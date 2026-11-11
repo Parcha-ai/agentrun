@@ -12,14 +12,21 @@ import { harnessOffers } from "../dist/harness.js";
 /** The longest the event loop is held in a check: a look every 10 ms, and well under a hashed binary or a run CLI. */
 const HELD_MS = 200;
 
-// What a check loads on its first use is loaded now, so the loop measured below is the check's alone: a module's first
-// evaluation holds the loop wherever it runs.
-await Promise.all(["../dist/adapters.js", "../dist/harness-table.js", "../dist/harness-opencode/index.js", "../dist/host.js", "../dist/model.js", "../dist/provider.js", "@parcha/agentrun-harness-claude", "@parcha/agentrun-harness-codex"].map((name) => import(name)));
-
 const found = findOpenCode();
 const skip = !found && env.AGENTRUN_OPENCODE_REQUIRE_BINARY !== "1" ? "the pinned OpenCode is not installed here" : false;
 
 test("the server checks a harness's pinned binary without holding its event loop: no gap over 200 ms while OpenCode is hashed and asked its version", { skip, timeout: 120_000 }, async () => {
+  // Everything the offers load on their first use is loaded first, by offers whose OpenCode is not there (its check finds
+  // no file, reads nothing and keeps nothing), so the loop measured below is the check's alone: a module's first
+  // evaluation holds the loop wherever it runs.
+  const before = env.OPENCODE_BIN;
+  env.OPENCODE_BIN = "/nonexistent/agentrun-probe-loop/opencode";
+  try {
+    assert.equal((await harnessOffers({ OPENAI_API_KEY: "fake-test-key" })).find((offer) => offer.id === "opencode")?.available, false);
+  } finally {
+    if (before === undefined) delete env.OPENCODE_BIN;
+    else env.OPENCODE_BIN = before;
+  }
   let last = performance.now();
   let worst = 0;
   // A look's gap past its 10 ms; the last look is taken at the end too, so a loop held to the end is counted.
