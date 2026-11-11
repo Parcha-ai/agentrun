@@ -49,7 +49,7 @@ test("a job.yaml out of shape is refused, naming each problem", (t) => {
 const step = (id, kind, graders, extra = {}) => ({
   id, kind, status: "completed", pass: graders.every(([, pass]) => pass), graders: graders.map(([grader, pass]) => ({ grader, type: "regex", pass, reason: "" })),
   cost_usd: 0.002, work_cost_usd: 0.001, reflect_cost_usd: 0.001, grade_cost_usd: 0.0005, grade_cost_unpriced: false, eval_grader_cost_usd: null,
-  learning: { state: "merged" }, learned: { notes: [], skills: [], workflows: [] }, workflow_proposed: false, learned_workflow_calls: 0, approvals: [], active_after: { notes: {}, skills: {}, workflows: {} },
+  tokens: { input: 900, cache_read: 0, cache_write: 0, output: 100, requests: 2, unmetered: 0 }, learning: { state: "merged" }, learned: { notes: [], skills: [], workflows: [] }, workflow_proposed: false, learned_workflow_calls: 0, approvals: [], active_after: { notes: {}, skills: {}, workflows: {} },
   ...extra,
 });
 
@@ -71,6 +71,9 @@ test("the metrics: follow on repeat steps, the work cost's trend, workflow reuse
   assert.deepEqual([m.wrong_keeps, m.plant_graders], [1, 1]);
   assert.equal(m.grade_cost_unknown_steps, 1);
   assert.ok(m.learning_overhead_usd_per_run > 0, "a lower bound with one grade unknown");
+  assert.deepEqual([m.follow_k, m.follow_n, m.pass_k, m.pass_n], [1, 2, 3, 5], "the counts beside the rates");
+  assert.deepEqual([m.tokens_per_run, m.tokens_per_pass, m.tokens_known_steps], [1000, Math.round(5000 / 3), 5], "input + output per run, and per passing step");
+  assert.equal(metricsOf(steps.map((x) => ({ ...x, tokens: null })), true).tokens_per_pass, null, "unknown when no run booked its tokens");
 });
 
 test("the summary: one table row per series, and a refused series said as stopped", () => {
