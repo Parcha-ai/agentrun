@@ -652,8 +652,7 @@ test.skip("a capped run with a request cut by a crash goes on: the cut request c
 });
 
 // Three runs in turn, each followed for up to 55 s.
-// SKIP (follow-up #2078): the run's thinking level does not reach the harness's session on the runner
-test.skip("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
+test("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   for (const [harness, thinking, said] of [["claude-agent", "high", "Thinking high."], ["claude-agent", "max", "Thinking max."], ["codex", "max", "Thinking xhigh."]]) {
     const id = `think-${harness}-${thinking}`;
