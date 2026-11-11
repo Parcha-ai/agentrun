@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { request } from "node:http";
 import { test } from "node:test";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { git, resnap } from "./learn-support.mjs";
@@ -32,7 +33,7 @@ const fetchFlow = () => ({
 
 /** A server with accounts and the owner's session; agent `source` (`extra`: more of its definition) learning, with
  *  `files` committed on its folder's main. */
-async function owned(t, files, extra = {}) {
+async function owned(t, files, extra = {}, before = async () => {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = await serve(t, { learning: "on", accounts: true, openSetup: true });
   const { api, data, port } = server;
@@ -40,6 +41,7 @@ async function owned(t, files, extra = {}) {
   const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
+  await before({ port, cookie, origin }, t);
   const made = await api("POST", "/agents", agent("source", { learning: true, ...extra }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   await seedOf(data, "source");
@@ -200,5 +202,26 @@ test("a learned workflow holding one of the server's secrets now, or a code node
   const code = await promote("coded");
   assert.equal(code.status, 400, code.text);
   assert.ok(code.json.error.problems.some((one) => one.rule === "executable_node"), code.text);
+  assert.deepEqual(await agentIds(), ["source"], "nothing made");
+});
+
+/** The fake MCP server saved as `fake`, no auth (its tool `add` among those it lists), closed when the test ends. */
+async function saveFakeMcp({ port, cookie, origin }, t) {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  // A server's save is the owner's (a secret write): their session's.
+  const saved = await call(port, { method: "PUT", path: "/v2/settings/mcp-servers/fake", headers: { ...json, cookie, origin }, body: { url: fake.url, auth: { type: "none" } } });
+  assert.equal(saved.status, 200, saved.text);
+}
+
+// Walk 6 on #2479: a learned workflow whose call node runs an MCP tool the source agent's own tool settings deny is not
+// made an agent, and the refusal names where the deny was set: the agent's tool settings, never the server.
+test("a learned workflow calling an MCP tool the source agent's tool settings deny is not made an agent: the refusal says it is set to deny for this agent", { timeout: 150_000 }, async (t) => {
+  const flow = { v: 2, name: "file-ticket", schemas: { Q: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, R: { type: "object" } }, input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" }, root: { node: "call", label: "Add them", via: "tool", tool: "mcp:fake/add", args: { a: "{a}", b: "{b}" }, out: "R", as: "r", deadline_s: 30 } };
+  const { promote, agentIds } = await owned(t, flowFiles("file-ticket", flow), { tools: ["mcp:fake/add"], tool_settings: { "mcp:fake/add": { permission: "deny" } } }, saveFakeMcp);
+  const refused = await promote("file-ticket");
+  assert.equal(refused.status, 400, refused.text);
+  const problem = refused.json.error.problems?.find((one) => one.rule === "workflow");
+  assert.equal(problem?.detail, "This workflow's call node calls mcp:fake/add, which is set to deny for this agent. (the call node at /root)", refused.text);
   assert.deepEqual(await agentIds(), ["source"], "nothing made");
 });

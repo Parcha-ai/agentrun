@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
+import { ToolCard } from "@/components/ToolCard";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { grantOf, grantProblem, type McpServer, mcpGrant, staleGrants } from "@/lib/mcp";
 import { SERVER_DENY } from "@/lib/toolSettings";
 
@@ -14,20 +14,17 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
   const granted = tools.filter((t) => grantOf(t));
   const runs = !harnesses || harnesses.includes(harness);
   // A grant the server's save refuses (by harness, or by name) can't be ticked; one already granted stays, to untick.
-  const box = (grant: string, label: ReactNode, note?: string, warn?: string, refused?: string) => {
+  // Each tool is the editor's one ToolCard, as a built-in tool is: the same height, its description clamped, More.
+  const box = (grant: string, name: string, description?: string, warn?: string, refused?: string, note?: ReactNode) => {
     const on = tools.includes(grant);
     const off = (!runs || !!refused) && !on;
     const said = warn ?? refused ?? (on && !runs ? `Won't run on ${harness}.` : undefined);
     return (
-      <li key={grant}><label className={cn("flex items-start gap-3 border px-3 py-2.5 font-mono text-body", on && "border-foreground", warn && "border-warning/60", off ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-        <input type="checkbox" value={grant} checked={on} disabled={off} onChange={() => toggle(grant)} className="mt-0.5 accent-primary" />
-        <span className="min-w-0">{label}
-          {note && <span className="mt-0.5 line-clamp-2 block font-sans text-label text-muted-foreground" title={note}>{note}</span>}
-          {said && <span className="mt-0.5 block font-sans text-label text-warning-text" role="alert">{said}</span>}</span>
-      </label></li>
+      <li key={grant} className="min-w-0"><ToolCard value={grant} name={name} note={note} description={description} alert={said} on={on} disabled={off} warn={!!warn} onToggle={() => toggle(grant)} /></li>
     );
   };
-  const grid = (children: ReactNode) => <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">{children}</ul>;
+  // The built-in tools' grid: columns of at least 18rem that a card's content never widens.
+  const grid = (children: ReactNode) => <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">{children}</ul>;
   const notHere = !runs && <p className="text-small text-warning-text">{harness} doesn't run MCP tools on this server{harnesses?.length ? `: ${harnesses.join(" and ")} do` : ""}.</p>;
   if (servers === "failed") return (
     <div className="mt-4 space-y-2">
@@ -46,7 +43,7 @@ export function McpToolPicker({ servers, tools, harness, harnesses, onChange, on
         <section key={s.name} aria-label={`MCP server ${s.name}`}>
           <p className="caps mb-2 text-label font-semibold text-muted-foreground">{s.name} · MCP server</p>
           {/* A tool its server's read says no price meters: its calls run outside the run's cost and cap. */}
-          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), s.not_metered?.includes(t.name) ? <>{t.name}<span className="ml-2 font-sans text-label text-muted-foreground">not metered</span></> : t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined))))}
+          {grid(s.tools.map((t) => box(mcpGrant(s.name, t.name), t.name, [t.title, t.description].filter(Boolean).join(": ") || undefined, undefined, grantProblem(s.name, t, harness) ?? (t.permission === "deny" ? SERVER_DENY : undefined), s.not_metered?.includes(t.name) ? "not metered" : undefined)))}
         </section>
       ))}
       {stale.length > 0 && (
