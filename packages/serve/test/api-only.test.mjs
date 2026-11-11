@@ -37,7 +37,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
-    ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/api/store"], ["GET", "/llms.txt"],
+    ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
     ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
@@ -77,7 +77,6 @@ test("an API-only server serves a run's routes with the token", async (t) => {
 const REFUSED = [
   ["the console", "GET", "/", { token: false, headers: { accept: "text/html" } }],
   ["the console's assets", "GET", "/assets/index.js", { token: false }],
-  ["the store page's data", "GET", "/api/store", {}],
   ["setup", "POST", "/v2/setup", { token: false, body: { password: notSecret("password"), code: notSecret("code") }, headers: { origin: "http://127.0.0.1" } }],
   ["sign-in", "POST", "/v2/auth/sign-in", { token: false, body: { password: notSecret("password") } }],
   ["the session", "GET", "/v2/auth/session", {}],
@@ -124,7 +123,6 @@ test("off by default: the same routes are served without the profile", async (t)
   const server = await serve(t, { runner: false });
   assert.equal((await send(server, "GET", "/v2/agents")).status, 200, "agents");
   assert.equal((await send(server, "GET", "/v2/triggers")).status, 200, "triggers");
-  assert.equal((await send(server, "GET", "/api/store")).status, 200, "the store page's data");
   assert.equal((await send(server, "GET", "/v2/runs")).status, 200, "runs");
 });
 

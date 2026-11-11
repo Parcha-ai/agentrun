@@ -265,6 +265,106 @@ test("--timeout bounds every request: a server that answers one page and then st
   }
 });
 
+test("a list command with --all reads every page and prints one list, its next_cursor null; a server that never ends its pages stops it, exit 1", { timeout: 60_000 }, async (t) => {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  const asked = [];
+  const searched = [];
+  let mode = "three";
+  const base = await loopback(t, (req, res) => {
+    const url = new URL(req.url, "http://host");
+    asked.push(url.searchParams.get("cursor"));
+    searched.push([url.searchParams.get("limit"), url.searchParams.get("archived")]);
+    const at = Number(url.searchParams.get("cursor") ?? "0");
+    if (mode === "refused" && at === 1) return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "not_found", message: "Gone." } }));
+    const next = mode === "three" || mode === "refused" ? (at < 2 ? String(at + 1) : null) : mode === "same" ? "again" : mode === "back" ? "1" : String(at + 1);
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ agents: [{ agent_id: `a${at}` }], total: 3, next_cursor: next }));
+  });
+  const all = await cli(["agents", "list", "--limit", "1", "--archived", "--all", "--base-url", base]);
+  assert.equal(all.code, 0, all.err);
+  assert.deepEqual(all.json(), { agents: [{ agent_id: "a0" }, { agent_id: "a1" }, { agent_id: "a2" }], total: 3, next_cursor: null }, "one list, the shape of one page");
+  assert.deepEqual(asked, [null, "1", "2"], "each page's cursor, in turn");
+  assert.deepEqual(searched, [["1", "true"], ["1", "true"], ["1", "true"]], "every page with the command's other flags");
+  mode = "same";
+  const same = await cli(["agents", "list", "--all", "--base-url", base]);
+  assert.equal(same.code, 1);
+  assert.match(same.err, /^agentrun agents list --all: the server answered the same next_cursor twice/);
+  assert.equal(same.out, "", "it printed nothing");
+  // The cursor it started from counts as read: a server that answers it again is caught at once.
+  mode = "back";
+  asked.length = 0;
+  const back = await cli(["agents", "list", "--cursor", "1", "--all", "--base-url", base]);
+  assert.deepEqual([back.code, back.out, asked], [1, "", ["1"]], back.err);
+  // A page refused mid-way is that refusal: its error on stderr, its exit code, nothing printed.
+  mode = "refused";
+  const refused = await cli(["agents", "list", "--all", "--base-url", base]);
+  assert.deepEqual([refused.code, refused.out], [1, ""]);
+  assert.equal(JSON.parse(refused.err).error.code, "not_found");
+  mode = "endless";
+  asked.length = 0;
+  const endless = await cli(["agents", "list", "--all", "--base-url", base]);
+  assert.equal(endless.code, 1);
+  assert.match(endless.err, /^agentrun agents list --all: the server still had a next page after 1000; stopped there and printed nothing/);
+  assert.equal(asked.length, 1000, "never past the cap");
+  assert.equal(endless.out, "");
+  // A command that is no list takes no --all; a list's help says what it does.
+  assert.equal((await cli(["agents", "get", "a", "--all", "--base-url", base])).code, 2);
+  assert.match((await cli(["agents", "list", "--help"])).out, /--all +every page: follows next_cursor and prints one list/);
+  // The skill names it where it lists each command's flags: on every list command, and on no other.
+  const reference = readFileSync(new URL("../skills/agentrun-cli/references/commands.md", import.meta.url), "utf8");
+  const sections = Object.fromEntries(reference.split(/^### /m).slice(1).map((section) => [section.slice(0, section.indexOf("\n")), section]));
+  const withAll = Object.keys(sections).filter((usage) => sections[usage].includes("- `--all` (boolean, this CLI's own): every page: follows next_cursor"));
+  assert.deepEqual(withAll.sort(), Object.keys(sections).filter((usage) => sections[usage].includes("- `--cursor STRING`")).sort());
+  assert.ok(withAll.includes("`agentrun agents list`") && withAll.includes("`agentrun runs list`"), withAll.join(", "));
+  assert.match(readFileSync(new URL("../skills/agentrun-cli/SKILL.md", import.meta.url), "utf8"), /^- 5: the server does not offer the command here: a 501, `unsupported_here`/m);
+});
+
+test("a 501 reads as unsupported, exit 5: the server's error with its reason, else one of the CLI's own naming the capability that is off; a secret route's too; help says so", async (t) => {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  let body = JSON.stringify({ error: { code: "unsupported_here", message: "This server has no billing, so it gives no quotes.", retryable: false, request_id: "q1", capability: "quotes" } });
+  const base = await loopback(t, (req, res) => res.writeHead(501, { "content-type": "application/json" }).end(body));
+  const off = await cli(["stats", "--base-url", base]);
+  assert.equal(off.code, 5, off.err);
+  assert.deepEqual(JSON.parse(off.err), { error: { code: "unsupported_here", message: "This server has no billing, so it gives no quotes.", retryable: false, request_id: "q1", capability: "quotes", status: 501 } }, "the server's own reason, kept");
+  body = JSON.stringify({ error: { code: "unsupported_here", capability: "home.writes" } });
+  const unsaid = await cli(["stats", "--base-url", base]);
+  assert.equal(unsaid.code, 5);
+  assert.deepEqual(JSON.parse(unsaid.err), { error: { code: "unsupported_here", capability: "home.writes", status: 501, message: "The server does not offer this here: home.writes is off." } });
+  body = "not json";
+  const bare = await cli(["stats", "--base-url", base]);
+  assert.equal(bare.code, 5);
+  assert.deepEqual(JSON.parse(bare.err), { error: { code: "unsupported_here", status: 501, message: "The server does not offer this here." } });
+  // A request that carries a secret never prints the server's answer, which could quote it: a 501 there is said in the
+  // CLI's own words, exit 5 too.
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-501-"));
+  removeAtEnd(dir);
+  const secret = `s-${randomBytes(8).toString("hex")}`;
+  writeFileSync(join(dir, "body.json"), JSON.stringify({ name: "m", url: "https://mcp.example.com", auth: { type: "bearer", token: secret } }));
+  body = JSON.stringify({ error: { code: "unsupported_here", message: `no: ${secret}` } });
+  const hidden = await cli(["api", "POST", "/settings/mcp-servers/preview", "--body", `@${join(dir, "body.json")}`, "--base-url", base]);
+  assert.equal(hidden.code, 5, hidden.err);
+  assert.equal(hidden.err, "The server does not offer it here: 501 unsupported_here. Its answer is not shown, since it could quote the secret sent.\n");
+  assert.match((await cli(["help"])).out, /5 the server does not offer the\s+command here \(501, unsupported_here; the error says why\)/);
+});
+
+test("a run waiting on its spend cap is paused at it, in the wait's line and in the skill: never said to have stopped", async (t) => {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  const run = { run_id: "r1", status: "input_required", pending: { kind: "budget", cap_usd: 0.05, spent_usd: 0.05, suggested_cap_usd: 0.2 } };
+  const base = await loopback(t, (req, res) => {
+    const timeline = new URL(req.url, "http://host").pathname.endsWith("/timeline");
+    const body = timeline ? { run_id: "r1", status: "input_required", state: "waiting", reset: false, rows: [], drop: [], next_after: 1, unchanged: false, has_more: false, final: false } : run;
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+  });
+  const waited = await cli(["runs", "wait", "r1", "--base-url", base]);
+  assert.equal(waited.code, 8, waited.err);
+  assert.equal(waited.err, "Run r1 is paused at its spend cap: raise it with `agentrun runs raise-cap r1 --max-cost-usd 0.2`, then `agentrun runs wait r1`.\n");
+  const skill = readFileSync(new URL("../skills/agentrun-cli/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /A run paused at its spend cap, or waiting for a tool call to be approved, exits 8/);
+  assert.doesNotMatch(skill, /stopped at its spend cap|stops at its cap/);
+});
+
 test("backoff: the client's own delay doubles up to its cap; the server's retry is the floor, above that cap too", () => {
   assert.deepEqual([1, 2, 3, 4].map((tries) => backoff(tries)), [500, 1000, 2000, 4000]);
   assert.equal(backoff(20), 30_000, "capped");
