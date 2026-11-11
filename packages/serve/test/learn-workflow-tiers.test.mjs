@@ -69,7 +69,7 @@ async function tiered(t, id, tier, env) {
   const records = await entriesOf({ data }, runId, ["runner.request", "runner.turn"]);
   const turnOf = (request) => records.find((entry) => entry.kind === "runner.turn" && entry.turn === request.turn);
   const booked = records.filter((entry) => entry.kind === "runner.request").map((request) => ({ host: request.host, usd: turnOf(request)?.usd, held: request.heldUsd }));
-  const sent = gw.requests.map((request) => ({ model: request.body?.model, node: (request.body?.tools ?? []).some((tool) => tool?.name === "submit") }));
+  const sent = gw.requests.map((request) => ({ model: request.body?.model, node: (request.body?.tools ?? []).some((tool) => tool?.name === "submit"), asked: request.body?.max_output_tokens ?? request.body?.max_tokens }));
   return { sent, booked, view: (await api("GET", `/runs/${runId}`)).body };
 }
 
@@ -96,4 +96,18 @@ test("a learned workflow's fast node, where the agent has no fast model, runs on
   const node = booked.filter((one) => one.host === LEARNED_WORKFLOW_TOOL);
   assert.equal(node.length, 1, JSON.stringify(booked));
   assert.ok(near(node[0].usd, usdOf("gpt-run")), `${node[0].usd}`);
+});
+
+test("a learned workflow's fast node on the model id the run's own model shares, at a dearer fast price: held under the run's cap at the price its route books it at, and booked there", { timeout: 120_000 }, async (t) => {
+  const { sent, booked } = await tiered(t, "tier-shared", "fast", (price) => ({ AGENT_MODEL_FAST: "gpt-run", AGENT_MODEL_FAST_PRICE: price("gpt-fast") }));
+  const nodeSent = sent.find((one) => one.node);
+  assert.equal(nodeSent?.model, "gpt-run", JSON.stringify(sent));
+  const node = booked.filter((one) => one.host === LEARNED_WORKFLOW_TOOL);
+  assert.equal(node.length, 1, JSON.stringify(booked));
+  assert.ok(near(node[0].usd, usdOf("gpt-fast")), `booked at the fast route's price: ${node[0].usd}`);
+  // Held at the fast route's price: the output it asked for at its output price, its small input beside it. At the run's
+  // own price it would be a tenth of that, and a dearer request could pass its hold and the run's cap.
+  const [inPrice, outPrice] = PRICES["gpt-fast"].map((usd) => usd / 1e6);
+  const outputHold = nodeSent.asked * outPrice;
+  assert.ok(node[0].held >= outputHold && node[0].held < outputHold + 5_000 * inPrice, `held at the fast route's price: ${JSON.stringify(node[0])}, its output hold ${outputHold}`);
 });

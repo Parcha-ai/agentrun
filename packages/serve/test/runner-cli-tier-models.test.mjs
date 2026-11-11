@@ -43,6 +43,8 @@ const MODELS = {
     env: (url, tiers) => ({
       AGENT_MODEL_BASE_URL: url, AGENT_MODEL: "gpt-run", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: price("gpt-run"),
       ...(tiers.includes("fast") ? { AGENT_MODEL_FAST: "gpt-fast", AGENT_MODEL_FAST_PRICE: price("gpt-fast") } : {}),
+      // The run's own model's id as the fast tier's, at the fast price: one id two routes price apart.
+      ...(tiers.includes("fast-shared") ? { AGENT_MODEL_FAST: "gpt-run", AGENT_MODEL_FAST_PRICE: price("gpt-fast") } : {}),
       ...(tiers.includes("strong") ? { AGENT_MODEL_STRONG: "gpt-strong", AGENT_MODEL_STRONG_PRICE: price("gpt-strong") } : {}),
     }),
   },
@@ -156,6 +158,25 @@ for (const harness of ["claude-agent", "codex"]) {
       assert.ok(typeof node[0].held === "number" && node[0].held >= outputHold && node[0].held < outputHold + 5_000 * tierPriced.input, `held under the run's cap at ${tierPriced.model}'s price: ${JSON.stringify(node[0])}, its output hold ${outputHold}`);
       const harnessOwn = booked.filter((one) => one.host === undefined);
       assert.ok(harnessOwn.length >= 1 && harnessOwn.every((one) => typeof one.usd === "number" && !near(one.usd, tierPriced.usd)), `the harness's own not at the tier's price: ${JSON.stringify(harnessOwn)}`);
+    });
+  }
+
+  if (harness === "codex") {
+    test("a codex run's learned fast node on the model id the run's own model shares, at a dearer fast price: held under the run's cap at the price its route books it at, and booked there", { timeout: 60_000 }, async (t) => {
+      const { row, booked, sent } = await tieredRun(t, harness, "fast", ["fast-shared"]);
+      assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+      const nodeSent = sent.find((one) => one.node);
+      assert.equal(nodeSent?.model, "gpt-run", JSON.stringify(sent));
+      const node = booked.filter((one) => one.host === LEARNED_WORKFLOW_TOOL);
+      assert.equal(node.length, 1, JSON.stringify(booked));
+      const [inPrice, outPrice] = PRICES["gpt-fast"].map((usd) => usd / 1e6);
+      assert.ok(near(node[0].usd, (10 * PRICES["gpt-fast"][0] + 2 * PRICES["gpt-fast"][1]) / 1e6), `booked at the fast route's price: ${node[0].usd}`);
+      const outputHold = nodeSent.asked * outPrice;
+      assert.ok(node[0].held >= outputHold && node[0].held < outputHold + 5_000 * inPrice, `held at the fast route's price, never the run's: ${JSON.stringify(node[0])}, its output hold ${outputHold}`);
+      // And the harness's own requests on the same id, by the session's route, held at the run's price: a tenth of the fast
+      // price, never the fast route's.
+      const own = booked.filter((one) => one.host === undefined);
+      assert.ok(own.length >= 1 && own.every((one) => one.held < node[0].held / 5), `the harness's own held at the run's price: ${JSON.stringify(own)} vs the node's ${node[0].held}`);
     });
   }
 
