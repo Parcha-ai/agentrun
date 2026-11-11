@@ -158,8 +158,7 @@ test("a request whose price is unknown makes the run's cost unknown, never 0", {
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
 });
 
-// SKIP (follow-up #2080): a run past its spend cap waits for input instead of failing spend_cap_reached
-test.skip("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
+test("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("over", { harness: "codex", instructions: "Overspend." }))).status, 201);
   // A cap that is no whole number of cents: its words say it in cents, never as a float's tail.

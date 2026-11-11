@@ -28,6 +28,8 @@ const { holdOf } = await import("../dist/decision-cap.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { servedTimelineRows } = await import("../dist/run-timeline-served.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { journalSessions } = await import("../dist/runner/sessions.js");
+const { DECISION_SESSION } = await import("@parcha/agentrun-kernel/kernel/cap");
 
 /** The faux System One service (serves OpenRouter's Decisions catalog and answers decisions), pointed at under --faux. */
 const FAUX_SYSTEM_ONE = fileURLToPath(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url));
@@ -169,17 +171,38 @@ async function waitRow(server, done, ms = 20_000) {
   }
 }
 
-test("a capped workflow's decision books main's hold: the provider reports no cost, so it settles at holdOf", async (t) => {
+/** The booking records (runner.request and runner.turn) of run-1's decisions session (DECISION_SESSION), read once the
+ *  run is at rest. */
+async function decisionRecords(store) {
+  const { harness } = await openRead(store);
+  try {
+    const sessions = journalSessions(harness, BACKGROUND_CONTEXT, store);
+    return (await sessions.read(DECISION_SESSION)).filter((record) => record.kind === "runner.request" || record.kind === "runner.turn");
+  } finally {
+    await harness.close(BACKGROUND_CONTEXT);
+  }
+}
+
+test("a capped workflow's decision whose provider reports no cost: the cap counts it at main's hold (holdOf), and the run's saved cost is unknown, never that hold", async (t) => {
   let sent;
   const decider = fauxOpenrouter({ price: priceOf(), costUsd: null, record: (request) => (sent = request) });
-  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const { server, store } = await worldWith(t, { capUsd: 1, decider });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the run ends: ${JSON.stringify(row)}`);
   assert.ok(sent, "the decision was sent to the provider");
-  // main's hold for the exact request the provider was sent (serve decision-cap.ts holdOf), under the run's mode.
+  // main's hold for the exact request the provider was sent (serve decision-cap.ts holdOf), under the run's mode: the
+  // cap's figure for it, booked as held.
   const hold = await holdOf({ id: "openrouter", priceOf: async () => priceOf() }, { label: "ask", kind: "judge", model: sent.model, state: sent.state, questions: sent.questions }, "expected");
   assert.ok("usd" in hold && hold.usd > 0, `main holds it at a figure: ${JSON.stringify(hold)}`);
-  assert.ok(Math.abs((row.costUsd ?? 0) - hold.usd) < 1e-12, `the run books main's hold ${hold.usd}: ${row.costUsd}`);
+  // The cap held it at main's hold, and its answer came back with no cost (its turn's usd null): the cap counts it at
+  // that hold (charged as held).
+  const records = await decisionRecords(store);
+  const request = records.find((record) => record.kind === "runner.request")?.data;
+  const turn = records.find((record) => record.kind === "runner.turn")?.data;
+  assert.ok(Math.abs((request?.heldUsd ?? 0) - hold.usd) < 1e-12, `held at main's hold ${hold.usd}: ${JSON.stringify(records)}`);
+  assert.equal(turn?.usd, null, `its answer reported no cost: ${JSON.stringify(turn)}`);
+  // As a cost it is unknown: the run's saved cost says so (null), as a pi run's does for a decision of no reported cost.
+  assert.equal(row.costUsd, null, `the run's cost is unknown, never the hold: ${row.costUsd}`);
 });
 
 test("a workflow's decision counts once in its cost: its served timeline's usage row and its view each say the run's one booked cost", async (t) => {
@@ -406,7 +429,7 @@ test("a raise too small for the decision it parked at sends the run on, and the 
 
 test("a raise finishes a pause only above the cap still refused: the same raise again, or one under it, leaves the run parked where it stands; one past the need resumes it to its end with the pause gone", async (t) => {
   let asked = 0;
-  const decider = fauxOpenrouter({ price: feeOnly(10), costUsd: null, record: () => (asked += 1) });
+  const decider = fauxOpenrouter({ price: feeOnly(10), costUsd: 10, record: () => (asked += 1) });
   const { server, store } = await worldWith(t, { capUsd: 1, decider });
   const first = await settledAt(server, store, (r) => r.state === "parked");
   await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
@@ -430,7 +453,7 @@ test("a raise finishes a pause only above the cap still refused: the same raise 
   await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 20 } });
   const ended = await waitRow(server, (r) => r.state === "ended" && r.runner === null);
   assert.equal(ended.state, "ended", JSON.stringify(ended));
-  assert.deepEqual([asked, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], [1, 10], "the decision sent once, booked at its $10 hold");
+  assert.deepEqual([asked, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], [1, 10], "the decision sent once, booked at the $10 it charged");
   const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
   assert.equal(view.pending, null, `no pause once it ended: ${JSON.stringify(view.pending)}`);
 });
@@ -438,7 +461,7 @@ test("a raise finishes a pause only above the cap still refused: the same raise 
 test("a decision at its cap: a hold that is exactly the room left is sent and booked; one a hair over it parks the run unsent", async (t) => {
   await t.test("exactly the room", async (t) => {
     let asked = 0;
-    const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: null, record: () => (asked += 1) });
+    const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: 0.4, record: () => (asked += 1) });
     const { server } = await worldWith(t, { capUsd: 0.4, decider });
     const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
     assert.deepEqual([row.state, asked, Math.round((row.costUsd ?? 0) * 1e9) / 1e9], ["ended", 1, 0.4], JSON.stringify(row));
