@@ -61,13 +61,8 @@ export const budgetPausedIn = (root: string): BudgetMark | undefined => {
   const mark = readJson<BudgetMark>(join(root, BUDGET_PAUSE));
   return mark && typeof mark.words === "string" && typeof mark.cap_usd === "number" ? mark : undefined;
 };
-/** A raise's cap, for the run's process to read (the server writes it after serve.json keeps it). */
-export const writeRaisedCap = (root: string, usd: number): void => writeWhole(join(root, CAP_RAISED), { max_cost_usd: usd });
 /** The pause's mark taken away: a raise sent its run on, here when no process waits at it (it was let go). */
 export const clearBudgetPause = (root: string): void => rmSync(join(root, BUDGET_PAUSE), { force: true });
-/** Whether a raise to `capUsd` finishes the pause `mark` names (the server's finishRaise opens a let-go run again on it):
- *  only a cap above the one still refused. No mark, or a cap at or under it, opens nothing. */
-export const raiseFinishes = (capUsd: number, mark: BudgetMark | undefined): boolean => mark !== undefined && capUsd > mark.cap_usd + CAP_TOLERANCE;
 
 /** The raised cap the run at `root` was given, if any. */
 const raisedIn = (root: string): number | undefined => {

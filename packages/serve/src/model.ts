@@ -341,6 +341,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: Tokens | "unknown"; contextWindow?: number; maxTokens?: number; usage?: (context: unknown, usage: Tokens) => Tokens };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
+    // A faux model with no price ("unknown"), as a provider that does not price it: unpriced, so the runner's route books
+    // its requests at no known price (null), never at the placeholder cost's $0 (model-route.ts routeOf).
+    if (mod.cost === "unknown") for (const id of ids) unpriced.add(id);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact; `maxTokens` its

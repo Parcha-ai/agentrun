@@ -1,4 +1,4 @@
-export type EvidenceTool = "browser_read" | "web_fetch" | "screenshot" | "browser_downloads";
+export type EvidenceTool = "browser_read" | "screenshot" | "browser_downloads";
 
 export type EvidenceRecord = {
   tool: EvidenceTool;
