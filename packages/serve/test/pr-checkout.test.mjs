@@ -81,6 +81,44 @@ test("the checkout lands in repo/ at the pull request's head, detached, with its
   await made.end();
 });
 
+test("a merge base the shallow fetch shows through an old side branch is not taken while a newer one is cut off: the checkout deepens to the true merge base", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const gh = join(dir, "gh");
+  // main: 45 commits (c0..c44), the base at c44. The pull request branches at c40 and has 60 commits, then merges a side
+  // branch that left c0 (its merge commit is the head). The first fetch (50 deep) reaches c0 through the side branch and
+  // so sees c0 as common to both, while the true merge base c40 lies past the branch's 50th commit.
+  const work = join(dir, "work");
+  await mkdir(work, { recursive: true });
+  const commit = (file, text) => {
+    writeFileSync(join(work, file), `${text}\n`);
+    git(work, "add", file);
+    git(work, "commit", "-q", "-m", `${file}: ${text}`);
+  };
+  git(work, "init", "-q", "-b", "main");
+  let c40;
+  for (let i = 0; i < 45; i++) {
+    commit("main.txt", `main ${i}`);
+    if (i === 0) git(work, "branch", "side");
+    if (i === 40) c40 = git(work, "rev-parse", "HEAD");
+  }
+  const base = git(work, "rev-parse", "HEAD");
+  git(work, "checkout", "-q", "side");
+  commit("side.txt", "an old side branch");
+  git(work, "checkout", "-q", "-b", "feature", c40);
+  for (let i = 0; i < 60; i++) commit("README.md", `the head's readme ${i}`);
+  git(work, "merge", "-q", "--no-ff", "-m", "merge the side branch", "side");
+  const head = git(work, "rev-parse", "HEAD");
+  const bare = join(gh, "acme", "widgets.git");
+  await mkdir(join(gh, "acme"), { recursive: true });
+  git(dir, "clone", "-q", "--bare", work, bare);
+  const { folder, workspace } = await runFolder(dir);
+  const made = await prCheckout({ workspace, fromGitHub: true, input: firing("acme/widgets", { head, base }), web: `file://${gh}` });
+  const repo = join(folder, CHECKOUT_DIR);
+  assert.equal(git(repo, "rev-parse", "HEAD"), head, made.note);
+  assert.equal(git(repo, "rev-parse", "pr/merge-base"), c40, "the newest shared commit, not the old one the side branch shows");
+  await made.end();
+});
+
 test("a claim that lets go late removes only its own checkout: a later claim's checkout of the same run stays until that claim lets go", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");

@@ -180,9 +180,10 @@ docker compose logs agentrun | grep Open
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
 shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
-This `compose.yaml` doesn't pass `AGENTRUN_SEAL_KEY` to the server yet (#2164), so the server keeps its seal key inside
-the container, outside `/data`: recreating the container loses every saved key and sign-in. Until that's fixed, use
-[`deploy/compose.yaml`](../../deploy/README.md), which requires the key, or don't recreate the container.
+This `compose.yaml` passes `AGENTRUN_SEAL_KEY` from the `.env` to the server and refuses to start without it, so the key that
+seals every saved key, MCP credential and sign-in is kept outside the container and the data volume. Keep that `.env`
+line. A store whose secrets were sealed with another key refuses to start, and the server never makes a new key over
+sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13

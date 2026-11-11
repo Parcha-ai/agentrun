@@ -39,7 +39,10 @@ export const CHECKOUT_DIR = "repo";
 /** How long the whole checkout may take: inside Archil's exec bound, on either mode. */
 export const CHECKOUT_MS = COMMAND_MAX_MS;
 /** The commits each side is first fetched with, then deepened by (doubling) until the merge base is in: about 3,200
- *  commits back at most, past which the run is told there is no merge base and the base's diff is the two-dot one. */
+ *  commits back at most, past which the run is told there is no merge base and the base's diff is the two-dot one. A merge
+ *  base found is taken only when no shallow edge lies outside its ancestry: a history cut short can show an older common
+ *  commit (a long branch that merged an old side branch) while the path to the true merge base is cut off, so the fetch
+ *  deepens until every edge is at or behind the merge base it found. */
 const DEPTH = 50;
 const DEEPENS = 6;
 
@@ -61,11 +64,17 @@ git init -q "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .gi
 fetch() { git fetch -q --no-tags --no-recurse-submodules origin "$@" "$head" \${base:+"$base"}; }
 fetch --depth=${DEPTH} || exit 11
 mb=
+settled() {
+  [ -n "$mb" ] || return 1
+  [ -s .git/shallow ] || return 0
+  while IFS= read -r edge; do git merge-base --is-ancestor "$edge" "$mb" 2>/dev/null || return 1; done < .git/shallow
+}
 if [ -n "$base" ]; then
   n=${DEPTH} i=0
-  while ! mb=$(git merge-base "$base" "$head" 2>/dev/null); do
-    mb=
-    [ "$i" -lt ${DEEPENS} ] || break
+  while :; do
+    mb=$(git merge-base "$base" "$head" 2>/dev/null) || mb=
+    settled && break
+    [ "$i" -lt ${DEEPENS} ] || { mb=; break; }
     fetch --deepen=$n || exit 11
     n=$((n * 2)) i=$((i + 1))
   done
