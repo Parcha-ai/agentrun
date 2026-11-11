@@ -797,7 +797,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-// SKIP (follow-up #2078): a follow-up after a stop never runs: the run stays cancelled on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
