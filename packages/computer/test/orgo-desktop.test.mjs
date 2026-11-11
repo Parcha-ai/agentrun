@@ -99,6 +99,21 @@ test("Orgo desktops' check(): the os's own image, network open, Orgo's sizes for
 	assert.deepEqual(fake.api.requests, []);
 });
 
+test("Orgo desktops' check() refuses a GPU in checkGpu's words, the one GPU rule every provider shares: neither os declares one", async () => {
+	const { checkGpu } = await import("../dist/provider.js");
+	for (const os of ["windows", "macos"]) {
+		const { provider, fake } = setup(os);
+		assert.equal(provider.capabilities().gpu, undefined, os);
+		const gpu = { type: "H100", count: 1 };
+		assert.deepEqual(provider.check(specOf(os, { gpu })), checkGpu(gpu, provider.capabilities()), os);
+		assert.deepEqual(provider.check(specOf(os, { gpu })), [{ field: "gpu", message: "this provider offers no GPU: ask a provider that declares one (capabilities().gpu) for a GPU computer" }], os);
+		const created = await provider.create(specOf(os, { gpu }));
+		assert.equal(created.error?.code, "refused", os);
+		assert.match(created.error.message, /^gpu: this provider offers no GPU/, os);
+		assert.deepEqual(fake.api.requests, [], `${os}: nothing called`);
+	}
+});
+
 test("Orgo Windows create: os windows with Orgo's end as the backstop, waits while the computer is not ready, writes the labels file, reads the screen; no key in a word", async () => {
 	const { provider, fake } = setup("windows", { notReady: 2 });
 	const created = await provider.create(specOf("windows"));
