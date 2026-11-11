@@ -17,6 +17,9 @@
     "status": "working",
     "state": "idle",
     "title": "Summarize the design workshop transcript (all four hours of it).",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:32.153Z",
     "updated_at": "2026-10-28T21:14:01.019Z",
     "ended_at": null,

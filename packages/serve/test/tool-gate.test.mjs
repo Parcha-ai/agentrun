@@ -250,8 +250,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   assert.deepEqual(denied, Object.fromEntries(Object.keys(denied).map((harness) => [harness, "unavailable: denied"])), "no provider is asked, on any harness");
 });
 
-/** web_fetch set to ask on `harnesses` at once, the case below: each run parks, the owner answers more than a minute later,
- *  allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal. */
+/** web_fetch set to ask on `harnesses` at once, the case below: each run parks, its claim let go, and the owner answers
+ *  then; allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal. */
 async function askedOn(t, harnesses, { resumes = true } = {}) {
   const dialled = await network(t);
   // Each request pi's faux model is asked, by run: counted below, and shown when an answer is not what it should be.
@@ -284,9 +284,24 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     Object.assign(run, { approval: view.pending.id, callId: call.tool_use_id });
   }
   assert.deepEqual(await dialled(), [], "nothing ran while they wait");
-  // A real wait, past any CLI's own tool timeout: no CLI sits in a call meanwhile.
-  await sleep(61_000);
-  for (const run of runs) assert.equal((await api("GET", `/runs/${run.runId}`)).body.status, "input_required", `${run.harness} still parked`);
+  // The park is a release: no runner holds the run and no session is open while it waits, so how long the owner takes
+  // changes nothing (no clock is waited on; #2292). The answer reaches the run's next claim.
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    for (const run of runs) {
+      // The view reads input_required as the park lands; the runner lets go of its claim just after: polled, to a deadline.
+      let row;
+      for (const until = Date.now() + 15_000; ; await sleep(50)) {
+        row = await store.runs.get(run.runId);
+        if (row.state === "parked" && row.runner === null) break;
+        assert.ok(Date.now() < until, `${run.harness}: parked with its claim let go within 15 s: ${JSON.stringify(row)}`);
+      }
+      assert.deepEqual([row.state, row.runner], ["parked", null], `${run.harness}: parked, its claim let go`);
+      assert.equal((await api("GET", `/runs/${run.runId}`)).body.status, "input_required", `${run.harness} still parked`);
+    }
+  } finally {
+    await store.close();
+  }
 
   const byToken = await api("POST", `/runs/${runs[0].runId}/approvals/${runs[0].approval}`, { decision: "allow" });
   assert.deepEqual([byToken.status, byToken.body.error.code], [403, "forbidden"], "a token never answers an approval: an agent's MCP client or a script may hold one");
@@ -336,7 +351,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
   assert.deepEqual(await dialled(), harnesses.map(() => PAGE), "each allowed call ran once, no denied one ran");
 }
 
-test("web_fetch set to ask on pi: the run parks with its pending approval and is answered more than a minute later by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
+test("web_fetch set to ask on pi: the run parks with its pending approval, its claim let go, and is answered by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
 
 test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000, skip: "waits on the approval row reading after the call's own rows once the call ran: on the switch the call's result row is written after the answer, and the approval row keeps the call row's place" }, (t) => askedOn(t, ["pi"]));
 
