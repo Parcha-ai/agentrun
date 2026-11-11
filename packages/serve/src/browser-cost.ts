@@ -206,7 +206,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  it is booked once whoever books it (this, or a reopen's: reopened). One that cannot be booked (its claim lost, a
    *  write that failed) is said in the log, and booked by the next claim's reopen. */
   function bookOnLedger(booking: PaidBooking, data: Booked): Promise<void> {
-    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: 0, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, owed: true, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
+    // Held at its charge (known: it was billed): a claim lost before its settle leaves it booked at that, never unknown
+    // (the kernel's bookCut books an owed step at its hold). A charge of an unknown amount holds nothing.
+    const owes = typeof data.usd === "number" && Number.isFinite(data.usd) && data.usd > 0 ? data.usd : 0;
+    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, owed: true, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
       (stepped) => void ("refused" in stepped && log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${stepped.refused.slice(0, 200)}): the next claim's reopen books it` }))),
       (error: unknown) => void log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${String((error as Error)?.message ?? error).slice(0, 200)}): the next claim's reopen books it` })),
     );

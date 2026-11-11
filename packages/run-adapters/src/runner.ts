@@ -456,10 +456,26 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // A hold-only step an earlier process left open is given back: money reserved, not spent (its holder's charges book
     // the money), never booked as cut. Every other cut step keeps the rule below.
     const givenBack = left.filter((t) => read.openHolds.has(t));
-    const numbers = left.filter((t) => !read.openHolds.has(t));
+    // An owed step (money already owed at its provider, at the figure it was held at: a browser charge) an earlier process
+    // left open is booked at that figure, its known cost, never as an unknown cut: what it owes was settled when it was
+    // admitted, and its settle alone was lost.
+    const owedTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => {
+      const data = (r.data ?? {}) as { owed?: unknown; hold?: unknown };
+      return data.owed === true && data.hold !== true ? [inherited[i]!] : [];
+    }));
+    const owed = left.filter((t) => !read.openHolds.has(t) && owedTurns.has(t) && (held.get(t) ?? 0) > 0);
+    const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t));
     if (givenBack.length) {
       await append(givenBack.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, givenBack: true } })));
       for (const turn of givenBack) answered.add(turn);
+    }
+    if (owed.length) {
+      await append(owed.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { turn, usd: held.get(turn)!, bookedUsd: held.get(turn)!, rule: "owed" } })));
+      for (const turn of owed) {
+        answered.add(turn);
+        const hosted = hosts.get(turn);
+        emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: held.get(turn)!, estimated: true }, ...(hosted === undefined ? {} : { host: hosted }) });
+      }
     }
     if (numbers.length === 0) return;
     // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may

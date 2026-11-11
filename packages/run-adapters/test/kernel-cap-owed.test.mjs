@@ -107,3 +107,19 @@ test("a ref names one booking: a second admit of it, on this claim or a later on
   assert.equal(later.booked, true, "a later claim's books nothing either");
   near((await capOf(store, 1).tools(await store.open(cap.TOOL_SESSION))).spentUsd(), 0.0014, "booked once");
 });
+
+test("an owed charge held at its amount whose claim was lost before its settle is booked at that amount by the next claim, never as an unknown cut", async () => {
+  const store = memorySessionStore();
+  // A browser charge of $0.0014 admitted owed and held at its amount, under its ref; the claim is lost before its settle.
+  const tools = await capOf(store, 1).tools(await store.open(cap.TOOL_SESSION));
+  await tools.admit({ ...release, id: "s1@charge#1", holdUsd: 0.0014, owed: true, ref: "s1@1000" });
+  // The next claim opens the session: its cut steps are booked first.
+  const next = await capOf(store, 1).tools(await store.open(cap.TOOL_SESSION));
+  const turns = (await store.read(cap.TOOL_SESSION)).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data);
+  assert.deepEqual(turns.map(({ usd, bookedUsd, cut }) => ({ usd, bookedUsd, cut })), [{ usd: 0.0014, bookedUsd: 0.0014, cut: undefined }], `booked at its amount, never cut: ${JSON.stringify(turns)}`);
+  near(next.spentUsd(), 0.0014, "the run's paid spend is that charge");
+  const cost = (await import("@parcha/agentrun-kernel")).sessionSpendOf(await store.read(cap.TOOL_SESSION)).cost;
+  assert.deepEqual(cost, { usd: 0.0014, soFarUsd: 0.0014, unpriced: 0 }, "and its cost is known, never unknown");
+  // Its ref is booked: a reopen's admit of the same charge books nothing more.
+  assert.equal((await next.admit({ ...release, id: "s1@charge#2", holdUsd: 0.0014, owed: true, ref: "s1@1000" })).booked, true, "booked once");
+});
