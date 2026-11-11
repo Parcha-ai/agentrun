@@ -442,7 +442,23 @@ const HOLD_WRITING_MS = 10_000;
  *  before npm starts. */
 const HOLD_STOP_MS = 60_000 + NPM_STOP_GRACE_MS + NPM_KILLED_WAIT_MS;
 
-type Hold = { readonly host: string; readonly pid: number; readonly startedAt: number; readonly token: string };
+type Hold = { readonly host: string; readonly pid: number; readonly identity?: string; readonly startedAt: number; readonly token: string };
+
+/** Process `pid`'s identity beyond its pid, where this system shows one (Linux's /proc): the boot it runs in and its start
+ *  time in clock ticks since that boot. A pid reused by another process (a restarted container's, which may well be
+ *  given the same one) never reads as the one that wrote a hold. Undefined where it can't be read (no such process, or
+ *  no /proc). */
+export function processIdentity(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The fields after the command (in parentheses, which may hold spaces): the state is the 3rd field, the start the 22nd.
+    const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return start && /^\d+$/.test(start) && boot ? `${boot}:${start}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** The hold at `at` as written, or undefined when it cannot be read (gone, cut short, not one). */
 async function readHold(at: string): Promise<Partial<Hold> | undefined> {
@@ -455,18 +471,27 @@ async function readHold(at: string): Promise<Partial<Hold> | undefined> {
 }
 
 /** Takes the hold on installs into `dir` for this process: its token when it holds it now, undefined while another
- *  installer does: its process alive, when it names this host, whatever its age (its npm may still be stopping); within
- *  INSTALL_TIMEOUT_MS and the time npm takes to stop (HOLD_STOP_MS), when another host's, whose process can't be asked. The hold
+ *  installer does. One of this host's is held while the process that wrote it lives, whatever its age (its npm may still
+ *  be stopping): its pid alive and, where the system shows it, the same process (processIdentity), so a pid another
+ *  process was given since never keeps it; where the identity can't be read, while its pid lives within INSTALL_TIMEOUT_MS
+ *  and the time npm takes to stop (HOLD_STOP_MS). Another host's, whose process can't be asked, within that bound. The hold
  *  is written whole beside its place and linked into it, which fails when a hold is there, so no reader sees one part
  *  way. A hold its installer left (gone, or past that bound, or unreadable and older than HOLD_WRITING_MS) is taken over
  *  by one taker alone: the one that links it to a name of that very file's removes it, and only while it is still that
  *  file, so a hold another taker made meanwhile is never removed. */
-export async function takeHold(dir: string, { isAlive = alive, host = hostname(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; host?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
+export async function takeHold(dir: string, { isAlive = alive, identity = processIdentity, host = hostname(), timeoutMs = INSTALL_TIMEOUT_MS }: { isAlive?: (pid: number) => boolean; identity?: (pid: number) => string | undefined; host?: string; timeoutMs?: number } = {}): Promise<string | undefined> {
   const at = installHoldOf(dir);
   await mkdir(dirname(at), { recursive: true });
   const token = randomUUID();
   const draft = `${at}.${token}`;
-  await writeFile(draft, JSON.stringify({ host, pid: process.pid, startedAt: Date.now(), token } satisfies Hold));
+  const own = identity(process.pid);
+  await writeFile(draft, JSON.stringify({ host, pid: process.pid, ...(own ? { identity: own } : {}), startedAt: Date.now(), token } satisfies Hold));
+  /** Whether a hold of this host's is still its installer's: that process alive, by its identity where both are known. */
+  const installing = (held: Partial<Hold> & { pid: number; startedAt: number }): boolean => {
+    if (!isAlive(held.pid)) return false;
+    const now = typeof held.identity === "string" ? identity(held.pid) : undefined;
+    return now !== undefined ? now === held.identity : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS;
+  };
   try {
     for (let tries = 0; tries < 3; tries++) {
       try {
@@ -479,7 +504,7 @@ export async function takeHold(dir: string, { isAlive = alive, host = hostname()
       if (!judged) continue;
       const held = await readHold(at);
       const live = typeof held?.pid === "number" && typeof held.startedAt === "number"
-        ? held.host === host ? isAlive(held.pid) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
+        ? held.host === host ? installing(held as Partial<Hold> & { pid: number; startedAt: number }) : Date.now() - held.startedAt <= timeoutMs + HOLD_STOP_MS
         : Date.now() - judged.mtimeMs <= HOLD_WRITING_MS;
       if (live) return undefined;
       // Left by its installer: reaped by one taker alone. The hold is never moved; a taker links it to a name of that very
