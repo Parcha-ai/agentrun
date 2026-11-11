@@ -13,12 +13,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { consolidationMain, consolidationState, learningCommit, type LearningChange, mainTexts, readMain } from "../learn/commit.js";
-import { consolidationDue, driftedPairs } from "../learn/consolidate.js";
+import { consolidationDue, driftedSince } from "../learn/consolidate.js";
 import { PROPOSAL } from "../learning.js";
 import { proposeRun } from "../propose.js";
 import { agentLearningOverStore } from "../store-reads/learning.js";
 import { learningWorkspace, readRunDiff } from "../learn/folder.js";
-import type { Store } from "../store/store.js";
+import { FINAL_STATES, type Store } from "../store/store.js";
 import type { Workspace } from "../workspace/index.js";
 import { type CheckedAnswer, createLearningLoop, type GradeMain, type KeptProposal, type LearningCommitResult, type LearningLoopDeps, type Problem } from "./learning-loop.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -40,9 +40,13 @@ export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now
 export const consolidationRunId = (runId: string): string => `${runId}-consolidate`;
 /** Whether run `runId` is a consolidation run (its commits on main end the merges a consolidation counts). */
 export const isConsolidationRun = (runId: string): boolean => runId.endsWith("-consolidate");
-/** A consolidation run's launch: harness "learning" (the loop factory picks it so), its input the agent and the pairs
- *  out of step. */
-export const consolidationLaunchOf = (agentId: string, pairs: readonly { skill: string; workflow: string; changed: "skill" | "workflow" }[]) => ({ harness: LEARNING_HARNESS, input: { consolidate: { agentId, pairs } }, title: "Consolidating what the agent learned", place: { mode: "runner" } });
+/** A consolidation run's launch: harness "learning" (the loop factory picks it so), its input the agent, the pairs out
+ *  of step and `after`, main's commit as it was queued (the next one counts merges from it); `model`, the grade model
+ *  of the learning run that queued it (its launch's, as the server named it), so its ask and its grade go to the model
+ *  every learning run grades with. */
+export const consolidationLaunchOf = (agentId: string, pairs: readonly { skill: string; workflow: string; changed: "skill" | "workflow" }[], { after, model }: { readonly after?: string; readonly model?: string } = {}) => ({
+  harness: LEARNING_HARNESS, input: { consolidate: { agentId, pairs, ...(after ? { after } : {}) } }, title: "Consolidating what the agent learned", place: { mode: "runner" }, ...(model ? { model } : {}),
+});
 
 const objectOf = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
 
@@ -103,20 +107,24 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
           await rm(runDir, { recursive: true, force: true });
         }
       },
-      // After a run's merge: a consolidation is queued when due (learn/consolidate.ts consolidationDue): at every
-      // CONSOLIDATE_MERGES-th merge since the last consolidation's commit while the active notes are past the budget, or a
-      // skill and its draft the merge put out of step. Its id is the merge's run's (a replayed end queues it once).
-      afterMerge: async (ws, { agentId, runId, files }) => {
-        const state = await consolidationState(ws as Workspace, isConsolidationRun);
-        const pairs = driftedPairs(state, files);
-        const due = consolidationDue({ mergesSince: state.mergesSince, activeBytes: state.activeBytes, drifted: pairs.length, queued: false });
+      // After a run's merge, before its learning run ends: a consolidation is queued when due (learn/consolidate.ts
+      // consolidationDue): CONSOLIDATE_MERGES merges since the last one was queued while the active notes are past the
+      // budget, or a skill and its draft out of step after those merges. None while one is queued or running; two merges
+      // at once queue one (store learning.queueConsolidation). Its id is the merge's run's (a replayed end queues it once).
+      afterMerge: async (ws, { agentId, runId, learningRunId }) => {
+        const last = await store.learning.consolidation(agentId);
+        const queued = last !== undefined && !FINAL_STATES.includes(last.state);
+        if (queued) return;
+        const state = await consolidationState(ws as Workspace, { ...(last?.after ? { after: last.after } : {}), consolidated: isConsolidationRun });
+        const pairs = driftedSince(state, state.changes);
+        const due = consolidationDue({ mergesSince: state.mergesSince, activeBytes: state.activeBytes, drifted: pairs.length, queued });
         if (!due) return;
         const source = await store.runs.get(runId);
         if (!source) return;
-        const id = consolidationRunId(runId);
-        if (await store.runs.get(id)) return;
-        await store.runs.create({ id, agentId, revisionId: source.revisionId }, { body: consolidationLaunchOf(agentId, pairs) });
-        deps.log?.(`learning: a consolidation of ${agentId}'s learning is queued (${due}) as ${id}`);
+        const model = objectOf((await store.runs.launch(learningRunId)).body).model;
+        const launch = consolidationLaunchOf(agentId, pairs, { ...(state.main ? { after: state.main } : {}), ...(typeof model === "string" && model !== "" ? { model } : {}) });
+        const made = await store.learning.queueConsolidation({ id: consolidationRunId(runId), agentId, revisionId: source.revisionId }, { body: launch });
+        if ("queued" in made) deps.log?.(`learning: a consolidation of ${agentId}'s learning is queued (${due}) as ${made.queued}`);
       },
     },
     merged: async (ws, runId) => (await readRunDiff(ws as Workspace, runId)) !== undefined,

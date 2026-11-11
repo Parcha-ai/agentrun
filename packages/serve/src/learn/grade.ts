@@ -86,8 +86,8 @@ export const GRADE_RUBRIC = [
   "",
   "Consolidation: a new note that supersedes several active notes replaces them. Keep it only when it keeps every rule",
   "of the notes it supersedes (their whole text is above) and adds none of its own; drop it as Contradicts when it",
-  "loses or changes a rule, and the notes it would replace stay. A skill and its workflow draft given together must",
-  "describe the same steps; drop both when they differ.",
+  "loses or changes a rule, and the notes it would replace stay. A skill and its workflow draft given together, or one",
+  "given new beside the other as main holds it, must describe the same steps; drop the new ones when they differ.",
   // end LS-05/LS-09 shared
 ].join("\n");
 
@@ -112,6 +112,10 @@ export type GradeInput = {
   /** The skill and workflow draft the run proposes beside them, each checked, by path in the folder: a skill's
    *  `skills/<name>/SKILL.md`, a draft's `workflows/<name>/workflow.json` with its `README.md`. */
   readonly files?: readonly NoteText[];
+  /** The other side of a skill and draft pair whose one side `files` gives (a consolidation that rewrote one and gave
+   *  the other back unchanged): as main holds it, by path as `files` names them, shown so the new side can be compared
+   *  with it, never graded. */
+  readonly beside?: readonly NoteText[];
   /** What the user said in the run, in order: the messages the run was sent, never the host's end-of-run turn. The
    *  prompt holds every one, each cut to GRADE_CAPS.askedMessage, with unseen characters taken out, while together
    *  they fit GRADE_CAPS.askedTotal (askedOf). The host cuts them of its secrets first. */
@@ -304,6 +308,10 @@ function promptWithin(input: GradeInput, budget: number): string {
   if (triggered !== undefined && (!Array.isArray(triggered) || !triggered.every((one) => one && typeof one.text === "string" && typeof one.source === "string" && SOURCE.test(one.source)))) throw new Error("a trigger's input must be a source word and a text");
   if (typeof run !== "string" || !RUN_ID.test(run)) throw new Error("the run id is not 1 to 128 letters, digits, dots, dashes or underscores");
   const learned = learnedFilesOf(input?.files);
+  const beside = input?.beside === undefined ? [] : learnedFilesOf(input.beside);
+  if (beside.length && !learned.length) throw new Error("a skill or workflow draft is given beside none");
+  const twice = beside.find(({ file }) => learned.some((one) => one.file === file));
+  if (twice) throw new Error(`${twice.file} is both new and beside`);
   const files = filesOf(proposed, learned.length === 0);
   if (files.length > CAPS.newNotes) throw new Error(`the proposal holds more than ${CAPS.newNotes} new notes`);
   if (instructions !== undefined) checkText(instructions, "the instructions");
@@ -339,7 +347,7 @@ function promptWithin(input: GradeInput, budget: number): string {
   const said = messages.map(({ at, text }) => `${at}. ${text}`).join("\n\n");
   // The file names are in the fence lines' labels; each is checked with the texts so the token is nowhere but in its own lines.
   const texts: string[] = [index, said, ...fromTriggers.shown.map(({ text }) => text), ...(told === undefined ? [] : [told])];
-  for (const note of [...superseded, ...proposed, ...learned]) texts.push(note.file, note.text);
+  for (const note of [...superseded, ...proposed, ...learned, ...beside]) texts.push(note.file, note.text);
 
   const token = fenceToken(run, texts);
   const fence = (label: string, text: string) =>
@@ -398,6 +406,9 @@ function promptWithin(input: GradeInput, budget: number): string {
     ...(proposed.length ? proposed.map(({ file, text }) => fence(`${file}, new`, withoutRiskyMark(text))) : ["There are none."]),
     ...(learned.length
       ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.map(({ file, text }) => fence(`${file}, new`, text))]
+      : []),
+    ...(beside.length
+      ? ["", "## Beside them, as the folder holds it", "", "The other side of the pair, unchanged: compare the new side with it. It is no item of yours.", "", ...beside.map(({ file, text }) => fence(`${file}, active`, text))]
       : []),
     "",
     "## Your verdict",

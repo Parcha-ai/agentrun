@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { note } from "./fixtures/faux-learn.mjs";
 
 const consolidate = await import("../dist/learn/consolidate.js");
-const { CLUSTER_NOTES, CLUSTERS, CONSOLIDATE_BUDGET, CONSOLIDATE_MERGES, clustersOf, consolidationDue, driftedPairs, rankOf, ranked, replacementProblems } = consolidate;
+const { CLUSTER_NOTES, CLUSTERS, CONSOLIDATE_BUDGET, CONSOLIDATE_MERGES, clustersOf, consolidationDue, driftedPairs, driftedSince, rankOf, ranked, replacementProblems } = consolidate;
 const { parseNoteFile } = await import("../dist/learn/notes.js");
 
 const parsed = (file, name, description, body) => parseNoteFile(file, note(name, description, `${body}\n`));
@@ -54,15 +54,25 @@ test("a skill and its workflow draft drift apart when a merge changes one and no
   assert.deepEqual(driftedPairs({ skills, workflows }, ["workflows/lonely/workflow.json", "notes.md"]), [], "no partner, no pair");
 });
 
-test("a consolidation is due at every 5th merge past the serve budget (one that merged nothing is asked again 5 merges later), or on a drifted pair; never while one is queued", () => {
+test("a consolidation is due once 5 merges landed since the last one was queued, past the serve budget (the count starts again at each queue, so never at each merge), or on a drifted pair; never while one is queued or running", () => {
   const base = { mergesSince: 5, activeBytes: 9000, drifted: 0, queued: false };
   assert.equal(consolidationDue(base), "growth");
   assert.equal(consolidationDue({ ...base, mergesSince: 4 }), undefined, "too few merges");
-  assert.equal(consolidationDue({ ...base, mergesSince: 6 }), undefined, "not at each merge after the 5th");
-  assert.equal(consolidationDue({ ...base, mergesSince: 10 }), "growth", "again 5 merges later");
+  assert.equal(consolidationDue({ ...base, mergesSince: 7 }), "growth", "the budget passed at the 7th merge since the queue: due then, not at the 10th");
+  assert.equal(consolidationDue({ ...base, mergesSince: 200 }), "growth", "the log's cap is a count like any other: the queue starts it again");
   assert.equal(consolidationDue({ ...base, activeBytes: 8000 }), undefined, "within the budget");
   assert.equal(consolidationDue({ ...base, mergesSince: 0, activeBytes: 0, drifted: 1 }), "drift");
   assert.equal(consolidationDue({ ...base, drifted: 1, queued: true }), undefined, "one at a time");
+});
+
+test("over several merges (newest first), the newest merge that wrote a skill or its draft decides: one side alone is out of step, both is in step again", () => {
+  const skills = [{ name: "weekly-summary" }];
+  const workflows = [{ name: "weekly-summary", readme: "Writes the weekly summary." }];
+  const skill = ["skills/weekly-summary/SKILL.md"];
+  const both = [...skill, "workflows/weekly-summary/workflow.json"];
+  assert.deepEqual(driftedSince({ skills, workflows }, [["a.md"], skill, both]), [{ skill: "weekly-summary", workflow: "weekly-summary", changed: "skill" }], "a later merge of a note alone keeps it out of step");
+  assert.deepEqual(driftedSince({ skills, workflows }, [both, skill]), [], "written whole since: in step");
+  assert.deepEqual(driftedSince({ skills, workflows }, [["a.md"]]), [], "no merge wrote either");
 });
 
 test("rank: read·3 + min(given, 10)·0.1; ties go to the newer note", () => {
@@ -92,4 +102,19 @@ test("one consolidation asks for the clusters, best first, while what they super
   const of = (n, tag) => Array.from({ length: n }, (_, i) => `${tag}${i}`);
   assert.deepEqual(clustersWithin([of(4, "a"), of(4, "b"), of(4, "c")]).map((c) => c[0]), ["a0", "b0"]);
   assert.deepEqual(clustersWithin([of(6, "a"), of(4, "b"), of(2, "c")]).map((c) => c[0]), ["a0", "c0"], "a smaller one after may still fit");
+});
+
+test("the grader's prompt shows a pair's side main holds beside the new one, fenced as data and graded not; beside nothing new, or beside itself, it throws", async () => {
+  const { gradePrompt } = await import("../dist/learn/grade.js");
+  const json = { file: "workflows/find-policies/workflow.json", text: '{"v":2}' };
+  const readme = { file: "workflows/find-policies/README.md", text: "---\nname: find-policies\ndescription: Finds a policy\n---\n" };
+  const skill = { file: "skills/find-policies/SKILL.md", text: "---\nname: find-policies\ndescription: Find a policy\n---\n1. Read the page.\n" };
+  const prompt = gradePrompt({ run: "run-1-consolidate", active: [], superseded: [], proposed: [], files: [json, readme], beside: [skill] });
+  assert.match(prompt, /for no other: workflows\/find-policies\/workflow\.json\./);
+  const beside = prompt.slice(prompt.indexOf("## Beside them, as the folder holds it"), prompt.indexOf("## Your verdict"));
+  assert.match(beside, /----- begin \S+: skills\/find-policies\/SKILL\.md, active -----\n---\nname: find-policies[\s\S]*1\. Read the page\.\n----- end /);
+  assert.match(prompt.replace(/\s+/g, " "), /or one given new beside the other as main holds it, must describe the same steps; drop the new ones when they differ\./);
+  assert.ok(!gradePrompt({ run: "run-1-consolidate", active: [], superseded: [], proposed: [], files: [json, readme] }).includes("## Beside them"));
+  assert.throws(() => gradePrompt({ run: "run-1-consolidate", active: [], superseded: [], proposed: [], files: [json, readme], beside: [json, readme] }), /both new and beside/);
+  assert.throws(() => gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [{ file: "a.md", text: "---\nname: A\ndescription: a\ntype: feedback\n---\nA rule.\n" }], beside: [skill] }), /beside none/);
 });

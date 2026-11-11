@@ -19,7 +19,7 @@ import type { LearningProposal } from "../store/store.js";
 import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
 import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
-import { learnedPlace } from "../learn/skills.js";
+import { learnedPlace, SKILLS_DIR, WORKFLOWS_DIR } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
 import { notKept, SAME_NOTE, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
@@ -125,9 +125,10 @@ export interface ConsolidationDeps {
   /** The checks over a consolidation's answer, against main as `seed` (propose.ts proposeRun, as a run's end-of-run turn
    *  is checked): the proposal kept, or why nothing is. */
   checkAnswer(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools?: readonly string[] }): Promise<CheckedAnswer>;
-  /** After a merge of a run's learning: whether a consolidation is due for its agent (learn/consolidate.ts
-   *  consolidationDue), and queue it. Never fails the merge. */
-  afterMerge(ws: unknown, merged: { readonly agentId: string; readonly runId: string; readonly files: readonly string[] }): Promise<void>;
+  /** After a merge of a run's learning, before its learning run (`learningRunId`) ends: whether a consolidation is due
+   *  for its agent (learn/consolidate.ts consolidationDue), and queue it. A throw parks the learning run, which asks
+   *  again when it wakes (its merge is on main already). */
+  afterMerge(ws: unknown, merged: { readonly agentId: string; readonly runId: string; readonly learningRunId: string }): Promise<void>;
 }
 
 /** A consolidation run's own facts, from its launch. */
@@ -135,8 +136,9 @@ export type Consolidation = { readonly agentId: string; readonly instructions?: 
 /** What the checks kept of a consolidation's answer, or why nothing. */
 export type CheckedAnswer = { readonly state: "proposed"; readonly proposal: KeptProposal; readonly left?: readonly Problem[] } | { readonly state: "dropped"; readonly reason: string; readonly detail?: string; readonly problems?: readonly Problem[] };
 /** A consolidation's journal entry (journal-kinds.ts learningConsolidation): its proposal held to its clusters, what the
- *  checks and the hold left out, the notes that stay active, and what its ask spent. */
-type ConsolidationData = { readonly proposal: KeptProposal; readonly left: readonly Problem[]; readonly stayActive: readonly string[]; readonly usd: number | null };
+ *  checks and the hold left out, the notes that stay active, what its ask spent, and `beside`, the other side of each
+ *  pair the proposal writes one side of, as main holds it (the grader compares the two, and grades neither). */
+type ConsolidationData = { readonly proposal: KeptProposal; readonly left: readonly Problem[]; readonly stayActive: readonly string[]; readonly usd: number | null; readonly beside?: readonly NoteText[] };
 
 const ROOT = ROOT_CONVERSATION_ID;
 
@@ -366,8 +368,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
 
         /** The grade and the merge of `proposal` on the agent's learning folder `ws`, as the learning of `who` (its Run-Id on
          *  the merge, its `source` in the journal): a run's kept proposal, or a consolidation's own. `checked` is what the
-         *  checks left out, said with the merge. After a run's merge, `afterwards` asks whether a consolidation is due. */
-        const settle = async (ws: unknown, who: { readonly runId: string; readonly agentId: string; readonly instructions?: string }, proposal: KeptProposal, checked: readonly Problem[], afterwards: boolean): Promise<LoopEnd> => {
+         *  checks left out, said with the merge; `beside`, what the grader reads with the proposal and grades not (a pair's
+         *  side main holds). After a run's merge, `afterwards` asks whether a consolidation is due, before the run ends. */
+        const settle = async (ws: unknown, who: { readonly runId: string; readonly agentId: string; readonly instructions?: string }, proposal: KeptProposal, checked: readonly Problem[], afterwards: boolean, beside: readonly NoteText[] = []): Promise<LoopEnd> => {
           const source = who;
           const entries = await journalEntries(journal, context);
           rooted = entries.length > 0;
@@ -395,7 +398,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: grading,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
@@ -478,9 +481,17 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               return { state: "ended" };
             }
             const detail = mergedWords(settled.merging, settled.verdict, checked);
+            // Whether the agent's learning is due a consolidation now, queued before this run ends: a queue that fails
+            // parks the run (its merge is on main, so it wakes to the same merge and asks again), never a lost one.
+            if (afterwards && learning.consolidation) {
+              try {
+                await learning.consolidation.afterMerge(ws, { agentId: source.agentId, runId: source.runId, learningRunId: claim.runId });
+              } catch (error) {
+                await append(KINDS.learningUnavailable, { source: source.runId, error: `a consolidation could not be queued: ${(error as Error)?.message ?? String(error)}` } satisfies UnavailableData, "parked");
+                return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
+              }
+            }
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail, verdict: settled.verdict } satisfies MergedData, "ended");
-            // Whether the agent's learning is due a consolidation now (never a fault of this merge).
-            if (afterwards && learning.consolidation) await learning.consolidation.afterMerge(ws, { agentId: source.agentId, runId: source.runId, files: result.files }).catch(() => {});
             return { state: "ended" };
           }
           if (result.reason === "conflict") {
@@ -563,11 +574,20 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: main.seed };
             const left = [...(checked.left ?? []), ...held.problems];
             if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
-            made = { proposal, left, stayActive: held.stayActive, usd: asked };
+            // A pair the answer wrote one side of (the other given back unchanged, which the checks take out): the other
+            // side as main holds it goes to the grader beside it, so it can check both describe the same steps.
+            const writes = new Set((proposal.files ?? []).map(({ file }) => file));
+            const beside = pairs.flatMap(({ skill, workflow }): NoteText[] => {
+              const [skillFile, json, readme] = [`${SKILLS_DIR}/${skill.name}/SKILL.md`, `${WORKFLOWS_DIR}/${workflow.name}/workflow.json`, `${WORKFLOWS_DIR}/${workflow.name}/README.md`];
+              const [s, w] = [writes.has(skillFile), writes.has(json)];
+              if (s === w) return [];
+              return s ? [{ file: json, text: workflow.json }, { file: readme, text: workflow.readme }] : [{ file: skillFile, text: skill.text }];
+            });
+            made = { proposal, left, stayActive: held.stayActive, usd: asked, ...(beside.length ? { beside } : {}) };
             await append(KINDS.learningConsolidation, made);
             await deps.flush();
           }
-          return settle(ws, who, made.proposal, made.left, false);
+          return settle(ws, who, made.proposal, made.left, false, made.beside ?? []);
         };
 
         const consolidating = learning.consolidation;

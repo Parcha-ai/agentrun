@@ -95,29 +95,43 @@ export function clustersWithin<T>(clusters: readonly (readonly T[])[], cap: numb
 /** A skill and a workflow draft of one job that a merge put out of step: it changed one (`changed`) and not the other. */
 export type DriftedPair = { readonly skill: string; readonly workflow: string; readonly changed: "skill" | "workflow" };
 
-/** The pairs `changed` (the paths a merge wrote) put out of step: partners are a skill and a draft of the same name, or a
- *  draft whose README names the skill as a word. A pair both of whose sides changed is in step. */
-export function driftedPairs(learned: { readonly skills: readonly { readonly name: string }[]; readonly workflows: readonly { readonly name: string; readonly readme: string }[] }, changed: readonly string[]): DriftedPair[] {
-  const touched = (dir: string, name: string) => changed.some((path) => path.startsWith(`${dir}/${name}/`));
+type Learned = { readonly skills: readonly { readonly name: string }[]; readonly workflows: readonly { readonly name: string; readonly readme: string }[] };
+
+/** Each skill and its draft: partners are a skill and a draft of the same name, or a draft whose README names the skill
+ *  as a word. */
+function partnersOf(learned: Learned): { skill: string; workflow: string }[] {
   const named = (readme: string, skill: string) => new RegExp(`(^|[^A-Za-z0-9-])${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9-]|$)`, "i").test(readme);
-  const out: DriftedPair[] = [];
-  for (const skill of learned.skills) {
-    for (const workflow of learned.workflows) {
-      if (workflow.name !== skill.name && !named(workflow.readme, skill.name)) continue;
-      const [s, w] = [touched(SKILLS_DIR, skill.name), touched(WORKFLOWS_DIR, workflow.name)];
-      if (s !== w) out.push({ skill: skill.name, workflow: workflow.name, changed: s ? "skill" : "workflow" });
-    }
-  }
-  return out;
+  return learned.skills.flatMap((skill) => learned.workflows.filter((workflow) => workflow.name === skill.name || named(workflow.readme, skill.name)).map((workflow) => ({ skill: skill.name, workflow: workflow.name })));
 }
 
-/** Why a consolidation is due after a merge, or undefined: `drift` when a pair drifted, `growth` at every
- *  CONSOLIDATE_MERGES-th merge since the last consolidation (5, 10, …: one that merged nothing is asked again only 5
- *  merges later, never at each merge) with the active notes past CONSOLIDATE_BUDGET. Never while one is queued. */
+/** The pairs `changed` (the paths a merge wrote) put out of step (partnersOf): a pair both of whose sides changed is in
+ *  step. */
+export function driftedPairs(learned: Learned, changed: readonly string[]): DriftedPair[] {
+  return driftedSince(learned, [changed]);
+}
+
+/** The pairs out of step after `changes`, the paths each merge wrote, newest first: for each skill and its draft
+ *  (partnersOf), the newest merge that wrote either decides, out of step when it wrote one side alone. A pair a later
+ *  merge wrote whole is in step again. */
+export function driftedSince(learned: Learned, changes: readonly (readonly string[])[]): DriftedPair[] {
+  const touched = (paths: readonly string[], dir: string, name: string) => paths.some((path) => path.startsWith(`${dir}/${name}/`));
+  return partnersOf(learned).flatMap(({ skill, workflow }) => {
+    const newest = changes.find((paths) => touched(paths, SKILLS_DIR, skill) || touched(paths, WORKFLOWS_DIR, workflow));
+    if (!newest) return [];
+    const [s, w] = [touched(newest, SKILLS_DIR, skill), touched(newest, WORKFLOWS_DIR, workflow)];
+    return s === w ? [] : [{ skill, workflow, changed: s ? "skill" as const : "workflow" as const }];
+  });
+}
+
+/** Why a consolidation is due after a merge, or undefined: `drift` when a pair is out of step, `growth` once
+ *  CONSOLIDATE_MERGES merges or more landed since the last consolidation was queued (`mergesSince`, counted from that
+ *  queue, so one that merged nothing is asked again only CONSOLIDATE_MERGES merges later) with the active notes past
+ *  CONSOLIDATE_BUDGET. Never while one is queued or running (`queued`): it reads main as it starts, and what merges after
+ *  is counted for the next. */
 export function consolidationDue(state: { readonly mergesSince: number; readonly activeBytes: number; readonly drifted: number; readonly queued: boolean }): "drift" | "growth" | undefined {
   if (state.queued) return undefined;
   if (state.drifted > 0) return "drift";
-  return state.mergesSince > 0 && state.mergesSince % CONSOLIDATE_MERGES === 0 && state.activeBytes > CONSOLIDATE_BUDGET ? "growth" : undefined;
+  return state.mergesSince >= CONSOLIDATE_MERGES && state.activeBytes > CONSOLIDATE_BUDGET ? "growth" : undefined;
 }
 
 /** A note's evidence: read·3 + min(given, 10)·0.1, from the runs that opened it and that were given it (the learning

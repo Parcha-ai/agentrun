@@ -251,6 +251,14 @@ export interface Learning {
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. And each consolidation of
    *  an agent's learning that ended in the window, its row's cost its ask's and its grade's. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** The agent's consolidation (a learning run whose launch names `consolidate`, learn/consolidate.ts) that is queued,
+   *  parked or running, else its newest: its id, its state and `after`, main's commit as it was queued (its launch's).
+   *  Undefined when none was ever queued. */
+  consolidation(agentId: string): Promise<{ id: string; state: RunState; after?: string } | undefined>;
+  /** Queues consolidation `run` with `launch`, unless one of its agent is queued, parked or running (not ended, failed or
+   *  stopped) or `run.id` is a run already: checked and written in one transaction under a lock of the agent's, so two
+   *  merges at once queue one. `queued` with its id, or `pending` with the id of the run there. */
+  queueConsolidation(run: { id: string; agentId: string; revisionId: string }, launch: RunLaunchInput): Promise<{ queued: string } | { pending: string }>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */

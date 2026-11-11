@@ -336,24 +336,26 @@ export async function consolidationMain(ws: Workspace): Promise<ConsolidationMai
   });
 }
 
-/** What decides, after a merge, whether a consolidation is due (learn/consolidate.ts consolidationDue): the merges on
- *  main since the last consolidation's commit (one whose Run-Id is a consolidation run's, `consolidated(run)`), up to the
- *  log the snapshot keeps; the bytes of the active notes; and each active skill's name and draft's name and README, for
- *  the pairs a merge's files put out of step. */
-export async function consolidationState(ws: Workspace, consolidated: (run: string) => boolean): Promise<{ mergesSince: number; activeBytes: number; skills: { name: string }[]; workflows: { name: string; readme: string }[] }> {
+/** What decides, after a merge, whether a consolidation is due (learn/consolidate.ts consolidationDue): main's commit now;
+ *  the merges of runs on main since `after` (main as the last consolidation was queued; none queued yet, every merge the
+ *  log keeps), a consolidation run's own (`consolidated(run)`) left out, and the paths each wrote, newest first, for the
+ *  pairs out of step (consolidate.ts driftedSince); the bytes of the active notes; and each active skill's name and
+ *  draft's name and README. Counted from the queue, never from a consolidation's commit: one that merged nothing still
+ *  starts the count again, and the count never sits at the log's cap. */
+export async function consolidationState(ws: Workspace, since: { readonly after?: string; readonly consolidated: (run: string) => boolean }): Promise<{ main?: string; mergesSince: number; changes: string[][]; activeBytes: number; skills: { name: string }[]; workflows: { name: string; readme: string }[] }> {
   return readLearning(ws, async ({ snapshot, body }) => {
-    if (!snapshot) return { mergesSince: 0, activeBytes: 0, skills: [], workflows: [] };
-    let mergesSince = 0;
+    if (!snapshot) return { mergesSince: 0, changes: [], activeBytes: 0, skills: [], workflows: [] };
+    const changes: string[][] = [];
     for (const change of snapshot.log) {
-      if (!("run" in change.by)) continue;
-      if (consolidated(change.by.run)) break;
-      mergesSince++;
+      if (change.commit === since.after) break;
+      if (!("run" in change.by) || since.consolidated(change.by.run)) continue;
+      changes.push(change.files);
     }
     const activeBytes = snapshot.notes.filter((note) => note.status === "active").reduce((sum, note) => sum + note.bytes, 0);
     const workflows = await Promise.all(snapshot.workflows.filter((item) => item.status === "active").flatMap((item) => {
       const readme = item.files.find((file) => file.path.endsWith("/README.md"));
       return readme ? [body(readme.path, readme.oid).then((text) => ({ name: item.name, readme: text }))] : [];
     }));
-    return { mergesSince, activeBytes, skills: snapshot.skills.filter((item) => item.status === "active").map(({ name }) => ({ name })), workflows };
+    return { main: snapshot.main, mergesSince: changes.length, changes, activeBytes, skills: snapshot.skills.filter((item) => item.status === "active").map(({ name }) => ({ name })), workflows };
   });
 }

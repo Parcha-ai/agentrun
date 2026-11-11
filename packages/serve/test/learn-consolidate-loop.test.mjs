@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { agentWithRevision, storeOn } from "./store-helpers.mjs";
+import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
 
 const { learningLoopFactory, consolidationLaunchOf, consolidationRunId } = await import("../dist/runner/learning-factory.js");
@@ -37,7 +37,8 @@ const DRAFT = { v: 2, name: "find-policies", schemas: { Page: { type: "object", 
 /** A store, a learning folder holding `notes` (file to text) as a person committed them, and an agent; `before` runs on
  *  the folder first. */
 async function world(t, notes = FILES, before) {
-  const { store } = await storeOn(t);
+  const clock = { now: T0 };
+  const { store } = await storeOn(t, { clock });
   const data = mkdtempSync(join(tmpdir(), "learn-consolidate-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   await agentWithRevision(store);
@@ -52,7 +53,7 @@ async function world(t, notes = FILES, before) {
   };
   for (const [file, text] of Object.entries(notes)) assert.equal((await onFolder((ws) => learningCommit(ws, { kind: "person", action: "created", file, text, ifMatch: null }))).ok, true);
   if (before) await before(onFolder);
-  return { store, data, onFolder };
+  return { store, data, onFolder, clock };
 }
 
 /** A grader's verdict keeping every file it is asked about, or dropping those `drop` names. */
@@ -182,29 +183,131 @@ test("a skill and its draft out of step are written back in step, both in the me
   assert.match(texts["workflows/find-policies/workflow.json"], /window in days/);
 });
 
-test("the 5th merge past the serve budget queues one consolidation run, as no listed run; a merge before it queues none", async (t) => {
-  const big = (i) => note(`Long rule ${i}`, `A rule kept long ${i}`, `${`Keep this rule in mind ${i}. `.repeat(70)}\n`);
+test("a consolidation that gives the skill back unchanged and rewrites its draft: the grader reads the skill beside the draft, as main holds it, and grades the draft alone; the merge writes the draft", async (t) => {
+  const README = "---\nname: find-policies\ndescription: Finds a store's refund policy\n---\n";
   const w = await world(t, {}, async (onFolder) => {
-    for (const i of [1, 2, 3, 4]) {
-      const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: `run-${i}`, reason: "learned", graded: {}, files: [{ path: `long-${i}.md`, text: big(i) }] }));
-      assert.equal(made.ok, true, JSON.stringify(made));
-    }
+    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: README }] }));
+    assert.equal(made.ok, true, JSON.stringify(made));
   });
-  // run-5 ends keeping a note, and its learning run grades and merges it: the 5th merge.
-  const learn = async (runId, file) => {
-    await w.store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" });
-    const claim = await w.store.claim(runId, "runner-a", { leaseMs: 60_000 });
-    await w.store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "proposed", proposal: { notes: [{ file, text: big(file) }] } } } }, { table: "learning_run", row: { id: `${runId}-learning` } }] });
-    const learningClaim = await w.store.claim(`${runId}-learning`, "runner-b", { leaseMs: 60_000 });
-    const loop = learningLoopFactory({ refuse: async () => [], store: w.store, data: w.data, ask: async ({ prompt }) => ({ text: graderAnswer(prompt), usd: 0 }) })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
-    return loop.start(learningClaim);
-  };
-  assert.deepEqual(await learn("run-5", "long-5.md"), { state: "ended" });
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Read the page's text, then quote the store's refund lines." } };
+  const answer = [`\`\`\`\`skill find-policies\n${SKILL}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  const { end, entries, snapshot, asks } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }] });
+  assert.deepEqual(end, { state: "ended" }, JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.problems])));
+  const grade = asks[1];
+  assert.match(grade, /Give one item for each of these files, each once, and for no other: workflows\/find-policies\/workflow\.json\./, "the draft alone is graded");
+  const beside = grade.slice(grade.indexOf("## Beside them"), grade.indexOf("## Your verdict"));
+  assert.ok(beside.includes("skills/find-policies/SKILL.md, active") && beside.includes("2. Quote the refund lines."), beside);
+  assert.ok(grade.indexOf("## The new skill and workflow draft") < grade.indexOf("## Beside them"));
+  const commit = snapshot.log[0];
+  assert.deepEqual([...commit.files].filter((f) => !f.startsWith(".")), ["workflows/find-policies/workflow.json"], "the draft alone: its README and the skill as they were");
+});
+
+const big = (i) => note(`Long rule ${i}`, `A rule kept long ${i}`, `${`Keep this rule in mind ${i}. `.repeat(70)}\n`);
+/** A world whose folder holds `merges` merges of long notes (past the serve budget), by runs run-1 to run-<merges>. */
+const longWorld = (t, merges) => world(t, {}, async (onFolder) => {
+  for (let i = 1; i <= merges; i++) {
+    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: `run-${i}`, reason: "learned", graded: {}, files: [{ path: `long-${i}.md`, text: big(i) }] }));
+    assert.equal(made.ok, true, JSON.stringify(made));
+  }
+});
+/** Run `runId` ends keeping note `file` (or `files`), its learning run (grade model `model`) grades and merges it on
+ *  the faux grader: the learning run's end. `store` stands in for the store the loop is given. */
+async function learn(w, runId, file, { model, store = w.store, files } = {}) {
+  w.clock.now += 1000;
+  await w.store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" });
+  const claim = await w.store.claim(runId, "runner-a", { leaseMs: 60_000 });
+  const proposal = files ? { notes: [], files } : { notes: [{ file, text: big(file) }] };
+  await w.store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "proposed", proposal } } }, { table: "learning_run", row: { id: `${runId}-learning`, ...(model ? { model } : {}) } }] });
+  const learningClaim = await w.store.claim(`${runId}-learning`, "runner-b", { leaseMs: 60_000 });
+  return { claim: learningClaim, end: await learnAgain(w, learningClaim, store) };
+}
+const learnAgain = (w, claim, store = w.store) =>
+  learningLoopFactory({ refuse: async () => [], store, data: w.data, now: () => w.clock.now, ask: async ({ prompt }) => ({ text: graderAnswer(prompt), usd: 0 }) })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal }).start(claim);
+/** Ends queued consolidation run `id` as one that merged nothing. */
+async function endConsolidation(w, id) {
+  w.clock.now += 1000;
+  const claim = await w.store.claim(id, "runner-c", { leaseMs: 60_000 });
+  await w.store.runs.update(claim, { state: "ended" });
+}
+
+test("the 5th merge past the serve budget queues one consolidation run, as no listed run, on the learning run's grade model, before that run ends; a merge before it queues none", async (t) => {
+  const w = await longWorld(t, 4);
+  assert.deepEqual((await learn(w, "run-5", "long-5.md", { model: "faux/grade-model" })).end, { state: "ended" });
   const queued = await w.store.runs.get(consolidationRunId("run-5"));
   assert.equal(queued?.state, "queued", "the 5th merge past 8 KB queues a consolidation");
-  assert.equal((await w.store.runs.launch(consolidationRunId("run-5"))).body.input.consolidate.agentId, "agent-1");
+  const launch = (await w.store.runs.launch(consolidationRunId("run-5"))).body;
+  assert.equal(launch.input.consolidate.agentId, "agent-1");
+  assert.equal(launch.model, "faux/grade-model", "the grade model the learning run was queued with: its ask and its grade go there");
+  assert.equal(launch.input.consolidate.after, (await w.onFolder((ws) => readSnapshot(ws))).main, "main as it was queued: the next count starts there");
   assert.ok(!(await w.store.runs.list({})).some((run) => run.id.endsWith("-consolidate") || run.id.endsWith("-learning")), "no listed run");
-  // The 6th merge is not a 5th: none queued.
-  assert.deepEqual(await learn("run-6", "long-6.md"), { state: "ended" });
-  assert.equal(await w.store.runs.get(consolidationRunId("run-6")), undefined);
+});
+
+test("one consolidation at a time: while one is queued, a merge that would make one due queues none; two queues of one agent at once make one", async (t) => {
+  const w = await longWorld(t, 4);
+  await w.store.runs.create({ id: "run-0-consolidate", agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", []) });
+  assert.deepEqual((await learn(w, "run-5", "long-5.md")).end, { state: "ended" });
+  assert.equal(await w.store.runs.get(consolidationRunId("run-5")), undefined, "one is queued: the 5th merge queues none");
+  // The store's queue: checked and written in one transaction, so of two at once, one is queued.
+  await endConsolidation(w, "run-0-consolidate");
+  const made = await Promise.all(["run-a-consolidate", "run-b-consolidate"].map((id) => w.store.learning.queueConsolidation({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", []) })));
+  assert.equal(made.filter((one) => "queued" in one).length, 1, JSON.stringify(made));
+  const [one] = made.filter((m) => "queued" in m);
+  assert.deepEqual(made.filter((m) => "pending" in m), [{ pending: one.queued }]);
+  assert.equal((await w.store.learning.consolidation("agent-1")).id, one.queued);
+});
+
+test("merges are counted from the last consolidation's queue, never from a consolidation's commit or the log's cap: one that merged nothing is asked again 5 merges after it was queued, never at each merge", async (t) => {
+  // Seven merges on main, then a consolidation queued (main as it was then) that ended merging nothing.
+  const w = await longWorld(t, 7);
+  const after = (await w.onFolder((ws) => readSnapshot(ws))).main;
+  await w.store.runs.create({ id: "run-7-consolidate", agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", [], { after }) });
+  await endConsolidation(w, "run-7-consolidate");
+  for (const i of [8, 9, 10, 11]) {
+    assert.deepEqual((await learn(w, `run-${i}`, `long-${i}.md`)).end, { state: "ended" });
+    assert.equal(await w.store.runs.get(consolidationRunId(`run-${i}`)), undefined, `merge ${i - 7} since the queue: none`);
+  }
+  assert.deepEqual((await learn(w, "run-12", "long-12.md")).end, { state: "ended" });
+  assert.equal((await w.store.runs.get(consolidationRunId("run-12")))?.state, "queued", "the 5th merge since the last queue");
+});
+
+test("a consolidation that cannot be queued parks the learning run, its merge on main and the run not ended; at its wake it queues it, then ends", async (t) => {
+  const w = await longWorld(t, 4);
+  let fail = true;
+  const failing = { ...w.store, runs: w.store.runs, agents: w.store.agents, learning: { ...w.store.learning, queueConsolidation: async (...args) => {
+    if (fail) throw new Error("the store is busy");
+    return w.store.learning.queueConsolidation(...args);
+  } } };
+  const { claim, end } = await learn(w, "run-5", "long-5.md", { store: failing });
+  assert.equal(end.state, "parked", JSON.stringify(end));
+  assert.equal((await w.store.runs.get("run-5-learning")).state, "parked", "not ended: its end waits for the queue");
+  const entries = await journalEntries(w.store.journal(claim), BACKGROUND_CONTEXT);
+  assert.ok(!entries.some((e) => e.kind === KINDS.learningMerged), "no end recorded yet");
+  assert.match(entries.find((e) => e.kind === KINDS.learningUnavailable).data.error, /consolidation could not be queued/);
+  assert.ok((await w.onFolder((ws) => readSnapshot(ws))).notes.some((n) => n.file === "long-5.md"), "its merge is on main");
+  // At its wake, a claim resumes it: the merge already on main, the queue made, the run ended merged.
+  await w.store.release(claim, { state: "parked", wakeAt: end.wakeAt });
+  w.clock.now = end.wakeAt + 1;
+  fail = false;
+  const again = await w.store.claim("run-5-learning", "runner-b", { leaseMs: 60_000 });
+  assert.ok(again, "claimable at its wake");
+  assert.deepEqual(await learnAgain(w, again, failing), { state: "ended" });
+  assert.equal((await w.store.runs.get(consolidationRunId("run-5")))?.state, "queued");
+  assert.ok((await journalEntries(w.store.journal(again), BACKGROUND_CONTEXT)).some((e) => e.kind === KINDS.learningMerged));
+});
+
+test("a skill and its draft put out of step are found by a later merge too: one queued while it waited never loses that pair", async (t) => {
+  const w = await world(t, {}, async (onFolder) => {
+    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [{ path: "skills/find-policies/SKILL.md", text: SKILL }, { path: "workflows/find-policies/workflow.json", text: JSON.stringify(DRAFT) }, { path: "workflows/find-policies/README.md", text: "---\nname: find-policies\ndescription: Finds a store's refund policy\n---\n" }] }));
+    assert.equal(made.ok, true, JSON.stringify(made));
+  });
+  await w.store.runs.create({ id: "run-0-consolidate", agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", []) });
+  // The skill alone changes while a consolidation is queued: none queued then.
+  const skill2 = SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.");
+  assert.deepEqual((await learn(w, "run-1", undefined, { files: [{ file: "skills/find-policies/SKILL.md", text: skill2 }] })).end, { state: "ended" });
+  assert.equal(await w.store.runs.get(consolidationRunId("run-1")), undefined);
+  // It ends; the next merge, of a note alone, finds the pair still out of step and queues it.
+  await endConsolidation(w, "run-0-consolidate");
+  assert.deepEqual((await learn(w, "run-2", "plain.md")).end, { state: "ended" });
+  const launch = (await w.store.runs.launch(consolidationRunId("run-2"))).body;
+  assert.deepEqual(launch.input.consolidate.pairs, [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }]);
 });

@@ -1064,6 +1064,9 @@ class SqliteStore implements Store {
       runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal),
       ...(row.learning_run_id === null ? {} : { learningRunId: row.learning_run_id }), createdAt: row.created_at,
     });
+    // A consolidation run: a learning run whose launch names the agent it consolidates (learning-factory.ts consolidationLaunchOf).
+    const finalStates = FINAL_STATES.map((state) => `'${state}'`).join(", ");
+    const consolidationOf = `${d.jsonText("run_launch.body", ["harness"])} = 'learning' AND ${d.jsonText("run_launch.body", ["input", "consolidate", "agentId"])} IS NOT NULL`;
     this.learning = {
       proposal: async (runId) => {
         const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, learning_run_id, created_at FROM learning_proposals WHERE run_id = ?", runId);
@@ -1105,6 +1108,32 @@ class SqliteStore implements Store {
         );
         return [...proposed, ...consolidations.map((row): LearningSpend => ({ agentId: row.agent_id, at: row.ended_at, costUsd: row.cost_usd }))].sort((a, b) => a.at - b.at);
       },
+      consolidation: async (agentId) => {
+        const row = await db.get<{ id: string; state: RunState; after: string | null }>(
+          `SELECT runs.id, runs.state, ${d.jsonText("run_launch.body", ["input", "consolidate", "after"])} AS after
+             FROM runs JOIN run_launch ON run_launch.run_id = runs.id
+            WHERE runs.agent_id = ? AND ${consolidationOf}
+            ORDER BY CASE WHEN runs.state IN (${finalStates}) THEN 1 ELSE 0 END, runs.started_at DESC, COALESCE(runs.ended_at, 0) DESC, runs.id DESC LIMIT 1`,
+          agentId,
+        );
+        return row ? { id: row.id, state: row.state, ...(typeof row.after === "string" ? { after: row.after } : {}) } : undefined;
+      },
+      queueConsolidation: async ({ id, agentId, revisionId }, launch) =>
+        db.transaction(async (tx) => {
+          // Two merges of one agent at once: the second waits here, then sees the first's run (SQLite's one writer already does).
+          await d.lockKey(tx, `consolidation:${agentId}`);
+          const there = await tx.get<{ id: string }>(
+            `SELECT runs.id FROM runs JOIN run_launch ON run_launch.run_id = runs.id
+              WHERE runs.agent_id = ? AND ${consolidationOf} AND runs.state NOT IN (${finalStates})
+              ORDER BY runs.started_at DESC, runs.id DESC LIMIT 1`,
+            agentId,
+          ) ?? await tx.get<{ id: string }>("SELECT id FROM runs WHERE id = ?", id);
+          if (there) return { pending: there.id };
+          const at = now();
+          await tx.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?)", id, agentId, revisionId, at);
+          await writeLaunch(tx, id, launch, at);
+          return { queued: id };
+        }),
     };
 
     this.settings = {
