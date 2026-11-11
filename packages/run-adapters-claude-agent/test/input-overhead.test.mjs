@@ -1,8 +1,9 @@
 // The input the Messages API bills for a body that the body does not carry: the tool-use system prompt it adds to a
-// request with tools, and each image at the most one image is billed as, whatever its bytes (the kernel's
-// providerInputOverhead holds the figures and their sources). The model proxy adds it to the body's bytes for the
+// request with tools, and each image at the most it can be billed as by its size, in place of its base64's bytes (the
+// kernel's providerInputOverhead holds the figures and their sources). The model proxy adds it to the body's bytes for the
 // request's inputTokensMax, so a small request with tools, or with a small image of large dimensions, near a budget is not
-// undercounted. No network: the provider is a scripted fetch.
+// undercounted, and a screenshot's megabyte of base64 is never read as a megabyte of tokens. No network: the provider is a
+// scripted fetch.
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
@@ -62,12 +63,14 @@ test("the tool-use system prompt is the documented largest for any current model
   assert.equal(policy.serverInputOverhead, claudePolicy.anthropicServerInputOverhead, 'the policy says it');
 });
 
-test("each image adds the most one image is billed as, 4,784 tokens (the high-resolution tier), at any depth, through the shared figures", () => {
+test("each image counts at the most it can be billed as by its size (a 2000x2000 one at the high-resolution tier's 4,784 tokens), at any depth, in place of its base64's bytes, through the shared figures", () => {
+  const B = BIG_SMALL_PNG.length;
   assert.equal(host.ANTHROPIC_IMAGE_TOKENS_MAX, 4784);
-  assert.equal(overheadOf(withResult([image])), 675 + 4784);
-  assert.equal(overheadOf(withResult([{ type: 'text', text: 'two views' }, image, image])), 675 + 2 * 4784);
-  assert.equal(overheadOf(bodyWith({ messages: [{ role: 'user', content: [image] }] })), 4784, 'an image with no tools');
-  assert.equal(overheadOf(withResult([image])), host.providerInputOverhead?.('anthropic-messages', { tools: true, images: 1 }), 'the policy and the shared function agree');
+  assert.equal(overheadOf(withResult([image])), 675 + 4784 - B);
+  assert.equal(overheadOf(withResult([{ type: 'text', text: 'two views' }, image, image])), 675 + 2 * (4784 - B));
+  assert.equal(overheadOf(bodyWith({ messages: [{ role: 'user', content: [image] }] })), 4784 - B, 'an image with no tools');
+  assert.equal(overheadOf(withResult([image])), host.providerInputOverhead?.('anthropic-messages', { tools: true, images: [{ bytes: B, width: 2000, height: 2000 }] }), 'the policy and the shared function agree');
+  assert.equal(overheadOf(bodyWith({ messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } }] }] })), 4784, 'an image the provider fetches: its most, its URL\'s bytes kept');
   assert.ok(Buffer.byteLength(BIG_SMALL_PNG) < 1000, `the test image is ${Buffer.byteLength(BIG_SMALL_PNG)} bytes of base64 for 2000x2000 px`);
 });
 
@@ -117,7 +120,7 @@ test("a small request with tools whose body fits what is left, but not with the 
 });
 
 test("a request whose body fits what is left, but not with its image's allowance (a small PNG of 2000x2000 px), is refused before it is sent", async (t) => {
-  await refusedJustUnder(t, withResult([image]), PROMPT.autoOrNone + IMAGE);
+  await refusedJustUnder(t, withResult([image]), PROMPT.autoOrNone + IMAGE - BIG_SMALL_PNG.length);
 });
 
 /** A 1280x720 RGB PNG the size a desktop's screenshot is: its top `noisy` rows hold pixels that do not compress (a fixed

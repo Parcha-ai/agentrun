@@ -4,8 +4,18 @@
 //
 // A request's input can never be more tokens than its body's UTF-8 bytes (`inputTokensMaxOf`), except for what the
 // provider adds or bills by another measure: a prompt it adds itself when tools are present, and images, which it bills by
-// their area after it resizes them, not by their bytes. Each figure is the largest the provider documents for any current
-// model, so no model is undercounted.
+// their area after it resizes them, not by their bytes. An image is counted at what it is billed as, in place of the bytes
+// its data takes in the body (a screenshot's base64 is a megabyte; Claude bills it as some 1,200 tokens). Each figure is
+// the largest the provider documents for any current model, so no model is undercounted.
+
+/** One image a request carries: the bytes its data takes in the body (its base64, or its data URL; 0 for an image the
+ *  provider fetches by URL), which are counted at the image's billed size instead, and its pixel size when its data's own
+ *  header says it (PNG, JPEG, GIF, WebP). */
+export interface ImageInput {
+  readonly bytes: number;
+  readonly width?: number;
+  readonly height?: number;
+}
 
 /** What of a request decides what its provider adds: whether it offers tools, how it asks for them, and its images. */
 export interface InputShape {
@@ -14,7 +24,7 @@ export interface InputShape {
   /** Its tool_choice, as Anthropic names them; absent for the provider's default. */
   toolChoice?: "auto" | "none" | "any" | "tool";
   /** Its image inputs, at any depth (a tool's result included). */
-  images: number;
+  images: readonly ImageInput[];
 }
 
 /**
@@ -76,14 +86,105 @@ export const INPUT_OVERHEAD_APIS: readonly string[] = Object.freeze(["anthropic-
 const anthropicToolPrompt = (shape: InputShape): number => (!shape.tools ? 0 : shape.toolChoice === "any" || shape.toolChoice === "tool" ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.autoOrNone);
 
 /**
+ * The most tokens Claude bills an image of `width` x `height` pixels as: its count of 28 px patches (the
+ * high-resolution tier) or its area at 750 pixels a token (the standard tier), whichever is more, at most
+ * `ANTHROPIC_IMAGE_TOKENS_MAX`. Claude only ever shrinks an image before it counts it ("Resolution and token cost",
+ * https://platform.claude.com/docs/en/build-with-claude/vision), so the image as sent is the most it can be billed as.
+ */
+export function anthropicImageTokens(width: number, height: number): number {
+  return Math.min(ANTHROPIC_IMAGE_TOKENS_MAX, Math.max(Math.ceil(width / 28) * Math.ceil(height / 28), Math.ceil((width * height) / 750)));
+}
+
+/** Whether `image` is a figure the bounds can read: whole bytes, and a size of whole positive pixels or none. */
+function checkedImage(image: ImageInput): ImageInput {
+  const pixels = (n: unknown) => n === undefined || (Number.isSafeInteger(n) && (n as number) > 0);
+  if (!image || !Number.isSafeInteger(image.bytes) || image.bytes < 0 || !pixels(image.width) || !pixels(image.height) || (image.width === undefined) !== (image.height === undefined)) {
+    throw new Error(`not an image's bytes and size: ${JSON.stringify(image).slice(0, 80)}`);
+  }
+  return image;
+}
+
+/**
  * The input tokens a provider bills for a request of `shape` beyond its body's bytes, on the API `api` (pi's names:
- * "anthropic-messages", "openai-responses", ...). A documented API gets its documented figures; any other gets the
- * general figure (`INPUT_OVERHEAD_APIS`). Never undefined: an input that cannot be measured is the body's, not the API's.
+ * "anthropic-messages", "openai-responses", ...): its tool prompt, and each image at what it can be billed as in place of
+ * the bytes its data takes in the body (so the figure is below 0 for a request whose images' data is larger than they
+ * are billed as; the body's bytes and this together are its bound). A documented API gets its documented figures; any
+ * other gets the general figure (`INPUT_OVERHEAD_APIS`). Never undefined: an input that cannot be measured is the
+ * body's, not the API's.
  */
 export function providerInputOverhead(api: string, shape: InputShape): number {
-  if (!Number.isSafeInteger(shape.images) || shape.images < 0) throw new Error(`not an image count: ${String(shape.images).slice(0, 40)}`);
-  if (api === "anthropic-messages") return anthropicToolPrompt(shape) + shape.images * ANTHROPIC_IMAGE_TOKENS_MAX;
-  if (api === CHAT_COMPLETIONS) return (shape.tools ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : 0) + shape.images * OPENAI_IMAGE_TOKENS_MAX;
-  if (INPUT_OVERHEAD_APIS.includes(api)) return shape.images * OPENAI_IMAGE_TOKENS_MAX;
-  return (shape.tools ? ASSUMED_TOOL_PROMPT_TOKENS : 0) + shape.images * OPENAI_IMAGE_TOKENS_MAX;
+  if (!Array.isArray(shape.images)) throw new Error(`not a list of images: ${String(shape.images).slice(0, 40)}`);
+  const images = shape.images.map(checkedImage);
+  const dataBytes = images.reduce((sum, image) => sum + image.bytes, 0);
+  if (api === "anthropic-messages") {
+    const billed = images.reduce((sum, image) => sum + (image.width !== undefined ? anthropicImageTokens(image.width, image.height!) : ANTHROPIC_IMAGE_TOKENS_MAX), 0);
+    return anthropicToolPrompt(shape) + billed - dataBytes;
+  }
+  const openai = images.length * OPENAI_IMAGE_TOKENS_MAX - dataBytes;
+  if (api === CHAT_COMPLETIONS) return (shape.tools ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : 0) + openai;
+  if (INPUT_OVERHEAD_APIS.includes(api)) return openai;
+  return (shape.tools ? ASSUMED_TOOL_PROMPT_TOKENS : 0) + openai;
+}
+
+/** The pixel size an image's base64 `data` says in its own header (PNG, JPEG, GIF or WebP), or undefined: another format,
+ *  or a header that cannot be read. Only its start is decoded (a JPEG's frame header within its first 256 KiB). */
+export function imageSizeOf(data: string): { width: number; height: number } | undefined {
+  const head = Buffer.from(data.slice(0, 349_528), "base64");
+  const sized = (width: number, height: number) => (width > 0 && height > 0 ? { width, height } : undefined);
+  if (head.length >= 24 && head.readUInt32BE(0) === 0x89504e47 && head.toString("latin1", 12, 16) === "IHDR") return sized(head.readUInt32BE(16), head.readUInt32BE(20));
+  if (head.length >= 10 && head.toString("latin1", 0, 4) === "GIF8") return sized(head.readUInt16LE(6), head.readUInt16LE(8));
+  if (head.length >= 30 && head.toString("latin1", 0, 4) === "RIFF" && head.toString("latin1", 8, 12) === "WEBP") {
+    const kind = head.toString("latin1", 12, 16);
+    if (kind === "VP8X") return sized(1 + head.readUIntLE(24, 3), 1 + head.readUIntLE(27, 3));
+    if (kind === "VP8L") { const bits = head.readUInt32LE(21); return sized(1 + (bits & 0x3fff), 1 + ((bits >>> 14) & 0x3fff)); }
+    if (kind === "VP8 ") return sized(head.readUInt16LE(26) & 0x3fff, head.readUInt16LE(28) & 0x3fff);
+    return undefined;
+  }
+  if (head.length >= 4 && head[0] === 0xff && head[1] === 0xd8) {
+    // Walk the segments to a start-of-frame marker (SOF0-SOF15, but not DHT, JPG or DAC), which holds the height then width.
+    for (let at = 2; at + 9 <= head.length; ) {
+      if (head[at] !== 0xff) return undefined;
+      const marker = head[at + 1]!;
+      if (marker === 0xff) { at += 1; continue; }
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { at += 2; continue; }
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return sized(head.readUInt16BE(at + 7), head.readUInt16BE(at + 5));
+      at += 2 + head.readUInt16BE(at + 2);
+    }
+  }
+  return undefined;
+}
+
+const plain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Each item of `type` at any depth of `value` (a tool's result holds them), as `read` reads it. */
+function itemsOf(value: unknown, type: string, read: (item: Record<string, unknown>) => ImageInput, out: ImageInput[] = []): ImageInput[] {
+  if (Array.isArray(value)) for (const item of value) itemsOf(item, type, read, out);
+  else if (plain(value)) {
+    if (value.type === type) out.push(read(value));
+    for (const item of Object.values(value)) itemsOf(item, type, read, out);
+  }
+  return out;
+}
+
+/** A Messages body's images (`{type: "image", source}`), at any depth: a base64 source's data, or a URL's (no bytes). */
+export function messagesImagesIn(value: unknown): ImageInput[] {
+  return itemsOf(value, "image", (item) => (plain(item.source) && item.source.type === "base64" ? imageInputOf(item.source.data) : { bytes: 0 }));
+}
+
+/** A Responses body's images (`{type: "input_image", image_url}`), at any depth: a data URL, or a URL or file id (no bytes). */
+export function responsesImagesIn(value: unknown): ImageInput[] {
+  return itemsOf(value, "input_image", (item) => imageInputOf(item.image_url));
+}
+
+/** The image a body's `data` (base64, or a data URL) carries: the bytes it takes, and its size when its header says it.
+ *  Anything else (an http URL, a file id): no bytes, no size. */
+export function imageInputOf(data: unknown): ImageInput {
+  if (typeof data !== "string") return { bytes: 0 };
+  const base64 = /^data:[^,]*;base64,/i.exec(data);
+  if (data.startsWith("data:") && !base64) return { bytes: 0 };
+  const payload = base64 ? data.slice(base64[0].length) : data;
+  // A URL the provider fetches is billed by the image it finds, and only its own bytes are in the body.
+  if (!base64 && /^[a-z][a-z0-9+.-]*:\/\//i.test(data)) return { bytes: 0 };
+  const size = imageSizeOf(payload);
+  // Its whole string, once JSON writes it: base64 and a data URL's prefix need no escaping.
+  return { bytes: Buffer.byteLength(JSON.stringify(data), "utf8") - 2, ...(size ?? {}) };
 }

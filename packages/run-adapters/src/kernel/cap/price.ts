@@ -78,8 +78,11 @@ export function requestPrice(pricing: Pricing, bound: number, previous: Previous
 export function inputBound(request: ModelCapRequest): number | undefined {
   const measured = request.inputTokens;
   if (typeof measured !== "number" || !Number.isFinite(measured) || measured < 0) return undefined;
+  // Below 0 only by images' data counted at their billed size instead; a shape that says more such bytes than were
+  // measured is no bound.
   const added = request.shape ? providerInputOverhead(request.model.api, request.shape) : 0;
-  return measured + added + (request.extraInputTokens ?? 0);
+  const bound = measured + added + (request.extraInputTokens ?? 0);
+  return bound < 0 ? undefined : bound;
 }
 
 /** The output a request is sent with at most: what it asks (its model's ceiling when it says none), and its thinking budget

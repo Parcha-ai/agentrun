@@ -16,7 +16,7 @@
 // `input_tokens`; they are booked apart. The watch reads each `function_call` item of an answer before OpenCode has it:
 // its call id, name and arguments, which tie the MCP call OpenCode makes next (it carries no call id) to the model's own.
 import type { IncomingHttpHeaders } from "node:http";
-import { providerInputOverhead, ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { providerInputOverhead, ProxyRefusal, responsesImagesIn, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix OpenCode gives the adapter's MCP tools: the server is `hands`. */
 export const TOOL_PREFIX = "hands_";
@@ -246,7 +246,7 @@ function itemsIn(value: unknown, type: string): number {
  *  input has no stated bound, so a body with one cannot be measured. */
 export function responsesServerInputOverhead(body: Record<string, unknown>): number {
   if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
-  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: itemsIn(body.input, "input_image") }) as number;
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: responsesImagesIn(body.input) }) as number;
 }
 
 /** An event that is not whole by this many characters is not read. */

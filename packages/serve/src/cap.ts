@@ -48,7 +48,7 @@ import { readRunDbSync } from "./run-db.js";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
+import { imageInputOf, providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
 import { CAP_WRAPUP, type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
@@ -880,16 +880,18 @@ function outputBound(model: Pick<Model<Api>, "maxTokens" | "contextWindow" | "co
 }
 
 /** A request's input tokens, bounded above: one per UTF-8 byte of what is sent (a byte-level tokenizer never takes
- *  fewer than one byte a token, and an image's base64 is far more bytes than its tokens), plus `overhead`, what the
- *  provider adds server-side that the body does not hold. The same bound on every harness. */
+ *  fewer than one byte a token), plus `overhead`: what the provider adds server-side that the body does not hold, and
+ *  each image at what it is billed as in place of its base64's bytes (below 0 for a large image: piOverhead). The same
+ *  bound on every harness. */
 export const inputBound = (sent: string, overhead = 0): number => Buffer.byteLength(sent, "utf8") + overhead;
 
 /** What pi's provider adds server-side to a request of `context`, the same table the model proxy uses, by the model's API
  *  kind: undefined for a kind whose additions are not known. The context does not say how the request chooses a tool,
  *  so the dearer choice is taken. */
 export function piOverhead(model: Pick<Model<Api>, "api">, context: Context): number | undefined {
-  const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown }[] }).content) : []));
-  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").length });
+  const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown; data?: unknown }[] }).content) : []));
+  // Each image at what it is billed as by its size, in place of its base64's bytes in what is sent (imageInputOf).
+  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").map((part) => imageInputOf(part.data)) });
 }
 
 const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;

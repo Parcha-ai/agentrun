@@ -108,7 +108,7 @@ test("a request is held at the output it is sent with, its thinking budget inclu
 
 test("the input adds the provider's server-side tokens from the proxy's table: tools and an image held the same on every harness", async () => {
   const { cap } = capOn(10, { mode: "strict" });
-  const shape = { tools: true, toolChoice: "auto", images: 1 };
+  const shape = { tools: true, toolChoice: "auto", images: [{ bytes: 0 }] };
   const admitted = await cap.admit(modelRequest(SONNET, 10_000, 1_000, { shape }));
   near(admitted.worstUsd, usd(10_000 + providerInputOverhead("anthropic-messages", shape), 3.75) + usd(1_000, 15));
 });
@@ -117,8 +117,8 @@ test("a gateway or provider with no documented figure is priced and sent, never 
   const { cap } = capOn(10);
   const gateway = { ...GPT, id: "gateway-model", api: "openai-completions" };
   const elsewhere = { ...GPT, id: "elsewhere", api: "some-new-api" };
-  await cap.admit(modelRequest(gateway, 10_000, 1_000, { shape: { tools: true, images: 0 } }));
-  await cap.admit(modelRequest(elsewhere, 10_000, 1_000, { shape: { tools: true, images: 0 } }));
+  await cap.admit(modelRequest(gateway, 10_000, 1_000, { shape: { tools: true, images: [] } }));
+  await cap.admit(modelRequest(elsewhere, 10_000, 1_000, { shape: { tools: true, images: [] } }));
 });
 
 test("a tool's own request adds its hosted allowance and most fee: web search at 5 searches of 25,000 tokens and 5 searches' fee", async () => {
