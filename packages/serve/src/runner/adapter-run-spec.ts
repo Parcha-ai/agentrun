@@ -173,6 +173,11 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
+/** A tier's route, one per model in a run (model.ts gatewayPrices: a model two tiers share takes one price): a tier on the
+ *  run's own model, or on an earlier tier's, takes that route (`earlier`, the run's own first), so the proxy's booking and
+ *  the cap, which prices a request by its model id, read one price for it. */
+export const oneRoutePerModel = (at: ModelRoute, earlier: readonly ModelRoute[]): ModelRoute => earlier.find((other) => other.model === at.model) ?? at;
+
 /** A tier's route as the pi adapter takes it (PiAdapterOptions.tiers): the route's own fields. */
 export const tierRouteOf = (route: ModelRoute): TierRoute => ({
   model: route.model,
@@ -417,7 +422,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const tierEnv = withModelKeys(deps.env, { ...(await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env })), ...toolEnv });
     for (const tier of SUBAGENT_TIERS) {
       try {
-        tierRoutes.set(tier, await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
+        tierRoutes.set(tier, oneRoutePerModel(await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut), [route, ...tierRoutes.values()]));
       } catch (error) {
         tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
       }
