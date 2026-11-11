@@ -157,6 +157,9 @@ test("a CLI's parked MCP call shows the gate's waiting words as its result row o
   assert.equal(result.tool_name, "mcp__fake__add");
   assert.equal(result.preview, waitingWords);
   assert.notEqual(result.tool_status, "failed", "a parked call is no failure");
+  // Asked again while it waits (a resume, a cap raised meanwhile): still one waiting result for the call.
+  await commitWrites(j, [entry(await j.mintId(), "agentrun.ask", { callId: "c1", tool: "mcp:fake/add", args: { a: 2, b: 3 }, requestedAt: new Date(T0).toISOString() })], context);
+  assert.deepEqual((await kinds()).map((r) => [r.kind, r.preview ?? null]), [["tool_use", null], ["tool_result", waitingWords]], "asked twice: one waiting result");
   // Allowed and sent: in flight, no result until its end.
   await commitWrites(j, [entry(await j.mintId(), "agentrun.answer", { callId: "c1", decision: "allow" }), entry(await j.mintId(), "agentrun.call.sent", { callId: "c1" })], context);
   assert.deepEqual((await kinds()).map((r) => r.kind), ["tool_use"], "sent: no waiting words, no result yet");

@@ -62,7 +62,8 @@ function piShaped(entries: readonly EntryLike[]): EntryLike[] {
     // waiting words (mcp-run.ts), which the record never keeps as the call's end, since an end is its outcome and the call
     // is answered from it. While the call is parked and unsent, those words show as its result row from its ask on, as pi's
     // parked call shows them; its sent mark or its end (run, refused, withdrawn) ends that.
-    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.has(data.callId)) {
+    // Once per call, at its first ask: a call asked again (a resume, a raise while it waits) shows one waiting result.
+    if (entry.kind === KINDS.ask && typeof data.callId === "string" && waiting.delete(data.callId)) {
       const tool = typeof data.tool === "string" ? data.tool : "tool";
       const timestamp = typeof data.requestedAt === "string" && Number.isFinite(Date.parse(data.requestedAt)) ? { timestamp: Date.parse(data.requestedAt) } : {};
       // Its own id (the ask's, marked), so the renderer never takes it for the ask entry seen twice.
