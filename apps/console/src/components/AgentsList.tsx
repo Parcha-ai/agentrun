@@ -68,9 +68,11 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
       </button>
       {/* The footer: its chips on the left, each on one line, wrapping as whole chips onto more rows there (the first row
           centred on the actions: a 20px chip in 6px above and below is the 32px button's height); its three actions on the
-          right, on the first row, never shrunk. Every card's footer reads the same whatever its chips. */}
-      <div className="mt-auto flex items-start gap-2 pt-4">
-        <div data-testid="agent-card-chips" className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5 py-1.5">
+          right, on the first row, never shrunk. The chips' area grows from nothing but never below its widest chip: when
+          that chip and the actions do not fit side by side (a narrow card), the actions drop to a row of their own, at the
+          right. Every card's footer reads the same whatever its chips. */}
+      <div data-testid="agent-card-footer" className="mt-auto flex flex-wrap items-start gap-x-2 gap-y-1 pt-4">
+        <div data-testid="agent-card-chips" className="flex flex-1 flex-wrap items-center gap-x-2 gap-y-1.5 py-1.5">
           <Chip className="shrink-0 whitespace-nowrap">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</Chip>
           {a.runs && <Chip className="shrink-0 whitespace-nowrap">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</Chip>}
           {waiting > 0 && (
@@ -78,7 +80,7 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
               className="h-5 shrink-0 whitespace-nowrap border-warning/50 bg-warning/10 px-1.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</Button>
           )}
         </div>
-        <div data-testid="agent-card-actions" className="flex shrink-0 items-center gap-2">
+        <div data-testid="agent-card-actions" className="ml-auto flex shrink-0 items-center gap-2">
           <Button size="icon" variant="outline" className="shrink-0" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onEdit?.(a.agent_id)}><Pencil aria-hidden /></Button>
           <Button size="icon" variant="outline" className="shrink-0" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>
           <Button size="icon" variant="outline" className="shrink-0" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>

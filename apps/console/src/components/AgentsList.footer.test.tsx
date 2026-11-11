@@ -33,9 +33,13 @@ describe("AgentsList card footer", () => {
     for (const card of cards) {
       const chips = card.querySelector("[data-testid=agent-card-chips]");
       const actions = card.querySelector("[data-testid=agent-card-actions]");
-      // The chips' area takes what is left and wraps whole chips; the actions' area never gives up its width.
-      expect([...classes(chips)].filter((c) => ["flex-wrap", "flex-1", "min-w-0"].includes(c)).sort()).toEqual(["flex-1", "flex-wrap", "min-w-0"]);
-      expect(classes(actions).has("shrink-0")).toBe(true);
+      // The chips' area takes what is left and wraps whole chips, but never shrinks below its widest chip (no min-w-0):
+      // the footer wraps instead, and the actions, which never give up their width, drop to a row of their own at the
+      // right (ml-auto) when that chip and they do not fit side by side (a 768 px viewport's two-column card).
+      const footer = card.querySelector("[data-testid=agent-card-footer]");
+      expect(classes(footer).has("flex-wrap")).toBe(true);
+      expect([...classes(chips)].filter((c) => ["flex-wrap", "flex-1", "min-w-0"].includes(c)).sort()).toEqual(["flex-1", "flex-wrap"]);
+      expect([classes(actions).has("shrink-0"), classes(actions).has("ml-auto")]).toEqual([true, true]);
       const buttons = [...actions!.querySelectorAll("button")];
       expect(buttons.map((b) => b.getAttribute("aria-label")?.split(" ")[0])).toEqual(["Edit", "Runs", "Archive"]);
       for (const button of buttons) expect(classes(button).has("shrink-0") && classes(button).has("size-control-sm")).toBe(true);
