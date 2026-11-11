@@ -21,25 +21,55 @@ function syntheticProviders(workflow: Workflow): NonNullable<WorkflowDeps["decis
   return { providers: Object.fromEntries([...ids].map((id) => [id, provider(id)])), default: "dry-run" };
 }
 
-export function synthesizeInstance(schema: unknown, definitions: Record<string, unknown> = {}, depth = 0): unknown {
+/** What one dry run may synthesize in all, across its input and every step's answer (DryRunOptions.budget), and what one
+ *  synthesizeInstance call may when none is given: values (each array item, object, string, number...) and string
+ *  characters. Synthesis counts each before it makes it and throws SynthesisTooLarge past either, so a schema that asks
+ *  for a huge value (nested arrays of a large minItems, a long minLength) never allocates past the budget. */
+export type SynthesisBudget = { values: number; chars: number };
+/** The default: a million values and 16 million characters, far past what a real workflow's dry run builds (a few
+ *  thousand values at most), and well within a host's memory (a few hundred MB at worst). */
+export const SYNTHESIS_BUDGET: Readonly<SynthesisBudget> = { values: 1_000_000, chars: 16_000_000 };
+/** The schema asked synthesis for more than its budget: the dry run ends not run, saying so. */
+export class SynthesisTooLarge extends Error {
+  override name = "SynthesisTooLarge";
+}
+type Spend = { values: number; chars: number; readonly limit: SynthesisBudget };
+const spendOf = (limit: Partial<SynthesisBudget> = {}): Spend => ({ values: 0, chars: 0, limit: { ...SYNTHESIS_BUDGET, ...limit } });
+function charge(spend: Spend, values: number, chars: number): void {
+  spend.values += values;
+  spend.chars += chars;
+  if (spend.values > spend.limit.values || spend.chars > spend.limit.chars) {
+    throw new SynthesisTooLarge(`the schema is too large to synthesize: past ${spend.limit.values} values or ${spend.limit.chars} characters`);
+  }
+}
+
+/** A value of `schema` (its `$ref`s read from `definitions`), synthesized within `budget` (SYNTHESIS_BUDGET when none):
+ *  past it, SynthesisTooLarge. */
+export function synthesizeInstance(schema: unknown, definitions: Record<string, unknown> = {}, depth = 0, budget: Partial<SynthesisBudget> = SYNTHESIS_BUDGET): unknown {
+  return synthesize(schema, definitions, depth, spendOf(budget));
+}
+
+function synthesize(schema: unknown, definitions: Record<string, unknown>, depth: number, spend: Spend): unknown {
+  // Every value it makes is counted before it is made: past the budget it throws, having built no more than the budget.
+  charge(spend, 1, 0);
   if (depth > 12 || !schema || typeof schema !== "object") return null;
   const spec = schema as Record<string, any>;
   if (typeof spec.$ref === "string") {
     const match = /^#\/definitions\/(.+)$/.exec(spec.$ref);
-    return match && definitions[match[1]] ? synthesizeInstance(definitions[match[1]], definitions, depth + 1) : null;
+    return match && definitions[match[1]] ? synthesize(definitions[match[1]], definitions, depth + 1, spend) : null;
   }
   if (spec.const !== undefined) return spec.const;
   if (Array.isArray(spec.enum) && spec.enum.length) return spec.enum[0];
   if (Array.isArray(spec.anyOf) && spec.anyOf.length) {
     const branch = spec.anyOf.find((candidate: any) => candidate?.type !== "null") ?? spec.anyOf[0];
-    return synthesizeInstance(branch, definitions, depth + 1);
+    return synthesize(branch, definitions, depth + 1, spend);
   }
-  if (Array.isArray(spec.oneOf) && spec.oneOf.length) return synthesizeInstance(spec.oneOf[0], definitions, depth + 1);
+  if (Array.isArray(spec.oneOf) && spec.oneOf.length) return synthesize(spec.oneOf[0], definitions, depth + 1, spend);
   const type = Array.isArray(spec.type) ? spec.type[0] : spec.type;
   if (type === "object" || (!type && spec.properties)) {
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, property] of Object.entries((spec.properties as Record<string, unknown>) || {})) {
-      out[key] = synthesizeInstance(property, definitions, depth + 1);
+      out[key] = synthesize(property, definitions, depth + 1, spend);
     }
     return { ...out };
   }
@@ -47,11 +77,15 @@ export function synthesizeInstance(schema: unknown, definitions: Record<string, 
     if (spec.maxItems === 0) return [];
     const min = Number.isInteger(spec.minItems) ? spec.minItems : 1;
     if (!spec.items) return [];
-    return Array.from({ length: Math.max(1, min) }, () => synthesizeInstance(spec.items, definitions, depth + 1));
+    // Each item is at least one value: a length past what the budget has left is refused before the array is made.
+    const length = Math.max(1, min);
+    if (length > spend.limit.values - spend.values) charge(spend, length, 0);
+    return Array.from({ length }, () => synthesize(spec.items, definitions, depth + 1, spend));
   }
   if (type === "string") {
     if (spec.maxLength === 0) return "";
     const min = Number.isInteger(spec.minLength) ? spec.minLength : 1;
+    charge(spend, 0, Math.max(1, min));
     return "x".repeat(Math.max(1, min));
   }
   if (type === "integer") {
@@ -139,6 +173,9 @@ export type DryRunOptions = {
    *  stops, as not run: synthetic answers can keep a loop going to its bound, and a map over a long list. 10,000 by
    *  default. */
   maxSteps?: number;
+  /** What the whole dry run may synthesize (SynthesisBudget): its input and every step's answer together. Past it the dry
+   *  run stops, as not run ("the schema is too large to synthesize"). SYNTHESIS_BUDGET by default. */
+  budget?: Partial<SynthesisBudget>;
 };
 
 
@@ -160,10 +197,18 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
   scanSchemas(workflow);
   if (skipped.length) return { ok: true, status: "not_run", skipped };
 
+  // One budget for everything this dry run synthesizes.
+  const spend = spendOf(opts.budget);
   let input: Record<string, unknown> = opts.input ?? {};
   if (opts.input === undefined && workflow.input) {
     const schema = resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]);
-    const generated = synthesizeInstance(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas);
+    let generated: unknown;
+    try {
+      generated = synthesize(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas, 0, spend);
+    } catch (error) {
+      if (error instanceof SynthesisTooLarge) return { ok: true, status: "not_run", skipped: [error.message] };
+      throw error;
+    }
     if (!generated || typeof generated !== "object" || Array.isArray(generated) || !Compile(schema as never).Check(generated)) {
       return { ok: true, status: "not_run", skipped: ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."] };
     }
@@ -182,6 +227,15 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
   // Why the dry run stopped early, kept here: the interpreter may wrap what an adapter throws.
   let stopped: string | undefined;
   const stop = (reason: string) => { stopped ??= reason; throw new Error(stopped); };
+  /** A step's synthetic answer within the run's budget: past it, the dry run stops (the interpreter may wrap the throw). */
+  const synthesized = (make: () => unknown): unknown => {
+    try {
+      return make();
+    } catch (error) {
+      if (error instanceof SynthesisTooLarge) stop(error.message);
+      throw error;
+    }
+  };
   const step = async () => {
     if (opts.signal?.aborted) stop("The dry run was stopped before it finished.");
     steps += 1;
@@ -199,7 +253,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       onEvent: (event) => { if (typeof event.label === "string") currentLabel = event.label; },
       runNode: async ({ schema, review }) => {
         await step();
-        const candidate = synthesizeInstance(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas);
+        const candidate = synthesized(() => synthesize(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas, 0, spend));
         if (review) await review(candidate);
         return candidate;
       },
@@ -213,7 +267,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       decisionProviders: syntheticProviders(workflow),
       runEffect: async ({ node, schema }) => { await step(); return node.via === "shell"
         ? { code: 0, stdout: "{}", stderr: "", truncated: false }
-        : synthesizeInstance(schema ?? (workflow.schemas || {})[node.out as string] as Record<string, unknown>, (schema?.definitions as Record<string, unknown> | undefined) ?? workflow.schemas ?? {}); },
+        : synthesized(() => synthesize(schema ?? (workflow.schemas || {})[node.out as string] as Record<string, unknown>, (schema?.definitions as Record<string, unknown> | undefined) ?? workflow.schemas ?? {}, 0, spend)); },
     });
     if (result.status === "escalated") {
       // Synthetic values tripping an escalate predicate proves nothing about real cases.
