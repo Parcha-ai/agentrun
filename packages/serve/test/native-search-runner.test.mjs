@@ -36,7 +36,8 @@ async function provider(t) {
     const hosted = (body.tools ?? []).some((tool) => tool?.type === SEARCH_TOOL);
     const answer = hosted
       ? await send(`http://upstream.invalid${req.url}`, { method: req.method, headers: req.headers, body: raw })
-      : await fetch(`${gw.url}${req.url}`, { method: req.method, headers: { "content-type": "application/json", "x-api-key": String(req.headers["x-api-key"] ?? "") }, body: raw });
+      // A GET (a models list, or a probe of this loopback port) goes on with no body, which a GET can't carry.
+      : await fetch(`${gw.url}${req.url}`, { method: req.method, headers: { "content-type": "application/json", "x-api-key": String(req.headers["x-api-key"] ?? "") }, ...(req.method === "GET" || req.method === "HEAD" ? {} : { body: raw }) });
     res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" });
     res.end(Buffer.from(await answer.arrayBuffer()));
   });
