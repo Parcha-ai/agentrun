@@ -53,6 +53,18 @@ test("4. a served learning text holds no loopback address; what a run is laid ke
   assert.equal(secretsShown([], { local: true }).text(text), text, "a run's own .learning/ keeps it");
 });
 
+// #2250's P2: a learning text loses its loopback address and nothing else. A run error's `url:` tail (withoutLoopback) is
+// no rule of a note's, a patch's or a workflow.json's: their label, last newline and JSON stay.
+test("4. a served learning text loses only the address: a note's url: label and last newline, a patch's last line and a workflow's JSON stay", () => {
+  const shown = secretsShown([]);
+  assert.equal(shown.text("The proxy:\nurl: http://localhost:8080\n"), "The proxy:\nurl: a local address\n");
+  assert.equal(shown.text("@@ -0,0 +1,2 @@\n+The proxy:\n+url: http://localhost:8080\n"), "@@ -0,0 +1,2 @@\n+The proxy:\n+url: a local address\n");
+  const flow = JSON.stringify({ name: "proxy", steps: [{ note: "url: http://localhost:8080" }, { note: 'Call "http://127.0.0.1:9000/v1" first, or localhost:9000.' }, { note: "[::1]:9000/v1/responses." }] });
+  const served = shown.text(flow);
+  assert.equal(/127\.0\.0\.1|localhost|::1/.test(served), false, served);
+  assert.deepEqual(JSON.parse(served).steps.map((step) => step.note), ["url: a local address", 'Call "a local address" first, or a local address.', "a local address."], served);
+});
+
 test("4. a run's # Learned section keeps a note's local address, as its .learning/ files do", { timeout: 60_000 }, async (t) => {
   const { api, data, store } = await serve(t, { runner: false, learning: "on" });
   assert.equal((await api("POST", "/agents", agent("local", { learning: true }))).status, 201);
