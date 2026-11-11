@@ -67,18 +67,16 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
-/** A busy store, and the home_busy answer it maps to (agents.ts homeBusy's words), for a read or write that
- *  meets the one store under load. */
-const storeBusy = (error: unknown): boolean => error instanceof StoreBusy;
-const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 import { runLines } from "./usage-lines.js";
 import { type BoxOffer, boxesByDefault, boxesLog, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
+import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
@@ -979,15 +977,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
+   *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
+   *  Docker, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
+   *  daemon that stops after the start is seen, and one that is gone says so in noDockerWords); once it answers, the
+   *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
+   *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
+   *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
+   *  reason, which says how to fix it. */
+  const dockerDaemon = dockerDaemonCheck({ env });
+  const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
+    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
+    if (provider === "docker" && !fauxDocker && enabledBoxes(env).has("docker")) {
+      const daemon = await dockerDaemon();
+      if (!daemon.up || box?.available) return daemon;
+    } else if (box?.available) return { up: true };
+    return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
+  };
   let computerRoutes: ComputerRoutes | undefined;
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
+      // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        answers: dockerAnswers,
       }),
   }));
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
@@ -995,12 +1012,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
-   *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
-   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
-  const dockerAnswers = (provider: string): true | string => {
-    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
-  };
+   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
   const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
@@ -3025,9 +3037,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (res.headersSent) return void res.end();
       // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
       if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
-      // A store still busy past a request's wait is home_busy, whichever read or write met it.
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      // A store still busy past a request's wait, or a write still open at its deadline, is home_busy, whichever read or
+      // write met it: the request may be sent again, never a 500 (agents.ts answerOf, as an MCP tool's call answers).
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;
@@ -3051,7 +3064,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
