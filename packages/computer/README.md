@@ -849,8 +849,22 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
 ```
 
 - `ComputerSpec.mount` is `{ kind: "bind", path }`, a folder on the provider's host bound in (the local Docker
-  computer), or `{ kind: "archil", disk, region, folder, token }`, the run's folder (such as
-  `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer.
+  computer), or `{ kind: "archil", disk, region, folder, token, hosts? }`, the run's folder (such as
+  `agents/<a>/runs/<r>/work`) inside an Archil disk in its region, mounted in a remote computer. `hosts`, when given,
+  pins hosts the archil client dials to IPv4 addresses in that computer, for Archil reached through a private address
+  (an SNI-passthrough proxy, say) while TLS is still checked against each host's name:
+  `{ "mount.example.internal": "10.0.0.10" }`. `archilRefusals` holds it to at most `ARCHIL_HOSTS_MAX` (16) hosts, each a
+  lowercase DNS name of two labels or more (`ARCHIL_HOST`, at most 253 characters) to an IPv4 address (`ARCHIL_ADDRESS`),
+  in words that hold none of them (`archilHostsProblem`). The image's root helper (`box/agentrun-archil`) is given them
+  as `<host>=<address>` after the folder, checks them by the same two patterns, and, once every argument and the token
+  are checked, writes them as `<address> <host>` lines in place of its own block of `/etc/hosts` (between
+  `# agentrun-archil: begin` and `# agentrun-archil: end`), keeping every other line, before it runs the client. It
+  refuses (exit 4, nothing mounted) where `/etc/hosts` is not root's alone (a link, or writable by another user or
+  through a folder above it), so the tool user can change no pin. The box image resolves through `/etc/hosts` first
+  (Debian's `hosts: files dns`). The block stays as long as the computer. Without `hosts`, `/etc/hosts` is not touched.
+  Which hosts to pin: the client first dials its region's mount server on port 8100, as its error names it when it
+  cannot (`Invalid control server address mount.green.us-east-1.aws.prod.archil.com:8100` for `aws-us-east-1`), then
+  the endpoints that server hands it, by name.
   `capabilities().mount` lists the kinds a provider takes; absent, it takes none. Each provider file also exports
   `MOUNT` beside its `create`, the same kinds (Docker `["bind"]`; Modal and Daytona `[]` for now), so a caller tells which
   provider binds a local folder from the registry (`providerModule(id)`) without building one.
@@ -859,7 +873,7 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   bind`); a bind's `path` is absolute, canonical (its own realpath, so what is read back is what is bound: Docker
   reports a bind's source as given, a symlink included), an existing directory on the host, with no NUL; an Archil
   mount's `disk`, `region`, `folder` and `token` are non-empty strings with no NUL, the `folder` relative to the disk's root and
-  with no `..` part. A field the kind does not have is refused.
+  with no `..` part, and its `hosts`, when given, an object of strings. A field the kind does not have is refused.
 - **The token is a secret.** No refusal names an Archil field's value (a token put in the wrong field is not echoed),
   and what a provider reads back of a mount, `MountReadBack` (`readBackOf(mount, epoch)`), is its kind and source
   alone: `{ kind: "bind", path }` or `{ kind: "archil", disk, region, folder, exclusive, epoch }`, or

@@ -79,6 +79,50 @@ test("archilRefusals: an Archil spec takes network none, the run and epoch label
 	assert.deepEqual(archilRefusals({ ...SPEC, mount: { kind: "bind", path: "/x" } }), [], "a bind is not this rule's");
 });
 
+test("archilRefusals: an Archil mount's hosts, when given, are at most 16 lowercase DNS names to IPv4 addresses, in words that hold none of them", () => {
+	const HOSTS = { "mount.example.internal": "10.0.0.10", "data.example.internal": "10.0.0.11" };
+	assert.deepEqual(archilRefusals({ ...SPEC, mount: { ...MOUNT, hosts: HOSTS } }), []);
+	assert.deepEqual(archilRefusals({ ...SPEC, mount: { ...MOUNT, hosts: {} } }), [], "an empty map pins nothing");
+	const many = Object.fromEntries(Array.from({ length: 17 }, (_, at) => [`h${at}.example.internal`, "10.0.0.10"]));
+	const cases = [
+		[["a", "b"], /hosts is an object/, "a list"],
+		["mount.example.internal=10.0.0.10", /hosts is an object/, "a string"],
+		[many, /at most 16 hosts, not 17/, "17 hosts"],
+		[{ "Mount.example.internal": "10.0.0.10" }, /lowercase DNS name/, "an uppercase host"],
+		[{ localhost: "10.0.0.10" }, /lowercase DNS name/, "one label"],
+		[{ "mount.example.internal.": "10.0.0.10" }, /lowercase DNS name/, "a trailing dot"],
+		[{ "-mount.example.internal": "10.0.0.10" }, /lowercase DNS name/, "a leading dash"],
+		[{ "mount.example.internal 10.0.0.12 other.example.internal": "10.0.0.10" }, /lowercase DNS name/, "a host with spaces"],
+		[{ "mount.example.internal": "10.0.0.256" }, /not an IPv4 address/, "a part over 255"],
+		[{ "mount.example.internal": "010.0.0.10" }, /not an IPv4 address/, "a leading zero"],
+		[{ "mount.example.internal": "fd00::10" }, /not an IPv4 address/, "an IPv6 address"],
+		[{ "mount.example.internal": "10.0.0.10\n10.0.0.11 other.example.internal" }, /not an IPv4 address/, "a second line"],
+		[{ "mount.example.internal": 10 }, /not an IPv4 address/, "a number"],
+	];
+	for (const [hosts, words, what] of cases) {
+		const refusals = archilRefusals({ ...SPEC, mount: { ...MOUNT, hosts } });
+		assert.ok(refusals.some(({ field, message }) => field === "mount" && words.test(message)), `${what}: ${JSON.stringify(refusals)}`);
+		assert.ok(!JSON.stringify(refusals).includes("example.internal") && !JSON.stringify(refusals).includes("10.0.0."), `${what}: no value in the words`);
+	}
+});
+
+test("archilMount: a mount's hosts go to the helper's mount and revoke as <host>=<address> after the folder, by host; with none, its argv is as before", async () => {
+	const hosts = { "mount.example.internal": "10.0.0.10", "data.example.internal": "10.0.0.11" };
+	const pins = ["data.example.internal=10.0.0.11", "mount.example.internal=10.0.0.10"];
+	const root = fakeRoot();
+	assert.deepEqual(await archilMount({ root, mount: { ...MOUNT, hosts }, releaseOlder: released(), timeoutMs: 1000 }), ok(undefined));
+	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder, ...pins]);
+	assert.deepEqual(root.calls[2].argv, [ARCHIL_HELPER, "serve"], "serve takes none");
+	const forced = fakeRoot();
+	await archilMount({ root: forced, mount: { ...MOUNT, hosts }, releaseOlder: released([{ id: "old", name: "old" }]), timeoutMs: 1000 });
+	assert.deepEqual(forced.calls.find(({ argv }) => argv[1] === "revoke").argv, [ARCHIL_HELPER, "revoke", MOUNT.disk, MOUNT.region, MOUNT.folder, ...pins]);
+	for (const none of [undefined, {}]) {
+		const plain = fakeRoot();
+		await archilMount({ root: plain, mount: { ...MOUNT, ...(none ? { hosts: none } : {}) }, releaseOlder: released(), timeoutMs: 1000 });
+		assert.deepEqual(plain.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder], JSON.stringify(none));
+	}
+});
+
 test("archilMount's preflight gives the helper back to root, 0755, a regular file never through a link, before it reads the helper's sha256", async () => {
 	// The E2B live run: E2B's template build left the helper -rwxrwxrwx at run time, though the recipe chmods it 0755
 	// and the build's own check passed. Root restores owner and mode first; the sha256 then proves it is the package's

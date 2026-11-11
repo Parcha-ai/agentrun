@@ -70,6 +70,8 @@ export type ArchilWorkspaceOptions = {
   readonly region?: string;
   /** The disk token a computer's mount takes, asked for when a mount is made (the claim's, archil-claim.ts). */
   readonly mountToken?: () => string | Promise<string>;
+  /** The host pins a computer's mount takes (the server's Archil settings): absent or empty, the mount has none. */
+  readonly mountHosts?: Readonly<Record<string, string>>;
 };
 
 /** Why an Archil workspace made without what a mount needs is not put in a computer. */
@@ -127,6 +129,7 @@ class ArchilWorkspace implements Workspace {
   readonly #onCleanupFailed: (message: string) => void;
   readonly #region: string | undefined;
   readonly #mountToken: (() => string | Promise<string>) | undefined;
+  readonly #mountHosts: Readonly<Record<string, string>> | undefined;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
   #rooted = false;
@@ -148,6 +151,7 @@ class ArchilWorkspace implements Workspace {
     this.#onCleanupFailed = options.onCleanupFailed ?? ((message) => process.emitWarning(message, "ArchilWorkspaceCleanup"));
     this.#region = options.region;
     this.#mountToken = options.mountToken;
+    this.#mountHosts = options.mountHosts !== undefined && Object.keys(options.mountHosts).length > 0 ? { ...options.mountHosts } : undefined;
   }
 
   /** The key of relative path `rel` ("" for the root). */
@@ -656,10 +660,11 @@ class ArchilWorkspace implements Workspace {
   /** The Archil mount of the root with `token`: refused without a region and a token function. */
   #mount(token: string): MountSpec {
     if (this.#region === undefined || this.#mountToken === undefined) throw new WorkspaceError("REFUSED", NOT_IN_A_COMPUTER);
-    return { kind: "archil", disk: this.#disk.id, region: this.#region, folder: this.#root, token };
+    return { kind: "archil", disk: this.#disk.id, region: this.#region, folder: this.#root, token, ...(this.#mountHosts ? { hosts: this.#mountHosts } : {}) };
   }
 
-  /** The Archil mount a computer makes of this folder: the disk, its region, the root as the folder, and the token. */
+  /** The Archil mount a computer makes of this folder: the disk, its region, the root as the folder, the token, and the
+   *  host pins when it has any. */
   async mountSpec(): Promise<MountSpec> {
     this.#mount("");
     return this.#mount(await this.#mountToken!());

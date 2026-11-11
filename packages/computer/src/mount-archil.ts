@@ -57,14 +57,43 @@ const DISK = /^(?:dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\/[A-Za-z0-
  */
 export const ARCHIL_REGION = "[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}";
 const REGION = new RegExp(`^${ARCHIL_REGION}$`);
+/**
+ * A host of an Archil mount's `hosts`: a lowercase DNS name of two labels or more, each 1 to 63 letters, digits and
+ * dashes, never starting or ending with a dash, at most ARCHIL_HOST_MAX_LENGTH in all. A pattern string, read the same by
+ * the helper's `grep -Ex` (box/agentrun-archil) and this RegExp.
+ */
+export const ARCHIL_HOST = "([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?";
+export const ARCHIL_HOST_MAX_LENGTH = 253;
+/** The address a host of `hosts` resolves to: an IPv4 address, four decimal parts of 0 to 255 with no leading zero. */
+export const ARCHIL_ADDRESS = "((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])";
+/** The most hosts one mount's `hosts` names. */
+export const ARCHIL_HOSTS_MAX = 16;
+const HOST = new RegExp(`^${ARCHIL_HOST}$`);
+const ADDRESS = new RegExp(`^${ARCHIL_ADDRESS}$`);
+
+/**
+ * Why an Archil mount's `hosts` is not one the helper takes, in words that hold none of its values; undefined when it is
+ * (or is not given). It is an object of at most ARCHIL_HOSTS_MAX hosts (ARCHIL_HOST), each to an IPv4 address
+ * (ARCHIL_ADDRESS).
+ */
+export function archilHostsProblem(hosts: unknown): string | undefined {
+	if (hosts === undefined) return undefined;
+	if (typeof hosts !== "object" || hosts === null || Array.isArray(hosts)) return "hosts is an object of host names to IPv4 addresses";
+	const entries = Object.entries(hosts);
+	if (entries.length > ARCHIL_HOSTS_MAX) return `hosts names at most ${ARCHIL_HOSTS_MAX} hosts, not ${entries.length}`;
+	if (entries.some(([host]) => host.length > ARCHIL_HOST_MAX_LENGTH || !HOST.test(host))) return "hosts names a host that is not a lowercase DNS name of two labels or more";
+	if (entries.some(([, address]) => typeof address !== "string" || !ADDRESS.test(address))) return "hosts maps a host to something that is not an IPv4 address";
+	return undefined;
+}
 const FOLDER = /^agents\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/work$/;
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 /**
  * The Archil rule every provider's check() adds to checkMount's, with no vendor call: network "none" (the tools have no
  * network: init's own namespace, loopback alone), the run's agentrun.run and agentrun.epoch labels (the claim the mount is made
- * under), a disk, region and folder of the helper's shapes, the folder of the labelled run, and a token of a disk
- * token's shape. No word holds a value of the mount but the folder's run, and only once the folder has the folder's shape.
+ * under), a disk, region and folder of the helper's shapes, the folder of the labelled run, a token of a disk token's
+ * shape, and hosts, when given, as archilHostsProblem takes them. No word holds a value of the mount but the folder's
+ * run, and only once the folder has the folder's shape.
  */
 export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	const mount = spec.mount as Record<string, unknown> | undefined;
@@ -85,6 +114,8 @@ export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	if (folder === null) refuse("mount", "mount.folder is agents/<agent>/runs/<run>/work, nothing else");
 	else if (runWrong === undefined && folder[1] !== run) refuse("mount", `mount.folder is run ${folder[1]}'s folder, not the run this computer is labelled for (${RUN_LABEL})`);
 	if (!TOKEN.test(text(mount.token))) refuse("mount", "mount.token is not a disk token: 16 to 4096 of letters, digits and ._~+/=-");
+	const hosts = archilHostsProblem(mount.hosts);
+	if (hosts !== undefined) refuse("mount", `mount.${hosts}`);
 	return found;
 }
 
@@ -158,9 +189,14 @@ function preflightDrift(output: string, expectedSha: string): string[] {
 /** What Archil answers a mount of a folder another client holds. */
 const HELD = "has an outstanding delegation";
 
-/** The helper's argv for a verb. */
+/** The helper's argv for a verb: a mount's or a revoke's ends with its hosts, `<host>=<address>` each, by host. */
 function helper(verb: "mount" | "revoke" | "serve" | "checkin", mount?: ArchilMount): string[] {
-	if (verb === "mount" || verb === "revoke") return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder];
+	if (verb === "mount" || verb === "revoke") {
+		const pins = Object.entries(mount!.hosts ?? {})
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(([host, address]) => `${host}=${address}`);
+		return [ARCHIL_HELPER, verb, mount!.disk, mount!.region, mount!.folder, ...pins];
+	}
 	return [ARCHIL_HELPER, verb];
 }
 

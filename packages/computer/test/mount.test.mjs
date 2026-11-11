@@ -30,6 +30,8 @@ test("checkMount: no mount is no refusal; a bind of an existing, canonical direc
 	assert.deepEqual(refusals(ARCHIL, ["archil"]), []);
 	assert.deepEqual(refusals(ARCHIL, ["bind", "archil"]), []);
 	assert.deepEqual(refusals({ ...ARCHIL, folder: "a/b/c" }, ["archil"]), []);
+	assert.deepEqual(refusals({ ...ARCHIL, hosts: { "mount.example.internal": "10.0.0.10" } }, ["archil"]), [], "an Archil mount may pin its hosts");
+	assert.deepEqual(refusals({ ...ARCHIL, hosts: undefined }, ["archil"]), []);
 });
 
 test("checkMount refuses a mount kind the provider does not declare, in words, with no token", () => {
@@ -52,7 +54,7 @@ test("checkMount refuses what is not a mount, or a kind it does not know, in wor
 	for (const mount of [null, "bind", 1, [], { path: dir }, { kind: "nfs", path: dir }]) {
 		const found = refusals(mount, ["bind", "archil"]);
 		assert.deepEqual(found.map((r) => r.field), ["mount"], JSON.stringify(mount));
-		assert.match(found[0].message, /mount is \{ kind: "bind", path \} or \{ kind: "archil", disk, region, folder, token \}/);
+		assert.match(found[0].message, /mount is \{ kind: "bind", path \} or \{ kind: "archil", disk, region, folder, token, hosts\? \}/);
 	}
 });
 
@@ -103,6 +105,10 @@ test("checkMount's Archil rule: disk, region, folder and token are non-empty str
 		[{ token: 12345 }, /mount\.token is required/],
 		[{ token: `${TOKEN}\0` }, /mount\.token: a NUL byte/],
 		[{ secret: TOKEN }, /mount\.secret is not a field of an archil mount/],
+		[{ hosts: ["mount.example.internal"] }, /^mount\.hosts is an object of host names to IP addresses$/],
+		[{ hosts: "mount.example.internal=10.0.0.10" }, /^mount\.hosts is an object/],
+		[{ hosts: null }, /^mount\.hosts is an object/],
+		[{ hosts: { "mount.example.internal": 10 } }, /^mount\.hosts is an object/],
 	]) {
 		const mount = { ...ARCHIL, ...change };
 		const found = refusals(mount, ["archil"]);

@@ -74,6 +74,18 @@ test("no disk token is kept: a PUT naming ARCHIL_DISK_TOKEN is refused as a fiel
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved");
 });
 
+test("a PUT's host pins are saved with the settings and shown back; a PUT without them saves none", async (t) => {
+  const { store, call } = await setup(t);
+  const hosts = { "mount.example.internal": "10.0.0.10", "data.example.internal": "10.0.0.11" };
+  const saved = await call("putWorkspaceArchil", { ...SETTINGS, hosts });
+  assert.deepEqual(saved.hosts, hosts);
+  assert.deepEqual(await loadArchilSettings(store), { ...SETTINGS, hosts }, "the settings row the claim loads");
+  assert.deepEqual((await call("getWorkspaceArchil")).hosts, hosts);
+  const plain = await call("putWorkspaceArchil", SETTINGS);
+  assert.equal(Object.hasOwn(plain, "hosts"), false, "a PUT replaces the settings: no pins given, none kept");
+  assert.deepEqual(await loadArchilSettings(store), SETTINGS);
+});
+
 test("a PUT that is not right is refused before anything is saved, field by field", async (t) => {
   const { store, call } = await setup(t);
   await refused(call("putWorkspaceArchil", { ...SETTINGS, image: "ghcr.io/agentrun/exec:latest" }), "image");
@@ -84,6 +96,9 @@ test("a PUT that is not right is refused before anything is saved, field by fiel
   await refused(call("putWorkspaceArchil", { ...SETTINGS, keys: { OPENAI_API_KEY: "sk" } }), "keys.OPENAI_API_KEY");
   await refused(call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: 7 } }), "keys.ARCHIL_API_KEY");
   await refused(call("putWorkspaceArchil", { ...SETTINGS, mode: 2 }), "mode");
+  for (const hosts of [["mount.example.internal"], { "Mount.example.internal": "10.0.0.10" }, { localhost: "10.0.0.10" }, { "mount.example.internal": "10.0.0.256" }, { "mount.example.internal": "fd00::10" }, { "mount.example.internal": "10.0.0.10 other.example.internal" }, Object.fromEntries(Array.from({ length: 17 }, (_, at) => [`h${at}.example.internal`, "10.0.0.10"]))]) {
+    await refused(call("putWorkspaceArchil", { ...SETTINGS, hosts }), "hosts");
+  }
   await refused(call("putWorkspaceArchil", []));
   assert.equal(await inArchilMode(store), false, "nothing saved");
   assert.deepEqual(await store.sealedKeys.all(), []);

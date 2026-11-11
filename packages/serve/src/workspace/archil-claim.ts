@@ -59,6 +59,8 @@ export interface ArchilClaim {
   readonly disk: ArchilDisk;
   /** The disk's region (a computer's mount names it). */
   readonly region: string;
+  /** The host pins a computer's mount takes (the server's Archil settings), when the owner set any. */
+  readonly hosts?: Readonly<Record<string, string>>;
   /** The exec image, pinned by digest; undefined for Archil's default. */
   readonly image: ArchilImage | undefined;
   /** The run's mount credential's token, minted the first time a mount asks (once per claim), held in memory only. */
@@ -161,6 +163,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   return {
     disk,
     region: settings.region,
+    ...(settings.hosts === undefined ? {} : { hosts: settings.hosts }),
     image,
     secrets: held,
     token: async () => {

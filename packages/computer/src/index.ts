@@ -56,7 +56,11 @@ export {
 	type ModalTimeouts,
 } from "./modal.js";
 export {
+	ARCHIL_ADDRESS,
 	ARCHIL_HELPER,
+	ARCHIL_HOST,
+	ARCHIL_HOST_MAX_LENGTH,
+	ARCHIL_HOSTS_MAX,
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_SYNC_SOCKET,
 	ARCHIL_TOOL_UID,
@@ -66,6 +70,7 @@ export {
 	type ArchilMountOptions,
 	type ArchilRoot,
 	type ProviderNote,
+	archilHostsProblem,
 	archilLabels,
 	archilMount,
 	archilReadBack,

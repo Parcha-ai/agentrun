@@ -770,6 +770,17 @@ computer is made with the GPUs asked.
   `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
   mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
 
+**Archil through a private address.** A sandbox whose egress reaches Archil only through a private address (an
+SNI-passthrough proxy, say, on a network locked to an allow-list) pins Archil's hosts to it: `hosts` in the same PUT, an
+object of at most 16 hosts, each a lowercase DNS name, to an IPv4 address, such as
+`"hosts": {"mount.example.internal": "10.0.0.10"}`. A computer's mount carries them, and the image's root helper writes
+them into its own block of the computer's `/etc/hosts`, as root, before the archil client runs: the client then dials
+that address, and TLS is still checked against the host's name. A PUT without `hosts` keeps none. The client first dials
+its region's mount server on port 8100, and the mount's failure names it when it cannot
+(`Invalid control server address mount.<...>.archil.com:8100: failed to lookup address information`), then the
+endpoints that server names; pin each, and let the proxy pass each port. The file API, exec and Archil's serverless exec
+run on this server and Archil's side, never in a computer, so the pins are a computer's mount's alone.
+
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
 phone and a browser never mount it.

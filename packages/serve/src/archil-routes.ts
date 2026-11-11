@@ -4,11 +4,13 @@
 //   GET    /v2/workspace/archil       on or off, the settings, and the account key as the shared secret shape: set or not,
 //                                     where from, when changed (never a value)
 //   PUT    /v2/workspace/archil       the settings row replaced, and the account key sealed when given (null removes it);
-//                                     the exec image, when given, pinned by digest
+//                                     the exec image, when given, pinned by digest; the mount's host pins, when given,
+//                                     as the computer package's archilHostsProblem takes them
 //   DELETE /v2/workspace/archil       off (the settings row removed; the key is kept, for turning it on again)
 //   POST   /v2/workspace/archil/test  one listing of the disk's root through its file API, with the account key opened
 //                                     as a claim opens it (archilClaim): { ok, detail } or { ok: false, why }
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
+import { ARCHIL_HOSTS_MAX, archilHostsProblem } from "@parcha/agentrun-computer";
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, clearArchilSettings, loadArchilSettings, saveArchilSettings } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
@@ -39,7 +41,7 @@ registerNotSecretWrite("testWorkspaceArchil", "A connection test reads the saved
 const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };
 
 /** The Archil settings as the owner reads them: the account key as `secret`, its SecretMeta, never a value. */
-export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
+export type ArchilView = { on: boolean; diskId?: string; region?: string; s3Url?: string; image?: string; hosts?: Readonly<Record<string, string>>; secret: KeyMeta };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
 
 export interface ArchilRoutesOptions {
@@ -71,9 +73,9 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */
   async function save(body: unknown): Promise<ArchilView> {
-    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object: { diskId, region, s3Url, image?, keys? }");
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object: { diskId, region, s3Url, image?, hosts?, keys? }");
     const given = body as Record<string, unknown>;
-    const issues: InputIssue[] = unknownFields(given, ["diskId", "region", "s3Url", "image", "keys"]);
+    const issues: InputIssue[] = unknownFields(given, ["diskId", "region", "s3Url", "image", "hosts", "keys"]);
     for (const field of ["diskId", "region"]) if (!nonEmpty(given[field])) issues.push({ field, reason: "required", message: `${field} is a non-empty string` });
     if (!nonEmpty(given.s3Url) || !URL.canParse(given.s3Url) || new URL(given.s3Url).protocol !== "https:") issues.push({ field: "s3Url", reason: "invalid", message: "s3Url is the disk's S3 endpoint, an https URL" });
     if (given.image !== undefined) {
@@ -83,6 +85,8 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
         issues.push({ field: "image", reason: "invalid", message: "image is pinned by digest: <name>@sha256:<64 hex>" });
       }
     }
+    const hosts = archilHostsProblem(given.hosts);
+    if (hosts !== undefined) issues.push({ field: "hosts", reason: "invalid", message: `${hosts} (at most ${ARCHIL_HOSTS_MAX}): the address each host a computer's archil client dials resolves to` });
     const keys = given.keys ?? {};
     if (typeof keys !== "object" || keys === null || Array.isArray(keys)) issues.push({ field: "keys", reason: "wrong_type", message: "keys is an object of ARCHIL_API_KEY" });
     const entries = typeof keys === "object" && keys !== null ? Object.entries(keys as Record<string, unknown>) : [];
@@ -91,7 +95,13 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
       else if (value !== null && !nonEmpty(value)) issues.push({ field: `keys.${name}`, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` });
     }
     if (issues.length) throw invalid(issues);
-    const settings: ArchilSettings = { diskId: (given.diskId as string).trim(), region: (given.region as string).trim(), s3Url: given.s3Url as string, ...(given.image !== undefined ? { image: given.image as string } : {}) };
+    const settings: ArchilSettings = {
+      diskId: (given.diskId as string).trim(),
+      region: (given.region as string).trim(),
+      s3Url: given.s3Url as string,
+      ...(given.image !== undefined ? { image: given.image as string } : {}),
+      ...(given.hosts !== undefined ? { hosts: given.hosts as Record<string, string> } : {}),
+    };
     for (const [name, value] of entries) {
       const row = KEYS.find((key) => key.name === name)!.row;
       if (value === null) await removeSealedKey(store, row);

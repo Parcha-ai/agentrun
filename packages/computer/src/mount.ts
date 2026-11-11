@@ -18,9 +18,12 @@ export const WORKSPACE = "/workspace";
 /**
  * The run's folder, mounted at WORKSPACE. bind: a folder on the provider's host, bound in (the local Docker computer).
  * archil: the run's folder inside an Archil disk in its region, mounted in the computer with the disk's token (a remote
- * computer).
+ * computer); `hosts`, when given, the address each host the archil client dials resolves to in that computer (a host
+ * name to an IP address: Archil reached through a private address, TLS still checked against the name).
  */
-export type MountSpec = { kind: "bind"; path: string } | { kind: "archil"; disk: string; region: string; folder: string; token: string };
+export type MountSpec =
+	| { kind: "bind"; path: string }
+	| { kind: "archil"; disk: string; region: string; folder: string; token: string; hosts?: Readonly<Record<string, string>> };
 export type MountKind = MountSpec["kind"];
 export const MOUNT_KINDS: readonly MountKind[] = ["bind", "archil"];
 
@@ -35,8 +38,8 @@ export type MountReadBack =
 	| { kind: "archil"; disk: string; region: string; folder: string; exclusive: boolean; epoch: number }
 	| { other: string };
 
-const SHAPE = 'mount is { kind: "bind", path } or { kind: "archil", disk, region, folder, token }';
-const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "region", "folder", "token"] };
+const SHAPE = 'mount is { kind: "bind", path } or { kind: "archil", disk, region, folder, token, hosts? }';
+const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "region", "folder", "token", "hosts"] };
 const NUL = "a NUL byte cannot be passed to a mount";
 const filled = (value: unknown): value is string => typeof value === "string" && value !== "";
 
@@ -44,7 +47,8 @@ const filled = (value: unknown): value is string => typeof value === "string" &&
  * The one mount rule, with no vendor call: no mount is no refusal; a kind the provider does not declare is refused in
  * words; a bind's path is absolute, canonical (its own realpath: what a provider reads back is what is bound), an
  * existing directory on the host, with no NUL; an Archil mount's disk, region, folder and token are non-empty strings with no
- * NUL, the folder relative to the disk's root and never above it. Each refusal names a field, never an Archil value.
+ * NUL, the folder relative to the disk's root and never above it, and its hosts, when given, an object of strings. Each
+ * refusal names a field, never an Archil value.
  */
 export function checkMount(mount: unknown, declared: readonly MountKind[] | undefined): Refusal[] {
 	if (mount === undefined) return [];
@@ -83,7 +87,7 @@ function bindRefusals(path: unknown): string[] {
 }
 
 /** An Archil mount's refusals, by field: no value is ever in them, since the token may be in any field by mistake. */
-function archilRefusals({ disk, region, folder, token }: Record<string, unknown>): string[] {
+function archilRefusals({ disk, region, folder, token, hosts }: Record<string, unknown>): string[] {
 	const found: string[] = [];
 	if (!filled(disk)) found.push("mount.disk is required: the Archil disk's name");
 	else if (disk.includes("\0")) found.push(`mount.disk: ${NUL}`);
@@ -95,6 +99,9 @@ function archilRefusals({ disk, region, folder, token }: Record<string, unknown>
 	else if (folder.split("/").includes("..")) found.push('mount.folder must stay inside the disk: no ".." part');
 	if (!filled(token)) found.push("mount.token is required: the disk's token, a non-empty string");
 	else if (token.includes("\0")) found.push(`mount.token: ${NUL}`);
+	if (hosts !== undefined && (typeof hosts !== "object" || hosts === null || Array.isArray(hosts) || Object.values(hosts).some((address) => typeof address !== "string"))) {
+		found.push("mount.hosts is an object of host names to IP addresses");
+	}
 	return found;
 }
 

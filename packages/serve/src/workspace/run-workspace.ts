@@ -58,6 +58,7 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
     onCleanupFailed: say,
     // A computer's mount of the run's folder: the disk's region, and the run's minted mount credential when a mount asks.
     region: claim.region,
+    ...(claim.hosts === undefined ? {} : { mountHosts: claim.hosts }),
     // The claim's own mint (archil-claim.ts token(), revoked by its revoke()) unless the caller hands another.
     ...(options.mountToken ? { mountToken: options.mountToken } : typeof claim.token === "function" ? { mountToken: () => claim.token() } : {}),
   });

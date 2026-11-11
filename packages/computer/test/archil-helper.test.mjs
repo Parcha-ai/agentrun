@@ -23,6 +23,8 @@ const DISK = "dsk-00000000000baf76";
 const REGION = "aws-us-east-1";
 const FOLDER = "agents/a1/runs/r1/work";
 const TOKEN = "tok-archil-helper-test-0123456789abcdef";
+/** The box's /etc/hosts before any pin. */
+const HOSTS_FILE = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost\n";
 /** The box's /proc as the image mounts it: no user sees another's processes. */
 const PROC = "proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=invisible 0 0\n";
 
@@ -60,8 +62,12 @@ async function box(t, { root = true } = {}) {
   const mount = join(dir, "mount");
   writeFileSync(mount, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${remounts}'\n[ -e '${remountable}' ] || { echo 'mount: /proc: permission denied.' >&2; exit 32; }\n[ "$*" = '-o remount,hidepid=2 /proc' ] || exit 1\nsed -i 's#^proc /proc proc \\([^ ]*\\) #proc /proc proc \\1,hidepid=invisible #' '${mounts}'\n`);
   chmodSync(mount, 0o755);
+  // The computer's /etc/hosts, root's alone (this user's, 0644, in the scratch directory, 0755).
+  const hosts = join(dir, "hosts");
+  writeFileSync(hosts, HOSTS_FILE);
+  chmodSync(hosts, 0o644);
   const source = readFileSync(HELPER, "utf8");
-  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
+  const fixed = { ARCHIL: ["/usr/bin/archil", archil], MP: ["/workspace", mp], MOUNTS: ["/proc/self/mounts", mounts], MOUNT: ["/usr/bin/mount", mount], CHOWN: ["/usr/bin/chown", chown], TOOL: ["agentrun-tool", userInfo().username], TOOL_UID: ["2510", String(process.getuid() + 1)], ROOT_UID: ["0", String(root ? process.getuid() : process.getuid() + 1)], COMPUTERD: ["/opt/agentrun/computerd", computerd], HOSTS: ["/etc/hosts", hosts], HELD_TOP: ["/", dir], SOCK: ["/run/agentrun-archil/archil.sock", join(dir, "run", "archil.sock")] };
   let copy = source;
   for (const [name, [shipped, here]] of Object.entries(fixed)) {
     assert.ok(source.includes(`\n${name}=${shipped}\n`), `the helper fixes ${name}=${shipped}`);
@@ -74,7 +80,7 @@ async function box(t, { root = true } = {}) {
     const ran = spawnSync(helper, args, { input: stdin, encoding: "utf8", env: { PATH: process.env.PATH } });
     return { status: ran.status, stderr: ran.stderr, calls: existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter(Boolean) : [] };
   };
-  return { dir, mp, mounts, run, computerd, tree: (script) => writeFileSync(tree, script), sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
+  return { dir, mp, mounts, hosts, run, computerd, tree: (script) => writeFileSync(tree, script), sock: join(dir, "run", "archil.sock"), remounts: () => (existsSync(remounts) ? readFileSync(remounts, "utf8").split("\n").filter(Boolean) : []), remountable: () => writeFileSync(remountable, ""), mounted: (folder = FOLDER) => writeFileSync(mounts, `${PROC}${DISK}:/${folder}[${REGION}] ${mp} fuse.archil rw 0 0\n`) };
 }
 
 /**
@@ -394,5 +400,105 @@ test("the region has one rule, ARCHIL_REGION, which archilRefusals and the helpe
     const ran = b.run(["mount", DISK, region, FOLDER]);
     assert.equal(ran.status, taken ? 0 : 2, `the helper ${taken ? "takes" : "refuses"} ${JSON.stringify(region)}: ${ran.stderr}`);
     if (!taken) assert.deepEqual(ran.calls, [], `nothing ran for ${JSON.stringify(region)}`);
+  }
+});
+
+// Host pins (a mount's hosts, mount-archil.ts): `<host>=<address>` after the folder, written as the helper's own block of
+// /etc/hosts before the client runs, so the client reaches Archil through the operator's private address. The tool user
+// cannot change them: the file must be root's alone.
+const PINS = ["mount.example.internal=10.0.0.10", "data.example.internal=10.0.0.11"];
+const block = (...lines) => ["# agentrun-archil: begin", ...lines, "# agentrun-archil: end"].join("\n") + "\n";
+
+test("mount and revoke pin each <host>=<address> in the helper's own block of /etc/hosts, every other line kept, before the client runs with its fixed arguments", async (t) => {
+  for (const verb of ["mount", "revoke"]) {
+    const b = await box(t);
+    const ran = b.run([verb, DISK, REGION, FOLDER, ...PINS]);
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(readFileSync(b.hosts, "utf8"), HOSTS_FILE + block("10.0.0.10 mount.example.internal", "10.0.0.11 data.example.internal"), verb);
+    assert.deepEqual(ran.calls.slice(0, 3), [`argv mount ${verb === "revoke" ? "--force " : ""}${DISK}:/${FOLDER} ${b.mp} --region ${REGION}`, "env token", "ps 0"], `${verb}: the client's arguments hold no pin`);
+  }
+  // Before the client: a mount the client refuses still finds the pins written (the helper exits at the client's answer).
+  const refused = await box(t);
+  writeFileSync(join(refused.dir, "archil-fails"), "");
+  assert.equal(refused.run(["mount", DISK, REGION, FOLDER, PINS[0]]).status, 1);
+  assert.equal(readFileSync(refused.hosts, "utf8"), HOSTS_FILE + block("10.0.0.10 mount.example.internal"));
+});
+
+test("a later mount's pins replace the helper's block and nothing else; a mount with none leaves /etc/hosts as it is", async (t) => {
+  const b = await box(t);
+  writeFileSync(b.hosts, `${HOSTS_FILE}${block("10.9.9.9 old.example.internal")}10.0.0.99 kept.example.internal\n`);
+  assert.equal(b.run(["mount", DISK, REGION, FOLDER, PINS[1]]).status, 0);
+  assert.equal(readFileSync(b.hosts, "utf8"), `${HOSTS_FILE}10.0.0.99 kept.example.internal\n${block("10.0.0.11 data.example.internal")}`);
+  const before = readFileSync(b.hosts, "utf8");
+  const plain = b.run(["mount", DISK, REGION, FOLDER]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(readFileSync(b.hosts, "utf8"), before, "no pins: not touched");
+});
+
+const BAD_PINS = [
+  ["mount.example.internal", "no address"],
+  ["mount.example.internal=", "an empty address"],
+  ["=10.0.0.10", "an empty host"],
+  ["Mount.example.internal=10.0.0.10", "an uppercase host"],
+  ["localhost=10.0.0.10", "one label"],
+  ["mount.example.internal.=10.0.0.10", "a trailing dot"],
+  ["-mount.example.internal=10.0.0.10", "a leading dash"],
+  [`${"a".repeat(64)}.example.internal=10.0.0.10`, "a label of 64"],
+  [`${"a.".repeat(126)}aa=10.0.0.10`, "254 characters"],
+  ["mount.example.internal=10.0.0.256", "a part over 255"],
+  ["mount.example.internal=010.0.0.10", "a leading zero"],
+  ["mount.example.internal=10.0.0", "three parts"],
+  ["mount.example.internal=fd00::10", "an IPv6 address"],
+  ["mount.example.internal=10.0.0.10=x", "a second ="],
+  ["mount.example.internal=10.0.0.10 other.example.internal", "a space"],
+  ["mount.example.internal=10.0.0.10\tother.example.internal", "a tab"],
+  ["mount.example.internal=10.0.0.10#", "a comment"],
+];
+
+test("a pin of any other shape, a host given twice or more than 16 exits 2: nothing runs and /etc/hosts is as it was", async (t) => {
+  const many = Array.from({ length: 17 }, (_, at) => `h${at}.example.internal=10.0.0.10`);
+  for (const pins of [...BAD_PINS.map(([pin]) => [pin]), [PINS[0], "mount.example.internal=10.0.0.12"], many]) {
+    const b = await box(t);
+    const ran = b.run(["mount", DISK, REGION, FOLDER, ...pins]);
+    assert.equal(ran.status, 2, `${JSON.stringify(pins).slice(0, 80)}: ${ran.stderr}`);
+    assert.deepEqual(ran.calls, [], JSON.stringify(pins).slice(0, 80));
+    assert.equal(readFileSync(b.hosts, "utf8"), HOSTS_FILE);
+  }
+  // 16 is the most: taken.
+  const b = await box(t);
+  assert.equal(b.run(["mount", DISK, REGION, FOLDER, ...many.slice(0, 16)]).status, 0);
+});
+
+test("a pin where /etc/hosts is not root's alone (writable by another user, or a link) exits 4: the client never runs", async (t) => {
+  const writable = await box(t);
+  chmodSync(writable.hosts, 0o666);
+  const ran = writable.run(["mount", DISK, REGION, FOLDER, PINS[0]]);
+  assert.equal(ran.status, 4, ran.stderr);
+  assert.match(ran.stderr, /hosts is not root's alone, so no host is pinned and nothing is mounted/);
+  assert.deepEqual(ran.calls, []);
+  assert.equal(readFileSync(writable.hosts, "utf8"), HOSTS_FILE);
+  const linked = await box(t);
+  const real = join(linked.dir, "hosts-real");
+  writeFileSync(real, HOSTS_FILE);
+  rmSync(linked.hosts);
+  symlinkSync(real, linked.hosts);
+  assert.equal(linked.run(["mount", DISK, REGION, FOLDER, PINS[0]]).status, 4);
+  assert.equal(readFileSync(real, "utf8"), HOSTS_FILE);
+  // Without pins, /etc/hosts is not read at all: today's mount.
+  assert.equal(writable.run(["mount", DISK, REGION, FOLDER]).status, 0);
+});
+
+test("a pin has one rule, ARCHIL_HOST and ARCHIL_ADDRESS, which archilRefusals and the helper apply alike", async (t) => {
+  const { ARCHIL_ADDRESS, ARCHIL_HOST, archilHostsProblem } = await import("../dist/mount-archil.js");
+  const source = readFileSync(HELPER, "utf8");
+  assert.ok(source.includes(`matches "$host" '${ARCHIL_HOST}'`), "the helper checks a host with ARCHIL_HOST, as written");
+  assert.ok(source.includes(`matches "$address" '${ARCHIL_ADDRESS}'`), "the helper checks an address with ARCHIL_ADDRESS, as written");
+  const table = [...BAD_PINS.map(([pin]) => [pin, false]), [PINS[0], true], [PINS[1], true], [`${"a".repeat(63)}.example.internal=255.255.255.255`, true], ["a.b=0.0.0.0", true]];
+  for (const [pin, taken] of table) {
+    const at = pin.indexOf("=");
+    const hosts = at < 0 ? { [pin]: undefined } : { [pin.slice(0, at)]: pin.slice(at + 1) };
+    assert.equal(archilHostsProblem(hosts) === undefined, taken, `archilHostsProblem ${taken ? "takes" : "refuses"} ${JSON.stringify(pin)}`);
+    const b = await box(t);
+    assert.equal(b.run(["mount", DISK, REGION, FOLDER, pin]).status, taken ? 0 : 2, `the helper ${taken ? "takes" : "refuses"} ${JSON.stringify(pin)}`);
   }
 });

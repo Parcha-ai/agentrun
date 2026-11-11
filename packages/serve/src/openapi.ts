@@ -36,6 +36,7 @@ import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
+import { ARCHIL_ADDRESS, ARCHIL_HOST, ARCHIL_HOST_MAX_LENGTH, ARCHIL_HOSTS_MAX } from "@parcha/agentrun-computer";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
 
 type Json = Record<string, unknown>;
@@ -653,6 +654,14 @@ const RUN_COMPUTER = {
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
+/** archil/1: the host pins of a computer's Archil mount, by the computer package's rule (archilHostsProblem). */
+const ARCHIL_HOSTS: Json = {
+  type: "object",
+  maxProperties: ARCHIL_HOSTS_MAX,
+  propertyNames: { type: "string", maxLength: ARCHIL_HOST_MAX_LENGTH, pattern: `^${ARCHIL_HOST}$` },
+  additionalProperties: { type: "string", pattern: `^${ARCHIL_ADDRESS}$` },
+  description: "The IPv4 address each host the archil client dials resolves to in a computer that mounts the disk, written by the image's root helper into its own block of the computer's /etc/hosts before the mount: Archil reached through a private address, such as an SNI-passthrough proxy, while TLS is still checked against the host's name. A host is a lowercase DNS name of two labels or more.",
+};
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on this Archil disk. Off, they are on this server's own disk (Mode 1)." },
@@ -662,6 +671,7 @@ const ARCHIL_VIEW = closedWith({
   region: { type: "string" },
   s3Url: { type: "string", format: "uri" },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, Archil's default." },
+  hosts: { ...ARCHIL_HOSTS, description: "The host pins of a computer's mount; absent, none." },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
@@ -1288,11 +1298,12 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
-      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the disk, region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the disk, its region and S3 URL, an exec image pinned by digest when given, and the host pins of a computer's mount when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the disk, region and S3 URL say where every run's files go. A field that is not right, an image not pinned by digest, or a host pin of another shape, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
         content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
+          hosts: ARCHIL_HOSTS,
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
       },

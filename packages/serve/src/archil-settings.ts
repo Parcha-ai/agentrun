@@ -1,8 +1,10 @@
-// The Archil disk the owner configured for Mode 2 (a remote disk the agent's files live on): its id, region, S3 URL and an
-// optional pinned image, kept as one row in store.settings. The disk's one kept credential is the account key (the file
-// API and exec), a sealed key (server-keys.ts) under the name below. No disk token is kept: a computer's mount credential
-// is minted per run from the account key. Mode 2 = these settings present; absent, the server is in Mode 1 (a local
-// folder). The owner sets them through the Archil routes (archil-routes.ts).
+// The Archil disk the owner configured for Mode 2 (a remote disk the agent's files live on): its id, region, S3 URL, an
+// optional pinned image and optional host pins for a computer's mount, kept as one row in store.settings. The disk's one
+// kept credential is the account key (the file API and exec), a sealed key (server-keys.ts) under the name below. No
+// disk token is kept: a computer's mount credential is minted per run from the account key. Mode 2 = these settings
+// present; absent, the server is in Mode 1 (a local folder). The owner sets them through the Archil routes
+// (archil-routes.ts).
+import { archilHostsProblem } from "@parcha/agentrun-computer";
 import type { Settings } from "./store/index.js";
 
 /** The settings key the Archil disk's configuration lives under in store.settings. */
@@ -17,6 +19,9 @@ export interface ArchilSettings {
   readonly s3Url: string;
   /** A pinned image for the disk's exec, when the owner set one; absent, Archil's default image. */
   readonly image?: string;
+  /** The address each host the archil client dials resolves to in a computer that mounts the disk (a host name to an
+   *  IPv4 address: Archil reached through a private address), when the owner set any; absent, the computer's own DNS. */
+  readonly hosts?: Readonly<Record<string, string>>;
 }
 
 /** The Archil settings the owner saved, or undefined when none is (Mode 1). A row that is not the expected shape reads as
@@ -33,6 +38,7 @@ export async function saveArchilSettings(store: { settings: Pick<Settings, "put"
     region: settings.region,
     s3Url: settings.s3Url,
     ...(settings.image !== undefined ? { image: settings.image } : {}),
+    ...(settings.hosts !== undefined ? { hosts: { ...settings.hosts } } : {}),
   });
 }
 
@@ -49,5 +55,5 @@ export async function inArchilMode(store: { settings: Pick<Settings, "get"> }): 
 function isArchilSettings(value: unknown): value is ArchilSettings {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v.diskId === "string" && typeof v.region === "string" && typeof v.s3Url === "string" && (v.image === undefined || typeof v.image === "string");
+  return typeof v.diskId === "string" && typeof v.region === "string" && typeof v.s3Url === "string" && (v.image === undefined || typeof v.image === "string") && archilHostsProblem(v.hosts) === undefined;
 }

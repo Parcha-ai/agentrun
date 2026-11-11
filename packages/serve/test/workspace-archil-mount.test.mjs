@@ -121,6 +121,20 @@ test("archil mountSpec and attach: a workspace made without a region or a token 
   }
 });
 
+test("archil mountSpec through the run's Workspace: the claim's host pins beside the token; the read-back and attach as without them", async () => {
+  const disk = new FakeArchilDisk();
+  const hosts = { "mount.example.internal": "10.0.0.10" };
+  const claim = { disk, region: REGION, hosts, image: undefined, secrets: new Set(), release() {} };
+  const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claim, mountToken: async () => TOKEN, log: () => {} });
+  const spec = await run.workspace.mountSpec();
+  assert.deepEqual(spec, { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), token: TOKEN, hosts });
+  assert.deepEqual(readBackOf(spec, EPOCH), { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), exclusive: true, epoch: EPOCH }, "pins are no part of the read-back");
+  for (const none of [undefined, {}]) {
+    const { workspace } = mounted(disk, none === undefined ? {} : { mountHosts: none });
+    assert.equal(Object.hasOwn(await workspace.mountSpec(), "hosts"), false, JSON.stringify(none));
+  }
+});
+
 test("archil mountSpec through the run's Workspace: the region from the claim and the run's minted mount credential; none kept, none minted, no mount", async () => {
   const disk = new FakeArchilDisk();
   const claim = { disk, region: REGION, image: undefined, secrets: new Set(), release() {} };

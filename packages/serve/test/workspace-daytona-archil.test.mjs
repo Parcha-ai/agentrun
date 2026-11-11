@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
-import { archilClaim, archilWorkspace, computerForClaim, computerProviderMakers } from "../dist/workspace/index.js";
+import { archilClaim, archilWorkspace, computerForClaim, computerProviderMakers, openRunWorkspace, runKey } from "../dist/workspace/index.js";
 import { archilControlFake } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
@@ -52,7 +52,7 @@ test("computerProviderMakers builds each provider through the computer package's
 
 /** A Mode 2 claim of a sandbox on `provider` on the fakes, on the real registry: its saved keys and the Archil account key
  *  sealed, a fake control API, a fake disk. */
-async function archilSandbox(t, provider = "daytona", { existing = [] } = {}) {
+async function archilSandbox(t, provider = "daytona", { existing = [], settings = SETTINGS, viaRun = false } = {}) {
   const control = await archilControlFake({ existing });
   t.after(() => control.close());
   const { store } = await storeOn(t);
@@ -61,8 +61,11 @@ async function archilSandbox(t, provider = "daytona", { existing = [] } = {}) {
   await putSealedKey(store, sealKey, "archil.api_key", ARCHIL_KEY);
   const disk = new FakeArchilDisk();
   const controller = new AbortController();
-  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
-  const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
+  const claim = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl } });
+  // The run's Workspace as the runner opens it from the claim (viaRun), or one made here with the claim's region and mint.
+  const workspace = viaRun
+    ? (await openRunWorkspace({ mode: 2, agentId: "a", runId: "run-1", archil: claim, log: () => {} })).workspace
+    : archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
   const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-archil-sandbox-")));
   dirs.push(scratch);
   const computer = fakeComputer(scratch);
@@ -155,6 +158,21 @@ test("the computer package's registry gives Daytona, Modal and E2B Archil mounts
 
 test("a Mode 2 Daytona sandbox on the real registry: providerFor with the saved key by name, the Archil mount with the minted token, no key or credential in the box, the kinded sandbox, release removes the token", async (t) => {
   await fullArchilPath(t, "daytona");
+});
+
+// The Archil settings' host pins (PUT /v2/workspace/archil hosts) reach the computer's mount spec through the claim and
+// the run's Workspace, beside the minted token; the computer package's helper writes them in the computer. Without
+// them, the mount spec is as it always was: no hosts field at all.
+test("a Mode 2 sandbox's mount carries the Archil settings' host pins through the claim and the run's Workspace; with none, no hosts field", async (t) => {
+  const hosts = { "mount.example.internal": "10.0.0.10", "data.example.internal": "10.0.0.11" };
+  const pinned = await archilSandbox(t, "daytona", { settings: { ...SETTINGS, hosts }, viaRun: true });
+  const answer = await pinned.run();
+  assert.deepEqual(pinned.record.created[0].mount, { kind: "archil", disk: SETTINGS.diskId, region: SETTINGS.region, folder: runKey("a", "run-1"), token: "fake-minted-token-1", hosts });
+  await answer.release();
+  const plain = await archilSandbox(t, "daytona", { viaRun: true });
+  const unpinned = await plain.run();
+  assert.equal(Object.hasOwn(plain.record.created[0].mount, "hosts"), false, "no pins: the mount as before");
+  await unpinned.release();
 });
 
 test("a Mode 2 Modal sandbox on the real registry takes the same Archil path, built from its saved token pair", async (t) => {
