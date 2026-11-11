@@ -521,8 +521,7 @@ test("a server that closes while npm unpacks (past the point where npm only note
   await next.close();
 });
 
-// SKIP (follow-up #2356): the runner installs the partial tree again whole, then its own resolution cache still finds the SDK the tree linked in, so the run fails
-test.skip("a partial tree is not Claude Code: one whose MCP library would resolve from above it (the data's own node_modules) is installed again whole, and the run starts on that", { timeout: 300_000, skip }, async (t) => {
+test("a partial tree is not Claude Code: one whose MCP library would resolve from above it (the data's own node_modules) is installed again whole, and the run starts on that", { timeout: 300_000, skip }, async (t) => {
   const registry = await fakeRegistry(t);
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
