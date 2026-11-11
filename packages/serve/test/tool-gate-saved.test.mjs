@@ -4,11 +4,8 @@
 // summary, redacted whole with the run's redactor, then cut.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
-import { agent, call, cookieOf, follow, runDir, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
@@ -30,6 +27,12 @@ async function owner(server) {
   return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
 }
 
+/** The run's hello.txt as its files route serves it (GET /v2/runs/{id}/files/hello.txt): its text, or none. */
+async function written(api, runId) {
+  const file = await api("GET", `/runs/${runId}/files/hello.txt`);
+  return file.status === 200 ? String(file.body) : undefined;
+}
+
 /** One run of agent `id`, which writes hello.txt once, parked for its approval: its pending approval and its rows. */
 async function parkedWrite(api, id) {
   const ask = "Write hello.txt once.";
@@ -42,8 +45,7 @@ async function parkedWrite(api, id) {
   return { runId: run.body.run_id, approval: view.pending.id, rows };
 }
 
-// SKIP (follow-up #2078): after an allow the parked write's Saved row and the resume row read differently on the runner
-test.skip("a parked write shows no Saved row while it waits, none after a deny (and no file), and an allowed one is the resume row with its file written; a Deny's note shows once on the resume row, redacted whole then cut", { timeout: 150_000 }, async (t) => {
+test("a parked write shows no Saved row while it waits, none after a deny (and no file), and an allowed one is the resume row with its file written; a Deny's note shows once on the resume row, redacted whole then cut", { timeout: 150_000 }, async (t) => {
   withEnv(t, { PARALLEL_API_KEY: HELD });
   const server = await serve(t, GATE);
   const { api } = server;
@@ -61,13 +63,12 @@ test.skip("a parked write shows no Saved row while it waits, none after a deny (
   const runs = await Promise.all([["allow"], ["deny", NOTE], ["deny", KEYED], ["deny", LINKED], ["deny", ASTRAL], ["allow", ALLOW_NOTE]].map(async ([decision, note], i) => ({ decision, note, ...(await parkedWrite(api, `saved-${i}`)) })));
   for (const run of runs) {
     assert.deepEqual(savedRows(run.rows).map((r) => r.summary), [], `${run.decision}: no Saved row while the write waits for its approval`);
-    assert.equal(existsSync(join(runDir(server.data, run.runId), "work", "hello.txt")), false, `${run.decision}: nothing was written while it waits`);
+    assert.equal(await written(api, run.runId), undefined, `${run.decision}: nothing was written while it waits`);
   }
   for (const run of runs) assert.equal(await answer(run.runId, run.approval, run.note === undefined ? { decision: run.decision } : { decision: run.decision, note: run.note }), 204);
   for (const run of runs) {
     const { rows } = await follow(api, run.runId, ["completed"], { deadlineMs: 55_000 });
     const at = `${run.decision}${run.note === KEYED ? " (keyed note)" : run.note === LINKED ? " (linked note)" : run.note === ASTRAL ? " (astral note)" : run.note === ALLOW_NOTE ? " (with a note)" : ""}`;
-    const file = join(runDir(server.data, run.runId), "work", "hello.txt");
     const resume = rows.filter((r) => r.origin === "server" && /^AgentRun: (write |You declined write)/.test(r.summary ?? ""));
     assert.equal(resume.length, 1, `${at}: one resume row: ${JSON.stringify(rows.map((r) => r.summary))}`);
     if (run.decision === "allow") {
@@ -76,11 +77,11 @@ test.skip("a parked write shows no Saved row while it waits, none after a deny (
         assert.equal(JSON.stringify(serverRows(rows)).includes(run.note), false, `${at}: the allow's note is on no row`);
         assert.equal((rows.findLast((r) => r.kind === "final_answer")?.text ?? "").includes(run.note), false, `${at}: the model never read the allow's note`);
       }
-      assert.equal(await readFile(file, "utf8"), "hello", `${at}: the file was written`);
+      assert.equal(await written(api, run.runId), "hello", `${at}: the file was written`);
       assert.deepEqual(savedRows(rows).map((r) => r.summary), [], `${at}: the parked call's own Saved row is gone; the resume row says it ran`);
       continue;
     }
-    assert.equal(existsSync(file), false, `${at}: no file`);
+    assert.equal(await written(api, run.runId), undefined, `${at}: no file`);
     assert.deepEqual(savedRows(rows).map((r) => r.summary), [], `${at}: no Saved row after a deny`);
     const shown = serverRows(rows);
     if (run.note === NOTE) {

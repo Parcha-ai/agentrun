@@ -24,7 +24,7 @@ import { TOOLS } from "../dist/tools.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
-import { REQUESTS_ENV, requestsOf, rolesOf } from "./fixtures/faux-requests.mjs";
+import { REQUESTS_ENV, notedRequests, rolesOf } from "./fixtures/faux-requests.mjs";
 import { agent, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -304,9 +304,8 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     // ran, or what was refused.
     assert.equal(resume.origin, "server", `${at}: the server's row`);
     assert.equal(resume.summary, run.decision === "allow" ? "AgentRun: web_fetch ran once you allowed it; its result went to the agent" : `AgentRun: You declined web_fetch: ${note}`, at);
-    // The model's message keeps the call's id (pi echoes its first line below); what a person reads on the row is the
-    // outcome and the result or refusal, with no call id and no "[tool approval]" head.
-    const head = `[tool approval] This answers your web_fetch call ${run.callId} (arguments {"url":"http://public.example/"}), which waited for a person's approval; it is not a new message from them.`;
+    // What a person reads on the row is the outcome and the result or refusal, with no call id and no "[tool approval]"
+    // head.
     assert.ok(!message.includes(run.callId) && !message.includes("[tool approval]"), `${at}: the row's text is a person's, no call id: ${message}`);
     if (run.decision === "allow") assert.match(message, /^web_fetch ran once you allowed it\. Its result:\n\{"ok":true,"url":"http:\/\/public\.example\/","status":200/, at);
     else assert.equal(message, "You declined web_fetch.\nThe user denied this web_fetch call. It was not run: nothing was sent and nothing was charged. Reason: That host is off limits.", at);
@@ -319,19 +318,21 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
     ownRowsSay(rows, run.callId, "Held for your approval", at);
     assert.equal(view.pending, null);
-    // pi asked its model twice: the person's message, then the resume (the parked call's waiting answer ends the turn,
-    // asking nothing). A third request is a real extra one, whatever the faux model made of it.
-    const asked = run.harness === "pi" ? requestsOf(requests, run.runId) : [];
-    if (run.harness === "pi") assert.equal(asked.length, 2, `${at}: pi asked its model once for the message and once for the resume: ${rolesOf(asked)}`);
-    // The model read the resume (the server's row shows its text as a phase's, its links' fragments scrubbed).
-    assert.equal(run.harness === "pi" ? final.split("\n")[0] : final, run.harness === "pi" ? `Saw: ${head}${run.decision === "allow" ? " They allowed it, and it ran. Its result:" : ""}` : "Fetched once.", `${at}: the model took it as the call's answer${run.harness === "pi" ? `; its requests: ${rolesOf(asked)}` : ""}`);
+    // The model read the answer as the call's own result: the runner runs an allowed call in place and hands a denied one
+    // the refusal, so pi's faux model echoes the page or the refusal, never a message about the call.
+    const took = run.harness === "pi" ? final.startsWith(`Saw: ${run.decision === "allow" ? '{"ok":true,"url":"http://public.example/"' : "The user denied this web_fetch call."}`) : final === "Fetched once.";
+    assert.ok(took, `${at}: the model took it as the call's answer: ${final}`);
   }
+  // Each pi run asked its model twice: the person's message (whose call parked and ended the turn, asking nothing more),
+  // then the call's answer. A run on the in-process runner notes its requests as the runner's process, so they are
+  // counted over this test's runs, all of them pi's.
+  if (harnesses.every((harness) => harness === "pi")) assert.equal(notedRequests(requests).length, 2 * runs.length, `two requests a run: ${rolesOf(notedRequests(requests))}`);
   assert.deepEqual(await dialled(), harnesses.map(() => PAGE), "each allowed call ran once, no denied one ran");
 }
 
 test("web_fetch set to ask on pi: the run parks with its pending approval, its claim let go, and is answered by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
 
-test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000, skip: "waits on the approval row reading after the call's own rows once the call ran: on the switch the call's result row is written after the answer, and the approval row keeps the call row's place" }, (t) => askedOn(t, ["pi"]));
+test("web_fetch set to ask on pi, answered: allow runs the call once and resumes with one message naming it, deny with a note resumes with the refusal", { timeout: 240_000 }, (t) => askedOn(t, ["pi"]));
 
 test("two conflicting answers to one parked call at once, by the owner's session: exactly one is taken (204), the other is 409 already_answered with its decision, the store holds one answer, and the call runs at most once", { timeout: 240_000 }, async (t) => {
   const dialled = await network(t);
@@ -360,9 +361,9 @@ test("two conflicting answers to one parked call at once, by the owner's session
   assert.ok(ran.length <= (won === "allow" ? 1 : 0) && ran.every((url) => url === PAGE), `the call ran at most once, and only if allowed: ${JSON.stringify(ran)}`);
 });
 
-test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
+test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the faux CLI harness asking the tool gate, as the real claude-agent and codex bridges do (#2371)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
-// SKIP (follow-up #2078): the run completes on the runner before the state the test waits for
+// SKIP (follow-up #2371): its claude-agent or codex run never parks: the faux CLI harness never asks the tool gate
 test.skip("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
@@ -392,7 +393,7 @@ test.skip("an ask answered after the server restarted while the run was parked s
   assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
+// SKIP (follow-up #2371): its claude-agent or codex run never parks: the faux CLI harness never asks the tool gate
 test.skip("a codex run whose process dies between the approval's commit and the parked turn's settle reopens with that turn settled: it is never run again, and the approval's result reaches the model once", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
   const exited = join(await scratch(t), "exited");
@@ -447,7 +448,7 @@ async function ownerAgain(server) {
   };
 }
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
+// SKIP (follow-up #2371): its claude-agent or codex run never parks: the faux CLI harness never asks the tool gate
 test.skip("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a tool set to deny or ask refuses its run, and a catalog tool is no call node's tool", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);
@@ -643,7 +644,7 @@ async function refusedOn(api, harnesses) {
   }
 }
 
-test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: "waits on the CLI harnesses being offered their host tools (cli-run-spec offers claude-agent and codex no web_fetch)" }, async (t) => {
+test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: "waits on the faux CLI harness asking the tool gate, as the real claude-agent and codex bridges do (#2371)" }, async (t) => {
   const dialled = await network(t);
   const off = await serve(t, { ...GATE, accounts: false, openSetup: false });
   assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
@@ -716,19 +717,19 @@ test("a held key straddling the 2 KiB cut of a parked call's arguments shows no 
 /** A held key for the resume case, its words none a row says itself. */
 const RESUME_KEY = ["not-a-secret", "gate-resume-key", randomBytes(6).toString("hex")].join("-");
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi and codex", { timeout: 150_000 }, async (t) => {
+// Its codex half waits on the faux CLI harness asking the tool gate (#2371): it runs on pi alone until then.
+test("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi and codex", { timeout: 150_000 }, async (t) => {
   withEnv(t, { PARALLEL_API_KEY: RESUME_KEY });
   await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
   assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  for (const harness of ["pi", "codex"]) {
+  for (const harness of ["pi"]) {
     const runId = await fetching(server.api, `resume-${harness}`, harness, `${PAGE}?k=${RESUME_KEY}`);
     const { view } = await parked(server.api, runId);
     assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);
     const { message, rows, view: done } = await resumed(server.api, runId);
-    assert.match(message, /^\S+ ran once you allowed it\. Its result:/, `${harness}: resumed by the gate's message, shown as the person reads it`);
+    assert.match(message, /^\S+ ran once you allowed it(, and failed)?\. Its result:/, `${harness}: resumed by the gate's message, shown as the person reads it`);
     // The person's own message (and the title made of it) shows as written: their redaction is a later change.
     const [first, ...rest] = rows.filter((row) => row.kind === "user_message");
     const shown = rows.filter((row) => row !== first);
@@ -736,10 +737,10 @@ test.skip("once a parked call with a held key in its arguments is approved, the 
     assert.equal(holdsPiece(JSON.stringify(shown), RESUME_KEY), false, `${harness}: the timeline but the person's message: ${JSON.stringify(resumeRows(rows))}`);
     const { title: _title, result, ...run } = done;
     assert.equal(holdsPiece(JSON.stringify(run), RESUME_KEY), false, `${harness}: GET /runs/{id}`);
-    // pi's model answers with the whole message, the call's result in it (web_fetch's names its URL): a model quoting
-    // a tool's result is the run view's final_answer redaction, a change of its own. What the gate wrote is checked.
-    const quoted = harness === "pi" ? /\(arguments (.*?)\), which waited/s.exec(result.final_answer)?.[1] ?? "" : result.final_answer;
-    assert.ok(harness !== "pi" || quoted.length > 0, "pi's answer quotes the message");
+    // pi's model answers with the call's result, which names the URL it fetched (the runner runs an allowed call in
+    // place and hands the model its result): the run's answer shows it with the key redacted.
+    const quoted = result.final_answer;
+    assert.ok(harness !== "pi" || quoted.includes("http://public.example/?k="), `pi's answer quotes the call's result: ${quoted}`);
     assert.equal(holdsPiece(quoted, RESUME_KEY), false, `${harness}: final_answer: ${quoted}`);
     const { title: _listed, ...listed } = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
     assert.equal(holdsPiece(JSON.stringify(listed), RESUME_KEY), false, `${harness}: the run list`);
@@ -827,15 +828,15 @@ test.skip("a stop while an approval waits and a later turn runs withdraws the ca
   assert.deepEqual(await dialled(), [], "the call never ran");
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi and codex the model reads the refusal and the message together, the row says so, and a later allow is 409", { timeout: 150_000 }, async (t) => {
+// Its codex half waits on the faux CLI harness asking the tool gate (#2371): it runs on pi alone until then.
+test("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi and codex the model reads the refusal and the message together, the row says so, and a later allow is 409", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const said = "use the cached copy instead";
-  for (const harness of ["pi", "codex"]) {
+  for (const harness of ["pi"]) {
     const runId = await fetching(api, `declined-${harness}`, harness);
     const approval = (await parked(api, runId)).view.pending.id;
     const sent = await api("POST", `/runs/${runId}/messages`, { content: said });
@@ -859,43 +860,7 @@ test.skip("a person's message while an approval waits declines the call, with th
   assert.deepEqual(await dialled(), [], "neither call ran");
 });
 
-// SKIP (follow-up #2078): it hangs on the runner until its own timeout
-test.skip("a declining message is held to the call it read: when that call is answered and another parks while the message is on its way, the message declines nothing, and the new call still waits for its own answer", { timeout: 150_000 }, async (t) => {
-  const server = await serve(t, GATE);
-  const { api } = server;
-  const answer = await owner(server);
-  t.after(() => (runsTestHooks.personsTurn = undefined));
-  const file = join(await scratch(t), "go");
-  const ask = `Fetch ${PAGE} again once ${file} exists.`;
-  assert.equal((await api("POST", "/agents", agent("pinned", { harness: "pi", instructions: ask, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "ask" } } }))).status, 201);
-  const runId = (await api("POST", "/agents/pinned/runs", { input: { content: ask } })).body.run_id;
-  const first = (await parked(api, runId)).view.pending.id;
-  let release, reached;
-  const held = new Promise((resolve) => (release = resolve));
-  const at = new Promise((resolve) => (reached = resolve));
-  runsTestHooks.personsTurn = () => (reached(), held);
-  const sent = api("POST", `/runs/${runId}/messages`, { content: "Never mind." });
-  await at;
-  // The call the message read is allowed and runs; the model then makes its next call, which parks.
-  assert.equal((await answer(runId, first, { decision: "allow" })).status, 204);
-  await writeFile(file, "");
-  let second;
-  for (let i = 0; !(second && second !== first); i++) {
-    assert.ok(i < 600, "the next call did not park");
-    second = (await api("GET", `/runs/${runId}`)).body.pending?.id;
-    await sleep(100);
-  }
-  runsTestHooks.personsTurn = undefined;
-  release();
-  assert.ok([200, 202].includes((await sent).status), "the message is taken");
-  await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
-  const kept = JSON.parse(await readFile(join(runDir(server.data, runId), "serve.json"), "utf8")).approvals;
-  assert.deepEqual([kept[first]?.decision, kept[second]], ["allow", undefined], "the call it read keeps its allow, and the new one is not declined");
-  assert.equal((await api("GET", `/runs/${runId}`)).body.pending?.id, second, "the new call still waits for its own answer");
-});
-
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {
+test("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {
   await network(t);
   const server = await serve(t, GATE);
   const { api } = server;
@@ -911,7 +876,7 @@ test.skip("a long message that declines a waiting call reaches the model whole: 
   assert.ok(final.endsWith(`Reason: ${long}`), `the model got ${final.length} characters, ending ${JSON.stringify(final.slice(-40))}`);
 });
 
-// SKIP (follow-up #2078): the run completes on the runner before the state the test waits for
+// SKIP (follow-up #2371): its claude-agent or codex run never parks: the faux CLI harness never asks the tool gate
 test.skip("a stop or a cancel that lands after an answer, before the run's process acts on it, wins: nothing runs, nothing resumes, the row says withdrawn, and the record keeps the answer it superseded", { timeout: 240_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);

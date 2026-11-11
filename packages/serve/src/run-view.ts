@@ -705,16 +705,23 @@ function callSays(answer: ApprovalAnswer | undefined): string {
   if (answer.decision === "withdrawn") return answer.ended ? ENDED_WHILE_WAITING : STOPPED_WHILE_WAITING;
   return "Allowed: it runs now";
 }
-/** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
-const approvalRowId = (callId: string) => `approval:${callId}`;
+/** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. Once the call
+ *  has its result the id changes (`:ran`): the served Timeline keeps the seq each id was first served with (rows.ts
+ *  RowLog), and the approval row is first served while the call waits, before its result row exists, so under its first
+ *  id it would keep reading above that result. A new id is served below it. */
+const approvalRowId = (callId: string, ran = false) => `approval:${callId}${ran ? ":ran" : ""}`;
+/** The call whose result made a "Saved <path>" row (pi-durable-agent's, read from a write's or an edit's arguments): the
+ *  result row's id, which the Saved row's id extends. */
+const savedBy = (row: TimelineEvent) => (row.kind === "phase" ? /^(.*):saved:\d+$/.exec(row.id)?.[1] : undefined);
 
 /** The rows of a run whose calls waited for approval, as the runner writes it (store-view.ts): the gate's ask
  *  (agentrun.ask, `asks`) and the person's answer (agentrun.answer, `answers`) are journal entries, and an allowed call runs
  *  in place, so its result row is its real result; a denied one's is the refusal. Each such call reads in order: its own
  *  rows, then the approval row, then, once there is one, the outcome row; its own rows say only that it was held once the
- *  outcome shows below, and before that what came of the approval so far. Arguments and notes go through `redact`, the
- *  run's redactor, before any cut. The rows this function makes are dropped first, so a pass over its own output gives the
- *  same rows. */
+ *  outcome shows below, and before that what came of the approval so far. A person's message that declined the call follows
+ *  as their own row, and a "Saved <path>" row the call's result made is not shown (the outcome tells what ran). Arguments
+ *  and notes go through `redact`, the run's redactor, before any cut. The rows this function makes are dropped first, so a
+ *  pass over its own output gives the same rows. */
 export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyMap<string, Approval>, answers: Readonly<Record<string, ApprovalAnswer>>, redact: (text: string) => string): TimelineEvent[] {
   if (!asks.size) return [...rows];
   const given = rows.filter((row) => !row.id.startsWith("approval:"));
@@ -722,7 +729,12 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
   const owns = (row: TimelineEvent) => (row.kind === "tool_use" || row.kind === "tool_result") && !!row.tool_use_id && byCall.has(row.tool_use_id);
   const lastOf = new Map<string, string>();
   for (const row of given) if (owns(row)) lastOf.set(row.tool_use_id!, row.id);
+  // The result rows of the calls that waited: a Saved row one of them made says a file was written that the outcome row
+  // already tells (an allow) or that was never written (a deny, a withdrawal), so it is not shown.
+  const heldResults = new Set(given.filter((row) => row.kind === "tool_result" && owns(row)).map((row) => row.id));
   return given.flatMap((row) => {
+    const saved = savedBy(row);
+    if (saved !== undefined && heldResults.has(saved)) return [];
     if (!owns(row)) return [row];
     const approval = byCall.get(row.tool_use_id!)!;
     const answer = answers[approval.id];
@@ -733,11 +745,18 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     if (lastOf.get(approval.call_id) !== row.id) return [own];
     const args = shownArgs(approval, redact);
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : "Asked your approval";
-    const asked: TimelineEvent = { ...row, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const id = approvalRowId(approval.call_id, result !== undefined);
+    const asked: TimelineEvent = { ...row, id, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     if (!outcome) return [own, asked];
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
-    const told: TimelineEvent = { ...(result ?? row), id: `${approvalRowId(approval.call_id)}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
-    return [own, asked, told];
+    const told: TimelineEvent = { ...(result ?? row), id: `${id}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    // A person's message that declined the call is theirs: their words, through the run's redactor, on a row of their own
+    // below the outcome, as a message they sent reads (pi-durable-agent's user_message: "You: <its first line>").
+    if (answer!.decision !== "deny" || answer!.by !== "message" || !answer!.note?.trim()) return [own, asked, told];
+    const said = redact(answer!.note.trim());
+    const { origin: _server, ...placed } = told;
+    const theirs: TimelineEvent = { ...placed, id: `${id}:said`, kind: "user_message", summary: `You: ${clipPoints(said.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "", NOTE_CHARS)}`, text: said } as TimelineEvent;
+    return [own, asked, told, theirs];
   });
 }
