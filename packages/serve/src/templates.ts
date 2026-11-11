@@ -617,6 +617,8 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
+    // The package's answer schema (manifest `output`): each completed run's structured answer, checked, is its result.output.
+    ...(isObject(p.outputSchema) ? { output_schema: p.outputSchema } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
 }
