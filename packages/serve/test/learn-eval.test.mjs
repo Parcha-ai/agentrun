@@ -148,3 +148,29 @@ test("the live eval leaves a call that never judged out of every rate: a timeout
   const u = tally([...judged, ...failed], [inj], "grade");
   assert.deepEqual([u.injection, u.drops], [[2, 2], [2, 2]]);
 });
+
+test("the live eval's --max-usd is a hard stop: once its spend reaches the cap, no further model request is sent, the summary says so, and it exits 3; a request whose cost it cannot read stops it too", { timeout: 120_000 }, async (t) => {
+  const { startFauxGateway } = await import("./fixtures/faux-gateway.mjs");
+  const { spawnSync } = await import("node:child_process");
+  const { existsSync } = await import("node:fs");
+  const script = new URL("../scripts/learn-eval.mjs", import.meta.url).pathname;
+  const run = async (price, maxUsd) => {
+    const gateway = await startFauxGateway({ text: "not a verdict", usage: { input: 1_000, output: 200 } });
+    t.after(() => gateway.close());
+    const out = join(await scratch(t), "out");
+    const env = { PATH: process.env.PATH, AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: ["fake", "test", "key"].join("-"), AGENT_MODEL: "gpt-test", ...(price ? { AGENT_MODEL_PRICE: price } : {}) };
+    const done = spawnSync(process.execPath, [script, "--out", out, "--set", "heldout", "--modes", "grade", "--models", "default", "--concurrency", "1", "--max-usd", maxUsd, "--label", "capped"], { env, encoding: "utf8", timeout: 100_000 });
+    const summary = existsSync(join(out, "capped.md")) ? readFileSync(join(out, "capped.md"), "utf8") : "";
+    return { done, summary, requests: gateway.requests.filter((r) => r.method === "POST").length };
+  };
+  // Priced: $1 a million in, $2 out, so each request is $0.0014; the cap is reached by the first.
+  const priced = await run("1,2,0.5", "0.001");
+  assert.equal(priced.done.status, 3, priced.done.stderr.slice(-2000));
+  assert.equal(priced.requests, 1, "one request, then none past the cap");
+  assert.match(priced.summary, /stopped at --max-usd 0\.001/);
+  // A model the run cannot price: its cost is unknown, so it stops at the first request as well.
+  const unpriced = await run(undefined, "5");
+  assert.equal(unpriced.done.status, 3, unpriced.done.stderr.slice(-2000));
+  assert.equal(unpriced.requests, 1);
+  assert.match(unpriced.summary, /cost of a request could not be read/);
+});
