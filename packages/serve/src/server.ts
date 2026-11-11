@@ -1117,16 +1117,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const shellOf = async (setting: { kind: string; provider?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
-   *  with (Docker, where it answers), whose shell runs the shell tools; else none, and why. */
+   *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
+   *  is no shell), whose shell runs the shell tools; else none, and why. */
   const shellHere = async (): Promise<ShellHere> => {
     if ((await shellOf({ kind: "none" })) === "local") return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const fresh = newAgentPlace(boxOffers);
+    let why = boxAvailability(boxOffers).find((one) => one.id === "docker")?.reason ?? "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
       const computer = { kind: "sandbox", provider: fresh.place.box };
-      if ((await shellOf(computer)) === "computer") return { computer, tools: [...shellTools("computer")], words: `the ${fresh.place.box} sandbox` };
+      const ready = await computerReady(computer);
+      if ("refused" in ready) why = ready.refused;
+      else if ((await shellOf(computer)) === "computer") return { computer, tools: [...shellTools("computer")], words: `the ${fresh.place.box} sandbox` };
     }
-    const docker = boxAvailability(boxOffers).find((one) => one.id === "docker");
-    return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${docker?.reason ?? "it is not set up"})` };
+    return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
   };
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */

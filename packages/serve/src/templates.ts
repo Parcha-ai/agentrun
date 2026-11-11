@@ -659,9 +659,9 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   const named = own && (p.tools || own.length) ? own : undefined;
   const tools = granted.length ? [...(named ?? (pick ? [] : chosen.defaultTools)), ...granted] : named;
   const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy }> = Object.fromEntries(allowed.map((tool) => [tool, { permission: "allow" as const }]));
-  // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants, and
-  // none for a bash the picked computer dropped.
-  if (p.toolPolicy && !pick?.dropped.includes("bash")) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
+  // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants. With
+  // a picked computer, only where the agent's tools hold bash: none for a bash the computer dropped, or never gave.
+  if (p.toolPolicy && (!pick || tools?.includes("bash"))) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
   const unpinned: { tool: string; parameters: string[] }[] = [];
   for (const { tool: name, pin, empty } of filledPins(chosen.mcp, parameters)) {
     if (empty.length) {

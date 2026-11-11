@@ -708,13 +708,16 @@ const ARCHIL = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url:
 const SHELL_READER = "---\nname: shell-reader\nversion: 1.0.0\ndescription: Reads its folder with a shell where there is one.\ntools: [read, bash]\ntool_policy: { bash: read-only }\ncomputer: [shell, none]\n---\nRead.\n";
 const NO_SHELL = /^This server has no shell to give an agent now: Archil is off \(Settings → Workspace\), and the docker box is unavailable here \(.+\), so the agent was made with the template's next choice, no computer, and without bash\. Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell\.$/;
 
-/** A server alone on the templates in `templates`, with a fake `docker` that answers when `docker`, in Mode 2 when `archil`. */
-async function computerServer(t, templates, { docker = false, archil = false } = {}) {
+/** A server alone on the templates in `templates`, with a fake `docker` that answers when `docker`, in Mode 2 when
+ *  `archil`. `stop()` makes that fake stop answering, as a Docker stopped after the server's start does. */
+async function computerServer(t, templates, { docker = false, archil = false, stopped } = {}) {
   const bin = join(await scratch(t), "bin");
   mkdirSync(bin);
-  const version = docker ? "echo 27.0.0-fake; exit 0" : "echo 'Cannot connect to the Docker daemon' >&2; exit 1";
-  writeFileSync(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then ${version}; fi\nexit 0\n`);
+  const up = join(bin, "up");
+  if (docker) writeFileSync(up, "");
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then if [ -e '${up}' ]; then echo 27.0.0-fake; exit 0; fi; echo 'Cannot connect to the Docker daemon' >&2; exit 1; fi\nexit 0\n`);
   chmodSync(join(bin, "docker"), 0o755);
+  if (stopped) stopped.stop = () => rmSync(up, { force: true });
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: `${bin}:${process.env.PATH}` }, ["AGENTRUN_BOXES", "ARCHIL_API_KEY"]);
   const { api } = await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true, templates });
   if (archil) {
@@ -782,6 +785,10 @@ test("pickComputer takes the first entry this server meets: shell where it has o
   const bare = { ...reader, tools: undefined, toolPolicy: undefined, computer: ["shell", "none"] };
   assert.deepEqual(compiled(bare, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(bare, docker) }).agent.definition.tools, docker.tools);
   assert.equal(compiled(bare, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(bare, none) }).agent.definition.tools, undefined);
+  // Its bash policy goes where the picked computer gives bash, and nowhere else.
+  const policed = { ...bare, toolPolicy: { bash: "read-only" } };
+  assert.equal(compiled(policed, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(policed, none) }).agent.definition.tool_settings, undefined);
+  assert.deepEqual(compiled(policed, parameters, { mcp: [], defaultTools: [], grants: [], computer: pickComputer(policed, docker) }).agent.definition.tool_settings, { bash: { policy: "read-only" } });
 });
 
 test("Mode 1 without Docker: a [shell, none] package's agent gets no computer and no bash, said in a computer warning; GET /v2/templates shows the list and that pick", async (t) => {
@@ -835,4 +842,18 @@ test("a package with no computer list keeps today's place: GET /v2/templates sho
   assert.deepEqual([listed.computer, listed.computer_here], [null, null]);
   const said = await appliedComputer(api, "plain");
   assert.deepEqual([said.applied.status, said.computer, said.tools, said.warned], [201, undefined, ["read"], []]);
+});
+
+test("Docker stopped since the server's start is no shell: a [shell, none] package falls back to none, said, and [shell] alone is refused, 409", async (t) => {
+  const stopped = {};
+  const api = await computerServer(t, await templatesOf(t, { "shell-reader": SHELL_READER, "shell-only": SHELL_READER.replace("shell-reader", "shell-only").replace("[shell, none]", "[shell]") }), { docker: true, stopped });
+  stopped.stop();
+  const said = await appliedComputer(api, "shell-reader");
+  assert.equal(said.applied.status, 201, JSON.stringify(said.applied.body));
+  assert.deepEqual([said.computer, said.tools, said.bash], [{ kind: "none" }, ["read"], undefined]);
+  assert.equal(said.warned.length, 1, JSON.stringify(said.applied.body.warnings));
+  assert.match(said.warned[0][1], NO_SHELL);
+  const refused = await api("POST", "/templates/shell-only/apply", {});
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((f) => f.field), ["computer"]);
 });
