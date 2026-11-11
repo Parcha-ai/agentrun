@@ -1279,4 +1279,62 @@ describe("the Learning tab's Make this an agent", () => {
     expect(said).toContain("it holds a value the server keeps secret");
     expect(checked.host.querySelector('a[href^="#/agents/"]')).toBeNull();
   });
+
+  it("Esc, from the focused Yes, cancels as Cancel does: no agent is made and the card's buttons come back", async () => {
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER });
+    await t.click(/^Make check-refunds an agent$/);
+    expect(t.button(/^Retire check-refunds$/)).toBeUndefined();
+    await t.key(document.activeElement!, "Escape");
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.calls.some((c) => c.startsWith("promote"))).toBe(false);
+    expect(t.button(/^Make check-refunds an agent$/)).toBeTruthy();
+    expect(t.button(/^Retire check-refunds$/)).toBeTruthy();
+  });
+
+  it("the success link opens the agent the server made, by its id, named by its name: not the workflow's folder name", async () => {
+    const made = (n: string) => ({ ...agent(true), agent_id: "check refunds/2", kind: "workflow", definition: { version: 1, name: `${n} (2)`, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent);
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async (n) => made(n) });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    const status = t.card("check-refunds")!.querySelector('[role="status"]')!;
+    const link = status.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe("#/agents/check%20refunds%2F2");
+    expect(link.textContent).toBe("check-refunds (2)");
+    expect(status.textContent).toBe("Made the agent check-refunds (2). Open it to run it.");
+    // Asked again, the earlier line goes while the confirm is open.
+    await t.click(/^Make check-refunds an agent$/);
+    expect(t.card("check-refunds")!.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("a 400 keeps the confirm open with each problem listed and Yes ready again; Cancel then closes it, nothing made", async () => {
+    const refused = new ClientError(400, "bad_request", "The workflow does not pass the checks.");
+    refused.problems = [
+      { rule: "secret_value", path: "workflows/check-refunds/workflow.json", detail: "it holds a value the server keeps secret" },
+      { rule: "unknown_tool", path: "workflows/check-refunds/workflow.json", detail: "a call node runs a tool this agent does not grant" },
+    ];
+    let tries = 0;
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { tries++; throw refused; } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    const ask = t.host.querySelector('[role="alertdialog"][aria-label="Make check-refunds an agent?"]')!;
+    expect(ask).not.toBeNull();
+    const alert = ask.querySelector('[role="alert"]')!;
+    expect(alert.querySelector("p")!.textContent).toBe("No agent was made: The workflow does not pass the checks.");
+    expect([...alert.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["it holds a value the server keeps secret", "a call node runs a tool this agent does not grant"]);
+    expect((t.button(/^Yes, make the agent$/) as HTMLButtonElement).disabled).toBe(false);
+    await t.click(/^Yes, make the agent$/);
+    expect(tries).toBe(2);
+    await t.click(/^Cancel$/);
+    expect(t.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(t.card("check-refunds")!.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("a refusal with no problems (no longer active) says so in the problem card's words, nothing made", async () => {
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async () => { throw new ClientError(409, "learned_not_active", "check-refunds is not active."); } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    const ask = t.host.querySelector('[role="alertdialog"]')!;
+    expect(ask.textContent).toContain("No agent was made.");
+    expect(t.host.querySelector('a[href^="#/agents/"]')).toBeNull();
+  });
 });
