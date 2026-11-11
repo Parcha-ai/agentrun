@@ -20,7 +20,7 @@ const { openSqliteStore, openPostgresStore, sealColumn, sealedAt } = await impor
 const { startRunnerProcess } = await import("../dist/runner/main.js");
 const { importCommand } = await import("../dist/import.js");
 const { OUTBOUND_WEBHOOK } = await import("../dist/webhooks.js");
-const { unseal } = await import("@parcha/pi-durable-agent");
+const { unseal } = await import("../dist/sealing.js");
 
 /** Whether the outbound webhook's signing secret the store in `data` keeps (its sealed settings' row) opens under `key`. */
 function webhookSecretOpens(data, key) {
