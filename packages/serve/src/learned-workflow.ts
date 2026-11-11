@@ -28,9 +28,64 @@ import { type Ledger, ledgerOf } from "./paid-calls.js";
 import type { PortModels } from "./port-models.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
-import { deniedText, type SettingFrom } from "./tool-gate.js";
-import { allows, CALL_TOOLS, learnedDraftTools, toolOf } from "./tools.js";
+import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
+import type { DenyFrom } from "./refusal-words.js";
+import { allows, CALL_TOOLS, learnedDraftTools, toolOf, workflowTools } from "./tools.js";
 import type { Complete } from "./llm.js";
+import { hostCalls } from "./host-calls.js";
+import { workflowNodes } from "./model.js";
+
+/** What a learned_workflow call's approval card says of its MCP calls' arguments: the workflow decides them as it runs. */
+export const LEARNED_MCP_ARGUMENTS = "decided by the workflow while it runs, from its input and its earlier steps";
+
+/** What a learned_workflow call's card shows of the MCP tools set to ask that the workflow can call: that their arguments
+ *  are the workflow's to decide, then every one of them by name. The card leads with these (the call's own input after
+ *  them), so they are never cut behind a long input. */
+export const learnedAskShown = (asks: readonly string[]): Record<string, unknown> => ({ mcp_arguments: LEARNED_MCP_ARGUMENTS, mcp_calls: [...asks] });
+
+/** The most bytes of the card those fields may take: the card's preview is cut at ARGS_PREVIEW_BYTES (2 KB), and its
+ *  braces and the call's name follow them. A workflow whose ask-gated MCP tools would not all show is refused, never
+ *  approved by a person who could not see what they approved. */
+export const LEARNED_ASK_CARD_BYTES = ARGS_PREVIEW_BYTES - 128;
+
+/** Whether every MCP tool set to ask that the workflow can call fits on its card (learnedAskShown, LEARNED_ASK_CARD_BYTES). */
+export const learnedAskFits = (asks: readonly string[]): boolean => Buffer.byteLength(JSON.stringify(learnedAskShown(asks)), "utf8") <= LEARNED_ASK_CARD_BYTES;
+
+/** The MCP tools a person's approval of a learned_workflow call covers: exactly those its card named (learnedAskShown's
+ *  `mcp_calls`, read from the card they approved, host-calls.ts HostCalls.approved). None when no person approved it,
+ *  or the card named none. A tool set to ask that the card did not name (one set to ask after the card was shown) is
+ *  never run under that approval. */
+export const learnedApprovedTools = (card: Readonly<Record<string, unknown>> | undefined): ReadonlySet<string> =>
+  new Set(Array.isArray(card?.mcp_calls) ? card.mcp_calls.filter((name): name is string => typeof name === "string") : []);
+
+/** An MCP tool's catalog name, `mcp:<server>/<tool>`: a call node that names one runs it through the run's own MCP. */
+const MCP_TOOL = /^mcp:[^/]+\/.+$/;
+
+/** The MCP tools a learned workflow's call nodes name (`via: "tool"`, `tool: "mcp:<server>/<tool>"`), each once; none for
+ *  one that does not read. The run's gate asks about them before the workflow's call runs (adapter-run-spec.ts). */
+export async function learnedMcpTools(workflow: string): Promise<string[]> {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(workflow);
+  } catch {
+    return [];
+  }
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  try {
+    return workflowTools(workflowNodes(doc, inspectWorkflow(doc as never))).calls.filter((tool) => MCP_TOOL.test(tool));
+  } catch {
+    return [];
+  }
+}
+
+/** A call node's MCP result as the workflow's value: its text as JSON when it parses, else `{ text }`. */
+const mcpValue = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { text };
+  }
+};
 
 export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
 
@@ -117,6 +172,12 @@ export type LearnedWorkflowRun = {
    *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
    *  gate reads its settings live (main's process). */
   refresh?: () => Promise<void>;
+  /** The run's MCP tools by catalog name (`mcp:<server>/<tool>`): those the claim's pin holds, which its revision grants.
+   *  A call node may name one of these; it runs through the run's own MCP, as the loop wrapped it (host-calls.ts). */
+  mcpTools?: readonly string[];
+  /** The gate's whole decision of an MCP node's call with its arguments, as the run's own call of the tool gets it
+   *  (RunGate.decide: deny, argument pins, ask, no approver). Required for an MCP node: one with none is never sent. */
+  decide?: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
 /** The most characters of a learned workflow's output its answer holds, monid's bound (monid.ts CLIP): within the
@@ -207,6 +268,18 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // A run handed no gate (a caller past the types) runs nothing: a tool is never allowed for want of a policy.
   if (typeof run.policy !== "function" || typeof run.denyFrom !== "function") return refuse("its run gave no tool policy for its call nodes");
   const { tools, gated, deniedBy } = learnedDraftTools(run.granted, run.policy, run.plane, run.denyFrom);
+  // The run's MCP tools, held to the same gate: one set to allow may be named, and one set to ask only when a person
+  // approved this call with a card that named it (its ask is the call's own: adapter-run-spec.ts adapterRunGate); one set
+  // to deny is refused in its words. One the run's pin does not hold is no tool of the run at all.
+  const approved = learnedApprovedTools(hostCalls()?.approved);
+  for (const name of run.mcpTools ?? []) {
+    const setting = run.policy(name);
+    if (setting === "allow" || (setting === "ask" && approved.has(name))) tools.push(name);
+    else {
+      gated[name] = setting;
+      if (setting === "deny") deniedBy[name] = run.denyFrom(name) as DenyFrom;
+    }
+  }
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
@@ -233,6 +306,29 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   };
   const runEffect = async ({ node, input: given, signal: own, executionPath, item }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } }) => {
     const tool = node.via === "tool" ? node.tool : undefined;
+    // Its call id under the workflow's call: the node, its execution path, its item in a map. Its paid requests are booked
+    // under it, as a call of its own.
+    const callId = `${ledger?.call ?? LEARNED_WORKFLOW_TOOL}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`;
+    if (tool && MCP_TOOL.test(tool)) {
+      // An MCP tool of the run, through the run's own MCP as the loop wrapped it (its flush, its booking on the run's one
+      // ledger, a CLI's record, the stop's abort), after the gate's rule read again now, as the harness's own call is.
+      const send = (run.mcpTools ?? []).includes(tool) && run.decide ? hostCalls()?.mcp(tool) : undefined;
+      if (!send || !run.decide) throw new Error(`call node "${node.label}": this agent runs no tool ${tool}`);
+      // The gate's whole decision of this call with the arguments the workflow resolved, as the harness's own call of the
+      // tool gets it: its deny, its argument pins (a messaging tool held to one channel), its ask, or no one to approve.
+      // The call's approval lifts only an ask, never a pin or a deny, and only for a tool its card named: one set to ask
+      // since the card was shown was never approved.
+      await run.refresh?.();
+      const verdict = await run.decide(tool, given);
+      if (typeof verdict === "object") throw new Error(verdict.deny);
+      const card = hostCalls()?.approved;
+      if (verdict === "ask" && !learnedApprovedTools(card).has(tool)) {
+        throw new Error(card ? `This ${tool} call needs a person's approval, and the approval given for this learned workflow did not cover it: its card did not name ${tool}. It was not run.` : `This ${tool} call needs a person's approval, which was not given for this call; it was not run.`);
+      }
+      const answer = await send(given, { callId, signal: own });
+      if (answer.isError) throw new Error(answer.text);
+      return mcpValue(answer.text);
+    }
     const effect = tool && allows(CALL_TOOLS, tool) && tools.includes(tool) ? toolOf(tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": this agent runs no tool ${tool ?? `via ${node.via}`}`);
     // The gate's one rule, read as each call node runs, as a workflow revision's call node reads it (app.ts runEffect):
@@ -243,7 +339,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
-    const booked = ledger ? { ledger: { call: `${ledger.call}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: ledger.record } } : {};
+    const booked = ledger ? { ledger: { call: callId, record: ledger.record } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.toolModels ? { models: run.toolModels } : {}), ...booked });
   };
   try {

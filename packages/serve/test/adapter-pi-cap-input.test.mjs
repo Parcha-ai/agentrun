@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions, hostTools, MODEL } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, capRun, quiet, SONNET } from "./adapter-pi-cap-support.mjs";
+import { capRun, quiet, SONNET } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 after(closeOpenSessions);

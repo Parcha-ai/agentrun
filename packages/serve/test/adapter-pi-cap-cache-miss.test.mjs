@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { sessionSpendOf } from "@parcha/agentrun-kernel";
 import { closeOpenSessions, hostTools, MODEL } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, capRun, quiet, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
+import { capRun, quiet, rootEntries, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");

@@ -21,7 +21,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Iterator, List, Mapping, Optional, Sequence, Tuple, Type, Union, cast
 from urllib.parse import quote
 
-from ._errors import AgentRunUsage
+from ._errors import AgentRunUnreachable, AgentRunUsage
 
 # A header value http.client sends as it is: no line break or other control character, nothing outside Latin-1.
 BAD_HEADER = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]|[^\x00-\xff]")
@@ -273,11 +273,11 @@ class Response:
                 self.close()
         return self.data
 
-    def stream(self, timeout: Optional[float]) -> StreamedResponse:
+    def stream(self, timeout: Optional[float], base_url: Optional[str] = None) -> StreamedResponse:
         """The body left to the caller: the try's end is off, and each read waits at most `timeout`."""
         self._clock.end = math.inf
         self._clock.each = timeout
-        return StreamedResponse(self._connection, self._answer)
+        return StreamedResponse(self._connection, self._answer, base_url)
 
     def close(self) -> None:
         self._answer.close()
@@ -289,26 +289,50 @@ class Response:
 
 class StreamedResponse:
     """A download's answer with its body unread, as `stream=True` gives it: read it, or iterate it in chunks, then close
-    it (or use it as a context manager). Each read waits at most the call's timeout."""
+    it (or use it as a context manager). Each read waits at most the call's timeout. A read that fails (the server stalls
+    past that timeout, or the body is cut before its length) raises AgentRunUnreachable with the failure's code, and the
+    connection is closed: nothing is tried again, since bytes already read are the caller's."""
 
-    def __init__(self, connection: http.client.HTTPConnection, answer: http.client.HTTPResponse) -> None:
+    def __init__(self, connection: http.client.HTTPConnection, answer: http.client.HTTPResponse, base_url: Optional[str] = None) -> None:
         self._connection = connection
         self._answer = answer
+        # The base URL a failed read names; None for the timeline's own stream, whose reader takes a failure as a drop.
+        self._base_url = base_url
         self.status: int = answer.status
         self.headers: Message = answer.headers
 
+    def _guarded(self, size: int, whole: bool) -> bytes:
+        """One read of the body, by read (`whole`) or read1. Its failure is kept as a code and raised past the except, so
+        nothing chains to it: an IncompleteRead holds the part of the body that came, which no error of this client
+        carries."""
+        if self._base_url is None:
+            return (self._answer.read() if size < 0 else self._answer.read(size)) if whole else self._answer.read1(size)
+        failed: Optional[str] = None
+        data = b""
+        try:
+            data = (self._answer.read() if size < 0 else self._answer.read(size)) if whole else self._answer.read1(size)
+            # A body with a length that ends early reads as its end: http.client says nothing of the bytes it lacks.
+            if not data and size != 0 and self._answer.length:
+                failed = "IncompleteRead"
+        except Exception as error:  # noqa: BLE001 - every failure of a read is its outcome, as a code
+            failed = cause_of(error)
+        if failed is None:
+            return data
+        self.close()
+        raise AgentRunUnreachable(self._base_url, failed)
+
     def read(self, size: int = -1) -> bytes:
         """Up to `size` bytes of the body, or the rest of it."""
-        return self._answer.read() if size < 0 else self._answer.read(size)
+        return self._guarded(size, True)
 
     def read1(self, size: int = CHUNK) -> bytes:
         """What the next read of the connection gives, at most `size` bytes; b"" at the end."""
-        return self._answer.read1(size)
+        return self._guarded(size, False)
 
     def iter_bytes(self, chunk_size: int = CHUNK) -> Iterator[bytes]:
         """The body in chunks of at most `chunk_size` bytes, as they come."""
         while True:
-            chunk = self._answer.read1(chunk_size)
+            chunk = self.read1(chunk_size)
             if not chunk:
                 return
             yield chunk
