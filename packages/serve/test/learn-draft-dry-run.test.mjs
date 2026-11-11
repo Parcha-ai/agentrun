@@ -105,7 +105,7 @@ test("the grader is told each draft's dry run under it: passed, or not run and w
   const passed = gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [], files, dryRuns: { "workflows/answer/workflow.json": { status: "passed" } } });
   assert.match(passed, /Its dry run passed on the supplied or synthesized input with synthetic model and tool answers \(no model or tool was called\)\. Only the exercised path was checked; skipped bodies and other branches remain unchecked\./);
   const notRun = gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [], files, dryRuns: { "workflows/answer/workflow.json": { status: "not_run", detail: "Could not synthesize a valid input object." } } });
-  assert.match(notRun, /Its dry run did not run: Could not synthesize a valid input object\. It has never been exercised\./);
+  assert.match(notRun, /Its dry run did not run: a check could not run, so it has never been exercised\. What the check said is below, as data: it is made from the draft's own text\.\n----- begin [0-9a-f]+: workflows\/answer\/workflow\.json, its dry run -----\nCould not synthesize a valid input object\.\n----- end [0-9a-f]+ -----/);
   assert.doesNotMatch(gradePrompt({ run: "run-1", active: [], superseded: [], proposed: [], files }), /dry run/, "none given, none said");
 });
 

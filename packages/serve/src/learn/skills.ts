@@ -255,19 +255,60 @@ function synthesized(schema: unknown, definitions: Readonly<Record<string, unkno
 /** What the DSL's synthesizeInstance would build of `schema` over `definitions`, counted without building it. */
 export const synthesizedSize = (schema: unknown, definitions: Readonly<Record<string, unknown>> = {}): Synthesized => synthesized(schema, definitions, 0, new Map());
 
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The nodes directly inside `node`, as the DSL reads them (recovery/execution-path.ts childrenOf): a chain's steps, a
+ *  parallel's branches, a map's or a loop's body, a route's branch bodies. A composed workflow node's child is a
+ *  workflow, walked as one (eachWorkflow). Only these are node positions: an object anywhere else (a schema, a const, a
+ *  step's literal value) is data, never a node, whatever keys it holds. */
+function childNodes(node: Record<string, unknown>): unknown[] {
+  switch (node.node) {
+    case "chain": return Array.isArray(node.steps) ? node.steps : [];
+    case "parallel": return Array.isArray(node.branches) ? node.branches : [];
+    case "map": case "loop": return [node.body];
+    case "route": return isRecord(node.branches) ? Object.values(node.branches).map((branch) => (isRecord(branch) ? branch.body : undefined)) : [];
+    default: return [];
+  }
+}
+
+/** Each workflow in `doc` (the draft's own, then each composed workflow node's child, at any depth), each with the loops
+ *  around it (their maxIters multiplied), and each node of it at a node position with the loops around that node. */
+function eachWorkflow(doc: unknown, visit: { workflow?: (workflow: Record<string, unknown>) => void; node?: (node: Record<string, unknown>, around: number) => number }): void {
+  const walkNode = (value: unknown, around: number): void => {
+    if (!isRecord(value)) return;
+    const within = visit.node ? visit.node(value, around) : around;
+    if (value.node === "workflow") return walkWorkflow(value.workflow, within);
+    for (const child of childNodes(value)) walkNode(child, within);
+  };
+  const walkWorkflow = (value: unknown, around: number): void => {
+    if (!isRecord(value)) return;
+    visit.workflow?.(value);
+    walkNode(value.root, around);
+  };
+  walkWorkflow(doc, 1);
+}
+
 /** Every workflow in `doc` with its schemas: the draft's own and each composed workflow node's child, at any depth. */
 function workflowsOf(doc: unknown): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
-  const walk = (value: unknown, isWorkflow: boolean) => {
-    if (!value || typeof value !== "object") return;
-    if (isWorkflow) out.push(value as Record<string, unknown>);
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (key === "schemas") continue;
-      walk(child, key === "workflow" && (value as { node?: unknown }).node === "workflow");
-    }
-  };
-  walk(doc, true);
+  eachWorkflow(doc, { workflow: (workflow) => out.push(workflow) });
   return out;
+}
+
+/** The keywords whose values are schemas, by shape: a map of them, a list of them, or one (a list too, for items). Every
+ *  other keyword's value (const, enum, default, examples, a title) is data, never a schema. */
+const SCHEMA_MAPS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"] as const;
+const SCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
+const SCHEMA_ONES = ["items", "additionalItems", "additionalProperties", "contains", "not", "if", "then", "else", "propertyNames", "unevaluatedItems", "unevaluatedProperties"] as const;
+
+/** Each schema in `schema`, itself first, at schema positions only (each once). */
+function eachSchema(schema: unknown, visit: (spec: Record<string, unknown>) => void, seen = new Set<unknown>()): void {
+  if (!isRecord(schema) || seen.has(schema)) return;
+  seen.add(schema);
+  visit(schema);
+  for (const key of SCHEMA_MAPS) if (isRecord(schema[key])) for (const sub of Object.values(schema[key] as Record<string, unknown>)) eachSchema(sub, visit, seen);
+  for (const key of SCHEMA_LISTS) if (Array.isArray(schema[key])) for (const sub of schema[key] as unknown[]) eachSchema(sub, visit, seen);
+  for (const key of SCHEMA_ONES) for (const sub of Array.isArray(schema[key]) ? (schema[key] as unknown[]) : [schema[key]]) eachSchema(sub, visit, seen);
 }
 
 /** The most iterations one loop of a learned draft may run (its maxIters), and the most nested loops may run together
@@ -277,23 +318,21 @@ export const LEARNED_MAX_ITERS = 50;
 export const LEARNED_LOOP_ITERS = 1_000;
 
 /** Why `doc`'s loops could run too long: a loop whose maxIters is past LEARNED_MAX_ITERS, or nested loops whose maxIters
- *  multiply past LEARNED_LOOP_ITERS, a composed workflow node's child's included. Read from the JSON alone. */
+ *  multiply past LEARNED_LOOP_ITERS, a composed workflow node's child's included. Read from the JSON alone, at node
+ *  positions only (eachWorkflow): a literal shaped like a loop is data. */
 export function loopProblems(doc: unknown): string[] {
   const problems: string[] = [];
-  const walk = (value: unknown, around: number) => {
-    if (!value || typeof value !== "object") return;
-    let within = around;
-    const node = value as { node?: unknown; label?: unknown; maxIters?: unknown };
-    if (node.node === "loop") {
+  eachWorkflow(doc, {
+    node: (node, around) => {
+      if (node.node !== "loop") return around;
       const iters = typeof node.maxIters === "number" ? node.maxIters : 0;
       const label = JSON.stringify(String(node.label ?? "").slice(0, 64));
-      within = around * iters;
+      const within = around * iters;
       if (iters > LEARNED_MAX_ITERS) problems.push(`its loop ${label} runs up to maxIters ${iters} times (the most is ${LEARNED_MAX_ITERS})`);
       else if (within > LEARNED_LOOP_ITERS) problems.push(`its loop ${label} and the loops around it run up to ${within} times together, their maxIters multiplied (the most is ${LEARNED_LOOP_ITERS})`);
-    }
-    for (const child of Object.values(value as Record<string, unknown>)) walk(child, within);
-  };
-  walk(doc, 1);
+      return within;
+    },
+  });
   return problems;
 }
 
@@ -306,12 +345,12 @@ export function synthesisProblems(doc: unknown): string[] {
     const schemas = workflow.schemas && typeof workflow.schemas === "object" ? (workflow.schemas as Record<string, unknown>) : {};
     const seen = new Map<unknown, Map<number, Synthesized>>();
     for (const [id, schema] of Object.entries(schemas)) {
-      // Each cap, on any keyword in the schema, wherever it sits.
+      // Each cap, on each schema in the schema (eachSchema: schema positions only; a literal that holds the keyword is
+      // data).
       const caps = new Set<string>();
-      JSON.stringify(schema, (key, value) => {
-        if (key === "minItems" && typeof value === "number" && value > SYNTH_MIN_ITEMS) caps.add(`minItems ${value} (the most is ${SYNTH_MIN_ITEMS})`);
-        if (key === "minLength" && typeof value === "number" && value > SYNTH_MIN_LENGTH) caps.add(`minLength ${value} (the most is ${SYNTH_MIN_LENGTH})`);
-        return value;
+      eachSchema(schema, (spec) => {
+        if (typeof spec.minItems === "number" && spec.minItems > SYNTH_MIN_ITEMS) caps.add(`minItems ${spec.minItems} (the most is ${SYNTH_MIN_ITEMS})`);
+        if (typeof spec.minLength === "number" && spec.minLength > SYNTH_MIN_LENGTH) caps.add(`minLength ${spec.minLength} (the most is ${SYNTH_MIN_LENGTH})`);
       });
       const definitions = (schema as { definitions?: Record<string, unknown> } | null)?.definitions ?? schemas;
       const size = synthesized(schema, definitions, 0, seen);
