@@ -97,9 +97,9 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     return end;
   }
 
-  /** Hands `buffered` to `loop` in order; the ones whose delivery threw are tried again, in order, until each goes through,
-   *  the loop has ended, or a row has been tried REPLAY_TRIES times (said once; it and the rows after it are left untaken
-   *  for the run's next claim). Never rejects. */
+  /** Hands each of `buffered` to `loop` once, in order, then lets the loop's `delivered` resolve; the ones whose delivery
+   *  threw are tried again, in order, until each goes through, the loop has ended, or a row has been tried REPLAY_TRIES
+   *  times (said once; it and the failed rows after it are left untaken for the run's next claim). Never rejects. */
   async function replay(runId: string, loop: Loop, buffered: readonly Command[], end: Promise<LoopEnd>, tries = REPLAY_TRIES): Promise<void> {
     let ended = false;
     const loopEnded = end.then(() => undefined, () => undefined).then(() => void (ended = true));
@@ -120,7 +120,9 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     };
     const failed: Command[] = [];
     try {
-      for (const command of buffered) if (failed.length > 0 || !(await delivers(command))) failed.push(command);
+      // Every row is tried once before the inner loop's `delivered` resolves, a later one even when an earlier one threw:
+      // a loop that waits on `delivered` (a run reopened by a follow-up) never goes on with a row still held here.
+      for (const command of buffered) if (!(await delivers(command))) failed.push(command);
     } finally {
       replayed();
     }

@@ -144,6 +144,41 @@ test("a buffered row whose delivery throws once while its loop keeps running is 
   assert.deepEqual(value, { state: "ended" });
 });
 
+test("every buffered row is handed to the loop once before its delivered resolves, a later one too when an earlier one threw: a follow-up behind a failed answer is never held past it", { timeout: 30_000 }, async () => {
+  const launched = defer();
+  const finish = defer();
+  const tries = [];
+  const inner = {
+    start() {
+      return finish.promise.then(() => ({ state: "ended" }));
+    },
+    async command(command) {
+      tries.push(command.id);
+      if (command.id === 21) throw new Error("the store was busy for a moment");
+      return { taken: true };
+    },
+    async stop() {
+      finish.resolve();
+    },
+  };
+  let innerDeps;
+  const dispatch = createDispatchLoop({
+    launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
+    resolve: () => (deps) => ((innerDeps = deps), inner),
+  })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+  const { seen } = await noUnhandled(async () => {
+    const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "parked" });
+    await dispatch.command(answer(21, "call-1"));
+    await dispatch.command({ id: 22, runId: "run-1", kind: "steer", body: { content: "and one more thing" }, createdAt: 0, takenAt: null, refused: null, tries: 0 });
+    launched.resolve();
+    await innerDeps.delivered;
+    assert.deepEqual(tries.slice(0, 2), [21, 22], "both rows were handed to the loop, in order, before its delivered resolved");
+    finish.resolve();
+    return run;
+  });
+  assert.deepEqual(seen, []);
+});
+
 test("a buffered row whose delivery always throws is tried REPLAY_TRIES times in all, said once as left, and never tried again on the claim: it stays for the run's next claim", { timeout: 30_000 }, async () => {
   const { REPLAY_TRIES } = await import("../dist/runner/dispatch.js");
   const launched = defer();
