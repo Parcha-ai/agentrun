@@ -14,7 +14,6 @@ import { agent, FAUX, follow, runDir, scratch, serve, storeRun, withEnv } from "
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const busy = (dir, name = "never") => `Answer once ${join(dir, name)} exists.`;
 
 /** POST `body` to `path` under Idempotency-Key `key`, and return once the server holds it, still unanswered: a probe under
  *  the same key, with a body the route refuses before it does anything, is idempotency_mismatch only once the server has
