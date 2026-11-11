@@ -377,8 +377,20 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.deepEqual(listed.entries.map(({ path, type }) => [path, type]), [[`${dir}\\a.txt`, "file"], [`${dir}\\big.bin`, "file"], [`${dir}\\sub`, "dir"]]);
 	assert.equal(listed.truncated, false);
 	assert.deepEqual((await call("files.list", { path: `${dir}\\sub` })).value.entries, [], "an empty folder: PowerShell's null is no entry");
-	await call("files.write", { path: `${dir}\\sub\\only.txt`, data: "" });
+	// An empty write makes an empty file, and clears one that has bytes: PowerShell 5.1 keeps the empty byte array.
+	assert.deepEqual((await call("files.write", { path: `${dir}\\sub\\only.txt`, data: "" })).value, { size: 0 });
 	assert.equal((await call("files.list", { path: `${dir}\\sub` })).value.entries.length, 1, "PowerShell's one object is a list of one");
+	await call("files.write", { path: `${dir}\\sub\\cleared.txt`, data: Buffer.from("old").toString("base64") });
+	assert.deepEqual((await call("files.write", { path: `${dir}\\sub\\cleared.txt`, data: "" })).value, { size: 0 });
+	assert.equal(fake.boxOf(ref.id).files.get(`${dir}\\sub\\cleared.txt`).length, 0);
+	await call("files.remove", { path: `${dir}\\sub\\cleared.txt` });
+	// A mode is refused before anything is made or changed: Windows keeps no POSIX mode.
+	for (const [method, params] of [["files.write", { path: `${dir}\\ro.txt`, data: "", mode: 0o444 }], ["files.mkdir", { path: `${dir}\\closed`, mode: 0o700 }]]) {
+		const refused = await call(method, params);
+		assert.equal(refused.error?.code, "unsupported", `${method}: ${JSON.stringify(refused)}`);
+		assert.match(refused.error.message, /no POSIX mode/);
+		assert.equal(fake.boxOf(ref.id).files.has(params.path) || fake.boxOf(ref.id).dirs.has(params.path), false, `${method} made nothing`);
+	}
 	assert.equal((await call("files.move", { from: `${dir}\\a.txt`, to: `${dir}\\big.bin` })).error.code, "exists");
 	assert.deepEqual((await call("files.move", { from: `${dir}\\a.txt`, to: `${dir}\\b.txt` })).value, {});
 	// A link is stat'ed as one; with follow, what it points to (relative to its folder, or absolute), to the end, and one

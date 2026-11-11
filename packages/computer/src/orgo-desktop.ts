@@ -262,6 +262,9 @@ export function commandOf(os: OrgoDesktopOs, argv: readonly string[], { cwd, env
 	return cwd === undefined ? run : `cd ${shQuote(cwd)} && ${run}`;
 }
 
+/** Why a files.write or files.mkdir that names a mode is refused on Windows, before anything is made or changed. */
+const NO_MODES = "an Orgo Windows computer's files have no POSIX mode to set (its file system keeps ACLs): leave mode unset";
+
 /**
  * The files methods on Windows, as one PowerShell script: its request is base64 of JSON in place of the marker, so no
  * value is ever quoted into the script, and its one line of output is JSON, the result or { error, message }.
@@ -318,7 +321,8 @@ const FILES_SCRIPT = [
 	"      if ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {",
 	"        if ($p.parents) { [void](New-Item -ItemType Directory -Force -Path $dir) } else { Refuse 'not_found' \"no folder $dir\" }",
 	"      }",
-	"      $bytes = if ($p.staged) { [IO.File]::ReadAllBytes($p.staged) } else { [Convert]::FromBase64String($p.data) }",
+	"      # Assigned in each branch: an if expression's value is unrolled, so an empty byte array would come out $null.",
+	"      if ($p.staged) { $bytes = [IO.File]::ReadAllBytes($p.staged) } else { $bytes = [Convert]::FromBase64String($p.data) }",
 	"      if ($null -ne $p.offset -or $p.append) {",
 	"        $f = [IO.File]::Open($p.path, 'OpenOrCreate', 'Write', 'Read')",
 	"        try { if ($p.append) { [void]$f.Seek(0, 'End') } else { [void]$f.Seek([int64]$p.offset, 'Begin') }; $f.Write($bytes, 0, $bytes.Length); $size = $f.Length } finally { $f.Close() }",
@@ -1490,6 +1494,7 @@ export class OrgoDesktopClient implements ComputerClient {
 				if (typeof params.data !== "string") return refuse("invalid", "data is base64");
 				if (params.offset !== undefined && params.append) return refuse("invalid", "offset and append are one or the other");
 				if (params.offset !== undefined && !(Number.isSafeInteger(params.offset) && (params.offset as number) >= 0)) return refuse("invalid", "offset is a whole number of bytes, 0 or more");
+				if (params.mode !== undefined) return refuse("unsupported", NO_MODES);
 				request = { op, path: params.path, ...(params.offset === undefined ? {} : { offset: params.offset }), append: params.append === true, parents: params.parents === true };
 				if (params.data.length <= INLINE_WRITE_CHARS) request.data = params.data;
 				else {
@@ -1514,6 +1519,7 @@ export class OrgoDesktopClient implements ComputerClient {
 			case "mkdir":
 			case "remove":
 				if (path(params.path) === undefined) return absolute("path");
+				if (op === "mkdir" && params.mode !== undefined) return refuse("unsupported", NO_MODES);
 				request = { op, path: params.path, parents: params.parents === true, recursive: params.recursive === true };
 				break;
 			case "move":

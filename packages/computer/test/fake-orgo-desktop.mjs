@@ -268,6 +268,9 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 					bytes = box.files.get(p.staged);
 					box.files.delete(p.staged);
 				} else bytes = Buffer.from(p.data, "base64");
+				// PowerShell 5.1 unrolls an if expression's value: a script that takes $bytes from one gets $null for an empty
+				// array, and WriteAllBytes, Write and .Length of $null throw. One that assigns in each branch keeps it.
+				if (bytes.length === 0 && script.includes("$bytes = if (")) return no("invalid", `Exception calling "WriteAllBytes" with "2" argument(s): "Value cannot be null. Parameter name: bytes"`);
 				const old = box.files.get(path) ?? Buffer.alloc(0);
 				let next;
 				if (p.append) next = Buffer.concat([old, bytes]);
