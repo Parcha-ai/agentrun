@@ -88,11 +88,8 @@ export const STOPPED = {
   cancelled: "the run was cancelled",
   cancelledLooking: "the run was cancelled while it looked back",
   crashed: "the run's process ended before it could look back",
-  crashedLooking: "the run's process ended while it looked back",
   timedOut: "looking back took too long",
-  notAsked: "looking back could not start",
   failed: "looking back ended on an error",
-  notSetAside: "the new notes could not be set aside to be checked",
   notChecked: "the new notes could not be checked",
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
   noReview: "the review of the new notes gave no answer",
@@ -150,7 +147,7 @@ export const said = {
 /** The reasons learn/grade.ts' parseVerdict gives of its own, never the grader's: an answer it could not read, and one
  *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
  *  did not keep every note). Found by asking it, so they follow it. */
-const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
+const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","decision":"drop","why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","decision":"drop","why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","decision":"drop","why":"w"},{"file":"a.md","decision":"drop","why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
 /** The skill or the workflow draft at `file` as a person names it ("the skill X", "the workflow Y"), or undefined for a
  *  note's file or a draft's README.md. */
 const learnedWords = (file: string): string | undefined => {

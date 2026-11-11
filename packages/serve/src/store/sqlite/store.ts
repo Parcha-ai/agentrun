@@ -15,14 +15,14 @@ import {
   type AlsoRow, type Claim, type Command, type FiringChange, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunPatch, type RunRow, type Runs,
   type JournalReads, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -784,7 +784,9 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       list: async ({ agentId, revisionId, state, archived, limit }) => {
-        const where: string[] = [];
+        // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
+        // count, stat or notice names it.
+        const where: string[] = [NOT_A_LEARNING_RUN];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
@@ -1072,6 +1074,26 @@ class SqliteStore implements Store {
           "SELECT run_id, agent_id, turn, proposal, learning_run_id, created_at FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
           agentId, limit,
         )).map(proposalOf),
+      spend: async ({ from, to }) => {
+        type SpendRecord = { agent_id: string; proposal: string; created_at: number; learning_run_id: string | null; run_state: RunState | null; run_ended_at: number | null; run_cost_usd: number | null };
+        const rows = await db.all<SpendRecord>(
+          `SELECT lp.agent_id, lp.proposal, lp.created_at, lp.learning_run_id, lr.state AS run_state, lr.ended_at AS run_ended_at, lr.cost_usd AS run_cost_usd
+             FROM learning_proposals lp
+             JOIN runs src ON src.id = lp.run_id
+             LEFT JOIN runs lr ON lr.id = lp.learning_run_id
+            WHERE src.imported_from IS NULL AND COALESCE(lr.ended_at, lp.created_at) >= ? AND COALESCE(lr.ended_at, lp.created_at) < ?
+            ORDER BY COALESCE(lr.ended_at, lp.created_at), lp.run_id`,
+          from, to,
+        );
+        return rows.flatMap((row): LearningSpend[] => {
+          // A proposal: once its learning run ended, failed or was stopped, its row's cost is the grade's spend (a stop
+          // seen after a paid grade keeps it, learning-loop.ts).
+          if (row.learning_run_id !== null) return row.run_state === "ended" || row.run_state === "failed" || row.run_state === "stopped" ? [{ agentId: row.agent_id, at: row.run_ended_at ?? row.created_at, costUsd: row.run_cost_usd }] : [];
+          // Kept with no learning run: dropped before it was proposed (nothing graded), unless it is still a proposal.
+          const kept = JSON.parse(row.proposal) as { state?: unknown } | null;
+          return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
+        });
+      },
     };
 
     this.settings = {

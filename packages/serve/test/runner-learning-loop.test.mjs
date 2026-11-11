@@ -5,7 +5,6 @@
 // with a wake, the grade never asked again. The grader's prompt is the server's (learn/grade.ts gradePrompt), asked once
 // more on an answer it cannot read, as grade.ts did.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
@@ -18,8 +17,8 @@ const { gradePrompt } = await import("../dist/learn/grade.js");
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: retry twice\n---\nRetry a flaky fetch twice." };
 const PROPOSAL = { seed: "s1", notes: [NOTE], asked: ["please be careful with retries"] };
 const MAIN = { active: [], superseded: [], graded: { "old.md": "oid-1" } };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", keep: true, why: "useful" }] });
-const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", keep: false, why: "vague" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const DROP = JSON.stringify({ merge: false, reason: "Too vague to help.", items: [{ file: "retries.md", decision: "drop", why: "vague" }] });
 const MERGED = { ok: true, main: "c0ffee", commit: "c0ffee", files: ["retries.md"] };
 
 /** A source run that ended keeping PROPOSAL, and its queued learning run, claimed by a runner. */
@@ -81,10 +80,8 @@ test("the grader's prompt and bounds are the server's: gradePrompt over the same
   const expected = gradePrompt({ run: "run-1", instructions: "Be brief.", active: [], superseded: [], proposed: [NOTE], asked: PROPOSAL.asked });
   assert.equal(calls.ask[0].request.prompt, expected);
   assert.equal(calls.ask[0].request.maxTokens, GRADE_MAX_TOKENS);
-  // The same figures the server's grade.ts used, while it is still in the tree.
-  const server = readFileSync(new URL("../src/grade.ts", import.meta.url), "utf8");
-  assert.match(server, new RegExp(`GRADE_TIMEOUT_MS = ${GRADE_TIMEOUT_MS.toLocaleString("en-US").replace(/,/g, "_")};`));
-  assert.match(server, new RegExp(`GRADE_MAX_TOKENS = ${GRADE_MAX_TOKENS.toLocaleString("en-US").replace(/,/g, "_")};`));
+  // The figures main's server grade used (its grade.ts, gone with E6): 180 s and 16,000 tokens.
+  assert.deepEqual([GRADE_TIMEOUT_MS, GRADE_MAX_TOKENS], [180_000, 16_000]);
 });
 
 test("an answer the grader's reader can't read is asked once more; two such answers drop it unread", async (t) => {
@@ -153,6 +150,31 @@ test("a stop row ends the learning run stopped, its row taken, with nothing merg
   assert.equal(calls.commit.length, 0, "nothing merged");
   assert.equal((await store.runs.get("learn-1")).state, "stopped");
   assert.notEqual((await store.commands("learn-1", 0)).find((row) => row.id === stop.id).takenAt, null, "its row taken");
+});
+
+test("a learning run stopped after its grade booked keeps that grade's cost on its row, and /v2/usage's learning spend counts it", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop, calls } = loopOn(store, clock);
+  const stop = await store.command("learn-1", { kind: "stop" });
+  await loop.stop({ kind: "command", commandId: stop.id });
+  assert.equal((await loop.start(claim)).state, "stopped");
+  assert.equal(calls.ask.length, 1, "the grade was asked and booked before the stop was seen");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", 0.01], "the paid grade stays on the stopped run's row");
+  const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
+  assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", 0.01]], "what /v2/usage reads as learning's spend");
+});
+
+test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  const { loop } = loopOn(store, clock, { answers: [new Error("the grade request was cut")] });
+  const stop = await store.command("learn-1", { kind: "stop" });
+  await loop.stop({ kind: "command", commandId: stop.id });
+  assert.equal((await loop.start(claim)).state, "stopped");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
+  const { learningSpendOverStore } = await import("../dist/store-reads/learning.js");
+  assert.deepEqual((await learningSpendOverStore(store, { from: 0, to: Number.MAX_SAFE_INTEGER })).map((one) => [one.agent, one.cost]), [["agent-1", null]]);
 });
 
 test("a learning run whose source kept nothing ends with nothing graded", async (t) => {

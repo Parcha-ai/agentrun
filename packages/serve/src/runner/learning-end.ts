@@ -27,11 +27,11 @@ import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";
 import { SKILL_NAME } from "../learn/skills.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
-import { gradeModelOf, PROPOSAL } from "../learning.js";
-import { reflects, type Reflect } from "../learning-run.js";
+import { PROPOSAL } from "../learning.js";
+import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
-import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
@@ -59,8 +59,6 @@ export interface LearningEndDeps {
   /** Every secret the server keeps sealed, read once at the run's end (store-secrets.ts storeSecrets over the store, the
    *  seal key and the data directory), never learned. A throw is a list that can't be read: the run learns nothing. */
   readonly stored?: () => Promise<readonly string[]>;
-  /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
-  readonly gradeModel?: string;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -69,7 +67,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const start = learningStartOf(launch);
   if (!start) return undefined;
   const env = deps.env ?? process.env;
-  const gradeModel = deps.gradeModel ?? gradeModelOf(env);
+  // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
+  const gradeModel = start.gradeModel;
   const capUsd = launch.maxCostUsd;
   const hookFor = (runId: string) => createReflectHook({
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
@@ -79,7 +78,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
     },
     // A draft asked for or not never stops the turn: a count that can't be read asks for none.
-    promptFacts: async (runId, agentId) => ({ active: start.seedNotes ?? start.given.length, tools: (await draftTools(deps, runId)).tools, draftFor: await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []) }),
+    promptFacts: async (runId, agentId) => {
+      const { tools } = await draftTools(deps, runId);
+      const draftFor = await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
+      // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
+      const described = draftFor.length ? await describedOf(tools) : [];
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described };
+    },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -113,11 +118,21 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   return async (input) => {
     // A seed that could not be read (no seedNotes, no commit): the server dropped its learning at the start, and the run
     // was never asked to look back.
-    if (start.seed === null && start.seedNotes === undefined) {
+    if (seedFailed(start)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) } } }] };
     }
     return hookFor(input.runId)(input);
   };
+}
+
+/** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
+ *  summary): the draft ask's `describe`. */
+async function describedOf(tools: readonly string[]): Promise<{ name: string; does: string }[]> {
+  const { toolOf } = await import("../tools.js");
+  return tools.flatMap((name) => {
+    const does = toolOf(name)?.summary;
+    return does ? [{ name, does }] : [];
+  });
 }
 
 /** How many of an agent's latest runs draftForOf reads at most: a skill offered to fewer than DRAFT_AFTER_RUNS of them is

@@ -29,7 +29,6 @@ test("a run's learning shows given and read, never used: given from its start, r
   const record = { state: "seeded", reason: null, detail: null, at: "2026-11-05T00:00:00.000Z", given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] };
   assert.deepEqual(learning.notesView(record, shown, false), { given: [{ file: "units.md", name: "Check units" }] });
   assert.deepEqual(learning.notesView(record, shown, true), { given: [{ file: "units.md", name: "Check units" }], read: [{ file: "units.md", name: "Check units" }] });
-  assert.ok(learning.KEPT_LEARNING.includes("given") && learning.KEPT_LEARNING.includes("read") && !learning.KEPT_LEARNING.includes("used"));
 });
 
 test("the ledger keeps the files a run was given and read, and the agent's notes count the runs of each", () => {
