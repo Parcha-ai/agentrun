@@ -435,3 +435,45 @@ test("a resumed merge keeps one item per file: a re-filed skill whose note file 
   const skill = learning.verdict.items.find(({ file }) => file === SKILL.file);
   assert.deepEqual([skill.keep, skill.why], [false, NOTE_NAME_IN_RUN("report-format")]);
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62B7CR): a note main holds by the same name with the same rule, in other front matter,
+// case or spacing (another run merged it while this one was graded), is no change, dropped unsaid, as readMain and the
+// merge's own settle read it (notes.ts ruleOf), never a name clash.
+test("takenOnMain reads the same rule under other front matter, case or spacing as the same note: dropped unsaid, never a name clash", () => {
+  const ours = UNITS("Convert every amount to cents before comparing.");
+  const theirs = { file: ours.file, text: "---\nname: Check units\ndescription: Cents first\ntype: reference\n---\nconvert every amount  to CENTS before comparing.\n" };
+  const settled = takenOnMain({ notes: [ours, NOTE] }, parseVerdict(KEEP_BOTH([ours.file, NOTE.file]), [ours, NOTE]), { [ours.file]: theirs.text });
+  assert.deepEqual([settled.verdict.items[0].keep, settled.verdict.items[0].why, settled.replace], [false, SAME_NOTE, []]);
+  assert.equal(settled.verdict.items[1].keep, true, "the other note merges");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62B7CQ): a resume reads which item's text the merge saved, not only which paths it
+// changed. The run's own note supersedes report-format.md (the merge marks it superseded, a changed path), and a skill
+// re-filed as report-format.md was left out by the first attempt (main's name, another rule): never revived as learned.
+test("a resumed merge reads each note's text on main: a changed path that holds another rule (a note marked superseded) saves no re-filed skill", async (t) => {
+  const old = "---\nname: Report format\ndescription: How a report opens\ntype: feedback\n---\nOpen every report with a summary line.\n";
+  const v2 = noteNamed("report-format-v2", "Report format v2", "Open every report with the status, then a summary line.", "supersedes: [report-format.md]\n");
+  const answer = verdictOf([{ file: v2.file, decision: "keep", why: "useful" }, { file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const { end, learning, notes } = await refileRun(t, { existing: { "report-format.md": old }, committed: [{ path: v2.file, text: v2.text }], notes: [v2], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(notes["report-format.md"], /^status: superseded$/m, "the first attempt marked the old note superseded");
+  assert.equal(learning.state, "merged", JSON.stringify(learning));
+  assert.deepEqual(learning.learned.map(({ file }) => file), [v2.file], JSON.stringify(learning));
+  assert.equal(learning.pending, undefined);
+  const skill = learning.verdict.items.find(({ file }) => file === SKILL.file);
+  assert.deepEqual([skill.keep, skill.why], [false, NOTE_NAME_TAKEN("report-format")]);
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62DEyt): a note reserves its rule only once it passes its other checks, its own merge
+// onto the base among them. a.md supersedes a note the folder does not hold (refused at the merge check); b.md says the
+// same rule and supersedes nothing: b.md is no duplicate of a note that is refused, and the checks name a.md alone.
+test("the checks: a note refused for what it supersedes reserves no rule, so a valid copy of its rule is no duplicate", () => {
+  const base = { files: ["MEMORY.md"], active: [], rules: new Map() };
+  const change = ({ file, text }) => ({ path: file, status: "added", mode: "100644", bytes: Buffer.from(text) });
+  const a = noteNamed("a", "A", "Retry a flaky fetch twice.", "supersedes: [missing.md]\n");
+  const b = noteNamed("b", "B", "Retry a flaky fetch twice.");
+  const checked = checkProposal({ base, changes: [change(a), change(b)] });
+  assert.deepEqual(checked.problems.map(({ rule, path }) => [rule, path]), [["supersedes", a.file]], JSON.stringify(checked.problems));
+  const alone = checkProposal({ base, changes: [change(b)] });
+  assert.deepEqual([alone.ok, alone.notes.map(({ file }) => file)], [true, [b.file]], "with a.md left out, b.md passes");
+});

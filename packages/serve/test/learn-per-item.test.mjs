@@ -115,3 +115,17 @@ test("a path outside what a run may write refuses the whole answer, past the cha
   assert.equal(result.state, "dropped", JSON.stringify(result).slice(0, 400));
   assert.ok(result.problems.some(({ rule, path }) => rule === "outside" && path === "../outside.md"), JSON.stringify(result.problems.filter(({ rule }) => rule !== "too_many_notes")));
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62DEyt): a.md supersedes a note the folder does not hold, b.md says its rule and
+// supersedes nothing. The pass that leaves a.md out keeps b.md: a refused note never makes its rule's valid copy a
+// duplicate, so the rule survives.
+test("a note left out for what it supersedes keeps no rule: its valid copy beside it is kept", async (t) => {
+  const answer = [
+    block("a.md", note({ name: "A", description: "A", body: "Retry a flaky fetch twice.\n", extra: "supersedes: [missing.md]\n" })),
+    block("b.md", note({ name: "B", description: "B", body: "Retry a flaky fetch twice.\n" })),
+  ].join("\n\n");
+  const result = await proposed(t, answer);
+  assert.equal(result.state, "proposed", JSON.stringify(result));
+  assert.equal(result.notes, 1, JSON.stringify(result));
+  assert.deepEqual(leftOf(result), [["supersedes", "a.md"]]);
+});
