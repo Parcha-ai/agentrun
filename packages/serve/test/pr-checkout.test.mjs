@@ -78,6 +78,21 @@ test("the checkout lands in repo/ at the pull request's head, detached, with its
   await made.end();
 });
 
+test("a claim that lets go late removes only its own checkout: a later claim's checkout of the same run stays until that claim lets go", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const gh = join(dir, "gh");
+  const { head, base } = pullRepo(gh, "acme/widgets");
+  const { folder, workspace } = await runFolder(dir);
+  const input = firing("acme/widgets", { head, base });
+  const lost = await prCheckout({ workspace, input, web: `file://${gh}` });
+  // The lease passed to another claim, which checks out the same run before the lost one's release runs.
+  const next = await prCheckout({ workspace, input, web: `file://${gh}` });
+  await lost.end();
+  assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), head, "the later claim's checkout is still there");
+  await next.end();
+  assert.deepEqual(await readdir(folder), [], "its own claim's release removed it");
+});
+
 test("with the GitHub App, the fetch carries a token minted for the one repository with contents read alone, held by the run's redactor, and the run's folder keeps none: not in .git/config, the remote's URL or any file", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");

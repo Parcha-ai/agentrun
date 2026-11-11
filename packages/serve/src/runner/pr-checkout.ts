@@ -21,6 +21,7 @@
 // What the run is told: one line in its system prompt, the checkout's facts, or why there is none and that the GitHub
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
 // the next claim of the same run.
+import { randomUUID } from "node:crypto";
 import { GITHUB_WEB, githubCall, type GithubPull, githubPullOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { COMMAND_MAX_MS } from "../workspace/archil-exec.js";
@@ -42,18 +43,21 @@ export const CHECKOUT_MS = COMMAND_MAX_MS;
 const DEPTH = 50;
 const DEEPENS = 6;
 
+/** The file in the checkout's .git naming the claim that made it: a removal takes only its own claim's checkout. */
+const OWNER_FILE = "agentrun-claim";
+
 /** The exec's script: $1 the remote's URL (no credential), $2 the head, $3 the base (or empty), $4 the folder, $5 the
- *  URL prefix the header is for. Its stdin's first line is an Authorization header, or empty for an anonymous fetch. Its
- *  exit codes name the step that failed (10 the folder, 11 the fetch, 12 the checkout); on success it prints the merge
+ *  URL prefix the header is for, $6 this claim's checkout id (written to .git/${OWNER_FILE}). Its stdin's first line is
+ *  an Authorization header, or empty for an anonymous fetch. Its exit codes name the step that failed (10 the folder, 11 the fetch, 12 the checkout); on success it prints the merge
  *  base, empty when none was found. */
 const SCRIPT = `set -u
-url=$1 head=$2 base=$3 dir=$4 scope=$5
+url=$1 head=$2 base=$3 dir=$4 scope=$5 claim=$6
 IFS= read -r auth || true
 export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 if [ -n "\${auth:-}" ]; then export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$scope.extraheader" GIT_CONFIG_VALUE_0="$auth"; fi
 auth=
 rm -rf "\${dir:?}"
-git init -q "$dir" >/dev/null 2>&1 && cd "$dir" && git remote add origin "$url" || exit 10
+git init -q "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && git remote add origin "$url" || exit 10
 fetch() { git fetch -q --no-tags --no-recurse-submodules origin "$@" "$head" \${base:+"$base"}; }
 fetch --depth=${DEPTH} || exit 11
 mb=
@@ -139,8 +143,11 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
   const secrets = token ? [token, header, header.slice("Authorization: Basic ".length)] : [];
   if (secrets.length) options.hold?.(secrets);
 
+  // This claim's checkout, by an id of its own: a claim that lost its lease and lets go late removes only the folder it
+  // made, never the one a later claim of the run is fetching or reading (that claim's fetch replaces a stale one itself).
+  const claim = randomUUID();
   const removal = async (): Promise<void> => {
-    const result = await workspace.exec(["sh", "-c", 'rm -rf -- "${1:?}"', "sh", CHECKOUT_DIR], { env: shellEnv(), timeoutMs: CHECKOUT_MS });
+    const result = await workspace.exec(["sh", "-c", `[ "$(cat "\${1:?}/.git/${OWNER_FILE}" 2>/dev/null)" = "$2" ] || exit 0; rm -rf -- "\${1:?}"`, "sh", CHECKOUT_DIR, claim], { env: shellEnv(), timeoutMs: CHECKOUT_MS });
     if (result.code !== 0) throw new Error(`the run's ${CHECKOUT_DIR}/ checkout could not be removed (exit ${result.code ?? result.signal}): ${tail(result.stderr, secrets)}`);
   };
   const failed = async (why: string): Promise<PrCheckout> => {
@@ -154,7 +161,7 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
   let result;
   try {
     result = await workspace.exec(
-      ["sh", "-c", SCRIPT, "sh", `${web}/${pull.repo}.git`, pull.head, pull.base ?? "", CHECKOUT_DIR, `${web}/`],
+      ["sh", "-c", SCRIPT, "sh", `${web}/${pull.repo}.git`, pull.head, pull.base ?? "", CHECKOUT_DIR, `${web}/`, claim],
       { env: shellEnv(), stdin: Buffer.from(`${header}\n`, "utf8"), timeoutMs: options.timeoutMs ?? CHECKOUT_MS, ...(options.signal ? { signal: options.signal } : {}) },
     );
   } catch (error) {
