@@ -68,7 +68,7 @@ describe("the session that may write secrets", () => {
 
 describe("Keys in a browser on the API token alone", () => {
   it("says to open the console from the server's link", async () => {
-    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: false, whyNot: "token" }));
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), writable: false, whyNot: "token" }));
     expect(host.textContent).toContain("Open the console from the server's link to change secrets.");
     expect(labels(host).filter((l) => /^(Paste|Replace|Remove)$/.test(l ?? ""))).toEqual([]);
   });
@@ -76,7 +76,7 @@ describe("Keys in a browser on the API token alone", () => {
 
 describe("Keys on a server with no accounts, not on loopback", () => {
   it("says to set secrets in the environment or turn accounts on, never to sign in", async () => {
-    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: false, whyNot: "no_accounts" }));
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), writable: false, whyNot: "no_accounts" }));
     expect(host.textContent).toContain(NO_ACCOUNTS);
     expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
   });
@@ -84,7 +84,7 @@ describe("Keys on a server with no accounts, not on loopback", () => {
 
 describe("Keys, off the password session", () => {
   it("shows each key's state, says once how to change them, and offers no Paste, Replace or Remove", async () => {
-    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: false }));
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), writable: false }));
     expect(host.textContent).toContain(SIGN_IN_TO_CHANGE);
     expect(host.textContent!.split(SIGN_IN_TO_CHANGE)).toHaveLength(2);
     expect(labels(host).filter((l) => /^(Paste|Replace|Remove)$/.test(l ?? ""))).toEqual([]);
@@ -93,13 +93,13 @@ describe("Keys, off the password session", () => {
   });
 
   it("says each key by its own name, never its secret's plane", async () => {
-    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: true }));
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), writable: true }));
     expect(host.querySelector('[data-secret="tool:PARALLEL_API_KEY"]')!.textContent).toContain("PARALLEL_API_KEY");
     expect(host.textContent).not.toMatch(/\b(tool|model):/);
   });
 
   it("on it: Replace and Remove on a key pasted here, Paste on a missing one, nothing on one set in the environment", async () => {
-    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), atRest: "sealed", writable: true }));
+    const host = await mount(createElement(KeysPage, { v2: client(() => KEYS), writable: true }));
     expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
     expect(labels(host.querySelector('[data-secret="tool:PARALLEL_API_KEY"]')!)).toEqual(["Replace", "Remove"]);
     expect(labels(host.querySelector('[data-secret="model:ANTHROPIC_API_KEY"]')!)).toEqual(["Paste"]);
@@ -109,7 +109,7 @@ describe("Keys, off the password session", () => {
 
 describe("the model key card, off the password session", () => {
   it("says how to change secrets in place of the keys to paste", async () => {
-    const host = await mount(createElement(ModelKeyCard, { v2: client(() => KEYS), needs: "key", atRest: "sealed", writable: false }));
+    const host = await mount(createElement(ModelKeyCard, { v2: client(() => KEYS), needs: "key", writable: false }));
     expect(host.textContent).toContain(SIGN_IN_TO_CHANGE);
     expect(labels(host)).not.toContain("Anthropic");
   });

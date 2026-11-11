@@ -11,7 +11,7 @@ import type { Run, TimelinePage } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 
-const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "What is two and two?",
   created_at: "2026-10-30T06:00:00Z", ended_at: status === "working" ? null : "2026-10-30T06:00:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: archived ? "2026-11-01T07:00:00Z" : null,
 });

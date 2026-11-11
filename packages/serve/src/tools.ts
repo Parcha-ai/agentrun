@@ -1,9 +1,9 @@
 // The tools a revision may name here: one closed table. Each entry is how the run's process binds the name and which
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
-// The file tools and `bash` bind from the run's coding source (coding-tools.ts): on the runner, pi's coding tools
-// without `bash`, so a run gets no shell on this machine; in a box, pi's four and the background tools (bash_background,
-// bash_output, bash_input, bash_signal, bash_list), each call made in the box. `bash` and the background tools may be
-// named only by an agent whose place is a box (runnable.ts).
+// The file tools, `bash` and the background tools (bash_background, bash_output, bash_input, bash_signal, bash_list) bind
+// nothing here: a run's runner binds them from its workspace's registry (workspace/run-tools.ts), each call made on the
+// run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
+// (runnable.ts).
 import { blurbOf } from "./tool-blurbs.js";
 import type { TSchema } from "typebox";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
@@ -14,7 +14,6 @@ import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
-import type { CodingSource } from "./coding-tools.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
@@ -82,8 +81,6 @@ export type ToolHost = {
   where: AppContext;
   /** The run's environment: the server's, without the server's token. */
   env: NodeJS.ProcessEnv;
-  /** The run's coding tools, by its place (coding-tools.ts codingSource). */
-  coding: CodingSource;
   /** Installs an extension in the run's registry, before the run opens. */
   install(extension: Extension): void;
   /** Runs in the commit that creates each of the run's conversations. */
@@ -197,16 +194,14 @@ const webFetchEntry = (name: string): ToolEntry => ({
   effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: pagesOf(run.env), signal: run.signal })),
 });
 
-/** A coding tool, from the run's coding source: a name it does not hold (bash on the runner) binds no tool. */
-const fileTool = (name: string, summary: string, sandboxOnly = false): ToolEntry => ({
+/** A file or shell tool: listed here for its words and its rules, bound by the run's workspace registry
+ *  (workspace/run-tools.ts), never by this table. */
+const fileTool = (summary: string, sandboxOnly = false): ToolEntry => ({
   summary,
   needs: [],
   nodes: !sandboxOnly,
   ...(sandboxOnly ? { sandboxOnly: true as const } : {}),
-  bind: async (host) => {
-    const tools = host.coding.tools.filter((tool) => tool.name === name);
-    return { tools, extensions: tools.length ? [host.coding.extension] : [] };
-  },
+  bind: async () => ({ tools: [], extensions: [] }),
 });
 
 /** The folder the browser files what it reads in. */
@@ -316,7 +311,7 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
 /** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
  *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
  *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
-export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer, claim: Claim, kept: RunSignIn) =>
   async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
     if (!kept.save || !savedOnRelease(row, change)) return false;
     const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
@@ -364,7 +359,7 @@ const browserTool: ToolEntry = {
     // launch makes it: never the process's environment, so one run's keys never make another's.
     const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
     const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
-    const handed = computer ? undefined : host.claim ? (refused || !host.store ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
+    const handed = computer ? undefined : host.claim ? (refused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
     const kept = !refused && handed?.provider === vendor ? handed : undefined;
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = computer
@@ -471,7 +466,7 @@ const browserTool: ToolEntry = {
     const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
-    const verify = kept?.save && host.claim && host.store ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = kept?.save
@@ -583,16 +578,16 @@ const browserTool: ToolEntry = {
 };
 
 export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
-  read: fileTool("read", "Read a file in the run's work/; in a sandbox, an image anywhere in the run's box too (a render in /tmp)."),
-  write: fileTool("write", "Write a file in the run's work/."),
-  edit: fileTool("edit", "Edit a file in the run's work/."),
-  bash: fileTool("bash", "Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).", true),
+  read: fileTool("Read a file in the run's work/; in a sandbox, an image anywhere in the run's box too (a render in /tmp)."),
+  write: fileTool("Write a file in the run's work/."),
+  edit: fileTool("Edit a file in the run's work/."),
+  bash: fileTool("Run a bash command in the run's box, from its work/, never on this server itself: only an agent whose place is a sandbox names it. Its output's tail; 120 s unless the call names a timeout, at most 600 s (longer work: bash_background).", true),
   // The background tools (background.ts): each call a short command in the run's box, on bash's environment.
-  bash_background: fileTool("bash_background", `Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
-  bash_output: fileTool("bash_output", `Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
-  bash_input: fileTool("bash_input", "Write text to a running background process's stdin, and close it if asked. Sandbox only.", true),
-  bash_signal: fileTool("bash_signal", "Send TERM, INT or KILL to a background process's process group. Sandbox only.", true),
-  bash_list: fileTool("bash_list", "List the run's background processes: id, state or exit code, output size and command. Sandbox only.", true),
+  bash_background: fileTool(`Start a command in the background in the run's box, from its work/, and get its id at once: its stdout and stderr go to work/background/<id>/output.log (the first ${BACKGROUND_LOG_BYTES / (1024 * 1024)} MiB), its stdin is a pipe (a terminal with tty: true), and the run's end ends it; at most ${BACKGROUND_MAX} run at once. Only an agent whose place is a sandbox names it.`, true),
+  bash_output: fileTool(`Read a background process's output from a byte offset, at most ${BACKGROUND_PAGE_BYTES / 1024} KiB a call, with whether it still runs, its exit code and the next offset. Sandbox only.`, true),
+  bash_input: fileTool("Write text to a running background process's stdin, and close it if asked. Sandbox only.", true),
+  bash_signal: fileTool("Send TERM, INT or KILL to a background process's process group. Sandbox only.", true),
+  bash_list: fileTool("List the run's background processes: id, state or exit code, output size and command. Sandbox only.", true),
   [ASK_TOOL]: {
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
@@ -713,7 +708,7 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
  *  (`reason`). `noBox`: why no box can run a sandbox-only tool here (place.ts noBoxReason), which leaves it
  *  unavailable with that reason; undefined, a box can. `refused`: the variables of the keys this server was started with
- *  that their provider refused at the start (ToolKeys.refused), each with why: a tool that needs one is unavailable,
+ *  that their provider refused at the start (tool-keys-store.ts refused), each with why: a tool that needs one is unavailable,
  *  saying that. Each tool also gives its permission under the server's settings (tool-gate.ts), the owner's default
  *  and the permissions it may be set to. */
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}) => {

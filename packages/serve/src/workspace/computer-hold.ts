@@ -58,8 +58,13 @@ export type ComputerHold = {
   /** The current take's name, while one is pending or held. */
   current(): string | undefined;
   /** The person takes it: pending while an agent call is in flight, then theirs. False (nothing changes) when a take is
-   *  pending or held already, or the hold is closed. `by`: the command row that asked. */
+   *  pending or held already, or the run is ending, or the hold is closed. `by`: the command row that asked. */
   take(options?: { readonly by?: number }): boolean;
+  /** The run is ending (its agent is done): nothing new is taken from now, and a take in force goes on until it ends, so
+   *  the run's end can wait for it and no later take is cut by the release (#2134). */
+  finish(): void;
+  /** Whether the run is ending (finish). */
+  finishing(): boolean;
   /** The take ends (`given` by default): false when there was none. A hand-back while the agent's ask is open answers it
    *  done, and the take ends `answered`. */
   give(why?: HoldEnd, options?: { readonly by?: number }): boolean;
@@ -104,6 +109,7 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
   let inFlight = 0;
   let epoch = 0;
   let closed = false;
+  let ending = false;
   let open: { ask: HoldAsk; timer: unknown; settle(outcome: AskOutcome): void; fail(error: unknown): void } | undefined;
   const waiters = new Set<() => void>();
   const listeners = new Set<(event: HoldEvent) => void>();
@@ -152,7 +158,7 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
     state: () => state,
     current: () => take,
     take({ by } = {}) {
-      if (closed || state !== "agent") return false;
+      if (closed || ending || state !== "agent") return false;
       take = by !== undefined ? `c${by}` : `v${now()}-${randomBytes(3).toString("hex")}`;
       epoch++;
       if (inFlight > 0) {
@@ -161,6 +167,10 @@ export function computerHold(options: { readonly idleMs?: number; readonly askMa
       } else toPerson(by);
       return true;
     },
+    finish() {
+      ending = true;
+    },
+    finishing: () => ending,
     give,
     away: () => void give("away"),
     touched() {

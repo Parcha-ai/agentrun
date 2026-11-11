@@ -17,6 +17,9 @@
     "status": "working",
     "state": "working",
     "title": "Bulk import takes a while",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:39.746Z",
     "updated_at": "2026-10-28T21:19:40.458Z",
     "ended_at": null,
