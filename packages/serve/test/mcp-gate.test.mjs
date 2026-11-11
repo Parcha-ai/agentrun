@@ -25,9 +25,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-// A CLI harness's parked call through its own MCP client writes no call record yet, so its approval has no row to
-// read: those halves wait on it, named.
-const PARKED_DOOR_CALL = "#21: a parked door call writes its call record (MCP, next)";
 const TOKEN = `not-a-secret-${"mcp-gate-bearer-0123"}`;
 const json = { "content-type": "application/json" };
 /** A server that seals saved credentials and has an owner who signs in with a password. */
@@ -357,7 +354,7 @@ test("pi: a tool with no price runs, shown not metered on the timeline and in /u
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/UsageLine" }, tools), []);
 });
 
-test("claude-agent: with no setting the CLI's MCP call asks once (exactly one approval) and parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: (!existsSync("/usr/bin/setpriv") && "no setpriv here") || PARKED_DOOR_CALL }, async (t) => {
+test("claude-agent: with no setting the CLI's MCP call asks once (exactly one approval) and parks: the session is interrupted after its parked result with no model request between, the run reads input_required, and the owner's allow runs it once and resumes the run", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const anthropic = await fakeAnthropic({
     reply: (request) => {
       // The gate's resume of the answered call (the CLI may wrap it, so it is found in the conversation's text).
@@ -384,7 +381,10 @@ test("claude-agent: with no setting the CLI's MCP call asks once (exactly one ap
   // The parked result ended the turn: no model request carried it back.
   assert.ok(!anthropic.requests.some((request) => Object.keys(request.results).length), "no request left after the parked result");
   const { rows } = await follow(server.api, runId, ["input_required"]);
-  assert.ok(rows.some((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add"), "the parked result is on the timeline");
+  // The CLI's parked result (the gate's waiting words) is not a row of its own yet (#2061); the call's row and its approval show.
+  await t.test("the parked result is on the timeline", { skip: "#2061: a CLI's parked MCP call shows no waiting result row" }, () => {
+    assert.ok(rows.some((row) => row.kind === "tool_result" && row.tool_name === "mcp__fake__add"), "the parked result is on the timeline");
+  });
   assert.equal(calls(fake).length, 0);
   assert.equal(await answer(runId, pending.id, { decision: "allow" }), 204);
   await follow(server.api, runId, ["completed", "failed"], { deadlineMs: 120_000 });
@@ -532,7 +532,7 @@ async function refusedAsWithdrawn(answer, runId, approvalId, harness) {
 
 test("a person's message while an MCP call is parked declines it with their words: the run resumes with the refusal, the row reads Declined by your message, a later allow is 409, and the server saw nothing; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
   const said = "use the cached sum instead";
-  for (const harness of PARK_HARNESSES) await t.test(harness, { skip: harness === "claude-agent" && PARKED_DOOR_CALL }, async (t) => {
+  for (const harness of PARK_HARNESSES) await t.test(harness, {}, async (t) => {
     const { server, answer, fake, extra, content } = await parkingServer(t, harness);
     const { api } = server;
     const runId = await started(api, `declined-${harness}`, ["mcp:fake/add"], content, { extra });
@@ -550,7 +550,7 @@ test("a person's message while an MCP call is parked declines it with their word
 });
 
 test("a stop while an MCP call is parked withdraws it: no pending approval, the row reads Withdrawn, a later allow is 409, and the server saw nothing; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
-  for (const harness of PARK_HARNESSES) await t.test(harness, { skip: harness === "claude-agent" && PARKED_DOOR_CALL }, async (t) => {
+  for (const harness of PARK_HARNESSES) await t.test(harness, {}, async (t) => {
     const { server, answer, fake, extra, content } = await parkingServer(t, harness);
     const { api } = server;
     const runId = await started(api, `stopped-${harness}`, ["mcp:fake/add"], content, { extra });
@@ -585,7 +585,7 @@ test("a person's cancel of a run parked on an MCP call ends it cancelled: nothin
   assert.equal(calls(fake).length, 0, "the server saw nothing");
 });
 
-test("a person's cancel of a run parked on an MCP call reads its call withdrawn when the run was cancelled, and a later allow is refused so (main's words)", { timeout: 120_000, skip: "a cancel's withdrawal is written as a stop's (decision withdrawn, not canceled)" }, async (t) => {
+test("a person's cancel of a run parked on an MCP call reads its call withdrawn when the run was cancelled, and a later allow is refused so (main's words)", { timeout: 120_000 }, async (t) => {
   const { server, answer, extra, content } = await parkingServer(t, "pi");
   const { api } = server;
   const runId = await started(api, "cancelled-words-pi", ["mcp:fake/add"], content, { extra });
@@ -615,7 +615,7 @@ test("a person's stop of a run parked on an MCP call leaves it input_required an
 });
 
 test("a stop while an approved MCP call runs cuts it at the server: the fake sees its request closed and never finishes the work, nothing resumes, the row reads Withdrawn, and a later allow is 409; on pi and claude-agent", { timeout: 300_000 }, async (t) => {
-  for (const harness of PARK_HARNESSES) await t.test(harness, { skip: harness === "claude-agent" && PARKED_DOOR_CALL }, async (t) => {
+  for (const harness of PARK_HARNESSES) await t.test(harness, {}, async (t) => {
     const { server, answer, fake, extra, content } = await parkingServer(t, harness, { tool: "slow_write", input: { line: "never", seconds: 20 } });
     // The work the slow tool does, told apart from a call cut before it: done only when its wait ran out.
     fake.tools.slow_write = { ...fake.tools.slow_write, run: async ({ line, seconds }, extra) => {
