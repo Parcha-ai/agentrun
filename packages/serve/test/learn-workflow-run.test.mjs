@@ -125,7 +125,7 @@ test("learned_workflow's description is short: one line of what it does, one lin
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }]);
   const lines = said.split("\n");
   assert.equal(lines.length, 2, said);
-  for (const fact of ["learned workflows", "one call", "by name", "JSON input", "(* required)", "output as JSON", "why it did not run"]) assert.ok(lines[0].includes(fact), `${fact}: ${lines[0]}`);
+  for (const fact of ["learned workflow", "one call", "by name", "JSON input", "(* required)", "Text output: reply with it unchanged", "Else JSON", "why it did not run"]) assert.ok(lines[0].includes(fact), `${fact}: ${lines[0]}`);
   assert.equal(lines[1], `- answer {question* string}: ${DESCRIPTION}`);
   assert.ok(Buffer.byteLength(said) <= 270, `${Buffer.byteLength(said)} bytes: ${said}`);
   const tool = learnedWorkflowTool({ workflows: [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }], granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
@@ -572,9 +572,9 @@ const reportFlow = () => ({
   root: { node: "chain", steps: [{ node: "extract", label: "format", instructions: "Write the card report: the table, then Flagged:, then Grand total: last.", out: "Report", as: "report" }] },
 });
 
-test("learned_workflow's description says a workflow that does the job asked gives the answer: its text as it is, in its format, nothing added (#2412)", () => {
+test("learned_workflow's description says a text output is the reply, unchanged (#2412)", () => {
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: "{}" }]);
-  assert.match(said, /its output is your answer: reply with its text as it is, in its format, and add nothing/, said);
+  assert.match(said.split("\n")[0], /Text output: reply with it unchanged\./, said);
 });
 
 test("a learned workflow's output is handed back as text when it is text, one string or an object of one string field, and as JSON otherwise (#2412)", async () => {

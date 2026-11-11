@@ -33,8 +33,8 @@ const fake = (name) => ["not-a-secret", name].join("-");
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_PRICE", "PARALLEL_API_KEY", ...MODEL_KEYS.map((row) => row.field)];
 
 /** learned_workflow's description and input schema for the one `answer` workflow, as LS-07 trimmed them: the same on pi
- *  and as each harness is given it. */
-const SAID = "Runs one of this agent's learned workflows in one call, by name, on a JSON input with the fields below (* required). Answers its output as JSON, or why it did not run.\n- answer {question* string}: Answers a question as a number; use when the person asks for the answer";
+ *  and as each harness is given it; its answer clause as #2412 says a text output is handed back to reply with. */
+const SAID = "Runs a learned workflow in one call, by name, on a JSON input: fields below (* required). Text output: reply with it unchanged. Else JSON, or why it did not run.\n- answer {question* string}: Answers a question as a number; use when the person asks for the answer";
 const SCHEMA = { type: "object", additionalProperties: false, required: ["name", "input"], properties: { name: { type: "string", enum: ["answer"] }, input: { type: "object" } } };
 
 const flowFiles = (name, workflow) => ({
@@ -235,7 +235,7 @@ test("R7 (guard) a call the harness's answer asks for beside learned_workflow st
   assert.equal(requestOf("write"), requestOf(LEARNED_WORKFLOW_TOOL), "both calls on the harness's one answer");
 });
 
-test("R8 (guard) learned_workflow's description and input schema are as LS-07 trimmed them, on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
+test("R8 (guard) learned_workflow's description and input schema are as LS-07 trimmed them (its answer clause as #2412 left it), on pi and as the harness is given it on claude-agent and codex; a pathless output is refused in #1727's words", { timeout: 120_000 }, async (t) => {
   const flows = [{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }];
   assert.equal(learnedWorkflowDescription(flows), SAID);
   const tool = learnedWorkflowTool({ workflows: flows, granted: [], env: {}, work: "/tmp", models: {}, modelOf: () => undefined, policy: () => "allow", denyFrom: () => "default" });
