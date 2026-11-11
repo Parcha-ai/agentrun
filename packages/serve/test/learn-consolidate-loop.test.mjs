@@ -492,3 +492,63 @@ test("a consolidation whose runner goes down after its paid request resumes on t
   const row = await w.store.runs.get(id);
   assert.equal(Math.round(row.costUsd * 1e6) / 1e6, 0.02, "the run's cost: the one consolidation request and its grade");
 });
+
+// PRRT_kwDOUmdVMs62RAsP: a resumed consolidation is held to the clusters its saved answer was asked about, never to
+// clusters rebuilt from main as it is at the resume. A note merged between the claims seeds another cluster first, and
+// the clusters rebuilt then would leave the saved replacements outside any cluster: the paid answer wasted.
+test("a consolidation resumed on its saved answer is held to the clusters that answer was asked about, even when a note merged since changes the clusters main gives now", async (t) => {
+  const w = await world(t);
+  const id = "run-0-consolidate";
+  await w.store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", []) });
+  const asks = [];
+  const ask = async ({ prompt }) => {
+    asks.push(prompt);
+    return { text: prompt.startsWith("You keep an agent's learned notes") ? replaceAsked(prompt) : graderAnswer(prompt), usd: 0.01, tokens: { input: 10, cache_read: 0, cache_write: 0, output: 5 } };
+  };
+  let down = true;
+  const refuse = async () => {
+    if (down) throw new Error("the runner went down");
+    return [];
+  };
+  const loopOf = () => learningLoopFactory({ refuse, store: w.store, data: w.data, ask })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
+  const first = await w.store.claim(id, "runner-a", { leaseMs: 60_000 });
+  await assert.rejects(loopOf().start(first), /the runner went down/);
+  const askedAbout = ["invoice", "refund", "migration"].filter((topic) => asks[0].includes(`### ${topic}-0.md (`));
+  assert.equal(askedAbout.length, 2, "two clusters asked about");
+  // Between the claims, another run merges a note of the rule left out: newest, it seeds that rule's cluster first now,
+  // five notes, and the two clusters asked about no longer fit one merge beside it.
+  const [left] = ["invoice", "refund", "migration"].filter((topic) => !askedAbout.includes(topic));
+  const extra = note(`${left} rule e`, RULES[left][0], `${RULES[left][0]}, every time.\n`);
+  const between = await mergeOn(w, "run-between", [{ path: `${left}-4.md`, text: extra }]);
+  assert.ok(between.ok && between.files.includes(`${left}-4.md`), JSON.stringify(between));
+  down = false;
+  w.clock.now += 120_000;
+  const again = await w.store.claim(id, "runner-b", { leaseMs: 60_000 });
+  assert.deepEqual(await loopOf().start(again), { state: "ended" });
+  const entries = await journalEntries(w.store.journal(again), BACKGROUND_CONTEXT);
+  assert.ok(entries.some((e) => e.kind === KINDS.learningMerged), `the saved answer merges: ${JSON.stringify(entries.map((e) => [e.kind, e.data?.detail, e.data?.problems]))}`);
+  const status = statusOf(await w.onFolder((ws) => readSnapshot(ws)));
+  for (const topic of askedAbout) {
+    assert.equal(status[`${topic}-rule.md`], "active", JSON.stringify(status));
+    for (const i of [0, 1, 2, 3]) assert.match(status[`${topic}-${i}.md`], new RegExp(`^(superseded:${topic}-rule\\.md|active)$`));
+  }
+  assert.equal(asks.filter((prompt) => prompt.startsWith("You keep an agent's learned notes")).length, 1, "asked once");
+});
+
+// PRRT_kwDOUmdVMs62RAsX: an answer that rewrites both sides of a pair is graded with the two side by side, never beside
+// main's. If the grader keeps one side and drops the other, the kept side was never compared with the partner it would
+// merge beside: the pair is dropped whole, and the next consolidation asks for it again.
+test("an answer that rewrites both sides of a pair, whose grade drops one side, merges neither: the kept side is left out with its partner, said, and main keeps the pair as it was", async (t) => {
+  const w = await driftedWorld(t);
+  const skill2 = SKILL.replace("2. Quote the refund lines.", "2. Quote the refund lines whole.\n3. Say the window in days.");
+  const draft2 = { ...DRAFT, root: { ...DRAFT.root, instructions: "Say the store's refund policy and its window in days, from the page." } };
+  const answer = [`\`\`\`\`skill find-policies\n${skill2}\`\`\`\``, `\`\`\`\`workflow find-policies\n---\ndescription: Finds a store's refund policy and window\n---\n${JSON.stringify(draft2)}\n\`\`\`\``].join("\n\n");
+  const before = await w.onFolder((ws) => readSnapshot(ws));
+  const { end, entries, snapshot, asks } = await consolidate(w, () => answer, { pairs: [{ skill: "find-policies", workflow: "find-policies", changed: "skill" }], drop: ["workflows/find-policies/workflow.json"] });
+  assert.deepEqual(end, { state: "ended" });
+  assert.match(asks[1], /each once, and for no other: skills\/find-policies\/SKILL\.md, workflows\/find-policies\/workflow\.json\./, "both sides graded together");
+  assert.equal(snapshot.main, before.main, `nothing merged: ${JSON.stringify(entries.map((e) => [e.kind, e.data?.detail]))}`);
+  const dropped = entries.find((e) => e.kind === KINDS.learningDropped);
+  assert.equal(dropped?.data.reason, "grader", JSON.stringify(entries.map((e) => [e.kind, e.data])));
+  assert.match(dropped.data.detail, /find-policies/, dropped.data.detail);
+});
