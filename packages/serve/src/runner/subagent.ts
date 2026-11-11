@@ -12,10 +12,12 @@
 // the call names one (never a model the call names); it has no subagent tool of its own (depth 1), and at most
 // SUBAGENT_PARALLEL children of a run work at once; a call past that waits for one to end.
 import type { Context } from "@earendil-works/chord";
-import { configure, defineExtension, defineTool, type Extension, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
+import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { ASK_TOOL } from "../tools.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
+import { cutAtLimit } from "./loop-contract.js";
+import { PI_STOP } from "./pi-stop.js";
 
 export const SUBAGENT_TOOL = "subagent";
 /** The tiers a call may name for its child (its definition's model_tiers, else this server's tier); a call that names
@@ -103,11 +105,10 @@ export function chosenTools(asked: readonly string[], options: Pick<SubagentOpti
   return { catalog };
 }
 
-/** The subagent tool and its extension. Install the extension in the run's root agent (adapters/pi.ts `extensions`). */
-export function subagentExtension(options: SubagentOptions): Extension {
+/** The subagent tool: one of the session's own tools (adapters/pi.ts `tools`), so it needs no extension of its own. */
+export function subagentTool(options: SubagentOptions): ToolRegistration {
   const free = slots(SUBAGENT_PARALLEL);
-  let extension: Extension;
-  const tool = defineTool({
+  return defineTool({
     name: SUBAGENT_TOOL,
     description: `Run a subagent: a fresh conversation that starts with nothing but your prompt, on your own model (or the model tier you name: ${SUBAGENT_TIERS.join(" or ")}), with only the tools you list (a subset of your own), and get its final answer back as text. Write the prompt self-contained: the subagent sees none of your conversation. Several calls in one turn run at once, at most ${SUBAGENT_PARALLEL} at a time; more wait their turn. A subagent cannot start subagents of its own.`,
     parameters: {
@@ -128,7 +129,8 @@ export function subagentExtension(options: SubagentOptions): Extension {
     execute: async (given, api, context: Context) => {
       const args = given as Args;
       const fail = (text: string) => ({ output: [{ type: "text" as const, text }], isError: true });
-      // Depth 1: a child has no subagent tool (its agent drops this extension); and only the run's own conversation calls it.
+      // Depth 1: a child is never offered subagent (its tools are the call's subset, NEVER_GIVEN aside); and only the run's
+      // own conversation calls it.
       if (Number(api.conversationId) !== Number(ROOT_CONVERSATION_ID)) return fail("subagent: a subagent cannot start subagents of its own. Nothing ran.");
       const model = args.model === undefined ? undefined : options.tier(args.model);
       if (model && "why" in model) return fail(`subagent: the ${args.model} tier has no model here: ${model.why} Nothing ran.`);
@@ -149,8 +151,8 @@ export function subagentExtension(options: SubagentOptions): Extension {
           const created = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
           await configure(tx, created.id, {
             // The tier's model, else the parent's own (its route through the session's proxy and booking).
+            // The child keeps the session's extension (its gate); its tools are exactly the call's subset.
             model: model?.ref ?? parent.model,
-            extensions: { remove: [extension] },
             tools: tools as unknown as ToolRegistration[],
             modelTools: null,
             instructions: [options.preamble, SUBAGENT_INSTRUCTIONS].filter(Boolean).join("\n\n"),
@@ -166,8 +168,12 @@ export function subagentExtension(options: SubagentOptions): Extension {
         const settled = await submission.wait(context);
         if (settled.status === "done" && settled.answer !== undefined) {
           const answer = await api.commit((tx) => tx.entry(settled.answer!), context);
-          const message = answer?.model?.findLast((each) => each.role === "assistant");
-          return { output: [{ type: "text" as const, text: boundedAnswer(textOf(message as never) || "(the subagent answered with no text)") }], details };
+          const message = answer?.model?.findLast((each) => each.role === "assistant") as { stopReason?: string; usage?: { output?: number } } | undefined;
+          const text = textOf(message as never);
+          // An answer cut at the model's output limit is unfinished (as the run's own is: loop.ts cutLast): an error the
+          // parent reads, with what the child said before the cut.
+          if (message?.stopReason === PI_STOP.length) return { ...fail(boundedAnswer(`subagent: its answer is unfinished: ${cutAtLimit(message.usage?.output)}${text ? `\nWhat it wrote before the cut:\n${text}` : ""}`)), details };
+          return { output: [{ type: "text" as const, text: boundedAnswer(text || "(the subagent answered with no text)") }], details };
         }
         // Unanswered: its own words for why (a request the cap refused, a provider's error), from its last answer.
         const last = await api.commit(async (tx) => (await tx.scanEntries({ conversationId: child, order: "descending" } as never, 20)).items.flatMap((entry) => entry.model ?? []).find((each) => each.role === "assistant"), context);
@@ -177,7 +183,5 @@ export function subagentExtension(options: SubagentOptions): Extension {
         release();
       }
     },
-  });
-  extension = defineExtension({ name: SUBAGENT_TOOL, tools: [tool as ToolRegistration] });
-  return extension;
+  }) as ToolRegistration;
 }

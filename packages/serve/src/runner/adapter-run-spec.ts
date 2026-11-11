@@ -11,7 +11,7 @@
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
@@ -46,13 +46,13 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
-import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, learnedDecisionKeys, savedModelKeys, withModelKeys } from "./claim-secrets.js";
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { agentEntriesOf } from "./loop.js";
-import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentExtension } from "./subagent.js";
+import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type TierRoute, tierProvider } from "./adapters/pi.js";
 import { wireName } from "../catalog.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
@@ -407,15 +407,21 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
+  // pi-native tools in the session's own extension (PiAdapterOptions.tools): the subagent tool, pushed below.
+  const piTools: ToolRegistration[] = [];
   // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
   // host's for the tier, each on a route of its own (its proxy on the session's booking, adapters/pi.ts tiers). A tier no
-  // route can be made for here is no failure of the run: a call on it answers why.
+  // route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
+  // provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's model): so
+  // its route reads every model key the server holds (savedModelKeys). Those reach the tier's proxy alone, as its
+  // credential, never the run's tools (toolEnv).
   const tierRoutes = new Map<SubagentTier, ModelRoute>();
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+    const tierEnv = withModelKeys(deps.env, { ...(await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env })), ...toolEnv });
     for (const tier of SUBAGENT_TIERS) {
       try {
-        tierRoutes.set(tier, await deps.routeOf(body.modelTiers?.[tier], withModelKeys(deps.env, toolEnv), tier, PI_WIRES, undefined, cut));
+        tierRoutes.set(tier, await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
       } catch (error) {
         tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
       }
@@ -425,6 +431,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     run,
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
     extensions: native,
+    tools: piTools,
     model: route.model,
     provider: route.provider,
     redact: cut,
@@ -539,12 +546,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
-  // The subagent tool, in the root agent beside the run's other native extensions: a child's tools are a subset of the
-  // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model one
-  // of the tiers resolved above.
+  // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
+  // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
+  // agent's own or one of the tiers resolved above.
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
     const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
-    native.push(subagentExtension({
+    piTools.push(subagentTool({
       granted,
       sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
       tier: (tier) => {

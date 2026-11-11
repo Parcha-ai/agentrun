@@ -1128,6 +1128,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // claim resumes the run parked (an unanswered pause), never ends it as a failed turn. One that cannot land (the
             // journal sealed) is left to the turn's end, as before.
             const park = spec.cap?.park(refusalOf(answer), raisedCapUsd ?? spec.cap.capUsd);
+            // Parking: every later request of this claim is refused in the same words, so nothing more is sent until a raise
+            // (on the next claim) resumes the run. A run's other conversations (a subagent's children) ask in their own
+            // turns; one refused request parks them all, never one alone.
+            if (park?.outcome === "parked") pendingPause ??= answer;
             if (park?.outcome === "parked" && !pausedAtRefusal && harness && gate && !gate.sealed) {
               const on = gate;
               // From here a raise row waits for the next claim (raise): one taken now would answer no pause this claim

@@ -190,3 +190,12 @@ test("a workflow's route takes the host's model of each tier, as main's workflow
     assert.deepEqual([main.model.modelId, provider.modelId], [row.sent, row.sent], `${row.name}: the workflow's node sends main's id`);
   }
 });
+
+test("a subagent tier's own model (model_tiers) that is not the host's model for the tier routes through the gateway, at the tier's price", async () => {
+  const env = { ...gatewayEnv("http://127.0.0.1:9", ROWS[0]), AGENT_MODEL_STRONG: "team-strong", AGENT_MODEL_STRONG_PRICE: "3,4" };
+  const route = await routeOf("openai/gpt-6-luna", env, "strong", PI_WIRES);
+  assert.equal(route.model, "openai/gpt-6-luna", "the tier's own model, never the host's team-strong");
+  assert.deepEqual([route.cost?.input, route.cost?.output], [3, 4], `the strong tier's price: ${JSON.stringify(route.cost)}`);
+  const host = await routeOf(undefined, env, "strong", PI_WIRES);
+  assert.equal(host.model, "team-strong", "a tier with no model of its own is the host's");
+});

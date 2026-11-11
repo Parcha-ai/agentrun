@@ -2,19 +2,21 @@
 // in-process runner: a granted call runs a fresh child conversation on the strong tier's model with exactly the subset of
 // tools it names (an MCP tool among them) and answers with the child's last text; a revision that does not grant it, or
 // a deny on it, refuses it; a name outside the agent's tools, or subagent itself, is refused before any child starts;
-// a child is never offered subagent (depth 1); the child's requests are booked on the run's one cap, which ends the child
-// when it is reached; several calls in a turn run at once, at most four at a time; the run's timeline nests the child's
-// rows under the call; a call that names no tier runs its child on the agent's own model; a child given bash runs it in
+// a child is never offered subagent (depth 1); an answer cut at its output limit fails the call; the child's requests are
+// booked on the run's one cap, whose refusal ends the child's call in the cap's words and parks the run, and a raise
+// resumes the run, not the child; a child mid-turn when its runner goes is the same child on the next claim, answering
+// once, with no finished request sent again; a cancel stops every child; several calls in a turn run at once, at most
+// four at a time; the run's timeline nests the child's rows under the call; a call that names no tier runs its child on the agent's own model; a child given bash runs it in
 // the run's computer, held to the agent's read-only bash policy by the same gate. No key, no network, no Docker (a fake
 // sandbox whose bash runs on this machine in the run's folder: fixtures/streaming-sandbox.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { streamingSandbox } from "./fixtures/streaming-sandbox.mjs";
-import { agent, follow, serve, withEnv } from "./support.mjs";
+import { agent, follow, runRecordOf, serve, startInProcessRunner, withEnv } from "./support.mjs";
 
 const { runFolder } = await import("../dist/workspace/paths.js");
 
@@ -25,10 +27,13 @@ const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const PER_REQUEST = 0.002;
 const ENDED = ["completed", "failed", "cancelled", "input_required"];
 
-async function setup(t, { mcp = false, sandbox } = {}) {
-  const log = join(process.env.TMPDIR ?? "/tmp", `faux-subagent-${randomBytes(6).toString("hex")}.jsonl`);
-  withEnv(t, { FAUX_SUBAGENT_LOG: log, AGENT_MODEL_STRONG: "faux-strong", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const server = await serve(t, { faux: FAUX_SUBAGENT, ...(mcp ? { accounts: true, openSetup: true } : {}), ...(sandbox ? { fauxBox: FAUX_BOX, computerForClaim: sandbox } : {}) });
+async function setup(t, { mcp = false, sandbox, runner = true } = {}) {
+  const tag = randomBytes(6).toString("hex");
+  const log = join(process.env.TMPDIR ?? "/tmp", `faux-subagent-${tag}.jsonl`);
+  /** The file whose being there lets a "Hold" child answer (fixtures/faux-subagent.mjs). */
+  const release = join(process.env.TMPDIR ?? "/tmp", `faux-subagent-${tag}.release`);
+  withEnv(t, { FAUX_SUBAGENT_LOG: log, FAUX_SUBAGENT_RELEASE: release, AGENT_MODEL_STRONG: "faux-strong", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const server = await serve(t, { faux: FAUX_SUBAGENT, ...(runner ? {} : { runner: false }), ...(mcp ? { accounts: true, openSetup: true } : {}), ...(sandbox ? { fauxBox: FAUX_BOX, computerForClaim: sandbox } : {}) });
   let fake;
   if (mcp) {
     fake = await startFakeMcp({});
@@ -42,18 +47,33 @@ async function setup(t, { mcp = false, sandbox } = {}) {
       return [];
     }
   };
-  /** A run of a new agent `id` (its definition's `extra` beside the suite's), on `content`, followed to its end. */
-  const run = async (id, extra, content, { max_cost_usd } = {}) => {
+  /** A new agent `id` (its definition's `extra` beside the suite's) started on `content`: its run's id. */
+  const start = async (id, extra, content, { max_cost_usd } = {}) => {
     const made = await server.api("POST", "/agents", agent(id, { approvals: "never", ...extra }));
     assert.equal(made.status, 201, JSON.stringify(made.body));
     const started = await server.api("POST", `/agents/${id}/runs`, { input: { content }, ...(max_cost_usd ? { max_cost_usd } : {}) });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    const followed = await follow(server.api, started.body.run_id, ENDED, { deadlineMs: 120_000 });
-    const view = (await server.api("GET", `/runs/${started.body.run_id}`)).body;
+    return started.body.run_id;
+  };
+  /** Run `runId` followed to one of `until`, with its view and final answer. */
+  const ended = async (runId, until = ENDED) => {
+    const followed = await follow(server.api, runId, until, { deadlineMs: 120_000 });
+    const view = (await server.api("GET", `/runs/${runId}`)).body;
     return { ...followed, view, answer: view.result?.final_answer ?? "" };
   };
-  return { ...server, run, lines, fake: () => fake };
+  /** A run of a new agent, followed to its end. */
+  const run = async (id, extra, content, options) => ended(await start(id, extra, content, options));
+  return { ...server, start, ended, run, lines, release: () => writeFileSync(release, "go"), fake: () => fake };
 }
+
+/** Wait until `ready()` holds, at most `ms`. */
+async function until(ready, what, ms = 60_000) {
+  for (const end = Date.now() + ms; !(await ready()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, `waited for ${what}`);
+}
+/** The model requests in the fixture's log (its other lines note a wait, a hold or an abort). */
+const requests = (lines) => lines.filter((line) => "model" in line);
+/** The timeline's rows of run `runId` now. */
+const rowsNow = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
 
 const delegate = (calls) => `Delegate ${JSON.stringify(calls)}`;
 const resultsOf = (rows) => rows.filter((row) => row.kind === "tool_result" && row.tool_name === "subagent");
@@ -132,35 +152,92 @@ test("several calls in one turn run at once, at most four at a time, each answer
   assert.ok(Math.abs(parallel.view.cost.usd - asked * PER_REQUEST) < 1e-9, `the run's cost ${parallel.view.cost.usd}`);
 });
 
-test("a child's spend books on the run's one cap, and the cap ends the child", { timeout: 240_000 }, async (t) => {
-  const { run, lines, api } = await setup(t);
+test("the cap's refusal of a child's request fails its call in the cap's words and parks the run; nothing more is sent; a raise resumes the run, not the child", { timeout: 240_000 }, async (t) => {
+  const { run, lines, api, ended } = await setup(t);
   const cap = 0.03;
   const capped = await run("capped", { tools: ["read", "subagent"] }, delegate([{ prompt: "Read forever nothing.md", tools: ["read"], model: "strong" }]), { max_cost_usd: cap });
   assert.equal(capped.last.status, "input_required", `parked at its cap: ${JSON.stringify(capped.view)}`);
-  // The cap ends the child: its call fails in the cap's words, or, when the run parked at its cap first, the call is
-  // cut with the run. Either way the child asks its model nothing more.
+  assert.equal(capped.view.pending?.kind, "budget", JSON.stringify(capped.view.pending));
+  // One behaviour: the child's refused request ends its turn, its call fails in the cap's words, and the run's own next
+  // request is refused the same way, so the run parks with the call's result on its record.
   const [result] = resultsOf(capped.rows);
-  if (result) {
-    assert.equal(result.tool_status, "failed");
-    assert.match(result.tool_result_preview ?? "", /subagent: it stopped before it answered: .*spend_cap_reached/);
-  }
-  const asked = lines().length;
+  assert.equal(result?.tool_status, "failed", JSON.stringify(capped.rows.map((row) => [row.kind, row.tool_name, row.tool_status])));
+  assert.match(result.tool_result_preview ?? "", /subagent: it stopped before it answered: .*spend_cap_reached/);
+  const asked = requests(lines()).length;
   await new Promise((resolve) => setTimeout(resolve, 1_000));
-  assert.equal(lines().length, asked, "nothing asked its model once the run stopped at its cap");
-  const child = lines().filter((line) => line.child).length;
-  const own = lines().filter((line) => !line.child).length;
+  assert.equal(requests(lines()).length, asked, "nothing asked its model once the run parked at its cap");
+  const child = requests(lines()).filter((line) => line.child).length;
+  const own = requests(lines()).filter((line) => !line.child).length;
   assert.ok(child >= 3, `the child asked its model until the cap: ${child}`);
   // What the run spent is every request the cap let through, the child's among them, and never more than its cap.
-  // Read again until the last answer's booking is in (it lands once the proxy has its upstream's end), at most 10 s.
   const want = (child + own) * PER_REQUEST;
   let spent = capped.view.cost?.usd;
-  for (const until = Date.now() + 10_000; !(Math.abs(spent - want) < 1e-9) && Date.now() < until; ) {
+  for (const end = Date.now() + 10_000; !(Math.abs(spent - want) < 1e-9) && Date.now() < end; ) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     spent = (await api("GET", `/runs/${capped.view.run_id}`)).body.cost?.usd;
   }
-  assert.ok(typeof spent === "number" && Math.abs(spent - (child + own) * PER_REQUEST) < 1e-9, `cost ${spent} for ${child} child and ${own} own requests: every request the model was asked is booked on the run`);
-  assert.ok(spent >= child * PER_REQUEST - 1e-9, `the child's ${child} requests are in the run's cost: ${spent}`);
+  assert.ok(typeof spent === "number" && Math.abs(spent - want) < 1e-9, `cost ${spent} for ${child} child and ${own} own requests: every request the model was asked is booked on the run`);
   assert.ok(spent <= cap + 1e-9, `within its cap: ${spent}`);
+
+  // A raise resumes the run, not the child: the agent's next turn reads the failed call (and may call subagent again,
+  // which starts a fresh child); the child asks its model nothing more.
+  const raised = await api("PATCH", `/runs/${capped.view.run_id}`, { max_cost_usd: 1 });
+  assert.equal(raised.status, 200, JSON.stringify(raised.body));
+  const resumed = await ended(capped.view.run_id, ["completed", "failed", "cancelled"]);
+  assert.equal(resumed.last.status, "completed", JSON.stringify(resumed.view));
+  assert.match(resumed.answer, /^Results: subagent: it stopped before it answered: .*spend_cap_reached/);
+  assert.equal(requests(lines()).filter((line) => line.child).length, child, "the child was not resumed");
+});
+
+test("a child mid-turn when its runner goes is the same child on the next claim: it answers once, and no finished request is sent again", { timeout: 240_000 }, async (t) => {
+  const { start, ended, lines, api, data, release } = await setup(t, { runner: false });
+  const closeFirst = await startInProcessRunner(data, { faux: FAUX_SUBAGENT });
+  let firstClosed = false;
+  t.after(() => (firstClosed ? undefined : closeFirst()));
+  const runId = await start("restart", { tools: ["read", "subagent"] }, delegate([{ prompt: "Say first" }, { prompt: "Hold second" }]));
+  // The first child has answered and its answer is on the run's record; the second is mid-request.
+  await until(async () => lines().some((line) => line.held === "second") && (await rowsNow(api, runId)).some((row) => row.parent_tool_use_id && JSON.stringify(row).includes("first") && row.kind !== "tool_call"), "the first child's answer and the second child's held request");
+  const held = runRecordOf(data, runId);
+  await closeFirst();
+  firstClosed = true;
+  release();
+  const closeSecond = await startInProcessRunner(data, { faux: FAUX_SUBAGENT });
+  t.after(() => closeSecond());
+  const done = await ended(runId, ["completed", "failed", "cancelled"]);
+  assert.equal(done.last.status, "completed", JSON.stringify(done.view));
+  assert.ok(runRecordOf(data, runId).epoch > held.epoch, "another claim resumed the run");
+  assert.equal(done.answer, "Results: first | second");
+  const asked = requests(lines());
+  assert.equal(asked.filter((line) => line.asked === "Say first").length, 1, "the first child's finished request was never sent again");
+  assert.equal(asked.filter((line) => !line.child).length, 2, "the run's own finished turn was never sent again: one turn that delegated, one that answered");
+  assert.equal(asked.filter((line) => line.asked === "Hold second").length, 2, "the second child's cut request was sent again, once, on the next claim");
+  // The same two children: one started row and one completed row each, never a third child for the resumed call.
+  assert.equal(done.rows.filter((row) => row.kind === "subagent_started").length, 2, JSON.stringify(done.rows.map((row) => [row.kind, row.summary])));
+  assert.equal(done.rows.filter((row) => row.kind === "subagent_completed").length, 2);
+  assert.deepEqual(resultsOf(done.rows).map((row) => row.tool_status), ["success", "success"]);
+});
+
+test("cancelling a run stops its children: their requests are aborted and nothing more is asked", { timeout: 240_000 }, async (t) => {
+  const { start, ended, lines, api } = await setup(t);
+  const runId = await start("cancel", { tools: ["read", "subagent"] }, delegate([{ prompt: "Hold one" }, { prompt: "Hold two" }]));
+  await until(() => lines().filter((line) => line.held).length === 2, "both children holding a request");
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  const done = await ended(runId, ["cancelled", "completed", "failed"]);
+  assert.equal(done.last.status, "cancelled", JSON.stringify(done.view));
+  await until(() => lines().filter((line) => line.aborted).length === 2, "both children's requests aborted", 20_000);
+  const asked = requests(lines()).length;
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  assert.equal(requests(lines()).length, asked, "nothing asked its model after the cancel");
+  assert.ok(!resultsOf(done.rows).some((row) => row.tool_status === "success"), "no child answered");
+});
+
+test("a child's answer cut at its model's output limit fails its call, saying so, with what it wrote", { timeout: 240_000 }, async (t) => {
+  const { run } = await setup(t);
+  const cut = await run("cut", { tools: ["read", "subagent"] }, delegate([{ prompt: "Cut half an ans" }]));
+  assert.equal(cut.last.status, "completed", JSON.stringify(cut.view));
+  const [result] = resultsOf(cut.rows);
+  assert.equal(result?.tool_status, "failed", JSON.stringify(cut.rows.map((row) => [row.kind, row.tool_name, row.tool_status])));
+  assert.match(cut.answer, /^Results: subagent: its answer is unfinished: [^\n]+\nWhat it wrote before the cut:\nhalf an ans$/);
 });
 
 test("a call that names no tier runs its child on the agent's own model", { timeout: 240_000 }, async (t) => {

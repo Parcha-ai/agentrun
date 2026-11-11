@@ -980,6 +980,16 @@ given `subagent` or `ask_person`), and at most 4 children of a run work at once;
 child under its call, and the run's cost counts every child's requests. How to split work and merge answers is the
 agent's own instructions, never the engine's.
 
+A child is a conversation in the run's own journal, owned by its call, so it lives and ends with the run:
+
+- **A restart or a moved claim** resumes it. The next claim finds the same child, which answers its call once. A request
+  it had finished is never sent again, and one the stop cut is sent again.
+- **A cancel** stops every child with the run: their requests are aborted, and nothing more is asked.
+- **The cap.** When the run's cap refuses a child's request, the child stops and its call fails in the cap's words
+  (`subagent: it stopped before it answered: ... spend_cap_reached`). The run's next request is refused the same way, so
+  the run parks at its cap (`input_required`, a `budget` pending) and sends nothing more. A raise resumes the run, not
+  the child: the agent reads the failed call on its next turn and may call `subagent` again, which starts a fresh child.
+
 #### Patterns
 
 **Sample K, merge, verify.** One pass misses what a second finds, and states things neither would confirm. A template's

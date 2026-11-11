@@ -74,7 +74,10 @@ type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: strin
 export async function routeOf(model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
-  const { models, unpriced } = await runModels(env, tier === "default" ? model : undefined, [tier]);
+  // A tier's own model, when one is named (a subagent's model_tiers), is the one registered, at the tier's price: a gateway
+  // lists only the models it is given, so the host's model for the tier in its place would leave this one unknown.
+  const named = tier !== "default" && typeof model === "string" ? { [tier]: model } : {};
+  const { models, unpriced } = await runModels(env, tier === "default" ? model : undefined, [tier], undefined, named);
   const target = models.getModel(chosen.model.provider, chosen.model.modelId) as unknown as PiModel | undefined;
   if (!target) throw new Error(`no model ${chosen.model.provider}/${chosen.model.modelId} here`);
   // A model serve has no price for (runModels' `unpriced`) carries a placeholder cost of zeros: its requests are booked at

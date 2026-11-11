@@ -12,7 +12,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -72,6 +72,10 @@ export interface PiAdapterOptions {
    *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
    *  its model from the root's agent, through this session's proxy and its booking. */
   readonly extensions?: readonly Extension[];
+  /** pi-native tools the session's own extension carries beside its host tools (the subagent tool: runner/subagent.ts):
+   *  pi's own tool tasks, under the session's gate like every call. Read when the session opens. A conversation one of
+   *  them opens keeps the session's extension, so its calls pass the same gate; its own `tools` say which it is offered. */
+  readonly tools?: readonly ToolRegistration[];
   /** The run's other model tiers (a subagent's model: runner/subagent.ts), each on its own model proxy with the session's
    *  one booking (io.models), so its requests are admitted and booked under the run's one cap as pi's own are. Each is
    *  listed in pi's models under tierProvider(tier). */
@@ -97,11 +101,11 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   };
 }
 
-/** The names of the run's pi-native extensions' tools (options.extensions): the model is offered them beside the session's
+/** The names of the run's pi-native tools (options.extensions' and options.tools): the model is offered them beside the session's
  *  own (so it may call one), and pi runs it. Offered and run by one mechanism; sessionOn never also piTool-wraps a session
  *  tool a native extension already owns, so the name is in the request's tools exactly once. */
 const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
-  (options.extensions ?? []).flatMap((extension) => extension.tools ?? []).map((tool) => tool.name);
+  [...(options.extensions ?? []).flatMap((extension) => extension.tools ?? []), ...(options.tools ?? [])].map((tool) => tool.name);
 
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
@@ -175,7 +179,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
   // piTool-wrapped here too: one tool by that name on the agent, offered once.
   const owned = new Set(nativeToolNames(options));
-  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io));
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io)), ...(options.tools ?? [])];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
