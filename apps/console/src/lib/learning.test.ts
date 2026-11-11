@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, pendingBy, provenance, type RunLearning, shownImpact, took, typeLabel, underWay, givenBy, readBy, waitsForOk, waitWords } from "./learning";
+import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, pendingBy, provenance, type RunLearning, shownImpact, took, typeLabel, underWay, givenBy, readBy, supersedesOf, waitsForOk, waitWords } from "./learning";
 import { recorded } from "@/fixtures";
 import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
@@ -305,5 +305,24 @@ describe("changeWords, for every served last_change kind", () => {
   }
   it("a superseded one reads as replaced", () => {
     expect(changeWords("superseded" as LastChange["kind"], "person")).toBe("Replaced by you");
+  });
+});
+
+// Review on #2351: a note's `supersedes` read as the server reads it (serve's learn/notes.ts: the whole value unquoted,
+// then a `[a, b]` list split, each item unquoted), so a quoted list is never one file named "[old.md]".
+describe("supersedesOf", () => {
+  const note = (line: string) => `---\nname: New\ndescription: d\ntype: feedback\n${line}\n---\nBody.\n`;
+  it("reads a list, a quoted list, one name and a quoted name as the server does", () => {
+    expect(supersedesOf(note("supersedes: [old.md, other.md]"))).toEqual(["old.md", "other.md"]);
+    expect(supersedesOf(note('supersedes: "[old.md, other.md]"'))).toEqual(["old.md", "other.md"]);
+    expect(supersedesOf(note("supersedes: '[old.md]'"))).toEqual(["old.md"]);
+    expect(supersedesOf(note('supersedes: ["old.md", \'other.md\']'))).toEqual(["old.md", "other.md"]);
+    expect(supersedesOf(note("supersedes: old.md"))).toEqual(["old.md"]);
+    expect(supersedesOf(note('supersedes: "old.md"'))).toEqual(["old.md"]);
+  });
+  it("names none when the note has no supersedes, or an empty one", () => {
+    expect(supersedesOf(note("origin: you"))).toEqual([]);
+    expect(supersedesOf(note("supersedes: []"))).toEqual([]);
+    expect(supersedesOf(note('supersedes: ""'))).toEqual([]);
   });
 });

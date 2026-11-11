@@ -5,6 +5,9 @@
 /** The setting that names the hosts a box may reach: a comma list of hosts, each a name or `*.` and a name, which
  *  replaces the default list; `none` for no network at all. Unset or empty, the default. */
 export const BOX_ALLOW_ENV = "AGENTRUN_BOX_ALLOW";
+/** Whether the operator set the setting (a list of their own, or none), not left it to the default: a browser is held to
+ *  the operator's list, never to the default, which is a sandbox's package-install list and no browsing policy. */
+export const boxAllowSetIn = (env: NodeJS.ProcessEnv): boolean => (env[BOX_ALLOW_ENV] ?? "").trim() !== "";
 /** The hosts a box reaches when the setting names none: the package registries pip and npm (and yarn) install from, and
  *  GitHub for a clone or an archive. */
 export const DEFAULT_BOX_ALLOW: readonly string[] = Object.freeze(["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"]);

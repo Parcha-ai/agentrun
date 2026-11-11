@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
-import { createComputerRoutes, folderModeOf, KeysRefused } from "../dist/computers.js";
+import { PROVIDERS } from "@parcha/agentrun-computer";
+import { createComputerRoutes, folderModeOf, KeysRefused, networkWords } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
@@ -67,6 +68,10 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
     [networkOf("sandbox", "docker"), networkOf("sandbox", "daytona"), networkOf("sandbox", "modal"), networkOf("sandbox", "e2b"), networkOf("desktop", "orgo"), networkOf("browser", "kernel")],
     [undefined, "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "the vendor's own network; this server's allow-list doesn't apply"],
   );
+  // Local Chrome, behind its own egress proxy ("open" and "allow", the computer package's registry entry): open, unless
+  // the operator sets the list.
+  const local = PROVIDERS.find((one) => one.id === "local");
+  assert.equal(networkWords(local.network), "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts");
 });
 
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {

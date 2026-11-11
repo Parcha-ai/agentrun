@@ -451,8 +451,8 @@ jobs:
           if grep -q 'no-key path missing' "$RUNNER_TEMP/stranger.out"; then echo "::notice title=${{ matrix.spec }}::$(cat "$RUNNER_TEMP/stranger.out")"; fi
 
   macos-local-run:
-    # The server on macOS: it hands a workflow run its decision key over a pipe, and macOS aborts the parent of a spawn with
-    # a pipe at descriptor 16 or above. No other job runs on a Mac.
+    # The server on macOS: it hands a workflow run its decision key over a pipe (macOS aborts the parent of a spawn with a
+    # pipe at descriptor 16 or above), and a run's folder swapped for a link reaches no host file. No other job runs on a Mac.
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -467,6 +467,14 @@ jobs:
       - name: The server hands a workflow run its decision key
         working-directory: packages/serve
         run: node --test --test-timeout=240000 test/decision-key.test.mjs
+      - name: A run's folder swapped for a link reaches no host file
+        # The path-resolving branch every Mac takes (serve's local.ts), on the Mac's own kernel: its opens refuse a link
+        # anywhere on the way with O_NOFOLLOW_ANY (beneath.ts), which Linux CI stands in for by a walk through /proc. The
+        # flag test checks node's O_NOFOLLOW on the Mac is the value beneathFlags keeps apart from O_NOFOLLOW_ANY.
+        working-directory: packages/serve
+        run: |
+          node --test --test-timeout=240000 --test-name-pattern="^local, resolving paths" test/workspace-local.test.mjs
+          node --test test/beneath-flags.test.mjs
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.
