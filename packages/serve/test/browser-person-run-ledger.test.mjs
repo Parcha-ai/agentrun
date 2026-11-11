@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
-import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_COST } from "../dist/timeline/index.js";
 import { browserSpend } from "../dist/browser-cost.js";
 import { paidHolds, useSpend } from "../dist/cap.js";
 

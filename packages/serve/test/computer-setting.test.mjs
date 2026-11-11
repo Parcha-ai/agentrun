@@ -26,6 +26,30 @@ test("a computer is {kind, provider?}: a kind of the five, a provider for every 
   assert.deepEqual(reasons({ kind: "sandbox", provider: "docker", image: "x" }), ["not_allowed"]);
   assert.deepEqual(settingConflict({ kind: "sandbox", provider: "docker" }, { mode: "sandbox", box: "docker" }, "definition"), []);
   assert.deepEqual(settingConflict({ kind: "desktop", provider: "e2b" }, { mode: "sandbox", box: "docker" }, "definition").map((issue) => issue.field), ["definition.place"]);
+  assert.deepEqual(settingConflict({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: "sandbox", box: "daytona" }, "definition"), [], "a place says no GPUs, and agrees");
+});
+
+test("a sandbox's gpu is { type, count } in checkGpu's words: a GPU type name and a whole count from 1; only a sandbox takes one", () => {
+  const issues = (gpu, kind = "sandbox") => computerIssues({ kind, provider: "daytona", gpu }, "definition.computer").map((issue) => [issue.field, issue.reason]);
+  assert.deepEqual(issues({ type: "H100", count: 2 }), []);
+  assert.deepEqual(issues({ type: "A100-80GB", count: 1 }), []);
+  assert.deepEqual(issues({ type: "H100", count: 1 }, "desktop"), [["definition.computer", "not_allowed"]]);
+  for (const gpu of ["H100", null, [], { type: "H100", count: 1, region: "earth" }]) assert.deepEqual(issues(gpu), [["definition.computer.gpu", "wrong_type"]], JSON.stringify(gpu));
+  assert.equal(computerIssues({ kind: "sandbox", provider: "daytona", gpu: "H100" }, "definition.computer")[0].message, "gpu is { type, count }: a GPU type this provider declares, and how many");
+  assert.deepEqual(issues({ count: 1 }), [["definition.computer.gpu.type", "missing"]]);
+  assert.deepEqual(issues({ type: "H 100", count: 1 }), [["definition.computer.gpu.type", "wrong_type"]]);
+  for (const count of [0, 1.5, "1", undefined]) assert.deepEqual(issues({ type: "H100", count }), [["definition.computer.gpu.count", "wrong_type"]], JSON.stringify(count));
+});
+
+test("through the API: a sandbox's gpu is saved and shown with its computer; on a desktop it is 422", async (t) => {
+  const { api } = await serve(t);
+  const gpu = await api("POST", "/agents", agent("gpu", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } } }));
+  assert.equal(gpu.status, 201, JSON.stringify(gpu.body));
+  assert.deepEqual([gpu.body.definition.computer, gpu.body.definition.place], [{ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }, { mode: "sandbox", box: "daytona" }]);
+  assert.deepEqual((await api("GET", "/agents/gpu")).body.definition.computer.gpu, { type: "H100", count: 2 });
+  const desk = await api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b", gpu: { type: "H100", count: 1 } } }));
+  assert.equal(desk.status, 422, JSON.stringify(desk.body));
+  assert.deepEqual(desk.body.error.fields.map((f) => [f.field, f.reason]), [["definition.computer", "not_allowed"]]);
 });
 
 test("through the API: a computer saved shows with its place, a place saved shows its computer, both must agree, and an edit naming neither keeps it", async (t) => {

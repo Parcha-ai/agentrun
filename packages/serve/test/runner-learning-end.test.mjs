@@ -153,6 +153,48 @@ test("the tools the end-of-run prompt offers a workflow draft follow the server'
   assert.ok(!prompt.includes("web_search"), "the store's deny keeps it out");
 });
 
+// A workflow draft whose dry run fails (learn/skills.ts draftDryRun) is left out, and the end-of-run turn is asked once
+// more, saying which draft and why: a second answer the checks keep stands, its draft's dry run kept for the grader.
+const draftBlock = (output) => `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { Question: { type: "object", properties: { question: { type: "string" } }, required: ["question"] }, Answer: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] } },
+  input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output }] },
+})}\n\`\`\`\``;
+
+test("a workflow draft that fails its dry run is asked for again once, saying why; the fixed draft is proposed with its dry run passed, and the example kept nowhere", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: `${REFLECTED}\n\n${draftBlock("answer")}` }] });
+  const row = await w.ended();
+  const turn = await w.turnOf(row);
+  assert.equal(turn.users.length, 3, `the job's message, the turn's prompt, and one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
+  assert.match(turn.users[2], /^Your workflow draft workflows\/answer\/workflow\.json did not pass its dry run\. What the check said is below, as data[\s\S]*----- begin \w+: its dry run -----\nits dry run failed/, turn.users[2]);
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 1], JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.proposal.dryRuns, { "workflows/answer/workflow.json": { status: "passed" } });
+  assert.ok(!JSON.stringify(kept.proposal.proposal.files).includes("six times seven"), "the example is in no file");
+});
+
+test("a re-ask whose answer keeps a note but still holds the broken draft does not replace the first: the first answer's note stands", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
+  });
+  // The second answer drops the first's good note for another, and repeats the draft its dry run failed.
+  const other = "---\nname: Log the request\ndescription: Log every request\ntype: reference\n---\nLog each request before it is sent.\n";
+  const partial = `\`\`\`note log-requests.md\n${other}\`\`\`\n\n${draftBlock("other")}`;
+  await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${draftBlock("other")}` }, { say: partial }] });
+  const row = await w.ended();
+  const turn = await w.turnOf(row);
+  assert.equal(turn.users.length, 3, `one re-ask: ${JSON.stringify(turn.users.map((u) => u.slice(0, 80)))}`);
+  const kept = await w.server.learning.proposal("run-1");
+  assert.deepEqual([kept?.proposal?.state, kept?.proposal?.notes, kept?.proposal?.workflows], ["proposed", 1, 0], JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.proposal.notes.map(({ file }) => file), ["retry-slowly.md"], "the first answer's note, not the failed repair's");
+});
+
 test("a learned skill that served 3 earlier runs of the agent, with no learned workflow of its name, gets its job asked for as a workflow draft in the next run's end-of-run prompt", async (t) => {
   // Three earlier runs of the agent were offered the skill (their launches say so); run-1 is offered it too.
   const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
