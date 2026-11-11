@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { note } from "./fixtures/faux-learn.mjs";
-import { CLI_TOOLS_TODO, ended, git, keptProposal, LEARN, learnedOnMain, learner, learningKept, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
+import { ended, git, keptProposal, LEARN, learnedOnMain, learner, learningKept, made, mergesOf, repoOf, savedOf, settled, sleep, started } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -303,7 +303,7 @@ test("a grader that never answers is cut off at its bound: the run's learning is
 // GET /v2/usage on one server with both kinds of spend outside a run's tokens: a run whose paid tool charged (monid's
 // `tools`, from S2) and a run whose grade spent (the learning ledger's `learning`). Each groups the same way, and the
 // total is every line once.
-test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000, skip: CLI_TOOLS_TODO }, async (t) => {
+test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000 }, async (t) => {
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const { api, data } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
