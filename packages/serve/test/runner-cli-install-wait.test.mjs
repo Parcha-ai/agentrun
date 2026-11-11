@@ -25,6 +25,7 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 const spec = await import("../dist/runner/cli-run-spec.js");
 const { fakeAnthropic } = await import("@parcha/agentrun-harness-claude/testing");
 const { linkHarnesses } = await import("./support.mjs");
@@ -296,7 +297,7 @@ async function responsesGateway(t, text) {
 /** A `harness` run claimed while the server's first-use install of it runs (held at a gate; it lands as the harness's
  *  `land` lays it, or fails with `fails`). The gate opens once the claim is seen waiting for the install (its spec's
  *  installSettled entered) with the run still running; `stop`: the person stops the run instead. Returns the run's end. */
-async function claimedMidInstall(t, harness, { fails, stop = false } = {}) {
+async function claimedMidInstall(t, harness, { fails, stop = false, whileWaiting } = {}) {
   const dir = scratch(t, "runner-cli-install-wait");
   const { env: harnessEnv, model, answer } = await harness.setup(t, dir);
   const entry = HARNESS_INSTALLS[harness.id];
@@ -358,6 +359,8 @@ async function claimedMidInstall(t, harness, { fails, stop = false } = {}) {
   }, "the claim waits for the install, or the run ends");
   assert.ok(first.waited, `the claim waits for the install, never ending the run while it runs: ${JSON.stringify(first.now)}`);
   assert.equal((await server.runs.get(RUN)).state, "running", "waiting for the install, the run is running, not failed");
+  // While it waits (the install still held): what the case reads then.
+  await whileWaiting?.(server);
   // ... and only then does the install go on (or, `stop`, the person stops the run while it waits).
   if (stop) await server.command(RUN, { kind: "stop" });
   else held.open();
@@ -390,6 +393,21 @@ for (const harness of [claude, codex]) {
     assert.ok(row.summary?.includes(why), `in the install's words: ${row.summary}`);
   });
 }
+
+test("a claude-agent run waiting for Claude Code's first-use install shows its Installing row on the person's timeline while the install is still held, not after it", { timeout: 180_000 }, async (t) => {
+  const words = `Installing ${claude.label} (first use)…`;
+  let seen;
+  await claimedMidInstall(t, claude, {
+    whileWaiting: async (server) => {
+      // The install is held until this returns: the row is read from the store as GET /v2/runs/{id}/timeline reads it.
+      seen = await until(async () => {
+        const rows = await runTimeline(server, RUN, ctx);
+        return rows.some((row) => row.kind === "phase" && row.summary === words) && rows;
+      }, "the Installing row on the timeline while the install is held");
+    },
+  });
+  assert.equal(seen.filter((row) => row.kind === "phase" && row.summary === words).length, 1, "one row, while it waited");
+});
 
 test("a person's stop of a claude-agent run waiting for Claude Code's first-use install ends it stopped at once; the install goes on", { timeout: 180_000 }, async (t) => {
   const { row, stillInstalling } = await claimedMidInstall(t, claude, { stop: true });

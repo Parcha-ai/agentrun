@@ -42,14 +42,16 @@ export async function runReflect(store: Store, runId: string, context: Context):
  *  tool call its assistant tool-call and its result. So a claude-agent / codex / opencode run reads the same rows, words
  *  and final answer as a pi run of the same conversation. A run's own pi entries and its end-of-run turn (already model
  *  shaped) pass through unchanged, so a pi run is untouched. */
-/** The calls the CLI record holds parked at their gate (a start marked parked) with no sent mark and no end. */
+/** The calls the CLI record holds parked at an MCP door (a start marked parked, not in its tool bridge) with no sent mark
+ *  and no end. */
 function parkedUnsent(entries: readonly EntryLike[]): Set<string> {
   const parked = new Set<string>();
   const past = new Set<string>();
   for (const entry of entries) {
     const callId = (entry.data as { callId?: unknown } | undefined)?.callId;
     if (typeof callId !== "string") continue;
-    if (entry.kind === KINDS.callStart && (entry.data as { parked?: unknown }).parked === true) parked.add(callId);
+    const start = entry.data as { parked?: unknown; bridge?: unknown };
+    if (entry.kind === KINDS.callStart && start.parked === true && start.bridge !== true) parked.add(callId);
     else if (entry.kind === KINDS.callSent || entry.kind === KINDS.callEnd) past.add(callId);
   }
   for (const callId of past) parked.delete(callId);
