@@ -147,3 +147,47 @@ test("a job's filled pins are set on the server before its apply, as the templat
   assert.equal(puts.length, 1, "one write of the server's tool settings");
   assert.ok(Object.values(puts[0]).some((setting) => setting.pin), JSON.stringify(puts[0]));
 });
+
+// The review's second round: a finished run whose learning has not settled is left alone and stops its series; every
+// timeline page is read; a grader that fails keeps the step.
+test("a finished run whose learning has not settled by the deadline is not cancelled, and says so", async () => {
+  const posts = [];
+  const api = async (method, path) => {
+    if (method === "POST") return (posts.push(path), { status: 202, body: {}, headers: new Headers() });
+    return { status: 200, body: { status: "completed", learning: { state: "proposed" } }, headers: new Headers() };
+  };
+  const got = await bench.settled(api, "run-1", true, Date.now() - 1);
+  assert.deepEqual([got.timedOut, got.learningUnsettled, posts], [false, true, []], "the finished run stands; its learning is the open part");
+});
+
+test("a step's timeline is read page by page, through next_after while has_more", async () => {
+  const pages = { 0: { rows: [{ id: "a", seq: 1 }], has_more: true, next_after: 1 }, 1: { rows: [{ id: "b", seq: 2 }, { id: "c", seq: 3, kind: "usage" }], has_more: false, next_after: 3 } };
+  const api = async (_method, path) => ({ status: 200, body: pages[Number(/after=(\d+)/.exec(path)?.[1] ?? 0)], headers: new Headers() });
+  assert.deepEqual((await bench.timelineRows(api, "run-1")).map((row) => row.id), ["a", "b", "c"]);
+});
+
+test("a grader whose run fails is recorded as not graded, and the step is kept", async () => {
+  const api = async () => ({ status: 500, body: { error: "down" }, headers: new Headers() });
+  const ctx = { api, options: { deadline: Date.now() + 60_000, runTimeoutMs: 1000 } };
+  const got = await bench.gradeOne(ctx, { file: "finds.md", type: "llm", rubric: "r" }, { input: "x" }, { answer: "", calls: [], mcpCalls: [], files: [] }, [], true);
+  assert.deepEqual([got.grader, got.pass, got.cost_usd], ["finds.md", false, null]);
+  assert.match(got.reason, /^not graded: /);
+});
+
+test("a step whose learning had not settled stops its series, naming the step: no later step runs without its lesson", () => {
+  assert.match(bench.unsettledStop({ id: "03", learning_unsettled: true }), /step 03.*not settled/);
+  assert.equal(bench.unsettledStop({ id: "03", learning_unsettled: false }), null);
+});
+
+test("the owner's approve goes with the session cookie alone: the route refuses any request that carries a token", async () => {
+  const { createServer } = await import("node:http");
+  const seen = [];
+  const server = createServer((req, res) => { seen.push(req.headers); res.end("{}"); });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const api = bench.apiOf(`http://127.0.0.1:${server.address().port}`, "tok");
+    await api("POST", "/approve", {}, bench.ownerHeaders({ cookie: "s=1", origin: "http://o" }, "etag-1"));
+    await api("GET", "/plain");
+  } finally { server.close(); }
+  assert.deepEqual(seen.map((h) => [h.authorization ?? null, h.cookie ?? null, h["if-match"] ?? null]), [[null, "s=1", "etag-1"], ["Bearer tok", null, null]]);
+});
