@@ -72,12 +72,17 @@ type HelloParams struct {
 	Client string `json:"client"`
 }
 
+// ProtocolVersion is the version of the protocol this daemon speaks (spec/computer), apart from its own version: the
+// TypeScript side's PROTOCOL_VERSION, which a test keeps equal.
+const ProtocolVersion = "0.1"
+
 type HelloResult struct {
-	Version string   `json:"version"`
-	OS      string   `json:"os"`
-	Kind    string   `json:"kind"`
-	Arch    string   `json:"arch"`
-	Groups  []string `json:"groups"`
+	Protocol string   `json:"protocol"`
+	Version  string   `json:"version"`
+	OS       string   `json:"os"`
+	Kind     string   `json:"kind"`
+	Arch     string   `json:"arch"`
+	Groups   []string `json:"groups"`
 	// Display is the DISPLAY a desktop's screen and input methods drive, such as ":99"; absent on any other computer.
 	Display string `json:"display,omitempty"`
 }
@@ -109,7 +114,7 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 			if extra := display.Groups(); len(extra) > 0 {
 				kind, groups, name = "desktop", append(groups, extra...), display.Name()
 			}
-			return HelloResult{Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name}, nil
+			return HelloResult{Protocol: ProtocolVersion, Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil
