@@ -18,6 +18,7 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
 import { LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import type { ApprovalDecision, RunMoment } from "./run-view.js";
@@ -293,7 +294,7 @@ function uuidv7(now = Date.now()): string {
 
 /** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
  *  place fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean };
+type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean; readonly thinking?: unknown };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
@@ -529,12 +530,16 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
   if (named !== undefined && !deps.launchDiskOf) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps no run on an Archil disk." }]);
   const archilDisk = deps.launchDiskOf ? await deps.launchDiskOf(entry.agent.id, named) : undefined;
+  // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
+  // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
+  // its harness's thinking, its guidance and its metrics all read the one value.
+  const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
   const launch: RunLaunch = {
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
     place,
     harness: harnessOfBody(revision.body),
-    ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     ...(cap !== undefined ? { maxCostUsd: cap } : {}),
     ...(capMode !== undefined ? { capMode } : {}),
     ...(Object.keys(plane).length ? { plane } : {}),

@@ -74,10 +74,12 @@ type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: strin
 export async function routeOf(model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
-  const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
+  const { models, unpriced } = await runModels(env, tier === "default" ? model : undefined, [tier]);
   const target = models.getModel(chosen.model.provider, chosen.model.modelId) as unknown as PiModel | undefined;
   if (!target) throw new Error(`no model ${chosen.model.provider}/${chosen.model.modelId} here`);
-  const price = (_model: string, used: RouteUsage): number => priceOn(target, used);
+  // A model serve has no price for (runModels' `unpriced`) carries a placeholder cost of zeros: its requests are booked at
+  // no known price (null), never $0, as a CLI run's are (adapters.ts priceOf).
+  const price = (_model: string, used: RouteUsage): number | null => (unpriced.has(chosen.model.modelId) ? null : priceOn(target, used));
   // What the model takes as input and its input limits, on every wire: pi's session sends a model that takes no images
   // pi-ai's placeholder in place of one, and pi's read holds an image to the model's limits (port-models.ts sessionModel).
   const sees = { ...(target.input ? { input: target.input } : {}), ...(target.inputLimits ? { inputLimits: target.inputLimits } : {}) };
