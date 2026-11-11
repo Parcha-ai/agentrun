@@ -33,6 +33,14 @@ export const FLAGS = {
   },
 };
 
+/** The most pages `--all` reads: past it, a server that keeps answering a next_cursor ends the command, exit 1. */
+export const MAX_PAGES = 1000;
+/** `--all`, on every list command (a GET whose query takes a cursor, its answer a page with next_cursor), and its help. */
+export const ALL = {
+  listing: (entry) => entry.method === "GET" && entry.query.some((q) => q.name === "cursor"),
+  help: ["--all", `every page: follows next_cursor and prints one list, its next_cursor null; stops past ${MAX_PAGES} pages, exit 1`],
+};
+
 /** The one command with no route of its own. */
 export const WAIT = {
   command: ["runs", "wait"],
@@ -109,7 +117,7 @@ function settle(client, run, id) {
   const go = `then \`agentrun runs wait ${id}\``;
   const why = run.status === "paused" ? `is paused: resume it with \`agentrun runs resume ${id}\``
     : run.pending?.kind === "question" ? `asked a question: answer it with \`agentrun runs message ${id} --content TEXT\``
-    : run.pending?.kind === "budget" ? `stopped at its spend cap: raise it with \`agentrun runs raise-cap ${id} --max-cost-usd ${Number.isFinite(run.pending.suggested_cap_usd) ? run.pending.suggested_cap_usd : "N"}\``
+    : run.pending?.kind === "budget" ? `is paused at its spend cap: raise it with \`agentrun runs raise-cap ${id} --max-cost-usd ${Number.isFinite(run.pending.suggested_cap_usd) ? run.pending.suggested_cap_usd : "N"}\``
     : run.pending?.kind ? `waits on a person (${run.pending.kind})`
     : `was stopped by a person: send it a message with \`agentrun runs message ${id} --content TEXT\``;
   client.io.stderr.write(`Run ${id} ${why}, ${go}.\n`);
