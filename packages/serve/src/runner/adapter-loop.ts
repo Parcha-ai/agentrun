@@ -875,15 +875,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const theRecord = cliRecord;
       // Who wrote it, when the person did not (a trigger's message that reopened the run): its input is that origin's.
       const by = originOf((command.body as { origin?: unknown } | null)?.origin);
-      // The row is taken in the commit that places it: pi's submission of the turn; a CLI's (whose harness writes no
-      // submission) the record's follow-up entry, written before the send. The answer to a wait in the claim: the row's
-      // waiting summary goes in that commit too.
+      // The row is taken only once the session holds the prompt: pi's in its submission's commit; a CLI's (whose harness
+      // writes no submission) in the record's follow-up entry, written right after the send, as sendAfterTurn takes its
+      // row. A runner lost between the send and that entry leaves the row untaken, so the next claim sends it again: a
+      // follow-up may be sent twice after a crash, never lost. The answer to a wait in the claim: the row's waiting summary
+      // goes in that commit too.
       const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(requestId);
       const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
-        await theRecord?.followUp(text, requestId, by);
         await theSession.send(text, { id: requestId, ...(by ? { origin: by } : {}) });
+        await theRecord?.followUp(text, requestId, by);
       })();
       reopen.placed?.();
       try {
@@ -1366,6 +1368,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           : undefined;
         session = await spec.adapter.open({ ...spec.session, tools: ownClient ? tools.filter((tool) => !mcpNames.has(tool.name)) : tools, ...(sessionMcp ? { mcp: sessionMcp } : {}) }, io);
         root = await harness.root(context);
+        // The root as the claim found it, before this pass writes anything of its own there (the computer's show-up, a
+        // takeover's note): what the reopen check below reads, so a fresh reopen is told by the run's own last entry.
+        const foundEntries = restarts === 0 ? await entriesOf(gate.journal, root.id, context) : [];
         // The run's desktop or phone: its hold's changes go to the run's journal, through this pass's Harness (under its
         // fence), and the computer shows up, the agent driving.
         computerNow?.detach();
@@ -1400,8 +1405,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // its session recovers that turn as any open turn.
         if (restarts === 0) {
           const rootId = root.id;
-          const entries = await entriesOf(gate.journal, rootId, context);
-          const endsRoot = entries.at(-1)?.kind === KINDS.end;
+          // Read before this claim's own writes (foundEntries): the computer's show-up or a takeover's note after the end
+          // is no turn of the follow-up's.
+          const endsRoot = foundEntries.at(-1)?.kind === KINDS.end;
           const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
           if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
           if (endsRoot && !inFlight && session!.state === "idle") reopen = {};

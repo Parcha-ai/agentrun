@@ -22,7 +22,7 @@ async function openCodeGate(t, toolSettings, servers) {
     rmSync(dir, { recursive: true, force: true });
   });
   const revision = { kind: "agentic", body: { toolSettings, harness: "opencode" } };
-  return adapterRunGate(store, { runId: "run-1" }, revision, dir, servers);
+  return adapterRunGate(store, { runId: "run-1" }, revision, dir, undefined, servers);
 }
 
 test("the MCP servers a revision grants, by their catalog names: each once, a wildcard grant too, no table tool", () => {
