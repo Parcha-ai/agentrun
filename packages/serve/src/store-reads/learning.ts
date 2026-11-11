@@ -157,7 +157,14 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     const final = FINAL_STATES.includes(run.state);
     const started = await learningStartOfRun(store, run.id);
     const end = await runLearningEnd(store, run.id);
-    const read = final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: true })) : [];
+    // What the run's journal says here (the notes its job opened, what its claims laid of the skills and workflows it was
+    // offered): read once for a settled run and kept by its epoch (settledJournalReads), else read now.
+    const offered = !!(started?.skills?.length || started?.workflows?.length);
+    const journal = async () => ({
+      read: final && started?.given.length ? notesReadOf(started.given, await runReflect(store, run.id, BACKGROUND_CONTEXT), await runTimeline(store, run.id, BACKGROUND_CONTEXT, { settled: true })) : [],
+      laid: offered ? laidOf(await runEntries(store, run.id, BACKGROUND_CONTEXT)) : undefined,
+    });
+    const { read, laid } = final ? await settledJournalReads(store, run.id, run.epoch, journal) : await journal();
     if (started || end) files.push(notesOf({ given: started?.given ?? [], read }));
     // The row learningImpact reads (the file path's RunRow): an ended run is a completed one.
     rows.push({
@@ -167,10 +174,27 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     } as unknown as RunRow);
     // What its claims laid of the skills and workflows it was offered (every learningLaid entry, laidOf): the run started
     // from those alone.
-    const laid = end && (started?.skills?.length || started?.workflows?.length) ? laidOf(await runEntries(store, run.id, BACKGROUND_CONTEXT)) : undefined;
     learnings.set(run.id, end ? impactLearningOf(end, started, laid) : null);
   }
   return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
+}
+
+/** What a settled run's journal tells the agent's learning view, kept by store and run id with the run's epoch: a claim
+ *  and a run's end each move the epoch, and only a claim writes to its journal, so a settled run's reads hold until the
+ *  next claim of it. At most SETTLED_READS_MAX runs a store, the oldest read dropped first. */
+const settledReads = new WeakMap<Store, Map<string, { readonly epoch: number; readonly value: SettledReads }>>();
+type SettledReads = { readonly read: readonly NoteUsed[]; readonly laid: Laid | undefined };
+const SETTLED_READS_MAX = 4096;
+async function settledJournalReads(store: Store, runId: string, epoch: number, read: () => Promise<SettledReads>): Promise<SettledReads> {
+  let runs = settledReads.get(store);
+  if (!runs) settledReads.set(store, (runs = new Map()));
+  const kept = runs.get(runId);
+  if (kept && kept.epoch === epoch) return kept.value;
+  const value = await read();
+  runs.delete(runId);
+  runs.set(runId, { epoch, value });
+  if (runs.size > SETTLED_READS_MAX) runs.delete(runs.keys().next().value!);
+  return value;
 }
 
 /** What a run's claim laid of its learning seed: the learned skills and workflows it was given, by name. */
@@ -247,16 +271,36 @@ export function callArgsOf(entries: readonly EntryLike[]): Map<string, { tool: s
  *  model loads each as `agentrun:<name>`, or by its bare name. */
 const CLAUDE_SKILLS_PLUGIN = "agentrun";
 
+/** The id ranges of a run's end-of-run turns, each from its prompt (an endOfRunTurn entry, `role: "person"`) to its
+ *  answer (`role: "model"`); one with no answer runs to the person's next message (a reopened run's follow-up), else to
+ *  the end. A reopened run has one per time it looked back. */
+function endOfRunTurns(entries: readonly EntryLike[]): [number, number][] {
+  const turns: [number, number][] = [];
+  let open: number | undefined;
+  for (const entry of [...entries].filter((one) => one.id !== undefined).sort((a, b) => a.id! - b.id!)) {
+    const role = (entry.data as { role?: unknown } | undefined)?.role;
+    if (entry.kind === KINDS.endOfRunTurn && role === "person") open ??= entry.id!;
+    else if (open !== undefined && ((entry.kind === KINDS.endOfRunTurn && role === "model") || (entry.kind === KINDS.message && role === "person"))) {
+      turns.push([open, entry.id!]);
+      open = undefined;
+    }
+  }
+  if (open !== undefined) turns.push([open, Number.POSITIVE_INFINITY]);
+  return turns;
+}
+
 /** The skills a run's job loaded with a harness's own Skill tool (claude-agent's): a native call, which the CLI's session
  *  records as a kernel step of its own (`kernel.start` named `tool.Skill`, keyed `tool:<call id>`, then its `kernel.end`)
  *  and never as a host tool's call record, so no timeline row or callArgsOf entry has it. Each by the name the model
- *  gave (`agentrun:<name>` or the bare one), only when its step completed, and only before the end-of-run turn. */
+ *  gave (`agentrun:<name>` or the bare one), only when its step completed, and only outside every end-of-run turn (a
+ *  reopened run's follow-up's loads are the job's). */
 export function nativeSkillLoads(entries: readonly EntryLike[]): string[] {
-  const turnAt = entries.find((entry) => entry.kind === KINDS.endOfRunTurn)?.id;
+  const turns = endOfRunTurns(entries);
+  const inTurn = (id: number | undefined) => id !== undefined && turns.some(([from, to]) => id >= from && id <= to);
   const asked = new Map<string, string>();
   const loaded: string[] = [];
   for (const entry of entries) {
-    if (turnAt !== undefined && entry.id !== undefined && entry.id >= turnAt) continue;
+    if (inTurn(entry.id)) continue;
     const data = (entry.data ?? {}) as { name?: unknown; stepId?: unknown; status?: unknown; input?: unknown };
     if (entry.kind === "kernel.start" && data.name === "tool.Skill" && typeof data.stepId === "string") {
       const skill = (data.input as { skill?: unknown } | undefined)?.skill;
@@ -271,11 +315,17 @@ export function nativeSkillLoads(entries: readonly EntryLike[]): string[] {
 /** Whether a skill loaded by the name `asked` is skill `name`: by its plugin-qualified name or its bare one. */
 const loadsSkill = (asked: string, name: string) => asked === name || asked === `${CLAUDE_SKILLS_PLUGIN}:${name}`;
 
-/** Whether call `call` read skill `name`'s SKILL.md: the read hand on `.agents/skills/<name>/SKILL.md`, a CLI adapter's
- *  read_skill_file of the skill's SKILL.md, or a Skill tool call on the skill. */
+/** Where a claim lays a learned skill's SKILL.md in the run's work (learning.ts RUN_SKILLS). */
+const laidSkillPath = (name: string) => `.agents/skills/${name}/SKILL.md`;
+/** Whether call `call` read skill `name`'s SKILL.md: the read hand on the path its claim laid it at (`.agents/skills/
+ *  <name>/SKILL.md` in the run's work, relative or absolute under it, never another file whose path ends the same way), a
+ *  CLI adapter's read_skill_file of the skill's SKILL.md, or a Skill tool call on the skill. */
 function readsSkill(call: { tool: string; args: Record<string, unknown> }, name: string): boolean {
   const text = (key: string) => (typeof call.args[key] === "string" ? (call.args[key] as string) : "");
-  if (call.tool === "read" || call.tool === "mcp__hands__read") return posix.normalize(text("path")).endsWith(`skills/${name}/SKILL.md`);
+  if (call.tool === "read" || call.tool === "mcp__hands__read") {
+    const path = posix.normalize(text("path"));
+    return path === laidSkillPath(name) || (path.startsWith("/") && path.endsWith(`/${laidSkillPath(name)}`));
+  }
   if (call.tool === "read_skill_file") return text("skill") === name && posix.normalize(text("path")) === "SKILL.md";
   if (call.tool === "Skill") return [text("skill"), text("command"), text("name")].some((asked) => loadsSkill(asked, name));
   return false;

@@ -2,13 +2,12 @@
 // of the revision's workflow; each node's state is `nodeStatus` over the journal's frame (and, once the run ended,
 // `readWorkflowRun`'s, with the task's end); a map's items, a route's branch taken and the interrupted decisions come
 // from the frame; the decisions are the receipts, each joined to its graph node by its execution path (`graphNodeOf`);
-// the calls and the nodes' times are the run process's node log (pause.ts).
+// the calls are the node log the runner keeps on the run's journal (KINDS.nodeEffect, each call's start and end).
 //
-// Where the frame and the receipts come from: while the run goes its process holds its store exclusively, so they are
-// the process's live view (pause.ts `live.json`), and the store is never opened (an open racing the process's own would
-// fail it). Once the run ended, the store.
+// Where the frame and the receipts come from: while the run goes, its live view (pause.ts `live.json`); once the run
+// ended, the store.
 import type { Context } from "@earendil-works/chord";
-import { llmAnswers, type NodeLine, readLiveView, readNodeLog } from "./pause.js";
+import { llmAnswers, type NodeLine, readLiveView } from "./pause.js";
 import { KINDS } from "./runner/journal-kinds.js";
 import type { Store } from "./store/store.js";
 
@@ -85,7 +84,9 @@ export async function runGraph(given: GraphInput) {
     if (live?.at) readAt = live.at;
     view = { status: nodeStatus(graph, { pin: pin as never, result: null }) as Record<string, string> };
   }
-  const lines = await readNodeLog(given.root);
+  // The call nodes' effects, as the runner logged each one's start and end on the run's journal (KINDS.nodeEffect).
+  const { runEntries } = await import("./store-reads/journal.js");
+  const lines = (await runEntries(given.store, id, given.context)).filter((entry) => entry.kind === KINDS.nodeEffect).map((entry) => entry.data as unknown as NodeLine);
   const nodeAt = (path: unknown) => (typeof path === "string" ? (graphNodeOf(graph, path)?.path ?? (graph.nodes.some((n) => n.path === path) ? path : undefined)) : undefined);
   const kinds = new Map(graph.nodes.map((node) => [node.path, node.kind]));
 

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve, serverLog } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** The gateway's key in these tests: no real one. */
@@ -157,13 +157,12 @@ const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-0f3c9a`;
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a codex run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a codex run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const gw = await gateway(t);
   const { api, data, standIn } = await codexServe(t, gw);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const dir = join(runDir(data, run.body.run_id));
   // Codex's own request, not another local process calling the gateway's port.
   for (let i = 0; !gw.seen.some((s) => s.path?.startsWith("/v1/")); i++) {
     assert.ok(i < 300, "the turn's model request reaches the gateway");
@@ -180,10 +179,10 @@ test.skip("a codex run's model proxy reports a refusal in the run's log: one har
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   gw.release();
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  const log = await readFile(join(dir, "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
 });
