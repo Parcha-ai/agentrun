@@ -114,7 +114,7 @@ test('the build loop builds each package once in order, skips one with no build,
 });
 
 // Freshness (#1025): a package builds against its dependencies' dists as the tree's sources make them. The root build rebuilds
-// everything in order; `--only` and `--changed` key on a build stamp (dist/.build-stamp) written after a build that succeeded: a
+// everything in order; `--only` and `--changed` key on a build stamp (node_modules/.cache/agentrun-build-stamp) written after a build that succeeded: a
 // package is stale with no stamp, with inputs that differ from its stamp's, or with a dependency that is stale or was built
 // again since.
 const packagesAB = [{ name: 'a', deps: [], build: true }, { name: 'b', deps: ['a'], build: true }, { name: 'c', deps: ['b'], build: true }, { name: 'n', deps: ['a'], build: false }];
@@ -152,6 +152,39 @@ test('a build of some packages builds the stale ones they depend on, and leaves 
   assert.deepEqual(mod.withStaleDeps(packagesAB, ['c'], new Set(['a', 'b'])).sort(), ['a', 'b', 'c'], 'c with its stale dependencies, through any depth');
   assert.deepEqual(mod.withStaleDeps(packagesAB, ['c'], new Set()), ['c'], 'nothing stale: just c');
   assert.deepEqual(mod.withStaleDeps(packagesAB, ['c'], new Set(['a'])).sort(), ['a', 'c'], 'a stale dist under a current one is still built');
+});
+
+test('a package a build is asked for counts as stale, so a current dependency between two named ones is built too', async () => {
+  const mod = await ordering();
+  const order = mod.buildOrder(packagesAB);
+  assert.deepEqual([...mod.stalePackages(packagesAB, order, { ...stamps(current), force: new Set(['a', 'c']) })], ['a', 'b', 'c'], 'a is built again, so b is behind it');
+  const stale = mod.stalePackages(packagesAB, order, { ...stamps(current), force: new Set(['a', 'c']) });
+  assert.deepEqual(mod.withStaleDeps(packagesAB, ['a', 'c'], stale).sort(), ['a', 'b', 'c'], '--only a,c: b is built between them');
+});
+
+test('serve reads the console build and pi reads its demo sources, never the demo-data.ts its own build writes', async () => {
+  const mod = await ordering();
+  const dir = mkdtempSync(join(tmpdir(), 'build-workspaces-reads-'));
+  try {
+    const touch = (path, text, at) => { mkdirSync(join(dir, path, '..'), { recursive: true }); writeFileSync(join(dir, path), text); utimesSync(join(dir, path), at, at); };
+    touch('packages/serve/src/a.ts', 'a', 100);
+    touch('packages/pi/src/a.ts', 'a', 100);
+    touch('packages/pi/src/demo-data.ts', 'generated', 100);
+    touch('examples/typed-research.ts', 'e', 100);
+    touch('apps/console/dist/index.html', 'console', 100);
+    const serve = { name: '@parcha/agentrun-serve', dir: join(dir, 'packages/serve') };
+    const pi = { name: '@parcha/agentrun-pi', dir: join(dir, 'packages/pi') };
+    const [s0, p0] = [mod.inputsOf(serve, dir), mod.inputsOf(pi, dir)];
+    touch('apps/console/dist/index.html', 'console 2', 120);
+    assert.notEqual(mod.inputsOf(serve, dir), s0, 'a rebuilt console is an input of serve');
+    assert.equal(mod.inputsOf(pi, dir), p0, 'and not of pi');
+    touch('packages/pi/src/demo-data.ts', 'generated', 150);
+    assert.equal(mod.inputsOf(pi, dir), p0, 'a rewritten demo-data.ts is no input');
+    touch('examples/typed-research.ts', 'e2', 160);
+    assert.notEqual(mod.inputsOf(pi, dir), p0, 'the example it is generated from is');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('what a build reads changes the inputs hash: an edit, a file added or deleted, and the root compiler settings', async () => {
@@ -209,15 +242,20 @@ test('--changed and --only on a tree of their own: stale packages build, current
 
     run('--changed');
     assert.deepEqual(built(), ['a', 'b'], 'no stamp: both build, a first');
+    assert.ok(!existsSync(join(dir, 'packages/a/dist/.build-stamp')), 'the stamp is not in the dist, which npm pack would carry');
+    rmSync(join(dir, 'packages/b/dist'), { recursive: true });
+    assert.equal(run('--stale').stdout, '@t/b\n', 'a cleared dist is stale');
     run('--changed');
-    assert.deepEqual(built(), ['a', 'b'], 'nothing changed: nothing builds');
+    assert.deepEqual(built(), ['a', 'b', 'b'], 'b alone');
+    run('--changed');
+    assert.deepEqual(built(), ['a', 'b', 'b'], 'nothing changed: nothing builds');
     assert.match(run('--changed').stdout, /up to date/);
 
     // A source of a changes: a rebuilds, and b with it, which compiles against a's new dist.
     edit('packages/a/src/index.ts', 'two');
     assert.equal(run('--stale').stdout, '@t/a\n@t/b\n', 'a and its dependent are stale');
     run('--changed');
-    assert.deepEqual(built(), ['a', 'b', 'a', 'b'], 'a, then b');
+    assert.deepEqual(built(), ['a', 'b', 'b', 'a', 'b'], 'a, then b');
     assert.equal(run('--stale').stdout, '', 'built again: current');
 
     // A file deleted from a package makes it stale, though every file left is older than its dist.

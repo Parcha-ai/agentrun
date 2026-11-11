@@ -13,13 +13,13 @@
 // Stale: a package with no build stamp (never built by this script, its dist cleared, or its last build failed), whose inputs
 // (every file under it but dist and node_modules, by path, size and time, and the root tsconfig.base.json and lockfile)
 // differ from its stamp's, that depends on a stale package, or that depends on one built again since it was. The stamp
-// (dist/.build-stamp) is written only after a build that succeeds and cleared when one starts, so a failed build, which
+// (node_modules/.cache/agentrun-build-stamp) is written only after a build that succeeds and cleared when one starts, so a failed build, which
 // tsc may still emit files for, never reads as current. A package with no build script is never stale.
 //   --root <dir>                                  the repository to build (default: this script's)
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './is-main.mjs';
 
@@ -79,27 +79,42 @@ export function subsetOrder(packages, names, built = (p) => existsSync(join(p.di
   return buildOrder(packages).filter((name) => wanted.has(name));
 }
 
-/** Where a package's build stamp is: in its dist, so a build that clears the dist (`rm -rf dist`) clears it too. */
-export const STAMP = '.build-stamp';
+/** Where a package's build stamp is, under its own node_modules (git ignores it, and `npm pack` never carries it): readStamp
+ *  reads none when the package has no dist, so a build that clears the dist (`rm -rf dist`) clears the stamp too. */
+export const STAMP = join('node_modules', '.cache', 'agentrun-build-stamp');
+const stampPath = (pkg) => join(pkg.dir, STAMP);
+/** What a build reads beyond its own folder, and what in its folder it only writes: the console's build, which serve copies into
+ *  its dist; the example and scripts that generate pi's src/demo-data.ts (rewritten by every pi build, so its own time is no input). */
+const READS = {
+  '@parcha/agentrun-serve': { also: ['apps/console/dist'] },
+  '@parcha/agentrun-pi': { also: ['examples', 'scripts/build-pi-demo.mjs', 'scripts/render-pi-skill.mjs'], ignore: ['src/demo-data.ts'] },
+};
 /** The files outside a package that every build reads: the shared compiler settings and the lockfile that fixes what it compiles against. */
 const SHARED = ['tsconfig.base.json', 'package-lock.json'];
 
 /** A hash of what a package's build reads: the path, size and modification time of every file under it but `dist` and
  *  `node_modules` (so a file added, deleted or edited changes it, even when every file left is older than the dist), and of the
- *  shared files under `root` (SHARED). */
+ *  shared files under `root` (SHARED), and of what READS names for it. */
 export function inputsOf(pkg, root = ROOT) {
   const lines = [];
-  const walk = (dir, rel) => {
+  const reads = READS[pkg.name] ?? {};
+  const walk = (dir, rel, skip = ['dist', 'node_modules', '.git']) => {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((x, y) => (x.name < y.name ? -1 : 1))) {
       if (entry.isDirectory()) {
-        if (!['dist', 'node_modules', '.git'].includes(entry.name)) walk(join(dir, entry.name), `${rel}${entry.name}/`);
-      } else {
+        if (!skip.includes(entry.name)) walk(join(dir, entry.name), `${rel}${entry.name}/`, skip);
+      } else if (!(reads.ignore ?? []).includes(`${rel}${entry.name}`)) {
         const st = statSync(join(dir, entry.name));
         lines.push(`${rel}${entry.name}\t${st.size}\t${st.mtimeMs}`);
       }
     }
   };
   if (existsSync(pkg.dir)) walk(pkg.dir, '');
+  for (const also of reads.also ?? []) {
+    const path = join(root, also);
+    if (!existsSync(path)) lines.push(`../${also}\tnone`);
+    else if (statSync(path).isDirectory()) walk(path, `../${also}/`, ['node_modules', '.git']);
+    else lines.push(`../${also}\t${statSync(path).size}\t${statSync(path).mtimeMs}`);
+  }
   for (const file of SHARED) {
     const path = join(root, file);
     lines.push(`../${file}\t${existsSync(path) ? `${statSync(path).size}\t${statSync(path).mtimeMs}` : 'none'}`);
@@ -112,7 +127,8 @@ export function inputsOf(pkg, root = ROOT) {
  *  and `id` names this stamp: it changes whenever the package is built again. */
 export function readStamp(pkg) {
   try {
-    const raw = readFileSync(join(pkg.dir, 'dist', STAMP), 'utf8');
+    if (!existsSync(join(pkg.dir, 'dist'))) return undefined;
+    const raw = readFileSync(stampPath(pkg), 'utf8');
     return { ...JSON.parse(raw), id: createHash('sha256').update(raw).digest('hex').slice(0, 16) };
   } catch {
     return undefined;
@@ -121,21 +137,22 @@ export function readStamp(pkg) {
 
 /** Records that `pkg` was built from `inputs` against `deps`, after a build that succeeded. */
 export function writeStamp(pkg, inputs, deps) {
-  mkdirSync(join(pkg.dir, 'dist'), { recursive: true });
-  writeFileSync(join(pkg.dir, 'dist', STAMP), `${JSON.stringify({ inputs, deps, at: Date.now() })}\n`);
+  mkdirSync(dirname(stampPath(pkg)), { recursive: true });
+  writeFileSync(stampPath(pkg), `${JSON.stringify({ inputs, deps, at: Date.now() })}\n`);
 }
 
 /** Forgets that `pkg` was built: a build in progress, or one that failed, leaves no stamp, however much it emitted. */
 export function clearStamp(pkg) {
-  rmSync(join(pkg.dir, 'dist', STAMP), { force: true });
+  rmSync(stampPath(pkg), { force: true });
 }
 
 /** The names of the packages that need building, in `order`. One that has a build script is stale when it has no stamp (never
  *  built by this script, or its dist cleared, or its last build failed or was cut short), when what its build reads has
  *  changed since the stamp (`inputs(p)`: a file edited, added or deleted, or the shared compiler settings), when a package it
  *  depends on is stale (that one is built first), or when a package it depends on was built again since it was (the stamp's
- *  record of that dependency's id no longer matches `stamp(dep)`). A package with no build script is never stale. */
-export function stalePackages(packages, order, { inputs = (p) => inputsOf(p), stamp = readStamp } = {}) {
+ *  record of that dependency's id no longer matches `stamp(dep)`). A package in `force` (one a build is asked for, which is about
+ *  to be built again) counts as stale, so what depends on it is too. A package with no build script is never stale. */
+export function stalePackages(packages, order, { inputs = (p) => inputsOf(p), stamp = readStamp, force = new Set() } = {}) {
   const byName = new Map(packages.map((p) => [p.name, p]));
   const stale = new Set();
   for (const name of order) {
@@ -143,7 +160,7 @@ export function stalePackages(packages, order, { inputs = (p) => inputsOf(p), st
     if (!p.build) continue;
     const mine = stamp(p);
     const behind = (dep) => stale.has(dep) || (byName.get(dep)?.build === true && mine?.deps?.[dep] !== stamp(byName.get(dep))?.id);
-    if (!mine || mine.inputs !== inputs(p) || p.deps.some(behind)) stale.add(name);
+    if (force.has(name) || !mine || mine.inputs !== inputs(p) || p.deps.some(behind)) stale.add(name);
   }
   return stale;
 }
@@ -184,7 +201,7 @@ if (isMain(import.meta)) {
   const full = buildOrder(packages);
   const changed = process.argv.includes('--changed');
   // The files are only walked when a mode asks which packages are stale: the plain build rebuilds every package.
-  const stale = only || changed || process.argv.includes('--stale') ? stalePackages(packages, full, { inputs: (p) => inputsOf(p, root) }) : new Set();
+  const stale = only || changed || process.argv.includes('--stale') ? stalePackages(packages, full, { inputs: (p) => inputsOf(p, root), force: new Set(only?.split(',').filter(Boolean)) }) : new Set();
   const named = only ? withStaleDeps(packages, only.split(',').filter(Boolean), stale) : undefined;
   let order = named ? subsetOrder(packages, named) : full;
   if (changed) order = order.filter((name) => stale.has(name));
