@@ -246,6 +246,8 @@ const reuseSeries = () => {
       tokens: calls ? io(500, 100) : io(1500, 300),
       learned: { notes: [], skills: id === "01" ? ["weekly"] : [], workflows: id === "05" ? ["weekly"] : [] },
       workflow_proposed: id === "05",
+      // What was active once the step's learning settled: the skill from 01 on, the workflow from 05 on.
+      active_after: { notes: {}, skills: { weekly: "s1" }, workflows: i >= 4 ? { weekly: "w1" } : {} },
     });
   });
 };
@@ -259,11 +261,24 @@ test("reuse: for a series that kept a workflow, its later steps that called lear
     tokens_per_pass_workflow: Math.round((3 * 600) / 2), tokens_per_pass_skill_only: Math.round((6 * 1800) / 4), workflow_steps_known: 3, skill_only_steps_known: 6,
   });
   // No workflow kept, or learning off: no reuse to say.
-  assert.equal(metricsOf(reuseSeries().map((x) => ({ ...x, learned: { notes: [], skills: x.learned.skills, workflows: [] } })), true).reuse, null);
+  assert.equal(metricsOf(reuseSeries().map((x) => ({ ...x, learned: { notes: [], skills: x.learned.skills, workflows: [] }, active_after: { ...x.active_after, workflows: {} } })), true).reuse, null);
   assert.equal(metricsOf(reuseSeries(), false).reuse, null);
   // A harness whose tokens are unknown: the counts stand, the token figures are unknown.
   const blind = metricsOf(reuseSeries().map((x) => ({ ...x, tokens: null })), true).reuse;
   assert.deepEqual([blind.call_steps, blind.call_passes, blind.tokens_per_pass_workflow, blind.tokens_per_pass_skill_only], [3, 2, null, null]);
+});
+
+test("reuse reads what was active, never what was only kept: a workflow kept waiting for the owner's OK (--no-approve) is no reuse, and a step had the skill only once it was active", () => {
+  // The workflow kept at 05 but pending: listed as learned, never active, so no run could call it.
+  const pending = reuseSeries().map((x) => ({ ...x, active_after: { ...x.active_after, workflows: {} } }));
+  const m = metricsOf(pending, true);
+  assert.equal(m.reuse, null, "no active workflow: no reuse");
+  assert.equal(m.reuse_rate, null, "and no reuse rate");
+  // The skill kept at 01 but pending until 03 was approved: the skill-only steps are those after it was active.
+  const late = reuseSeries().map((x, i) => ({ ...x, active_after: { ...x.active_after, skills: i >= 2 ? { weekly: "s1" } : {} } }));
+  const r = metricsOf(late, true).reuse;
+  // Skill-only steps now 04, 05, 08 and 10 (02 and 03 had no active skill): 1,800 tokens each, 04, 05 and 08 passed.
+  assert.deepEqual([r.skill_only_steps_known, r.tokens_per_pass_skill_only], [4, Math.round((4 * 1800) / 3)]);
 });
 
 test("the summary says each series' reuse: where the workflow was kept, how many later steps called it and passed, and the two token figures", () => {
