@@ -6,13 +6,13 @@
 //   - a hold that cannot be read is held while it is young and taken over once it is old, never an error;
 //   - takers over one stale hold: one holds it; a release lets go of its own hold alone.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-const { inTree, installHoldOf, releaseHold, takeHold } = await import("../dist/harness-install.js");
+const { inTree, installHoldOf, processIdentity, releaseHold, takeHold } = await import("../dist/harness-install.js");
 
 const scratch = (t, name) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), `harness-install-${name}-`));
@@ -100,12 +100,41 @@ test("takers over one stale hold: exactly one holds it, and the hold left is its
 test("a hold whose installer on this host is still alive is held past the install's timeout: only its stop lets another install start", async (t) => {
   const dir = join(scratch(t, "hold-overdue"), "harnesses", "fake");
   mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
-  // An install started long ago, its npm still running (killed at its own timeout, then given its grace to exit).
+  // An install started long ago, its npm still running (killed at its own timeout, then given its grace to exit): the
+  // process that wrote the hold, by its pid and its identity (its boot and start), is still the one with that pid.
   const overdue = Date.now() - 60 * 60_000;
-  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 4242, startedAt: overdue, token: "running" }));
-  assert.equal(await takeHold(dir, { host: "this-host", isAlive: () => true }), undefined, "its installer is alive: held");
+  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 4242, identity: "boot-1:100", startedAt: overdue, token: "running" }));
+  assert.equal(await takeHold(dir, { host: "this-host", isAlive: () => true, identity: () => "boot-1:100" }), undefined, "its installer is alive: held");
   assert.equal(JSON.parse(readFileSync(installHoldOf(dir), "utf8")).token, "running", "the hold is still its installer's");
   // Another host's installer can't be asked: past the bound (the timeout and npm's stop), its hold is taken over.
   const token = await takeHold(dir, { host: "another-host", isAlive: () => assert.fail("another host's process is never asked") });
   assert.equal(typeof token, "string", "another host's hold past the bound: taken over");
+});
+
+test("a hold whose pid now belongs to another process (a restarted container's) is taken over: the pid alone never keeps it", async (t) => {
+  const dir = join(scratch(t, "hold-reused"), "harnesses", "fake");
+  mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
+  writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 4242, identity: "boot-1:100", startedAt: Date.now(), token: "killed" }));
+  // pid 4242 is alive, but started at another time: not the installer that wrote the hold.
+  const token = await takeHold(dir, { host: "this-host", isAlive: () => true, identity: () => "boot-1:900" });
+  assert.equal(typeof token, "string", "its pid reused: taken over at once");
+  assert.equal(JSON.parse(readFileSync(installHoldOf(dir), "utf8")).token, token);
+});
+
+test("a hold that names no identity, or whose installer's can't be read, is held while its pid lives within the install's bound, then taken over", async (t) => {
+  const dir = join(scratch(t, "hold-no-identity"), "harnesses", "fake");
+  mkdirSync(dirname(installHoldOf(dir)), { recursive: true });
+  const hold = (startedAt) => writeFileSync(installHoldOf(dir), JSON.stringify({ host: "this-host", pid: 4242, startedAt, token: "old" }));
+  const taker = { host: "this-host", isAlive: () => true, identity: () => undefined };
+  hold(Date.now());
+  assert.equal(await takeHold(dir, taker), undefined, "young, its pid alive: held");
+  hold(Date.now() - 60 * 60_000);
+  assert.equal(typeof (await takeHold(dir, taker)), "string", "past the bound: taken over, so a reused pid never holds it for good");
+});
+
+test("this process's identity is read from the system where it shows one, the same each time; a pid that is gone has none", { skip: !existsSync("/proc/self/stat") && "no /proc here" }, async () => {
+  const mine = processIdentity(process.pid);
+  assert.match(mine ?? "", /^[0-9a-f-]+:\d+$/, "its boot and its start");
+  assert.equal(processIdentity(process.pid), mine);
+  assert.equal(processIdentity(2 ** 22 + 7), undefined, "no such process");
 });
