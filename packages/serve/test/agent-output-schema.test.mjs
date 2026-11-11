@@ -4,8 +4,9 @@
 // result.output is null, as before. And a triggered run is handed its trigger's previous result (#2144): a scheduled run
 // of the same trigger reads what its last completed run answered, so a weekly digest can leave out what it reported.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { agent, flowAgent, follow, serve } from "./support.mjs";
+import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
 
 /** A digest's schema: what a market monitor's answer holds, cut down. */
@@ -57,6 +58,20 @@ test("a completed run's result.output is its answer's last json block when it me
 
   const none = await answered(api, "plain", MET);
   assert.equal(none.result.output, null, "an agent with no output schema has none, as before");
+});
+
+test("the structured answer is read off the answer as written, then cut: a held value in it, a number's too, is cut inside the output, never the output dropped", { timeout: 120_000 }, async (t) => {
+  // Held values, made at runtime: one all digits (a gateway's key can be), which an answer can quote as a JSON number.
+  // Cut in the answer's text first, that number would leave `"amount": [redacted]`, no JSON at all.
+  const digits = String(10_000_000 + randomBytes(3).readUIntBE(0, 3));
+  const held = ["not-a-secret", "output-key", randomBytes(6).toString("hex")].join("-");
+  withEnv(t, { PARALLEL_API_KEY: held, AGENT_MODEL_API_KEY: digits });
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("digest", { output_schema: DIGEST }))).status, 201);
+  const quoting = { quiet: false, items: [{ claim: `Acme's key ${held} leaked`, amount: Number(digits) }] };
+  const run = await answered(api, "digest", quoting);
+  assert.deepEqual(run.result.output, { quiet: false, items: [{ claim: "Acme's key [redacted] leaked", amount: "[redacted]" }] }, "each held value is cut inside the output, its shape kept");
+  assert.ok(!JSON.stringify(run.result).includes(held) && !JSON.stringify(run.result).includes(digits), "no held value anywhere in the result");
 });
 
 test("a triggered run is handed its trigger's last completed result after its message; the first run, and another trigger's, get none", { timeout: 120_000 }, async (t) => {

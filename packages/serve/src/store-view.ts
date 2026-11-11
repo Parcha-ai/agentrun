@@ -175,8 +175,10 @@ interface StoreRun {
   readonly approvalsMode: Approvals;
   /** A completed workflow run's output, as its end kept it (EndData.output); null when it kept none. */
   readonly output: unknown;
-  /** An agentic run's output schema, as its revision kept it (definition.output_schema); undefined when it has none. */
-  readonly outputSchema: unknown;
+  /** An ended agentic run's structured answer against its revision's output schema (definition.output_schema), read off
+   *  its final answer as the journal keeps it, whole and uncut (answer-json.ts structuredAnswer): undefined when the
+   *  agent has no schema or the run has not ended. Cut of held values only when served (redactedOutput). */
+  readonly structured: { value: unknown } | { why: string } | undefined;
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
@@ -209,6 +211,10 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const approvalsMode = approvalsOf((revision?.body as { approvals?: unknown } | undefined)?.approvals);
   const outputSchema = row.kind === "agentic" ? (revision?.body as { outputSchema?: unknown } | undefined)?.outputSchema : undefined;
   const terminal = row.state !== "running";
+  // Its structured answer, from the final answer as the journal keeps it: never the served text, which a held value
+  // (a number among them) or a long answer's cut would have changed, so a block that meets the schema reads as written.
+  const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })) : null;
+  const structured = rawAnswer ? structuredAnswer(rawAnswer, outputSchema) : undefined;
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
@@ -321,7 +327,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, outputSchema, decisions };
+  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, structured, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -360,7 +366,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const { row, runRow, launch, view, unshown, values, output, outputSchema } = run;
+  const { row, runRow, launch, view, unshown, values, output, structured } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
   const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
@@ -371,11 +377,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
-  // an output schema and the answer's last fenced json block meets it (answer-json.ts structuredAnswer), else none. Served
-  // as runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while
-  // the run's sign-in can't be read back.
-  const structured = row.kind === "agentic" && outputSchema !== undefined && status === "completed" && finalAnswer ? structuredAnswer(finalAnswer, outputSchema) : undefined;
-  const ownOutput = row.kind === "workflow" ? output : structured && "value" in structured ? structured.value : null;
+  // an output schema and the answer's last fenced json block meets it (storeRunOf's `structured`), else none. Served as
+  // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
+  // run's sign-in can't be read back.
+  const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;
   const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
   const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
