@@ -560,7 +560,7 @@ export function paidCallsOf(data, runId) {
     const d = entry.data ?? {};
     const key = `${entry.conversationId}:${d.turn}`;
     if (entry.kind === "runner.request" && typeof d.model === "string" && d.model.startsWith("paid:")) {
-      const label = { tool: d.model.slice("paid:".length), ...(d.charged_by ? { charged_by: d.charged_by } : {}), ...(d.call ? { call: d.call } : {}) };
+      const label = { tool: typeof d.tool === "string" && d.tool ? d.tool : d.model.slice("paid:".length), ...(d.charged_by ? { charged_by: d.charged_by } : {}), ...(d.call ? { call: d.call } : {}) };
       requests.set(key, label);
       out.push({ kind: "agentrun.tool_started", ...label, heldUsd: d.heldUsd });
     } else if (entry.kind === "runner.turn" && requests.has(key) && d.givenBack !== true) {
