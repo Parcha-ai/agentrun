@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, runDir, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
+import { agent, asOwner, follow, runDir, scratch, serve as serveOf, startInProcessRunner, storeBytes, withEnv } from "./support.mjs";
 import { openSqliteStore, sealMcpCredential } from "../dist/store/index.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -226,26 +226,28 @@ test("pi: a run killed mid-call resumes with the call answered interrupted, and 
 });
 
 
-test("pi: a server whose address changed after the run started answers the run's calls with that, and nothing is sent", { timeout: 90_000, skip: "route-1: the message route reopens a completed run (F2 3bf299d833)" }, async (t) => {
-  const { api } = await serve(t, { faux: FAUX_MCP, harnesses: true });
+test("pi: a server whose address changed after the run started answers the run's calls with that, and nothing is sent", { timeout: 90_000 }, async (t) => {
+  // Accounts on: an owner can approve, so a call with no setting asks (with accounts off, an ask is refused at once).
+  const server = await serveOf(t, { faux: FAUX_MCP, harnesses: true, accounts: true, openSetup: true });
+  const { api } = server;
   const fake = await addFake(t, api);
-  assert.equal((await api("POST", "/agents", agent("mover", { tools: ["mcp:fake/add"], tool_settings: ALLOW_FAKE }))).status, 201);
-  const runId = await runOf(api, "mover", "Hello.");
-  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  // With no setting the call asks: the run waits on its approval with the server pinned at its first address.
+  assert.equal((await api("POST", "/agents", agent("mover", { tools: ["mcp:fake/add"] }))).status, 201);
+  const runId = await runOf(api, "mover", 'Call mcp__fake__add with {"a":2,"b":3}');
+  await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
+  const pending = (await api("GET", `/runs/${runId}`)).body.pending;
+  assert.equal(pending?.kind, "approval", JSON.stringify(pending));
+  // The owner moves the server meanwhile, then allows the call.
   const moved = await addFake(t, api, "fake", await startFakeMcp({ token: TOKEN }));
-  // What the save itself sent (its preview), before the run's call.
   const [before, movedBefore] = [fake.log.length, moved.log.length];
-  // A follow-up opens the completed run again before it is answered (the store's runs.reopen is one write), so the
-  // answer already reads the run past its end, and the follow below waits for the new turn's.
-  const followUp = await api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__fake__add with {"a":2,"b":3}' });
-  assert.equal(followUp.status, 202, JSON.stringify(followUp.body));
-  assert.notEqual(followUp.body.status, "completed", `the run is open again: ${JSON.stringify(followUp.body)}`);
+  const allowed = await asOwner(server)("POST", `/runs/${runId}/approvals/${pending.id}`, { decision: "allow" });
+  assert.equal(allowed.status, 204, JSON.stringify(allowed.body));
   const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "completed");
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.match(view.result?.final_answer ?? "", /address changed since this run started/);
   // A save's own preview may still be closing its exchange as it answers: what the run sent is any call, or any
-  // request after the run's turn began.
+  // request after the allow.
   const sent = (log, from) => log.slice(from).filter((entry) => entry.method !== "notifications/cancelled" && entry.http !== "DELETE");
   assert.deepEqual([calls(fake).length, calls(moved).length], [0, 0], "no call reached either address");
   assert.deepEqual([sent(fake.log, before), sent(moved.log, movedBefore)].map((log) => log.filter((entry) => entry.method === "initialize" || entry.method === "server/discover").length), [0, 0], `the run connected to neither: ${JSON.stringify([fake.log.slice(before), moved.log.slice(movedBefore)])}`);
@@ -292,7 +294,7 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   assert.deepEqual(leaked, [], "no file under the data directory, the store among them, holds the token");
 });
 
-test("claude-agent: a run killed mid-call resumes with the call reported interrupted to the model, and the server saw the call once", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") ? "no setpriv here" : "gate-reds-1: piShaped keeps an interrupted end (store-reads/journal.ts)" }, async (t) => {
+test("claude-agent: a run killed mid-call resumes with the call reported interrupted to the model, and the server saw the call once", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   // The model asks for the call once; every later answer says what it was told of it.
   let asked = false;
   const anthropic = await fakeAnthropic({
@@ -473,7 +475,7 @@ test("codex: a door Codex's client can't reach fails the run, naming the server,
   assert.match(JSON.stringify(view.error ?? view), /MCP servers failed to initialize: fake\b/);
 });
 
-test("codex: a run killed mid-call shows the call's row while it runs and its interrupted result after, resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000, skip: "gate-reds-1: piShaped keeps an interrupted end (store-reads/journal.ts)" }, async (t) => {
+test("codex: a run killed mid-call shows the call's row while it runs and its interrupted result after, resumes with the call answered interrupted, and the server saw the call once", { timeout: 120_000 }, async (t) => {
   // The runner holding the run goes mid-call and another resumes it, as on claude-agent: closed, since it runs in this
   // test's process.
   const { api, data } = await codexServe(t, {}, { runner: false });
@@ -507,15 +509,8 @@ test("codex: a run killed mid-call shows the call's row while it runs and its in
   assert.equal(calls(fake, "slow_write").length, 1, "the resume never sent the call again");
   const result = tools.find((row) => row.kind === "tool_result");
   assert.match(`${result?.summary} ${result?.tool_result_preview}`, /interrupted[\s\S]*may or may not have taken effect/i, JSON.stringify(tools));
-  // What the model reads of the call in the resumed thread: Codex was told it was interrupted. A follow-up opens the
-  // completed run again before it is answered, so the follow below waits for the new turn's end.
-  const followUp = await api("POST", `/runs/${runId}/messages`, { content: "outputs" });
-  assert.equal(followUp.status, 202, JSON.stringify(followUp.body));
-  assert.notEqual(followUp.body.status, "completed", `the run is open again: ${JSON.stringify(followUp.body)}`);
-  const { last: after } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 60_000 });
-  assert.equal(after.status, "completed");
-  assert.match((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "", /interrupted/i);
-  assert.equal(calls(fake, "slow_write").length, 1, "the call was never sent again");
+  // What Codex is told of the cut call in its resumed thread is its adapter's recovery note (run-adapters-codex
+  // recovery-note.test.mjs): a finished run takes no follow-up to ask it here (409 not_continuable).
 });
 
 test("codex: a call refused before anything is sent lists its call row before its failed result, as a sent call does", { timeout: 90_000 }, async (t) => {

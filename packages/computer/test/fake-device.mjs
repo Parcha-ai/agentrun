@@ -5,6 +5,7 @@
 // server, no phone.
 import { deflateSync } from "node:zlib";
 import { checkActions, checkLifetime, daemonWatch, FIXTURE_APP_ID, FIXTURE_BUTTON, FIXTURE_COLORS, FIXTURE_WINDOW, fixtureAppLog } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -208,7 +209,7 @@ export function fakeDevices({
 		};
 
 		const methods = {
-			hello: () => ok({ version: "1.0.0", os, kind, arch: "amd64", groups, ...hello }),
+			hello: () => ok({ protocol: PROTOCOL_VERSION, version: "1.0.0", os, kind, arch: "amd64", groups, ...hello }),
 			ping: () => ok({}),
 			"exec.run": ({ argv }) => ok({ exitCode: 0, stdout: Buffer.from(argv[0] === "env" ? "PATH=/usr/bin:/bin\nHOME=/fake\n" : `${argv.slice(1).join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false }),
 			"files.mkdir": () => ok({}),

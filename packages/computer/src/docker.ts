@@ -70,6 +70,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -142,6 +143,8 @@ export interface DockerProviderOptions {
 
 /** The mount kinds a Docker computer takes, as capabilities().mount declares them: a bind of a folder on this host. */
 export const MOUNT: readonly MountKind[] = ["bind"];
+/** The networks a Docker computer takes: none, open, or an allowlist through the server's egress proxy. */
+export const NETWORK: readonly NetworkForm[] = ["none", "open", "allow"];
 
 /** The machine kind and groups of each configuration: a linux computer, and one made with the desktop option. */
 export const CAPABILITIES: readonly KindCapabilities[] = [
@@ -327,7 +330,7 @@ export class DockerProvider implements ComputerProvider {
 		return {
 			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
-			network: ["none", "open", "allow"],
+			network: [...NETWORK],
 			allow: { domains: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, cidrs: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, mixed: true },
 			networkReadBack: true,
 			isolation: "container",
