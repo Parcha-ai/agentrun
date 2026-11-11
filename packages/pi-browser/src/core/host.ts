@@ -133,18 +133,6 @@ export interface WorkspaceFiles {
   resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }>;
 }
 
-/** A site use_website can open: configuration, never model input. */
-export type SiteInfo = { site: string; title: string; description: string };
-/** Runs one child agent that has the browser tools and no use_website, and answers its final text. The durable adapter
- *  supplies it: a task-owned conversation. */
-export type ChildRunner = (task: { site: string; requestId: string; prompt: string }, signal: AbortSignal) => Promise<string>;
-/** Runs a granted site's task and reports it, idempotent by `requestId`: exactly one of `run` (a task started elsewhere)
- *  or `report` (the result). A port that runs the child itself uses `ctx.runChild`; a broker ignores it. */
-export interface SiteRunPort {
-  list(signal: AbortSignal): Promise<SiteInfo[]>;
-  use(input: { site: string; requestId: string; instructions: string }, ctx: { signal: AbortSignal; runChild: ChildRunner }): Promise<{ run: { id: string; state: string } } | { report: string }>;
-}
-
 export type HandoffOutcome = "done" | "cancelled" | "expired";
 
 /** Hands the live browser to a person and reports how it ended. Polled by id, so a restarted process resumes the wait;

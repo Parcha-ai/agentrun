@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -16,13 +15,10 @@ const POLICY = { proxies: false, verified: false, captcha: false, geolocation: n
  *  for a result that carries only `content`, so the test reads the transcript the faux model receives, not the adapter's return value. */
 const shown = (message) => ({ text: (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join(""), images: (message.content ?? []).filter((part) => part.type === "image").length });
 
-test("every durable tool result reaches the model with its text: browser, web, site and failure results", async (t) => {
+test("every durable tool result reaches the model with its text: browser, web and failure results", async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: PAGE } });
   const evidence = { file: async (label, record) => ({ path: `evidence/${label}/${record.tool}.md`, bodyLine: 1 }) };
-  const requestId = randomUUID();
-  const listing = [{ site: "shop", title: "The shop", description: "Prices." }];
-  const sites = { port: { list: async () => listing, use: async () => ({ report: "The 8 GB board costs $80." }) }, listing };
-  const browser = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence, sites });
+  const browser = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence });
   const web = createWebExtension({
     providers: {
       name: "fake",
@@ -41,7 +37,6 @@ test("every durable tool result reaches the model with its text: browser, web, s
     ["snapshot", {}], ["run", { code: "await page.click('a')" }], ["screenshot", {}], ["browser_read", {}],
     ["run", {}],
     ["web_fetch", { url: "https://s.example/a" }], ["web_search", { query: "acme" }],
-    ["use_website", { site: "shop", request_id: requestId, instructions: "Find the price." }],
     ["browser_release", {}],
   ];
   let seen = [];
@@ -71,7 +66,6 @@ test("every durable tool result reaches the model with its text: browser, web, s
     assert.equal(r.content, false, `${r.tool}: output only, the key pi 1.5 shows the model`);
   }
   assert.equal(seen[2].images, 1, "the screenshot keeps its image");
-  assert.deepEqual(seen.map((r) => r.isError), [false, false, false, false, true, false, false, false, false], "only the run with neither code nor actions is a failure");
+  assert.deepEqual(seen.map((r) => r.isError), [false, false, false, false, true, false, false, false], "only the run with neither code nor actions is a failure");
   assert.match(seen[4].text, /"code":"refused"/, "a typed failure is its envelope, as the model reads it");
-  assert.match(seen[7].text, /The 8 GB board costs \$80\./);
 });

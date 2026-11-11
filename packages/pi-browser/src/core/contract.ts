@@ -14,7 +14,7 @@ export type ToolContract = {
   /** One sequential call makes its whole round sequential. */
   readonly executionMode: "sequential" | "parallel";
   readonly evidence: "none" | "receipt" | "image" | "files" | "urls";
-  readonly listedWhen: "always" | "downloads" | "upload" | "fetch" | "search" | "sites" | "handoff";
+  readonly listedWhen: "always" | "downloads" | "upload" | "fetch" | "search" | "handoff";
 };
 
 const actionSchema = (op: string, extra: Record<string, Record<string, unknown>> = {}) => ({

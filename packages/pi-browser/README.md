@@ -208,7 +208,6 @@ One session at a time may save to a profile in one process. A second saver is re
 | `browser_request_handoff` | Hand the session to a person for a step only a human can do, and wait for the host's handoff port to say how it ended. While the person has it, every other call answers `waiting_for_human`. Listed only when the host gives a `handoff` port. | Reruns and waits on the same request; a request asked again carries the same `request_id`, which the port treats as one. |
 | `web_fetch`, `web_search` | Fetch a page or search, through the provider's services. | Reruns. |
 | `browser_upload` | Choose one workspace file in a file input on the page, as a person picking it would. Nothing is submitted; `run` submits the form afterwards. The durable adapter lists it only when the host supplies `files` or `workspace`. | Never reruns. An upload the page does not answer fails at 60 s as possibly applied, and the identical retry is refused until the agent has looked at the page. |
-| `use_website` | Hand a task to another agent that works one website the host granted, in its own browser, and get its report. Listed only when the host passes `sites`. | A `request_id` that already finished answers its result without running again. A task that failed runs again. |
 
 `web_search` hits carry a `snippet` when the search has one: an excerpt of the page with its markdown links reduced to
 their text, whitespace collapsed and clipped to `WEB_SEARCH_SNIPPET_MAX` (500) characters, redacted with the rest of the
