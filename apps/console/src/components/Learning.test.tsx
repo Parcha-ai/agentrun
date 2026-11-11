@@ -1343,6 +1343,34 @@ describe("the Learning tab's Make this an agent", () => {
     expect(t.card("check-refunds")!.textContent).toContain("Made the agent check-refunds. Open it to run it.");
   });
 
+  it("a promotion whose answer was lost keeps its key past Cancel: a new confirm sends it again under the same key, and once an agent is made the next promotion gets a new one; a refusal lets the key go", async () => {
+    const keys: string[] = [];
+    let fail: "lost" | "refused" | null = "lost";
+    const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: async (n, key) => {
+      keys.push(key);
+      if (fail === "lost") throw new ClientError(500, "internal", "the answer was lost");
+      if (fail === "refused") throw new ClientError(409, "learned_not_active", "check-refunds is not active.");
+      return { ...agent(true), agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent;
+    } });
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    await t.click(/^Cancel$/);
+    await t.click(/^Make check-refunds an agent$/);
+    fail = null;
+    await t.click(/^Yes, make the agent$/);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+    // Made: the next promotion is a new request.
+    fail = "refused";
+    await t.click(/^Make check-refunds an agent$/);
+    await t.click(/^Yes, make the agent$/);
+    expect(keys[2]).not.toBe(keys[0]);
+    // Refused: an answer, so the next Yes is a new request too.
+    fail = null;
+    await t.click(/^Yes, make the agent$/);
+    expect(keys[3]).not.toBe(keys[2]);
+  });
+
   it("Esc while it makes the agent keeps the confirm up: no second promotion can start until the first answers", async () => {
     let answer!: (made: Agent) => void;
     const t = await open(agent(true), { learning: async () => flows("active"), caps: OWNER, promote: () => new Promise<Agent>((resolve) => (answer = resolve)) });
