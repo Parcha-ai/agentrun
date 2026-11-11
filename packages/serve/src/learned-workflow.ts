@@ -249,8 +249,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown }) => {
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
-    const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown; error?: unknown };
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...(typeof detail.error === "string" ? { error: detail.error.slice(0, 300) } : {}) });
+    const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0 });
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);

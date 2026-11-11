@@ -106,6 +106,10 @@ export interface AdapterRunSpec {
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
    *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
   readonly endOfRun?: EndOfRunTurn;
+  /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned skills and workflows it was
+   *  given, by name. The loop writes it on the root (KINDS.learningLaid) as this claim opens. Absent for a run that does
+   *  not learn. */
+  readonly learningLaid?: { readonly skills: readonly string[]; readonly workflows: readonly string[] };
   /** The run's work folder, as its file tools resolve a path: what the end-of-run turn's refusal under work/.learning/
    *  reads an absolute path against. Absent: a relative path, or the box's, still counts. */
   readonly workRoot?: string;
@@ -1044,6 +1048,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         // Taken over from a runner whose lease ran out mid-run: said on the run's timeline once, at this claim's first pass.
         if (restarts === 0 && claim.lost) await noteTakenOver(harness, root, claim.lost.runner);
+        // What this claim laid of the run's learning seed, once per claim: the newest is what the run was given.
+        if (restarts === 0 && spec.learningLaid) {
+          const [journalOf, rootOf, laid] = [harness, root, spec.learningLaid];
+          await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: KINDS.learningLaid, data: { skills: [...laid.skills], workflows: [...laid.workflows] } as unknown as JsonValue }), context);
+        }
         // Reopened by a person's follow-up (runs.reopen): its journal holds an end and its session opens idle. Set before the
         // session is ready, so the follow-up's steer, handed over once it is, is sent as this claim's turn.
         if (restarts === 0 && session!.state === "idle" && (await entriesOf(gate.journal, root.id, context)).some((entry) => entry.kind === KINDS.end)) reopen = {};

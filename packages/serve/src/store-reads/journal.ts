@@ -121,8 +121,8 @@ export async function runTimeline(store: Store, runId: string, context: Context,
 }
 
 /** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
- *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label and error
- *  through `redact` when given (the run's cut), as every text a row shows. Rows of a run that ran none are as they were. */
+ *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
+ *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
 function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
   const said = (text: string) => (redact ? redact(text) : text);
@@ -131,9 +131,9 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
     const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
     if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
     traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
-      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; error?: unknown };
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown };
       if (typeof one.label !== "string" || typeof one.status !== "string") return [];
-      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0, ...(typeof one.error === "string" ? { error: said(one.error) } : {}) }];
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0 }];
     }));
   }
   if (!traces.size) return rows;

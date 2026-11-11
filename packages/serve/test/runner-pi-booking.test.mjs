@@ -22,7 +22,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
-const { runTimeline } = await import("../dist/store-reads/journal.js");
+const { runTimeline, runEntries } = await import("../dist/store-reads/journal.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -98,7 +98,9 @@ async function piRun(t, { tools, learned }) {
   const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
   // The run's timeline as served from the store: a learned_workflow call's result row carries its nodes.
   const timeline = await runTimeline(server, RUN, ctx, { settled: true });
-  return { row, requests, turns, timeline };
+  // What its claim laid of its learning seed (KINDS.learningLaid): the newest entry.
+  const laid = (await runEntries(server, RUN, ctx)).findLast((entry) => entry.kind === "agentrun.learning.laid")?.data;
+  return { row, requests, turns, timeline, laid };
 }
 
 test("a pi run's learned_workflow model node books on the run's one ledger, a side call labelled learned_workflow", async (t) => {
@@ -120,10 +122,11 @@ test("a pi run with no learned workflow books nothing under the learned_workflow
 });
 
 test("a pi run's learned_workflow call shows the nodes its workflow ran on its result row", async (t) => {
-  const { row, timeline } = await piRun(t, { tools: ["read"], learned: true });
+  const { row, timeline, laid } = await piRun(t, { tools: ["read"], learned: true });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === LEARNED_WORKFLOW_TOOL);
   assert.ok(result, `a learned_workflow result row: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
   assert.deepEqual(result.learned_nodes?.map(({ label, kind, status }) => ({ label, kind, status })), [{ label: "answer", kind: "extract", status: "ok" }], JSON.stringify(result));
   assert.equal(typeof result.learned_nodes[0].duration_ms, "number");
+  assert.deepEqual(laid, { skills: [], workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
 });

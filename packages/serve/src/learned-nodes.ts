@@ -8,5 +8,6 @@ export const LEARNED_NODES = "agentrun.learned_nodes";
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
 /** One node of a learned workflow's run, as the DSL ended it (its `node.end` event): its label, its kind, how it ended
- *  (`ok`, `failed`, `escalated`), how long it took, and why it failed (at most 300 characters, as the DSL gives it). */
-export type LearnedNode = { readonly label: string; readonly kind: string; readonly status: string; readonly duration_ms: number; readonly error?: string };
+ *  (`ok`, `failed`, `escalated`) and how long it took. Never why it failed: the DSL cuts that text at 300 characters,
+ *  which can leave the start of a secret the run's cut no longer recognizes, so none of it is kept. */
+export type LearnedNode = { readonly label: string; readonly kind: string; readonly status: string; readonly duration_ms: number };

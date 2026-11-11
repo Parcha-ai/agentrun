@@ -50,6 +50,10 @@ export const KINDS = {
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
    *  over it, and the turn is never on the run's visible record. */
   endOfRunTurn: "agentrun.end-of-run.turn",
+  /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
+   *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
+   *  what the run was given. Neither a call nor a message. */
+  learningLaid: "agentrun.learning.laid",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */

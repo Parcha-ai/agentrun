@@ -156,20 +156,32 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
       startedAt: new Date(run.startedAt).toISOString(), endedAt: run.endedAt === null ? null : new Date(run.endedAt).toISOString(),
       costUsd: run.costUsd, importedFrom: run.importedFrom, archivedAt: run.archivedAt === null ? null : new Date(run.archivedAt).toISOString(),
     } as unknown as RunRow);
-    learnings.set(run.id, end ? impactLearningOf(end, started) : null);
+    // What its claim laid of the skills and workflows it was offered (the newest learningLaid entry): the run started from
+    // those alone.
+    const laid = end && (started?.skills?.length || started?.workflows?.length) ? laidOf(await runEntries(store, run.id, BACKGROUND_CONTEXT)) : undefined;
+    learnings.set(run.id, end ? impactLearningOf(end, started, laid) : null);
   }
   return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
+}
+
+/** What a run's claim laid of its learning seed: the learned skills and workflows it was given, by name. */
+type Laid = { readonly skills: readonly string[]; readonly workflows: readonly string[] };
+/** The newest learningLaid entry of a run's journal (its last claim's lay); none laid when it has none. */
+export function laidOf(entries: readonly EntryLike[]): Laid {
+  const data = (entries.findLast((entry) => entry.kind === KINDS.learningLaid)?.data ?? {}) as { skills?: unknown; workflows?: unknown };
+  const names = (list: unknown) => (Array.isArray(list) ? list.filter((name): name is string => typeof name === "string") : []);
+  return { skills: names(data.skills), workflows: names(data.workflows) };
 }
 
 /** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
  *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did
  *  not); its grade's cost once it ended (0 when nothing was graded). */
-function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"]): ImpactLearning {
+function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined): ImpactLearning {
   const over = end.state === "merged" || end.state === "dropped";
   const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   return {
     state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}),
-    ...(started?.skills?.length ? { seed_skills: started.skills.length } : {}), ...(started?.workflows?.length ? { seed_workflows: started.workflows.length } : {}), ...looked,
+    ...(laid?.skills.length ? { seed_skills: laid.skills.length } : {}), ...(laid?.workflows.length ? { seed_workflows: laid.workflows.length } : {}), ...looked,
     ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
   };
 }
@@ -187,53 +199,57 @@ export function notesReadOf(given: readonly NoteUsed[] | undefined, reflect: Pic
   return notesRead(reflect as Reflect | undefined, rows).flatMap((file) => (names.has(file) ? [{ file, name: names.get(file)! }] : []));
 }
 
-/** What a run's job did with the learned skills and workflows its launch offered it (GET /runs/{id}/learning `skills`
- *  and `workflows`): each skill, and whether the job read its SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, or a
- *  harness's own skill tool on it); each learned workflow the job called, by the call's `name` (workflowNamesOf), how
+/** What a run's job did with the learned skills and workflows its launch offered it (GET /runs/{id}/learning `used`:
+ *  its `skills` and `workflows`, apart from the skills and workflows it learned): each skill, and whether the job read its SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, or a
+ *  harness's own skill tool on it); each learned workflow the job called, by the call's `name` (callArgsOf), how
  *  many calls and how many failed. The end-of-run turn's rows are left out, as notesRead leaves them. */
 export type LearnedUse = { readonly skills: readonly { readonly name: string; readonly read: boolean }[]; readonly workflows: readonly { readonly name: string; readonly calls: number; readonly failed: number }[] };
-/** The tools a skill's SKILL.md is read with: the read hand (claude-agent's by its host-tool name too), a CLI adapter's
- *  read of a skill's file, and claude-agent's own Skill tool. */
-const SKILL_READS = new Set(["read", "mcp__hands__read", "read_skill_file", "Skill"]);
 /** learned_workflow by every name a harness calls it (runner/learning-end.ts LEARNED_NAMES). */
 const WORKFLOW_CALLS = new Set(["learned_workflow", "mcp__hands__learned_workflow"]);
-/** The workflow each learned_workflow call of a run's journal names (its `name` argument), by its call's id: pi's call in
- *  its assistant entry, a CLI harness's in its record's call start. The timeline row shows no input for the call. */
-export function workflowNamesOf(entries: readonly EntryLike[]): Map<string, string> {
-  const out = new Map<string, string>();
-  const nameOf = (args: unknown) => (typeof (args as { name?: unknown } | null)?.name === "string" ? String((args as { name: string }).name) : undefined);
+/** Each tool call of a run's journal, by its call's id: its tool and the arguments it was called with, as recorded (pi's
+ *  call in its assistant entry, a CLI harness's in its record's call start). A timeline row's input preview is cut and
+ *  for some tools absent, so what a call read or ran is read from these. */
+export function callArgsOf(entries: readonly EntryLike[]): Map<string, { tool: string; args: Record<string, unknown> }> {
+  const out = new Map<string, { tool: string; args: Record<string, unknown> }>();
+  const argsOf = (value: unknown) => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
   for (const entry of entries) {
     if (entry.kind === "pi.assistant") {
       for (const part of ((entry.model?.[0] as { content?: unknown } | undefined)?.content ?? []) as { type?: string; id?: string; name?: string; arguments?: unknown }[]) {
-        const name = part?.type === "toolCall" && WORKFLOW_CALLS.has(part.name ?? "") ? nameOf(part.arguments) : undefined;
-        if (name && typeof part.id === "string") out.set(part.id, name);
+        if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") out.set(part.id, { tool: part.name, args: argsOf(part.arguments) });
       }
     } else if (entry.kind === KINDS.callStart) {
       const data = (entry.data ?? {}) as { callId?: unknown; tool?: unknown; input?: unknown };
-      const name = WORKFLOW_CALLS.has(String(data.tool ?? "")) ? nameOf(data.input) : undefined;
-      if (name && typeof data.callId === "string") out.set(data.callId, name);
+      if (typeof data.callId === "string" && typeof data.tool === "string") out.set(data.callId, { tool: data.tool, args: argsOf(data.input) });
     }
   }
   return out;
 }
 
-export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], names: ReadonlyMap<string, string> = new Map()): LearnedUse {
+/** Whether call `call` read skill `name`'s SKILL.md: the read hand on `.agents/skills/<name>/SKILL.md`, a CLI adapter's
+ *  read_skill_file of the skill's SKILL.md, or claude-agent's Skill tool on the skill. */
+function readsSkill(call: { tool: string; args: Record<string, unknown> }, name: string): boolean {
+  const text = (key: string) => (typeof call.args[key] === "string" ? (call.args[key] as string) : "");
+  if (call.tool === "read" || call.tool === "mcp__hands__read") return posix.normalize(text("path")).endsWith(`skills/${name}/SKILL.md`);
+  if (call.tool === "read_skill_file") return text("skill") === name && posix.normalize(text("path")) === "SKILL.md";
+  if (call.tool === "Skill") return [text("skill"), text("command"), text("name")].includes(name);
+  return false;
+}
+
+export function learnedUseOf(started: RunLaunch["learning"], reflect: Pick<Reflect, "after" | "until"> | undefined, rows: readonly TimelineEvent[], args: ReadonlyMap<string, { tool: string; args: Record<string, unknown> }> = new Map()): LearnedUse {
   const job = rows.filter((row) => !reflects(reflect as Reflect | undefined, row.id));
   const results = new Map(job.flatMap((row) => (row.kind === "tool_result" && row.tool_use_id ? [[row.tool_use_id, row.tool_status] as const] : [])));
-  const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id);
-  const skills = (started?.skills ?? []).map((name) => ({
-    name,
-    read: calls.some((row) => SKILL_READS.has(row.tool_name ?? "") && results.get(row.tool_use_id!) === "success" && (posix.normalize(row.tool_input_preview ?? "").includes(`skills/${name}/SKILL.md`) || (row.tool_name !== "read" && row.tool_name !== "mcp__hands__read" && (row.tool_input_preview ?? "").includes(JSON.stringify(name))))),
-  }));
+  const calls = job.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id && row.tool_use_id).flatMap((row) => {
+    const call = args.get(row.tool_use_id!);
+    return call ? [{ id: row.tool_use_id!, ...call }] : [];
+  });
+  const skills = (started?.skills ?? []).map((name) => ({ name, read: calls.some((call) => results.get(call.id) === "success" && readsSkill(call, name)) }));
   const workflows = new Map<string, { calls: number; failed: number }>();
-  for (const row of calls) {
-    if (!WORKFLOW_CALLS.has(row.tool_name ?? "")) continue;
-    const name = names.get(row.tool_use_id!);
-    if (!name) continue;
-    const seen = workflows.get(name) ?? { calls: 0, failed: 0 };
+  for (const call of calls) {
+    if (!WORKFLOW_CALLS.has(call.tool) || typeof call.args.name !== "string") continue;
+    const seen = workflows.get(call.args.name) ?? { calls: 0, failed: 0 };
     seen.calls += 1;
-    if (results.get(row.tool_use_id!) !== "success") seen.failed += 1;
-    workflows.set(name, seen);
+    if (results.get(call.id) !== "success") seen.failed += 1;
+    workflows.set(call.args.name, seen);
   }
   return { skills, workflows: [...workflows].map(([name, seen]) => ({ name, ...seen })) };
 }
@@ -270,5 +286,5 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
   const learning = withNotes(end, started, read) as Learning;
   const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
-  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, workflowNamesOf(entries)) }, shown, secrets);
+  return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries)) }, shown, secrets);
 }

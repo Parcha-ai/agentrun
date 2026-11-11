@@ -513,10 +513,12 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },
-    // What the job did with the learned skills and workflows it was offered (store-reads/learning.ts learnedUseOf), each
-    // name cut of the host's secrets as a note's is.
-    skills: (input.used?.skills ?? []).map(({ name, read }) => ({ name: shown.name(name), read })),
-    workflows: (input.used?.workflows ?? []).map(({ name, calls, failed }) => ({ name: shown.name(name), calls, failed })),
+    // What the job did with the learned skills and workflows it was offered (store-reads/learning.ts learnedUseOf), apart
+    // from the skills and workflows it learned (notesView's), each name cut of the host's secrets as a note's is.
+    used: {
+      skills: (input.used?.skills ?? []).map(({ name, read }) => ({ name: shown.name(name), read })),
+      workflows: (input.used?.workflows ?? []).map(({ name, calls, failed }) => ({ name: shown.name(name), calls, failed })),
+    },
   };
 }
 

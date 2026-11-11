@@ -35,6 +35,13 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  *  failed part way and was taken back). */
 export type LaidSeed = { readonly seed: Seed; readonly skills: readonly string[]; readonly workflows: readonly LearnedWorkflow[] };
 
+/** What a claim laid of a run's learning seed, by name, as the adapter loop records it (KINDS.learningLaid): each learned
+ *  skill whose files it laid, and each learned workflow it handed the tool; none when nothing was laid. */
+export const laidOf = (laid: LaidSeed | undefined): { skills: string[]; workflows: string[] } => ({
+  skills: [...new Set((laid?.skills ?? []).map((path) => path.split("/")[0]!))],
+  workflows: (laid?.workflows ?? []).map(({ name }) => name),
+});
+
 /** Lays the run's learning seed (see the file's head). Undefined when the seed could not be read: nothing was laid.
  *  Never throws. */
 export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | undefined> {
