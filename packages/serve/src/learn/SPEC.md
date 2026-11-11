@@ -189,14 +189,18 @@ job calls for it: its decision is `note`, and it is re-filed as a note (`grade.t
 skill's description and body, of type feedback), which every later run reads, merged in the skill's place and pending
 when risky; one that would be no note is dropped, saying it belongs in a note, and keeps the grader's question (a
 Planted one still keeps nothing of the run). A re-filed note stays within a run's note cap (`CAPS.runNote`), as a run's
-own note does. The skill it replaces, if main holds it, is retired in the same write (the merge's `retire`). A re-filed
+own note does, and is one more new note: it counts against the run's new-note cap (`CAPS.newNotes`) beside the run's
+own kept notes, and one past it is dropped alone, saying so. The skill it replaces, if main holds it, is retired in the same write (the merge's `retire`). A re-filed
 skill whose note file the run's own kept note takes is dropped, saying so: one file is one item's, and its hold stands.
 A new note named like one main holds when the grade reads main (another run merged it after the seed) is left out of
 the grade and settled alone, never a drop of the whole proposal. At the merge, every note the verdict keeps (a new
 note, or a skill re-filed as one) whose file main already holds is settled alone (the learning run's `takenOnMain`),
 never a refusal of the whole merge: the same text is no change, dropped unsaid; a note whose front matter supersedes
 the note of its own name is a modification, written over it (the merge's `replace`, main's blob checked as graded);
-any other is dropped, saying a note of that name was added since or was there already. The rest merges. One copy of
+any other is dropped, saying a note of that name was added since or was there already. The rest merges. A run whose
+own merge is on main already (the learning run stopped after its commit and before it recorded it) is not settled
+against main again: its notes there are its merge's, and that merge's files settle each item, so what it wrote is
+learned. No words of a run's learning, the merge's or a read's, say a rule main already held. One copy of
 each rule: a new note whose body, set beside an active note's with whitespace and case aside (notes.ts `ruleOf`), is
 exactly the same, under another name, is a duplicate: the checks refuse it (`duplicate`, against the seed's active
 notes, and of two new notes the same, the second), and the merge's own computation leaves it out unsaid, against the

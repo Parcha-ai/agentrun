@@ -36,7 +36,7 @@ async function setUp(t) {
 }
 
 /** The learning loop over the store, with fakes for the grader, the folder and its write; `calls` counts each. */
-function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, readMain = async () => MAIN, mainTexts = async () => ({}) } = {}) {
+function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, readMain = async () => MAIN, mainTexts = async () => ({}), merged = async () => false } = {}) {
   const calls = { ask: [], commit: [], flush: 0 };
   const queue = [...answers];
   const factory = createLearningLoop({
@@ -53,6 +53,8 @@ function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, r
     commit: async (ws, change) => (calls.commit.push({ ws, change }), commit(ws, change)),
     // A fake main that holds no note by any of these names.
     mainTexts,
+    // A fake main that holds no merge of this run yet.
+    merged,
     now: () => clock.now,
   });
   const loop = factory({ journal: (claim) => store.journal(claim), flush: async () => (calls.flush++, store.flush()), signal: new AbortController().signal });

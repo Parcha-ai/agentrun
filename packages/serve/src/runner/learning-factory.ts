@@ -6,10 +6,11 @@
 //              (passed in by the runner's wiring);
 //   folder     the agent's learning folder in the server's data (learn/folder.ts learningWorkspace), ended after each run;
 //   readMain   main as the grader reads it, from the folder's snapshot (learn/commit.ts readMain);
-//   commit     the folder's one write (learn/commit.ts learningCommit).
+//   commit     the folder's one write (learn/commit.ts learningCommit);
+//   merged     whether the run's merge is on main already (learn/folder.ts readRunDiff), for a resume after its commit.
 
 import { learningCommit, type LearningChange, mainTexts, readMain } from "../learn/commit.js";
-import { learningWorkspace } from "../learn/folder.js";
+import { learningWorkspace, readRunDiff } from "../learn/folder.js";
 import type { Store } from "../store/store.js";
 import type { Workspace } from "../workspace/index.js";
 import { createLearningLoop, type GradeMain, type LearningCommitResult, type LearningLoopDeps, type Problem } from "./learning-loop.js";
@@ -46,6 +47,7 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
     readMain: async (ws, proposal) => (await readMain(ws as Workspace, { notes: proposal.notes })) as GradeMain | { readonly problems: readonly Problem[] },
     commit: async (ws, change) => (await learningCommit(ws as Workspace, change as LearningChange)) as LearningCommitResult,
     mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
+    merged: async (ws, runId) => (await readRunDiff(ws as Workspace, runId)) !== undefined,
     ...(deps.now ? { now: deps.now } : {}),
   });
 }

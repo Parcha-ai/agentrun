@@ -21,7 +21,7 @@ import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
-import { notKept, said, STOPPED } from "../learning-words.js";
+import { notKept, SAME_NOTE, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
 import { KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
@@ -102,6 +102,9 @@ export interface LearningLoopDeps {
   /** The texts main holds at these note paths (learn/commit.ts mainTexts): a note the merge keeps whose name main
    *  already holds is settled alone (takenOnMain). */
   mainTexts(ws: unknown, paths: readonly string[]): Promise<Readonly<Record<string, string>>>;
+  /** Whether run `runId`'s merge is on main already (learn/folder.ts readRunDiff: its diff file, named by the run as its
+   *  commit's Run-Id trailer names it): a resume after its commit, before its end was recorded. */
+  merged(ws: unknown, runId: string): Promise<boolean>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
 }
@@ -125,9 +128,6 @@ const itemOf = (file: string): string => {
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
 
-/** The why of a note main already holds the same (a run's new note, or a skill re-filed as one): no change, so its words
- *  never say it. */
-export const SAME_NOTE = "The same rule is already one of the agent's notes.";
 /** The why of a note whose name main already holds with other text, which it does not supersede: never written over,
  *  and the rest of what the run learned merges. */
 export const NOTE_NAME_TAKEN = (name: string) => `A note named ${name} was added since this run started, or was there already; this one wasn't kept.`;
@@ -405,19 +405,22 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
 
           // Each note it keeps whose file main already holds (another run merged one by that name since, or a skill
           // re-filed as one) is settled alone (takenOnMain): never written over unless it supersedes it, and never a
-          // refusal of everything else the run learned.
+          // refusal of everything else the run learned. Not when this run's own merge is on main already (the runner
+          // stopped after its commit, before it recorded it): the notes there are that merge's, never "already there", so
+          // the grade's verdict goes to the commit, which answers with that merge, and its files settle each item
+          // (resumedOf).
           const notePaths = graded.verdict.items.flatMap((item) => (!item.keep ? [] : item.note ? [item.note.file] : proposal.notes.some(({ file }) => file === item.file) ? [item.file] : []));
           let onMain: Readonly<Record<string, string>> = {};
-          if (notePaths.length) {
-            try {
-              onMain = await learning.mainTexts(ws, notePaths);
-            } catch (error) {
-              // Main could not be read: parked as for a write that could not reach the folder, tried again after a backoff.
-              await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
-              return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
-            }
+          let already = false;
+          try {
+            already = await learning.merged(ws, source.runId);
+            if (!already && notePaths.length) onMain = await learning.mainTexts(ws, notePaths);
+          } catch (error) {
+            // Main could not be read: parked as for a write that could not reach the folder, tried again after a backoff.
+            await append(KINDS.learningUnavailable, { source: source.runId, error: (error as Error)?.message ?? String(error) } satisfies UnavailableData, "parked");
+            return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
           }
-          const taken = takenOnMain(proposal, graded.verdict, onMain);
+          const taken = already ? { verdict: graded.verdict, replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
           const verdict = taken.verdict;
           if (!verdict.merge) {
             await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
@@ -429,9 +432,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           if (result.ok) {
             // What the merge left out against the main it committed on (a rule a note holds, a name one holds), each
             // item alone: said as takenOnMain says it, and nothing of it learned.
-            // A merge already on main (a resume after its commit): what it wrote is what its files say. takenOnMain ran
-            // against that main and read the run's own notes as there already, so each note is settled by the files:
-            // one written is kept as the grade kept it, one not written is left out (as takenOnMain or the commit says why).
+            // A merge already on main (a resume after its commit): what it wrote is what its files say, so each note is
+            // settled by the files: one written is kept as the grade kept it, one not written is left out (as takenOnMain
+            // or the commit says why).
             const settled = result.already ? resumedOf(proposal, graded.verdict, verdict, result) : leftOf(merging, verdict, result.left ?? []);
             if (!settled.verdict.items.some((item) => item.keep) && !result.files.length) {
               await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(settled.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
