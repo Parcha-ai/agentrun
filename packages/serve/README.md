@@ -1952,7 +1952,7 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, the store page's `/api/*`, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -2237,15 +2237,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
-comes through `/v2`. The store's read-only JSON stays under `/api/*` (`/api/store`, `/api/agents/{id}`, `/api/runs` and
-the rest of the store page's data), for a
-script with the token or a browser with its cookie. With accounts on (the default) the console asks for the owner's password
+comes through `/v2`. With accounts on (the default) the console asks for the owner's password
 ([your password](#your-password)) and the browser holds the owner's session cookie; a `?token=` link sets no cookie: the
 token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the printed link (`/?token=`) sets a cookie (`HttpOnly`,
 `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https) and sends the browser to the same address
 without the token. The cookie's value is derived from the token, never the token itself, and it lasts until the browser
 closes. Without it, the console says to open the link. Either cookie takes the place of `Authorization: Bearer` on
-`/api/*` and `/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
+`/v2`: for a `GET`, and for any other method only when the request's `Origin` is the server's own origin
 and its body is `application/json`, or, on a `PUT` or `POST` to a route that takes bytes (`PUT /v2/files/{id}`,
 `POST /v2/files`), of any content type. A request that sends an `Authorization` header is checked on that header alone.
 
