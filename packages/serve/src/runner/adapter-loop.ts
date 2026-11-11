@@ -18,7 +18,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "../refusal-words.js";
@@ -334,6 +334,11 @@ interface CliRecord {
    *  once the turn in flight ended): the person's message, or, with `origin`, the host's input entry naming who wrote it.
    *  Written every time, never once for the run as the first input is. */
   message(text: string, origin?: MessageOrigin): Promise<void>;
+  /** A message taken mid-turn is about to be sent as a turn of its own (sendAfterTurn): its intent mark (KINDS
+   *  messageSending, by its command row's id), in its own commit, for the flush before the send. A row that already has
+   *  one was sent by a runner lost before its row was taken, so this send is a second turn the model may read twice: a
+   *  phase row says so (MESSAGE_SENT_AGAIN), and this gives true. */
+  sending(commandId: number): Promise<boolean>;
   /** A call's start, before it runs (once per call id). A call parked at its gate (park) gets its sent mark here instead,
    *  committed before the send: only a parked call with that mark may have been sent. */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
@@ -378,12 +383,15 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // is never ended interrupted; it waits for its answer, which ends it (run once, refused, or withdrawn).
   const parked = new Set<string>();
   const sent = new Set<string>();
+  // The command rows a message was about to be sent for (their intent marks): one sent again is a retry.
+  const sending = new Set<number>();
   let personWritten = false;
   // Each end-of-run turn's prompt the record wrote as it asked the turn, by its request id: a turn asked again (a later
   // claim, after a crash in the turn) reuses it, never writes a second.
   const askedAt = new Map<string, EntryId>();
   for (const entry of await entriesOf(journal, root.id, context)) {
-    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown; parked?: unknown; requestId?: unknown };
+    const data = (entry.data ?? {}) as { callId?: unknown; role?: unknown; status?: CallStatus; output?: unknown; parked?: unknown; requestId?: unknown; commandId?: unknown };
+    if (entry.kind === KINDS.messageSending && typeof data.commandId === "number") sending.add(data.commandId);
     if (entry.kind === KINDS.endOfRunTurn && data.role === "person" && typeof data.requestId === "string") askedAt.set(data.requestId, entry.id as EntryId);
     if (entry.kind === KINDS.callEnd && typeof data.callId === "string") ends.set(data.callId, { status: data.status ?? "done", ...(typeof data.output === "string" ? { output: data.output } : {}) });
     if (entry.kind === KINDS.callStart && typeof data.callId === "string" && data.parked === true) parked.add(data.callId);
@@ -441,6 +449,16 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         if (origin) await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
         else await append(KINDS.message, { role: "person", text: input });
       }),
+    async sending(commandId) {
+      let again = false;
+      await inTurn(async () => {
+        again = sending.has(commandId);
+        if (again) await harness.commit((tx) => tx.appendEntry(root.id, { kind: HOST_PHASE, data: { summary: MESSAGE_SENT_AGAIN, at: now() } as unknown as JsonValue }), context);
+        else await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.messageSending, data: { commandId, at: now() } as unknown as JsonValue }), context);
+        sending.add(commandId);
+      });
+      return again;
+    },
     async start(callId, tool, input, replaySafe) {
       await flushText();
       await inTurn(async () => {
@@ -859,6 +877,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  in its submission's commit. A runner lost before that leaves the row untaken, so the next claim sends it again: a
    *  message may be sent twice after a crash, never lost. Its turn's end is what this gives. */
   const sendAfterTurn = async (theGate: Gate, next: (typeof afterTurn)[number]): Promise<TurnEnd> => {
+    // Its intent mark, durable before the send (the flush): a runner lost between the send and the take leaves the mark,
+    // and the next claim's send of the same row says it is sent again (CliRecord.sending), never silently paid twice.
+    if (cliRecord) {
+      await cliRecord.sending(next.commandId);
+      await deps.flush();
+    }
     const origin = next.origin === undefined ? undefined : JSON.stringify(next.origin);
     const match = !cliRecord
       ? writesSubmission(next.requestId)
@@ -868,6 +892,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const taken = theGate.expect(match, { take: [next.commandId] });
     taken.catch(() => undefined);
     await session!.send(next.text, { id: next.requestId, ...(next.origin ? { origin: next.origin } : {}) });
+    await specNow?.hooks?.afterMessageSent?.();
     await cliRecord?.message(next.text, next.origin);
     return session!.turnEnd();
   };
