@@ -148,13 +148,14 @@ test.skip("a message to a run working on a harness that cannot steer answers fol
   assert.equal(await answer(api, runId), "Answered the chat.");
 });
 
-/** The run's store entries of `kind` (a session's record, or the root's request marker). */
-function storeRecords(data, runId, kind) {
-  // The run's process writes the store meanwhile: a read that finds it locked tries again.
+/** Every journal entry of run `runId` in the server's one store (`<data>/store.sqlite`, the runs' journals in pi_entries,
+ *  each keyed by its run), in the order they were written. */
+function runEntries(data, runId) {
+  // The runner writes the store meanwhile: a read that finds it locked tries again.
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
-      return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === kind);
+      return db.prepare("SELECT record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => JSON.parse(String(row.record)));
     } catch (error) {
       if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
     } finally {
@@ -162,6 +163,8 @@ function storeRecords(data, runId, kind) {
     }
   }
 }
+/** The run's store entries of `kind` (a session's record, or the root's request marker). */
+const storeRecords = (data, runId, kind) => runEntries(data, runId).filter((record) => record.kind === kind);
 const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
 
 const killRun = async (data, runId) => {
@@ -262,11 +265,15 @@ test.skip("a run opened again whose new opening has a request of unknown price r
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
 
-/** A run's paid tool records, from its store: each mark and charge, its tool and figure. */
+/** A run's paid tool calls as its one ledger booked them, from the server's store: each paid request of the run's
+ *  paid-tools session (its `paid:<what was paid for>` name), with the figure its turn was booked at (null while none is). A
+ *  request and its booking share a turn of their own session, so they are paired within it. */
 function paidOf(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
-    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => [entry.kind, entry.data.tool, entry.data.heldUsd ?? entry.data.usd]);
+    const entries = db.prepare("SELECT conversation_id, record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => ({ conversation: row.conversation_id, ...JSON.parse(String(row.record)) }));
+    const booked = (request) => entries.find((entry) => entry.kind === "runner.turn" && entry.conversation === request.conversation && entry.data?.turn === request.data.turn)?.data?.usd ?? null;
+    return entries.filter((entry) => entry.kind === "runner.request" && String(entry.data?.model ?? "").startsWith("paid:")).map((request) => [request.data.model, booked(request)]);
   } finally {
     db.close();
   }
@@ -312,7 +319,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /"title":"Read by Parallel".*"via":"parallel"/s, "read through Parallel's extract");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), [["/v1/extract", true, ["http://public.example/"]]], "on the key the server handed the run");
-    assert.deepEqual(paidOf(data, run.body.run_id), [["agentrun.tool_started", "web_fetch", 0.001], ["agentrun.tool_cost", "web_fetch", 0.001]], "the extract's fee, marked and booked as on pi");
+    assert.deepEqual(paidOf(data, run.body.run_id), [["paid:Parallel's extract", 0.001]], "the extract's fee, booked once on the run's one ledger, as on pi");
     assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_fetch").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_fetch"]);
   });
 
@@ -331,13 +338,13 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]]], "on the key the server handed the run");
-    assert.deepEqual(paidOf(data, run.body.run_id), [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "the search's fee, marked and booked as on pi");
+    assert.deepEqual(paidOf(data, run.body.run_id), [["paid:Parallel's search", 0.001]], "the search's fee, booked once on the run's one ledger, as on pi");
     assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_search").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_search"]);
   });
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the key from the run's pipe, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the run's key, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
@@ -348,7 +355,6 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(seen.map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
-    assert.ok(seen.every((call) => call.pid !== process.pid), "from the run's process");
     assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid_run"], "the harness's journal names the wire name");
     assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid_run"]);
     const results = toolResults(rows);
@@ -743,9 +749,9 @@ for (const harness of ["claude-agent", "codex"]) {
     let paid = [];
     for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
       paid = paidOf(data, run.body.run_id);
-      if (paid.some(([kind]) => kind === "agentrun.tool_cost")) break;
+      if (paid.some(([, usd]) => usd !== null)) break;
     }
-    assert.deepEqual(paid, [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "marked, and settled though its turn was stopped");
+    assert.deepEqual(paid, [["paid:Parallel's search", 0.001]], "held, and booked at its fee though its turn was stopped");
     assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null, "the run's cost is known");
   });
 }
