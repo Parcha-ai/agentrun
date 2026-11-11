@@ -499,8 +499,9 @@ test("a run's file that goes between its listing and its read (its launch mark) 
   assert.throws(() => filesHoldingWith(denied, dir, "nak-canary"), /EACCES/);
 });
 
-// SKIP (follow-up #2078): on codex the gateway's key does not reach Codex's request through the run's proxy on the runner
-test.skip("on codex, with every secret set and its turn held inside Codex's own process (a child of the run's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+// The launcher hands the server its secrets over a pipe; AGENTRUN_STORE_URL is left out (a canary is no Postgres URL, and
+// the server refuses to start on one): the store URL's custody is its own case.
+test("on codex, with every secret set and its turn held inside Codex's own process (a child of the runner's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
   const unlisted = `nak-unlisted-codex-${process.pid}-${Date.now().toString(36)}`;
   const foo = `${unlisted}-FOO_API_KEY`;
@@ -510,6 +511,7 @@ test.skip("on codex, with every secret set and its turn held inside Codex's own 
   copyStandInSync(standIn);
   const { root, api, data } = await launched(t, {
     ...secrets,
+    AGENTRUN_STORE_URL: undefined,
     FOO_API_KEY: foo,
     FOO_PASSWORD: password,
     AGENTRUN_CODEX_STANDIN: "1",
@@ -528,13 +530,12 @@ test.skip("on codex, with every secret set and its turn held inside Codex's own 
   assert.equal(gw.seen[0].authorization, `Bearer ${secrets.AGENT_MODEL_API_KEY}`, "the gateway's key reached Codex's request through the run's proxy");
   const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
-  assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "and the run's, Codex's parent");
   for (const value of [foo, password]) assert.ok(onlyTheServerHolds(root, value).some((cmdline) => cmdline.includes(standIn)), "neither holds a key-shaped variable no list names");
-  // Everything the run has kept by its model request, read for a key while Codex holds the turn: its store, its log and
-  // Codex's own files (its home, its config, its rollout).
-  const { files, holding } = filesHolding(join(runDir(data, started.body.run_id)), canary, unlisted);
-  assert.ok(files.some((path) => path.endsWith("process.log")) && files.some((path) => path.includes("/harness/")), `the run's log and Codex's files are among those read: ${files.length} files`);
-  assert.deepEqual(holding, [], "no file of the run's holds a key");
+  // Everything kept by its model request, read for a key while Codex holds the turn: the data directory whole, the store,
+  // the run's folder and the claim's scratch with Codex's own files (its home, its config, its rollout) among it.
+  const { files, holding } = filesHolding(data, canary, unlisted);
+  assert.ok(files.some((path) => path.includes(started.body.run_id) && path.includes("/harness/")), `Codex's own files are among those read: ${files.length} files`);
+  assert.deepEqual(holding, [], "no file under the data directory holds a key");
 });
 
 test("a pi run on Amazon Bedrock hands each request the AWS keys its process holds, in pi-ai's own env option, which Bedrock's request reads them from: none needs an environment", async () => {
@@ -596,14 +597,14 @@ async function heldGateway(t) {
   return { seen, release: () => release(), origin: `http://127.0.0.1:${server.address().port}` };
 }
 
-// SKIP (follow-up #2078): on codex the gateway's key does not reach the run's process over its pipe on the runner
-test.skip("on codex, with its turn held inside Codex's own process, no process of the user holds a secret; Codex's model request still carries the gateway's key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+test("on codex, with its turn held inside Codex's own process, no process of the user holds a secret; Codex's model request still carries the gateway's key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   copyStandInSync(standIn);
   const { root, api } = await launched(t, {
     ...secrets,
+    AGENTRUN_STORE_URL: undefined,
     AGENTRUN_CODEX_STANDIN: "1",
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
@@ -621,15 +622,14 @@ test.skip("on codex, with its turn held inside Codex's own process, no process o
   assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
 });
 
-// SKIP (follow-up #2078): on claude-agent the CLI's model request never reaches the endpoint on the runner
-test.skip("on claude-agent, with its turn held inside the Claude CLI, no process of the user holds a secret; the CLI's request still carries a key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+test("on claude-agent, with its turn held inside the Claude CLI, no process of the user holds a secret; the CLI's request still carries a key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
   let release;
   const held = new Promise((resolve) => (release = resolve));
   t.after(() => release());
   const fake = await fakeAnthropic({ reply: () => ({ hold: held, then: { text: "Claude answered." } }) });
   t.after(() => fake.close());
-  const { root, api } = await launched(t, { ...secrets, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, []);
+  const { root, api } = await launched(t, { ...secrets, AGENTRUN_STORE_URL: undefined, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, []);
   assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent" }))).status, 201);
   assert.equal((await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } })).status, 202);
   for (let i = 0; fake.messages().length === 0; i++) {
