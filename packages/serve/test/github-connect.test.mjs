@@ -33,7 +33,7 @@ test("Connect GitHub starts GitHub's app-manifest flow: the manifest names the s
     setup_on_update: true,
     public: false,
     default_permissions: { pull_requests: "write", contents: "read", metadata: "read", issues: "read" },
-    default_events: ["pull_request", "issue_comment"],
+    default_events: ["pull_request", "issue_comment", "release"],
   });
   assert.match(String(started.headers.get("set-cookie")), /HttpOnly; SameSite=Lax; Path=\/v2\/integrations\/github\/callback/, "bound to the browser that started it");
   const org = await startConnect(server, { org: "acme" });
