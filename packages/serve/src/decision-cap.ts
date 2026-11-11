@@ -57,7 +57,7 @@ const CATALOG_RETRY_MS = [500, 1_500];
 /** `model`'s price from `priced`'s catalog, read up to CATALOG_TRIES times: a catalog still down then fails the request
  *  unsent, as a connection error (DecisionProviderError "connection"), and the decision node fails (decision nodes have
  *  no attempts loop), as on any provider's outage: never a CapStop. */
-async function catalogPrice(priced: { priceOf(model: string): Promise<DecisionModelPrice | null> }, model: string, signal: AbortSignal | undefined): Promise<DecisionModelPrice | null> {
+export async function catalogPrice(priced: { priceOf(model: string): Promise<DecisionModelPrice | null> }, model: string, signal: AbortSignal | undefined): Promise<DecisionModelPrice | null> {
   for (let tries = 1; ; tries += 1) {
     try {
       return await priced.priceOf(model);

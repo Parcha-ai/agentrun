@@ -363,9 +363,9 @@ test("a run without the decision provider's stored key fails: the provider the r
   assert.equal(row.state, "failed", `the run fails without the Parallel key: ${JSON.stringify(row)}`);
 });
 
-// ---- The cases the run's old in-process cap mechanism (budget.ts writeRaisedCap/raiseFinishes, decision-cap.ts
-// cappedDecisions) checked at its unit, here on the runner: a raise on a capped run, a raise finishing its pause, a
-// decision at its cap, the catalog down mid-run, and a map's items under one cap.
+// ---- The cases the run's old in-process cap checked at its unit, here on the runner: a raise on a capped run, a raise
+// finishing its pause, a decision at its cap, the catalog down mid-run, a map's items under one cap, a hold kept only once
+// its request is admitted, and a refusal its provider did not bill.
 
 /** A decision price that is its request fee alone: the hold is exactly `usd`. */
 const feeOnly = (usd) => priceOf({ promptUsd: 0, completionUsd: 0, requestUsd: usd, maxCompletionTokens: 4_096 });
@@ -521,7 +521,11 @@ test("a decision's hold is kept only once the driver has admitted its request: a
   const real = await openSqliteStore({ dataDir: dir, role: "runner", now });
   const second = await openSqliteStore({ dataDir: dir, role: "runner", now });
   const runners = [];
+  // Runner A's last write never comes back while the case runs; once it is done (runner B holds the run under a later
+  // claim, so nothing A does now lands) it fails, so A's claim unwinds and its proxies close.
+  let unstick = () => {};
   t.after(async () => {
+    unstick();
     for (const runner of runners) await runner.close().catch(() => {});
     for (const store of [real, second, server]) await store.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
@@ -539,7 +543,7 @@ test("a decision's hold is kept only once the driver has admitted its request: a
       died = true;
       runners[0].kill();
       diedNow();
-      await new Promise(() => {});
+      await new Promise((_, reject) => (unstick = () => reject(new Error("runner A died at this write"))));
     };
     const value = Reflect.get(target, key);
     return typeof value === "function" ? value.bind(target) : value;
@@ -563,4 +567,13 @@ test("a decision's hold is kept only once the driver has admitted its request: a
   assert.ok(asked.length <= 1, `asked at most once: ${asked.length}`);
   assert.ok((ended.costUsd ?? 0) <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
   if (asked.length === 1) assert.deepEqual([ended.state, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], ["ended", 0.4], `asked by runner B, booked at what it charged: ${JSON.stringify(ended)}`);
+});
+
+test("a decision its provider refuses unbilled (rate limited) charged nothing: its hold is booked at $0, and the run's cost says $0", async (t) => {
+  const { DecisionProviderError } = await import("@parcha/agentrun-dsl");
+  let asked = 0;
+  const decider = { ...fauxOpenrouter({ price: feeOnly(0.4), costUsd: null }), decide: async () => { asked += 1; throw new DecisionProviderError("rate_limited", "too many requests"); } };
+  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([row.state, asked, row.costUsd], ["failed", 1, 0], `asked once, refused unbilled, nothing counted: ${JSON.stringify(row)}`);
 });

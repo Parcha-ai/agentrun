@@ -19,11 +19,11 @@ import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailur
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { type CapMode, type CapModel, CapRefused, checkRaise, DECISION_SESSION, type DecisionCapRequest, followUpOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapMode, type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
-// The serve decision-provider list prices and the replay check, shared with main's decision cap. They move to the new
-// path when the old per-run decision cap (decision-cap.ts) is deleted in the cutover; one source of truth until then.
-import { askedBefore, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
+// The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
+// parity tests hold this cap's figures to.
+import { askedBefore, catalogPrice, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
 import { decisionProvidersIn } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -175,11 +175,13 @@ async function raisedCapOf(harness: Harness, context: Context): Promise<number |
   return capUsd;
 }
 
-/** The run's cap rule, handed to the loop so it parks and takes raises by the kernel cap without importing it. */
-function capRuleOf(capUsd: number): WorkflowCapRule {
+/** The run's cap rule, handed to the loop so it parks and takes raises by the kernel cap without importing it. A park
+ *  names the cap the run is held to when it parks (`capUsd()`: this claim's raise, else the launch's), so a raise too small
+ *  for the step that parked shows the new pause at the raised cap, and the next raise is checked against that. */
+function capRuleOf(capUsd: () => number): WorkflowCapRule {
   return {
     park: (refusal) => {
-      const park = parkOf({ message: refusal.message, forGood: refusal.forGood, ...(refusal.figures ? { figures: refusal.figures } : {}) } as never, capUsd);
+      const park = parkOf({ message: refusal.message, forGood: refusal.forGood, ...(refusal.figures ? { figures: refusal.figures } : {}) } as never, capUsd());
       return park.outcome === "parked"
         ? { outcome: "parked", pending: park.pending as unknown as BudgetData["pending"], words: park.words }
         : { outcome: "failed", error: park.error };
@@ -327,7 +329,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
       tools: [...new Set([...toolsOf(claimed.workflow), ...nodeNames])],
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
-      ...(claimed.capUsd !== undefined ? { cap: capRuleOf(claimed.capUsd) } : {}),
+      ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
       endPatch: async () => endPatchOf(booking, decisionCap, paidTools),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
@@ -702,55 +704,96 @@ async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | un
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
- *  decision node is admitted and settled through the run's decisions (`getCap`, wired at harnessReady), priced as main
- *  holds it. The reference is deferred because the cap is not built until the Harness opens. */
+ *  decision node is priced before the DSL driver admits its request (`judge`) and held, sent and settled through the run's
+ *  decisions once it is admitted (`admitted`), priced as main holds it. The reference is deferred because the cap is not
+ *  built until the Harness opens. */
 function decisionWorkflowCap(getCap: () => RunDecisions | undefined, providers: DecisionProviders, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">): WorkflowCap {
-  return { node: (fn) => fn, effect: (fn) => fn, judge: <F>(fn: F, driver?: DecisionDriver): F => decisionJudge(fn, { getCap, providers, park: hooks.park, hooks, driver }) };
+  const judging = decisionJudging({ getCap, providers, park: hooks.park, hooks });
+  return { node: (fn) => fn, effect: (fn) => fn, judge: judging.before, admitted: judging.admitted };
 }
 
-/** A decision wrapped over the DSL driver's judge (the host's `recovered.runJudge`): it prices the request as main does
- *  (holdOf), admits it through the kernel cap before the driver sends it, asks the driver's judge, and settles the hold at
- *  what the answer charged (its hold when it reports none, the way `charged:held` books it). A refusal for room parks the
- *  run through the loop's hook (as a model node's does); a refusal for no price fails it; a price the catalog could not
- *  read fails the decision node as a connection error, never the cap's stop. A request the driver answers from what it
- *  decided before (a route's, or one an earlier process admitted that did not fail) holds nothing (askedBefore). */
-function decisionJudge<F>(inner: F, deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; hooks?: Pick<WorkflowHostHooks, "paused" | "pause">; driver?: DecisionDriver }): F {
-  const judge = inner as (params: JudgeParams) => Promise<JudgeResult>;
-  return (async (params: JudgeParams) => {
-    if (deps.driver && askedBefore(deps.driver, params)) return judge(params);
-    // A person's pause in force parks the run before a new decision is held or sent, as a refusal for room does.
-    if (deps.hooks?.paused()) {
-      deps.hooks.pause();
-      throw new Error(PAUSED_WORDS);
-    }
-    const id = params.provider ?? deps.providers.default;
-    const provider = Object.hasOwn(deps.providers.providers, id) ? deps.providers.providers[id] : undefined;
-    // A provider the host lacks is refused by the judge itself (configuration), before anything is held.
-    if (!provider) return judge(params);
-    const cap = deps.getCap();
-    // The cap is wired at harnessReady, before any node runs; a decision reaching here without it is a bug.
-    if (!cap) throw new Error(`decision "${params.label}": the run's decision cap was not wired before the workflow ran`);
-    const request = await decisionRequestOf(provider, params);
-    try {
-      await cap.admit(request);
-    } catch (error) {
-      // A refusal the cap read: for room the run parks (a raise sends it), for no price it fails; both through the loop's
-      // hook, as a model node's refusal does. A price the catalog could not read fails the decision node, never the cap.
-      if (error instanceof CapRefused) { deps.park({ message: error.message, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) }); throw error; }
-      throw error; // DecisionPriceUnreadable, or anything else: the decision node's own failure.
-    }
-    try {
-      const result = await judge(params);
-      await cap.settle(request.id, { end: "charged", usd: finiteUsd(result?.cost_usd) });
-      return result;
-    } catch (error) {
-      // Sent and maybe billed (its outcome lost, its answer rejected): at what it was charged, else at its hold (null).
-      // One its provider refused unbilled, or that never left, charged nothing: booked at $0 so no later process counts it.
-      const charged = chargedCost(error);
-      await cap.settle(request.id, { end: "charged", usd: charged !== undefined ? charged : unbilled(error) ? 0 : null });
-      throw error;
-    }
-  }) as F;
+/** A decision under the run's cap, in two halves around the DSL driver's admission of its request (dsl withRecovery: the
+ *  request is committed, `decision.request`, before the judge is asked; one asked and never answered is never asked again):
+ *   - `before`, outside the admission: a request the driver answers from what it decided before (a route's, or one an
+ *     earlier process admitted that did not fail) holds nothing (askedBefore); a person's pause parks the run; the
+ *     request is priced as main prices it (holdOf), its catalog read again on a moment's outage.
+ *   - `admitted`, the judge the driver asks once it has admitted the request: the hold is taken through the kernel cap (its
+ *     record made durable before the send), the provider is asked, and the hold is settled at what the answer charged (its
+ *     hold when it reports none). So a hold is never kept for a request the driver did not admit: a process that dies
+ *     before the admission leaves nothing for the next claim to count beside asking it again. A refusal for room or for no
+ *     price ends the admitted request failed, unsent, in the driver's commit (asked again by the next claim), and then parks
+ *     the run, or fails it, through the loop's hook, as a model node's refusal does. A price the catalog still could not
+ *     read fails the decision node as an unsent connection error, never the cap's stop. */
+function decisionJudging(deps: { getCap: () => RunDecisions | undefined; providers: DecisionProviders; park: (refusal: CapRefusal) => void; hooks?: Pick<WorkflowHostHooks, "paused" | "pause"> }) {
+  /** Each request `before` priced, by the params object the driver hands on to `admitted`; and the cap's refusal of one. */
+  const priced = new WeakMap<object, DecisionCapRequest>();
+  const refused = new WeakMap<object, CapRefused>();
+  return {
+    before<F>(inner: F, driver?: DecisionDriver): F {
+      const judge = inner as (params: JudgeParams) => Promise<JudgeResult>;
+      return (async (params: JudgeParams) => {
+        if (driver && askedBefore(driver, params)) return judge(params);
+        // A person's pause in force parks the run before a new decision is held or sent, as a refusal for room does.
+        if (deps.hooks?.paused()) {
+          deps.hooks.pause();
+          throw new Error(PAUSED_WORDS);
+        }
+        const id = params.provider ?? deps.providers.default;
+        const provider = Object.hasOwn(deps.providers.providers, id) ? deps.providers.providers[id] : undefined;
+        // A provider the host lacks is refused by the judge itself (configuration), before anything is held.
+        if (!provider) return judge(params);
+        // The cap is wired at harnessReady, before any node runs; a decision reaching here without it is a bug.
+        if (!deps.getCap()) throw new Error(`decision "${params.label}": the run's decision cap was not wired before the workflow ran`);
+        priced.set(params, await decisionRequestOf(provider, params));
+        try {
+          return await judge(params);
+        } catch (error) {
+          const refusal = refused.get(params);
+          if (!refusal) throw error;
+          // The cap refused the admitted request: the driver ended it failed, unsent; that commit lands before the run
+          // parks, so the next claim asks it again rather than finding it asked and never answered.
+          await driver?.flush().catch(() => undefined);
+          deps.park({ message: refusal.message, forGood: refusal.forGood, ...(refusal.figures ? { figures: refusal.figures } : {}) });
+          throw refusal;
+        } finally {
+          priced.delete(params);
+          refused.delete(params);
+        }
+      }) as F;
+    },
+    admitted<F>(inner: F): F {
+      const judge = inner as (params: JudgeParams) => Promise<JudgeResult>;
+      return (async (params: JudgeParams) => {
+        const request = priced.get(params);
+        const cap = deps.getCap();
+        if (!request || !cap) return judge(params);
+        try {
+          await cap.admit(request);
+        } catch (error) {
+          // A refusal the cap read: told to `before` (which parks or fails the run once the driver has ended the request),
+          // and thrown here as a request that never left, so the driver ends it failed with nothing spent.
+          if (error instanceof CapRefused) {
+            refused.set(params, error);
+            throw new DecisionProviderError("connection", `${params.label}'s decision was not sent: ${error.message}`, { unsent: true, cause: error });
+          }
+          // A price the catalog could not read: the decision node fails unsent, as a connection error, never the cap.
+          if (error instanceof DecisionPriceUnreadable) throw new DecisionProviderError("connection", `${params.label}'s decision was not sent: ${error.message}`, { unsent: true, cause: error });
+          throw error;
+        }
+        try {
+          const result = await judge(params);
+          await cap.settle(request.id, { end: "charged", usd: finiteUsd(result?.cost_usd) });
+          return result;
+        } catch (error) {
+          // Sent and maybe billed (its outcome lost, its answer rejected): at what it was charged, else at its hold (null).
+          // One its provider refused unbilled, or that never left, charged nothing: booked at $0 so no later process counts it.
+          const charged = chargedCost(error);
+          await cap.settle(request.id, { end: "charged", usd: charged !== undefined ? charged : unbilled(error) ? 0 : null });
+          throw error;
+        }
+      }) as F;
+    },
+  };
 }
 
 /** A decision's request for the kernel cap, priced as main holds it (serve decision-cap.ts holdOf): Parallel's list price
@@ -772,10 +815,11 @@ async function decisionRequestOf(provider: DecisionProvider, params: JudgeParams
   if (typeof priced.priceOf !== "function" || model === undefined) return { ...base, model: openrouterModel(model ?? provider.id, null, null) };
   let price: DecisionModelPrice | null;
   try {
-    price = await priced.priceOf(model);
+    // Read again on a moment's outage (catalogPrice, CATALOG_TRIES reads), as main reads it.
+    price = await catalogPrice(priced as { priceOf(model: string): Promise<DecisionModelPrice | null> }, model, params.signal);
   } catch {
-    // The catalog could not be read: the decision fails unsent as a connection error, never the cap's stop (asModel throws
-    // DecisionPriceUnreadable for "unreadable").
+    // The catalog still could not be read: the decision fails unsent as a connection error, never the cap's stop (asModel
+    // throws DecisionPriceUnreadable for "unreadable").
     return { ...base, model: "unreadable" };
   }
   if (!price) return { ...base, model: openrouterModel(model, null, null) };
