@@ -1759,7 +1759,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A person's stop or cancel withdraws every call still waiting for its answer, in the end's own commit: the approval
     // card reads answered (withdrawn), never waiting for good on a final run.
     const byPerson = data.state === "stopped" || stopReason?.kind === "command";
-    const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow()) : [];
+    // A cancel's calls read cancelled with their run; a stop's, withdrawn.
+    const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow(), stopReason?.kind === "command" && stopReason.cancel ? "canceled" : "withdrawn") : [];
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);

@@ -739,15 +739,18 @@ test("once a parked call with a held key in its arguments is approved, the resum
     assert.equal(holdsPiece(JSON.stringify(shown), RESUME_KEY), false, `${harness}: the timeline but the person's message: ${JSON.stringify(resumeRows(rows))}`);
     const { title: _title, result, ...run } = done;
     assert.equal(holdsPiece(JSON.stringify(run), RESUME_KEY), false, `${harness}: GET /runs/{id}`);
-    // pi's model answers with the whole message, the call's result in it (web_fetch's names its URL): a model quoting
-    // a tool's result is the run view's final_answer redaction, a change of its own. What the gate wrote is checked.
-    const quoted = harness === "pi" ? /\(arguments (.*?)\), which waited/s.exec(result.final_answer)?.[1] ?? "" : result.final_answer;
-    assert.ok(harness !== "pi" || quoted.length > 0, "pi's answer quotes the message");
+    // On the runner the allowed call runs in its turn and pi's model reads its result, which names the URL the key is in:
+    // the faux model answers with that result whole, so the run's answer holds the key unless the view redacts it.
+    const quoted = result.final_answer;
+    assert.ok(harness !== "pi" || /^Saw: .*forty-two/s.test(quoted), `pi's answer reads the call's result back: ${quoted}`);
     assert.equal(holdsPiece(quoted, RESUME_KEY), false, `${harness}: final_answer: ${quoted}`);
     const { title: _listed, ...listed } = (await server.api("GET", "/runs")).body.runs.find((r) => r.run_id === runId);
     assert.equal(holdsPiece(JSON.stringify(listed), RESUME_KEY), false, `${harness}: the run list`);
   }
 });
+
+/** The call id of a parked run's web_fetch call (parked's rows), read from its call's row. */
+const callOf = ({ rows }) => rows.find((row) => row.kind === "tool_use" && row.tool_name === "web_fetch")?.tool_use_id;
 
 /** Run `runId` once its runner has applied a stop: no call waits, nothing works. A stop is a command row the runner applies
  *  (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
@@ -776,10 +779,13 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped, as a stop leaves a run");
+  // Idle with nothing pending. The status word a person's stop leaves is the reopen-stopped work's (mcp-gate.test.mjs's
+  // stopped-literal case waits on it the same way), not this case's.
+  assert.deepEqual([stopped.state, stopped.pending], ["idle", null], "stopped: idle, nothing pending");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
-  ownRowsSay((await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows, stopParked.result.tool_use_id, "Not run: the run was stopped while it waited", "stopped");
+  // On the runner a parked call has its call's row and no result row of its own (the park writes none).
+  ownRowsSay((await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows, callOf(stopParked), "Not run: the run was stopped while it waited", "stopped", { result: false });
   const late = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "withdrawn" }]);
 
@@ -791,7 +797,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   await follow(first.api, cancelRun, ["cancelled"], { deadlineMs: 30_000 });
   const cancelRow = (await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(cancelRow.summary, /^Withdrawn/);
-  ownRowsSay((await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows, cancelParked.result.tool_use_id, "Not run: the run was cancelled while it waited", "cancelled");
+  ownRowsSay((await first.api("GET", `/runs/${cancelRun}/timeline`)).body.rows, callOf(cancelParked), "Not run: the run was cancelled while it waited", "cancelled", { result: false });
   assert.deepEqual((await answer(cancelRun, cancelId, { decision: "deny" })).status, 409);
 
   await first.close();
@@ -900,8 +906,7 @@ test("an allow written before a person's message stands: the call runs once, the
   assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "allow" }]);
 });
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
-test.skip("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {
+test("a long message that declines a waiting call reaches the model whole: all 5000 of its characters, as its reason", { timeout: 120_000 }, async (t) => {
   await network(t);
   const server = await serve(t, GATE);
   const { api } = server;
