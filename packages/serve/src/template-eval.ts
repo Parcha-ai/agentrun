@@ -72,9 +72,10 @@ export type Grader =
  *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
- *  and quoted terms every one of which a file holds, /regex/ terms, NOT term, and the path:, filename:, extension: and
- *  language: qualifiers; the others ignored), answered as `path:line: text` lines, at most `limit` (default 100), after
- *  `note` when given. Taken when no answer of the tool matches the call. */
+ *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
+ *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
+ *  path:, filename:, extension: and language: qualifiers; the others ignored), answered as `path:line: text` lines, at
+ *  most `limit` (default 100), after `note` when given. Taken when no answer of the tool matches the call. */
 export type FakeSearch = { query: string; files: { path: string; text: string }[]; limit?: number; note?: string };
 export type McpFixture = { server: string; description: string; tools: Record<string, { description: string; input: Json; answers: Answer[]; default?: Json; search?: FakeSearch }> };
 export type EvalCase = {
@@ -411,7 +412,10 @@ export function searched(search: FakeSearch, query: string): string {
         : name === "extension" ? (path: string) => path.endsWith(`.${value.replace(/^\./, "")}`)
         : name === "language" && LANGUAGES[value.toLowerCase()] ? (path: string) => LANGUAGES[value.toLowerCase()]!.some((ext) => path.endsWith(ext))
         : undefined;
-      if (keep) filters.push(neg ? (path) => !keep(path) : keep);
+      // NOT before a qualifier excludes what it keeps, as -qualifier does; either way the NOT is spent here.
+      const exclude = (neg === "-") !== not;
+      not = false;
+      if (keep) filters.push(exclude ? (path) => !keep(path) : keep);
       continue;
     }
     if (bare === "AND" || bare === "OR") continue;
@@ -419,20 +423,14 @@ export function searched(search: FakeSearch, query: string): string {
       not = true;
       continue;
     }
-    let test: (line: string) => boolean;
-    if (regex !== undefined) {
-      try {
-        const pattern = new RegExp(regex);
-        test = (line) => pattern.test(line);
-      } catch {
-        const literal = regex.toLowerCase();
-        test = (line) => line.toLowerCase().includes(literal);
-      }
-    } else {
-      const literal = (quoted ?? bare ?? "").toLowerCase();
-      if (!literal) continue;
-      test = (line) => line.toLowerCase().includes(literal);
+    // A /.../ term is its text, never a regular expression: the fake runs on the eval's thread, where a pattern such as
+    // /(a+)+$/ could hold it past any timeout. An escaped punctuation mark (\. \( \/) is that mark.
+    const literal = (regex !== undefined ? regex.replace(/\\([^\w\s])/g, "$1") : (quoted ?? bare ?? "")).toLowerCase();
+    if (!literal) {
+      not = false;
+      continue;
     }
+    const test = (line: string) => line.toLowerCase().includes(literal);
     terms.push({ test, not });
     not = false;
   }
