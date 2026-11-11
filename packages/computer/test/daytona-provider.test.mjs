@@ -705,6 +705,37 @@ test("connect() speaks to the daemon over a session's input and log stream, and 
 	allToTheFake(fake);
 });
 
+test("connect() leaves no abort listener behind on any signal once it has answered: one per connect would pile up", async () => {
+	const { provider } = setup();
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	// Every abort listener added to a signal while connect runs, less those removed again.
+	const live = new Map();
+	const { addEventListener: add, removeEventListener: remove } = EventTarget.prototype;
+	EventTarget.prototype.addEventListener = function (type, listener, options) {
+		if (this instanceof AbortSignal && type === "abort") {
+			if (!live.has(this)) live.set(this, new Set());
+			live.get(this).add(listener);
+		}
+		return add.call(this, type, listener, options);
+	};
+	EventTarget.prototype.removeEventListener = function (type, listener, options) {
+		if (this instanceof AbortSignal && type === "abort") live.get(this)?.delete(listener);
+		return remove.call(this, type, listener, options);
+	};
+	let connected;
+	try {
+		connected = await provider.connect(made.value);
+	} finally {
+		EventTarget.prototype.addEventListener = add;
+		EventTarget.prototype.removeEventListener = remove;
+	}
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	const left = [...live.values()].reduce((count, listeners) => count + listeners.size, 0);
+	assert.equal(left, 0, `abort listeners connect left on its signals: ${left}`);
+	await connected.value.close();
+});
+
 test("connect() drops an echo of its own requests, should the toolbox echo input", async () => {
 	const { provider, fake } = setup();
 	const made = await provider.create(SPEC);

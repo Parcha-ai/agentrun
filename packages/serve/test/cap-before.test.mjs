@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { capBefore, NATIVE_SEARCH_ALLOWANCE_TOKENS, paidCall, useSpend } from "../dist/cap.js";
 import { nativeOptions } from "../dist/adapters.js";
 import { builtinHarness } from "../dist/harness-table.js";
-import { withOverCap } from "../dist/runs.js";
+import { withOverCap } from "../dist/run-view.js";
 
 // One request may cost 0.6 of the cap: a 1000-token ceiling at $600 a million output tokens is $0.60, under a $1 cap.
 const model = { id: "m", api: "openai-responses", provider: "p", maxTokens: 1000, contextWindow: 8000, cost: { input: 0, output: 600, cacheRead: 0, cacheWrite: 0 } };
