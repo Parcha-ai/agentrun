@@ -27,4 +27,7 @@ export type { InputRecord } from "./serve.ts";
 // The workspace confinement, for a host that reads a run's files itself (agentrun-serve), and its process-wide TEST seam
 // (confineTestHooks: runs after a path is checked and before it is opened; tests only, never a production hook).
 export { Confinement, confineHooks as confineTestHooks } from "./confine.ts";
+// The no_new_privs prefix pi's commands start under, for a host that starts another harness's CLI beside pi
+// (agentrun-serve's runner): the same setpriv, the same macOS gating and the same refusal.
+export { noNewPrivsPrefix } from "./env.ts";
 export type { Pin, PinSpec, RootName } from "./confine.ts";
