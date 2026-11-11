@@ -1,10 +1,7 @@
 // The lines an import ends with: how many sessions it found and from where, how many agents they make, and what they
 // used, from every session found, those imported before included. A number with no data behind it reads unknown.
-import { existsSync } from "node:fs";
-import type { AgentStoreReader } from "@parcha/pi-durable-agent";
-import type { RunMetrics } from "@parcha/pi-durable-agent/timeline";
+import type { RunMetrics } from "./timeline/index.js";
 import { SOURCES, type Source } from "./import-sources.js";
-import { readRunDbSync } from "./run-db.js";
 
 /** A session an import found: its source and agent; what it used (undefined: unknown), with its time at work; and its
  *  model requests by local hour of the day (undefined: their times are unknown). `untied`: a subagent's session whose
@@ -24,23 +21,6 @@ export function hoursOf(times: Iterable<number>): number[] {
   const hours = new Array<number>(24).fill(0);
   for (const at of times) if (Number.isFinite(at)) hours[new Date(at).getHours()]! += 1;
   return hours;
-}
-
-/** An imported run of `store`, as found: its metrics as the store keeps them, and its requests' times from its transcript,
- *  read by SQLite's JSON functions (no record is parsed here). Undefined for a run the store does not hold as imported. */
-export async function foundIn(store: AgentStoreReader, runId: string): Promise<Found | undefined> {
-  const run = store.readRun(runId);
-  if (!run?.importedFrom) return undefined;
-  const metrics = store.runMetrics(runId);
-  const file = store.runStorePath(runId);
-  let hours: number[] | undefined;
-  if (existsSync(file)) {
-    hours = readRunDbSync(file, false, (db) => {
-      const rows = db.prepare("SELECT json_extract(record, '$.model[0].timestamp') AS at FROM entries WHERE json_extract(record, '$.kind') = 'pi.assistant'").all() as { at: unknown }[];
-      return hoursOf(rows.map((row) => Number(row.at)));
-    });
-  }
-  return { source: run.importedFrom.source as Source, agent: run.agent, ...(metrics ? { metrics } : {}), ...(hours ? { hours } : {}) };
 }
 
 const count = (n: number) => n.toLocaleString("en-US");

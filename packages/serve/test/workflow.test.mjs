@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { readWorkflowRun } from "@parcha/pi-durable-agent/workflow";
+import { readWorkflowRun } from "../dist/workflow-run.js";
 import { startServe } from "../dist/index.js";
 import { answerFlow, client, FAUX, flowAgent, follow, runDir, serve, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";

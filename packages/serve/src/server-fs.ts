@@ -3,12 +3,11 @@
 // runner cutover deletes) can go on their own. Nothing here knows a run: it is whole-file writes made durable, a directory
 // sync, a JSON read that fails to null, a per-key work queue, the data-directory location and the names of the two files
 // the owner's CLI reads (the API token and the server record).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fsyncSync, openSync, readFileSync, renameSync, type Stats, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { agentDiskDir } from "@parcha/pi-durable-agent";
 import type { Json } from "./validate.js";
 
 /** The server's API token (`ar_local_...`), in the data directory, made at its first start when it is given none. */
@@ -36,6 +35,13 @@ export const defaultData = (env: NodeJS.ProcessEnv = process.env): string => joi
 export const DATA_ENV = "AGENTRUN_SERVE_DATA";
 
 /** Agent `agentId`'s folder on the disk, which holds its learning folder (learning.ts) and its runs: `<data>/disk/agents/<agent>`. */
+/** The folder of a data directory that holds each agent's disk: its runs and its learning. */
+export const DISK_DIR = "disk";
+/** An agent's folder's name on the disk: its id in lower case, then 16 hex digits of the id's SHA-256, so ids that differ
+ *  only in case never share one on a disk that folds case. */
+const agentDirName = (agentId: string): string => `${agentId.toLowerCase()}-${createHash("sha256").update(agentId, "utf8").digest("hex").slice(0, 16)}`;
+/** Agent `agentId`'s folder on the disk of data directory `data`: `<data>/disk/agents/<name>`. */
+export const agentDiskDir = (data: string, agentId: string): string => join(data, DISK_DIR, "agents", agentDirName(agentId));
 export const agentFolderOf = (data: string, agentId: string): string => agentDiskDir(data, agentId);
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */

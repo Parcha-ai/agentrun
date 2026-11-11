@@ -12,7 +12,8 @@ agent=$(get "$(api agent)" agent)
 pass "agent made" "$agent: pi, place runner, tool write"
 run=$(get "$(api start "$agent" 3 0)" run)
 # The run's three 0 ms steps can end within a second, before any poll sees a runner hold it, so the walk waits for its
-# end and reads its claim from the runner's own record of it, not from a live claim a fast run slips past.
+# end and reads its claim from the runner's own record of it ("Runner <name> claimed <run> (epoch <n>)"), not from a
+# live claim a fast run slips past, and holds it to one claim.
 ended=$(api end "$run")
 claims=$(claims_of "$run") || fail "run claimed" "no runner recorded a claim of $run within 60 s of its end"
 [ "$(printf '%s\n' "$claims" | wc -l)" -eq 1 ] || fail "run claimed" "claimed more than once: $(printf '%s' "$claims" | tr '\n' ';')"
