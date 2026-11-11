@@ -75,7 +75,8 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
       const revision = await store.agents.revision(run.revisionId);
       harnessOf.set(run.revisionId, revision?.kind === "workflow" ? "workflow" : ((revision?.body as { harness?: string } | null)?.harness ?? DEFAULT_HARNESS));
     }
-    const running = runReadState(run) === "running";
+    const read = runReadState(run, harnessOf.get(run.revisionId) === "workflow" ? "workflow" : "agentic");
+    const running = read === "running";
     const isPending = running && pending[run.id] !== undefined;
     const metered = !running && metricsOf(run) !== null;
     const metrics = metered ? metricsOf(run) : null;
@@ -85,7 +86,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
       costUsd: run.costUsd,
       running,
       pending: isPending,
-      state: isPending ? pending[run.id]! : runReadState(run),
+      state: isPending ? pending[run.id]! : read,
       metered,
       metrics,
       harness: harnessOf.get(run.revisionId)!,

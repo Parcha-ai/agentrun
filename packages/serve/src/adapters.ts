@@ -17,7 +17,7 @@ import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
 import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
-import { servedSkill } from "./learn/skills.js";
+import { servedSkills } from "./learn/skills.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -180,6 +180,13 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
  *  which its own check took: skills.ts). */
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
+
+/** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
+ *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
+export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
+  if (!prefix.length) return undefined;
+  return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
+}
 
 
 /** The model key a run on `harness` (one on an adapter, by its wire's route) of `model` (the revision's; none, the host's default for the
@@ -358,7 +365,7 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
-  const skills = needs.skills?.map((skill) => ({ ...skill, files: { ...skill.files, ...(skill.files["SKILL.md"] === undefined ? {} : { "SKILL.md": servedSkill(skill.files["SKILL.md"]) }) } }));
+  const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 

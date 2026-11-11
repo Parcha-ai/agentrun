@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ${{ fromJSON(github.event_name == 'merge_group' && '["24.21.0"]' || '["24.11.0","24.21.0"]') }}
+        node: ['24.22.3']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -88,14 +88,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 24.11 = the supported floor (first 24 LTS), 24.21 = current. The merge queue runs current only: every pull
-        # request and every push to main runs both.
-        node: ${{ fromJSON(github.event_name == 'merge_group' && '["24.21.0"]' || '["24.11.0","24.21.0"]') }}
+        # One Node: the supported floor (engines, .nvmrc) is the current pin, 24.22.3, the November 2026 security
+        # release. An older 24 is not supported, so no leg tests one.
+        node: ['24.22.3']
         shard: [checks, packages, source, gh-1, gh-2, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6]
-        # The downloaded source's consumer runs on current only, as it did in `checks`.
-        exclude:
-          - node: '24.11.0'
-            shard: source
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,10 +110,22 @@ jobs:
         # agentrun-serve's pdf_pages draws pages with poppler, and its tests make their PDFs with Ghostscript and a wide
         # PNG with ffmpeg: serve's suite runs in the any pool's shards.
         if: startsWith(matrix.shard, 'any-')
+        # The mirror is sometimes unreachable for a moment ("Network is unreachable"): apt retries each download three
+        # times, and the update and install are tried three times in all, 10 s then 30 s apart, failing after the third.
         run: |
           printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          for try in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils ghostscript ffmpeg; then
+              break
+            fi
+            if [ "$try" = 3 ]; then
+              echo "apt-get failed three times" >&2
+              exit 1
+            fi
+            pause=$([ "$try" = 1 ] && echo 10 || echo 30)
+            echo "apt-get failed (try $try of 3); trying again in ${pause} s" >&2
+            sleep "$pause"
+          done
           pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
@@ -143,8 +151,8 @@ jobs:
         run: npm run export:source
       - if: matrix.shard == 'checks'
         run: node scripts/check-generated.mjs
-      # TypeScript 5.4.5, not a Node version: in the merge queue it runs on the one Node there.
-      - if: matrix.shard == 'checks' && (matrix.node == '24.11.0' || github.event_name == 'merge_group')
+      # TypeScript 5.4.5, the consumers' TypeScript floor.
+      - if: matrix.shard == 'checks'
         run: node scripts/check-typescript-floor.mjs
       # verify-packages --console then checks the packed server carries the console, its files scanned like every packed file.
       - if: matrix.shard == 'packages'
@@ -161,12 +169,12 @@ jobs:
           AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
           # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
           AGENTRUN_CODEX_REQUIRE_BINARY: '1'
-          # On 24.21.0 the lean pool's shards record every workflow their DSL, pi and example tests validate or run
+          # The lean pool's shards record every workflow their DSL, pi and example tests validate or run
           # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
-          LEAN_SWEEP_DIR: ${{ matrix.node == '24.21.0' && startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
+          LEAN_SWEEP_DIR: ${{ startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
       # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
       - name: Keep the workflows the tests validated, for the lean job
-        if: matrix.node == '24.21.0' && startsWith(matrix.shard, 'lean-')
+        if: startsWith(matrix.shard, 'lean-')
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -214,7 +222,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
@@ -235,7 +243,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
           cache-dependency-path: apps/console/package-lock.json
       - run: node ../../scripts/npm-ci-retry.mjs --ignore-scripts
@@ -260,7 +268,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -269,7 +277,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-24.21.0
+          name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -307,7 +315,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
@@ -339,7 +347,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
@@ -368,7 +376,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
       - name: The image built, and the stack's smoke
         run: sh deploy/walk/smoke.sh
 
@@ -386,7 +394,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - uses: actions/cache@v4
         with:
@@ -406,7 +414,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-24.21.0
+          name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -425,7 +433,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - uses: actions/cache@v4
         with:
@@ -443,7 +451,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-24.21.0
+          name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -464,13 +472,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-24.21.0
+          name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -492,7 +500,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
@@ -555,13 +563,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
-          name: build-24.21.0
+          name: build-24.22.3
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
@@ -626,7 +634,7 @@ jobs:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
     # conformance corpus runs in `npm test` above. The sweep's workflows come from the lean
-    # pool's test shards on 24.21.0, so it waits for them; it runs when one failed too, and the sweep fails
+    # pool's test shards, so it waits for them; it runs when one failed too, and the sweep fails
     # if a shard's captures are missing. verify does not need it.
     needs: [test]
     if: ${{ !cancelled() }}
@@ -661,7 +669,7 @@ jobs:
         run: lake exe conformance
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
           cache: npm
       - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Build the DSL, whose validator gives TypeScript's verdicts

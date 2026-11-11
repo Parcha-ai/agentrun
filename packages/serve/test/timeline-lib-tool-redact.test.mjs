@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { timelineOf, timelineReducer } from "../dist/timeline/index.js";
-import { assistant, call, custom, inConv, result, user } from "./timeline-lib-support.mjs";
+import { assistant, call, inConv, result, user } from "./timeline-lib-support.mjs";
 
 /** A held key, made at runtime: no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "held-tool-key", "0123456789ab"].join("-");

@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-computer",
-  "version": "0.1.0-beta.33",
+  "version": "0.1.0-beta.35",
   "description": "The open platform's computer protocol: a daemon in every computer, and one provisioner per vendor, starting with Docker.",
   "keywords": [
     "agentrun",
@@ -13,7 +13,7 @@
   "license": "Apache-2.0",
   "author": "Parcha Labs, Inc.",
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,6 +25,46 @@
     "./mount": {
       "types": "./dist/mount.d.ts",
       "default": "./dist/mount.js"
+    },
+    "./docker": {
+      "types": "./dist/docker.d.ts",
+      "default": "./dist/docker.js"
+    },
+    "./daytona": {
+      "types": "./dist/daytona.d.ts",
+      "default": "./dist/daytona.js"
+    },
+    "./modal": {
+      "types": "./dist/modal.d.ts",
+      "default": "./dist/modal.js"
+    },
+    "./e2b": {
+      "types": "./dist/e2b.d.ts",
+      "default": "./dist/e2b.js"
+    },
+    "./orgo": {
+      "types": "./dist/orgo.d.ts",
+      "default": "./dist/orgo.js"
+    },
+    "./orgo-desktop": {
+      "types": "./dist/orgo-desktop.d.ts",
+      "default": "./dist/orgo-desktop.js"
+    },
+    "./phone-harness": {
+      "types": "./dist/phone-harness.d.ts",
+      "default": "./dist/phone-harness.js"
+    },
+    "./browserbase": {
+      "types": "./dist/browserbase.d.ts",
+      "default": "./dist/browserbase.js"
+    },
+    "./kernel": {
+      "types": "./dist/kernel.d.ts",
+      "default": "./dist/kernel.js"
+    },
+    "./local-chrome": {
+      "types": "./dist/local-chrome.d.ts",
+      "default": "./dist/local-chrome.js"
     },
     "./package.json": "./package.json"
   },

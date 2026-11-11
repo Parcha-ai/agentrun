@@ -11,19 +11,20 @@
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { HARNESS_TABLE_ENV } from "../harness-table.js";
 import { maxRunsOf } from "../host.js";
-import { FAUX_PREFIX } from "../model.js";
+import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
 import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import { computerDepsFrom } from "../workspace/computer-deps.js";
+import { type ComputerDeps, computerDepsFrom } from "../workspace/computer-deps.js";
+import { startJanitor } from "../workspace/computer-janitor.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -45,8 +46,11 @@ export interface RunnerProcessOptions {
   memory?: RunnerMemory;
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
-  /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop). */
-  createLoop?: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory);
+  /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop), with the computers it composed. */
+  createLoop?: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory | RunnerParts);
+  /** Run the computer janitor (workspace/computer-janitor.ts) over the computers createLoop composed: at the start, then
+   *  on its interval. Only the runner subcommand asks for it; a test that does not ask runs none. */
+  janitor?: boolean;
   onEvent?: (event: RunnerEvent) => void;
   /** For tests: the clock the heartbeat is written by. Default Date.now. */
   now?: () => number;
@@ -63,6 +67,9 @@ export interface RunnerProcess {
   readonly runner: Runner;
   /** What the store is, for the ready line: its kind and schema version. */
   readonly store: { readonly kind: string; readonly schema: number };
+  /** What its runs may hold, in MiB (RunnerMemory.budgetMib): its host's memory, or its container's limit, less the
+   *  server's own. Said once at its start, after the ready line. */
+  readonly memoryMib: number;
   /** Closes the runner (its loops stopped, its runs released), then its store connection. */
   close(): Promise<void>;
 }
@@ -132,7 +139,7 @@ export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
  *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
  *  this process's, as it was handed or booted). Refused in words with no seal key. */
-export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer): LoopFactory {
+export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer): RunnerParts {
   const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
@@ -144,8 +151,11 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
   };
-  return createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
+  return { createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) }), computers: computers.computerDeps, env: runs };
 }
+
+/** A runner's loop factory with the run's computers it composed and the runs' environment: what the janitor sweeps with. */
+export type RunnerParts = { readonly createLoop: LoopFactory; readonly computers: ComputerDeps; readonly env: NodeJS.ProcessEnv };
 
 /** Where runner `name` writes its heartbeat in `dataDir`. */
 export const heartbeatFile = (dataDir: string, name: string): string => join(dataDir, `runner-${name.replace(/[^A-Za-z0-9._:-]/g, "_")}.alive`);
@@ -189,8 +199,10 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
   const env = options.env ?? process.env;
   const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
+  const memory = options.memory ?? runnerMemory(store);
   let runner: Runner;
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
+  let janitor: ReturnType<typeof startJanitor> | undefined;
   try {
     // The server's seal key, booted the one way the server boots it (seal-key.ts): the one handed over, else the one in
     // this data directory, checked against what the store records. A runner on a store whose secrets another key sealed
@@ -200,18 +212,23 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     const name = options.name ?? runnerName();
     const made = options.createLoop ?? ofStore((opened, sealKey) => runnerLoop(opened, options.dataDir, undefined, sealKey));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
-    const createLoop = isStoreFactory(made) ? made(store, seal.key) : made;
+    const parts = isStoreFactory(made) ? made(store, seal.key) : made;
+    const createLoop = typeof parts === "function" ? parts : parts.createLoop;
+    // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
+    // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
     runner = startRunner({
       store,
       createLoop,
       name,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
-      memory: options.memory ?? runnerMemory(store),
+      memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {
+    await janitor?.close();
     seal?.release();
     await store.close();
     throw error;
@@ -221,9 +238,11 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   return {
     runner,
     store: { kind, schema },
+    memoryMib: memory.budgetMib,
     close: () =>
       (closing ??= (async () => {
-        await runner.close();
+        // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
+        await Promise.all([janitor?.close(), runner.close()]);
         await store.close();
         held.release();
       })()),
@@ -232,11 +251,11 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
 
 const storeFactories = new WeakSet<object>();
 /** Marks `make` as a function of the store (startRunnerProcess gives it the store it opens). */
-export function ofStore(make: (store: Store, sealKey: Buffer) => LoopFactory): (store: Store, sealKey: Buffer) => LoopFactory {
+export function ofStore<Made extends LoopFactory | RunnerParts>(make: (store: Store, sealKey: Buffer) => Made): (store: Store, sealKey: Buffer) => Made {
   storeFactories.add(make);
   return make;
 }
-const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory)): made is (store: Store, sealKey: Buffer) => LoopFactory => storeFactories.has(made);
+const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer) => LoopFactory | RunnerParts)): made is (store: Store, sealKey: Buffer) => LoopFactory | RunnerParts => storeFactories.has(made);
 
 /** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout or
  *  AGENTRUN_DRAIN_TIMEOUT says: the image's server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner
@@ -269,18 +288,20 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
   return { loops, drainMs };
 }
 
-/** The runner process's arguments: `--data D [--loops N] [--drain-timeout D] [--name N]`, or `--check --data D [--name
- *  N]`. Each option with a value is also taken as `--option=value` (the bin hands a data directory that starts with "-"
- *  so, never read as an option); an empty one is refused like a missing one. */
-export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; check?: true } {
+/** The runner process's arguments: `--data D [--loops N] [--drain-timeout D] [--name N] [--faux M]`, or `--check --data D
+ *  [--name N]`. Each option with a value is also taken as `--option=value` (the bin hands a data directory that starts
+ *  with "-" so, never read as an option); an empty one is refused like a missing one. `--faux`: the faux model module, a
+ *  test switch, as the server's own --faux; the only way a runner loads one. */
+export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; check?: true } {
   let dataDir: string | undefined;
   let loops: number | undefined;
   let drainMs: number | undefined;
   let name: string | undefined;
+  let faux: string | undefined;
   let check = false;
   for (let i = 0; i < argv.length; i++) {
     const given = argv[i]!;
-    const equals = /^(--(?:data|loops|drain-timeout|name))=(.*)$/s.exec(given);
+    const equals = /^(--(?:data|loops|drain-timeout|name|faux))=(.*)$/s.exec(given);
     const arg = equals ? equals[1]! : given;
     const value = () => {
       const next = equals ? equals[2] : argv[++i];
@@ -297,11 +318,12 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
       drainMs = durationMs(text);
       if (drainMs === undefined) throw new RunnerRefused(`--drain-timeout is a duration such as 6s, 500ms or 1m, not ${JSON.stringify(text)}`);
     } else if (arg === "--name") name = value();
+    else if (arg === "--faux") faux = value();
     else if (arg === "--check") check = true;
-    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N], or --check --data D [--name N]`);
+    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M], or --check --data D [--name N]`);
   }
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
-  return { dataDir, ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(check ? { check: true as const } : {}) };
+  return { dataDir, ...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(check ? { check: true as const } : {}) };
 }
 
 /** Runs until SIGTERM or SIGINT, then closes. `ready` is called once the signals are handled, never before: a line that
@@ -344,7 +366,7 @@ function said(name: string, event: RunnerEvent): string | undefined {
 /** `agentrun-serve runner ...`: the exit code. 2: bad arguments; 3: a store schema this runner does not know (or none
  *  set up yet); 1: anything else; 0: closed on a signal, or --check found a fresh heartbeat. AGENTRUN_RUNNER_NAME names
  *  it when --name does not. */
-export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessEnv = process.env, hooks: RunnerMainHooks = {}): Promise<number> {
   let args: ReturnType<typeof runnerArgs>;
   try {
     args = runnerArgs(argv);
@@ -353,6 +375,10 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
     console.error(`agentrun-serve runner: ${error.message}`);
     return 2;
   }
+  // A test switch is this start's option alone, as on the server (server.ts withoutFaux, fauxEnvOf): one the process
+  // inherited (AGENTRUN_SERVE_FAUX*, the harness table, left in an operator's shell or a platform's settings) never loads
+  // a module or decides what a run answers. --faux sets the faux model's.
+  const env: NodeJS.ProcessEnv = { ...withoutFaux(given), ...(args.faux ? { [FAUX_ENV]: resolve(args.faux) } : {}) };
   const name = args.name ?? env.AGENTRUN_RUNNER_NAME ?? undefined;
   if (args.check) {
     if (!name) {
@@ -382,6 +408,16 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
   const fatal = lastResort(runnerOf);
   process.on("unhandledRejection", fatal);
   process.on("uncaughtException", fatal);
+  // The stop is listened for before the start, as the server's CLI listens (cli.ts): startRunnerProcess starts claiming
+  // runs before it returns, so a SIGTERM or SIGINT during it (a platform's redeploy) would otherwise end the process by the
+  // signal itself, its claims held and a paid request in flight cut. A stop asked then is kept, and the runner closes as
+  // soon as its start is done, through the same close as a stop after it: its runs handed back, its store closed.
+  let asked = false;
+  const early = () => void (asked = true);
+  for (const signal of RUNNER_SIGNALS) process.on(signal, early);
+  const unlisten = () => {
+    for (const signal of RUNNER_SIGNALS) process.off(signal, early);
+  };
   try {
     started = await startRunnerProcess({
       dataDir: args.dataDir,
@@ -390,6 +426,8 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
       loops: holds.loops,
       drainMs: holds.drainMs,
       createLoop: ofStore((store, sealKey) => runnerLoop(store, args.dataDir, env, sealKey)),
+      // The runner subcommand ends what a crashed runner of this server left (never under --faux).
+      janitor: true,
       onEvent: (event) => {
         if (event.type === "error") return void console.error(`Runner ${runnerOf}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`);
         const line = said(runnerOf, event);
@@ -397,10 +435,31 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
       },
     });
   } catch (error) {
+    unlisten();
     console.error(`agentrun-serve runner: ${(error as Error)?.message ?? String(error)}`);
     return error instanceof RunnerRefused && error.cause instanceof SchemaVersionUnknown ? 3 : 1;
   }
+  await hooks.started?.(started);
+  // From here the handlers below take the stop, with nothing awaited between: no signal falls in a gap.
+  unlisten();
+  if (asked) {
+    console.log(`Runner ${started.runner.name} stopping: a stop came during its start`);
+    await started.close();
+    return 0;
+  }
   // Ready is said once SIGTERM and SIGINT are handled, so a stop sent on reading it always closes the runner.
-  await runUntilSignalled(started, ["SIGTERM", "SIGINT"], () => console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`));
+  // Then its memory budget, a line of its own (the ready line's shape is read by deploy checks): what a container's limit
+  // gave it is seen where it runs.
+  await runUntilSignalled(started, RUNNER_SIGNALS, () => {
+    console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`);
+    console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
+  });
   return 0;
 }
+
+/** The signals that stop a runner process. */
+const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
+
+/** A test's hooks into runnerMain: `started`, awaited once the runner has started claiming and before its stop handlers
+ *  take over from the ones its start listened on (the window a stop must not fall through). */
+export type RunnerMainHooks = { readonly started?: (process: RunnerProcess) => void | Promise<void> };

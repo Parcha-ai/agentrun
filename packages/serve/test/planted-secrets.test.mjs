@@ -119,7 +119,7 @@ test("no planted secret shows in any GET (by every id a plant made), a plant's a
 // A key saved on the server reaches a run as the claim opens it: when its vendor answers an error that echoes it, the
 // run's records hold none of it, as for a key the server was started with. The runner's redactor must hold the claim's
 // opened keys as well as its own environment's.
-test("a stored tool key a vendor echoes back in an error shows in none of the run's records: its timeline, its view and answer, the store's bytes (the journal's rows) and the server's log", { timeout: 120_000, skip: "waits on the runner adding a claim's opened keys to its redactor (runnerSecrets extra)" }, async (t) => {
+test("a stored tool key a vendor echoes back in an error shows in none of the run's records: its timeline, its view and answer, the store's bytes (the journal's rows) and the server's log", { timeout: 120_000 }, async (t) => {
   const planted = plantedValue("sk-planted-monid");
   const calls = join(mkdtempSync(join(tmpdir(), "planted-monid-")), "calls.jsonl");
   t.after(() => rmSync(dirname(calls), { recursive: true, force: true }));

@@ -22,12 +22,13 @@ import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
-import { providerLabel } from "@/lib/toolSettings";
+import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
+import { drawnNodeCount, nodesWord } from "@/lib/wfGraph";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null };
@@ -166,7 +167,12 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
                 {agent.tools?.length ? (
                   <ul className="flex flex-wrap gap-x-4 gap-y-1" aria-label="Tools">
                     {agent.tools.map((t) => (
-                      <li key={t.name}><span title={t.blurb}>{t.name}</span>{t.provider ? ` · ${providerLabel(t.provider, t.name)}` : ""}{t.permission ? ` · ${t.permission}` : ""}</li>
+                      <li key={t.name}>
+                        <span title={t.blurb}>{t.name}</span>{t.provider ? ` · ${providerLabel(t.provider, t.name)}` : ""}{t.permission ? ` · ${t.permission}` : ""}
+                        {/* A tool its runs would not get (bash's family with no computer that gives a shell, a web tool its
+                            provider can't serve here): the server's resolution says why, on hover. */}
+                        {resolution(t.resolved, t.name).unavailable && <span data-unavailable className="text-warning-text" title={t.resolved}> · unavailable</span>}
+                      </li>
                     ))}
                   </ul>
                 ) : "none"}
@@ -254,7 +260,7 @@ function WorkflowTab({ agent, go }: TabProps) {
     <section className="border">
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-2">
         <span className="caps text-label font-semibold">Graph</span>
-        <span className="font-mono text-label text-muted-foreground">{graph.nodes.length} nodes · rev {agent.definition.version}</span>
+        <span className="font-mono text-label text-muted-foreground">{nodesWord(drawnNodeCount(graph))} · rev {agent.definition.version}</span>
         <span className="flex-1" />
         <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}><Pencil aria-hidden /> Edit the workflow</Button>
       </div>

@@ -112,7 +112,6 @@ export async function learningKept(server, runId) {
 /** Why a CLI harness's learned_workflow case waits (claude-agent, codex, opencode): on the switch a CLI harness's host
  *  tools, learned_workflow among them, land with tl-untangle's cli-tools-builder (b697d0e9bc). pi's cases, the tool's
  *  description and the gate's run. LEARN_WORKFLOWS_PROBE runs them. */
-export const CLI_TOOLS_TODO = process.env.LEARN_WORKFLOWS_PROBE ? false : "tl-untangle's cli-tools-builder (b697d0e9bc): a CLI harness's host tools on the switch, learned_workflow among them";
 
 /** Run `runId`'s kept learning (its learning_proposals row: the turn and the proposal), from the server's store. */
 export const keptProposal = (server, runId) => overStore(server, (store) => store.learning.proposal(runId));

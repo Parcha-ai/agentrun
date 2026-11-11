@@ -22,17 +22,6 @@ async function agent(store, { kind = "agentic" } = {}) {
   await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind, body: kind === "workflow" ? { workflow: {} } : { instructions: "Answer." } });
 }
 
-/** Launches run `id` with the given body, claims it, writes the journal entries, and ends it with `patch`. */
-async function endedRun(store, { id = "run-1", launch, journal: writes = [], patch }) {
-  await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
-  const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-  if (writes.length) {
-    const journal = store.journal(claim);
-    await commitWrites(journal, writes, context);
-  }
-  await store.runs.update(claim, patch);
-}
-
 /** A user message and the model's final answer, with the request's cost on the answer. */
 async function conversation(store, claim, { ask, answer, usd }) {
   const journal = store.journal(claim);
@@ -402,9 +391,11 @@ test("the moment of a run parked at its cap reads paused with the pause words, s
   assert.equal(moment.paused, true);
   assert.equal(moment.pausedWords, "Out of budget. Raise the cap to at least $1.30 to continue.");
   assert.equal(moment.maxCostUsd, 0.5);
-  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main.
+  // The write half's raiseCap reads moment.paused to resume the run, as it does for a cap-paused run on main, and names the
+  // follow-up the runner sends for this pause: its budget entry's id (moment.pause).
+  assert.equal(moment.pause, String(budget.id));
   const result = await raiseCap(store, moment, 11);
-  assert.deepEqual(result, { resumed: true });
+  assert.deepEqual(result, { resumed: true, messageId: `agentrun:raise:${budget.id}` });
   // Right after the raise, before its runner takes it, the run reads as going on: never input_required on the cap it
   // was just raised past (a client's runs.wait right after the raise returned input_required again).
   const raised = await viewOverStore(store, "run-1", deps);
@@ -663,12 +654,12 @@ test("a value handed to the run (its agent's saved sign-in), straddling the old 
   assert.equal(served.slice(head.length, served.length - tail.length), "[redacted]", "the handed value's place");
 });
 
-test("a cancelled run (the store's stopped state) reads cancelled, with no result, error or review", async (t) => {
+test("a cancelled run (the store's stopped state, outcome 'cancelled') reads cancelled, with no result, error or review", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Stop me", place: { mode: "runner" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(claim, { state: "stopped", summary: "cancelled", endedAt: T0 + 2_000 });
+  await store.runs.update(claim, { state: "stopped", summary: "cancelled", outcome: "cancelled", endedAt: T0 + 2_000 });
 
   const view = await viewOverStore(store, "run-1", deps);
   assert.equal(view.status, "cancelled");

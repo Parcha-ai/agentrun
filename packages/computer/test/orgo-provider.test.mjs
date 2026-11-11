@@ -13,7 +13,8 @@ import { kindOf, serves, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
 
 const orgo = await import("../dist/orgo.js");
-const { CAPABILITIES, create, MOUNT, OrgoProvider, orgoName } = orgo;
+const { CAPABILITIES, create, MOUNT, OrgoProvider } = orgo;
+const { orgoName } = await import("../dist/orgo-names.js");
 
 const RUN = "run-7f3a";
 const SPEC = { image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: { "agentrun.run": RUN, "agentrun.epoch": "3", team: "a" } };
@@ -59,7 +60,11 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	assert.ok(built instanceof OrgoProvider);
 	assert.equal(built.id, "orgo");
 	assert.deepEqual(MOUNT, []);
-	assert.deepEqual(CAPABILITIES, [{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"] }], "what a built provider declares, known without building one");
+	assert.deepEqual(
+		CAPABILITIES,
+		[{ kind: "desktop", groups: ["exec", "files", "processes", "screen", "input.pointer", "input.keys"], image: "linux", options: {} }],
+		"what a built provider declares, known without building one: the Linux desktop alone, by its image; Windows and macOS are parked",
+	);
 	assert.equal(orgo.ENV, undefined, "the library names no environment variable");
 	assert.equal(orgo.fromEnv, undefined, "every setting is an option");
 	assert.deepEqual(api.requests, [], "building a provider calls nothing");
@@ -258,6 +263,11 @@ test("Orgo list: this workspace's computers by name, the run and epoch filtered 
 	assert.deepEqual(byRun.value.map((info) => info.ref.id), [mine.ref.id]);
 	assert.deepEqual(byRun.value[0].labels, { "agentrun.run": RUN, "agentrun.epoch": "3" });
 	assert.equal(byRun.value[0].network, "none");
+	// Listed with no run to match, a computer gives its run's hash (the name keeps no more), so a caller can still tell
+	// whose run it is: the janitor's list.
+	const { runHash } = await import("../dist/labels.js");
+	const unmatched = await fakes.provider.list({});
+	assert.deepEqual(unmatched.value.find((info) => info.ref.id === mine.ref.id).labels, { "agentrun.run.hash": runHash(RUN), "agentrun.epoch": "3" });
 	assert.equal(byRun.value[0].state, "running");
 	const deadline = Date.parse(JSON.parse(mine.box.labels).deadline);
 	assert.equal(byRun.value[0].deadline.getTime(), Math.ceil(deadline / 1000) * 1000, "the deadline read from the name: the janitor's");
@@ -271,6 +281,11 @@ test("Orgo list: this workspace's computers by name, the run and epoch filtered 
 	assert.deepEqual(byTeam.value.find((info) => info.ref.id === mine.ref.id).labels, SPEC.labels);
 	const all = await fakes.provider.list({});
 	assert.equal(all.value.length, 3, "never a computer whose name is not this provider's");
+	// A Windows or macOS desktop of the same run, in the same workspace, is the desktop provider's: Orgo's listing names
+	// its os, so this provider never lists it, and its janitor never sweeps it.
+	for (const os of ["windows", "macos"]) fakes.api.add({ name: orgoName({ "agentrun.run": RUN, "agentrun.epoch": "3" }, os === "windows" ? "00000000000c" : "00000000000d", new Date(Date.now() + HOUR)), os });
+	assert.deepEqual((await fakes.provider.list({ "agentrun.run": RUN, "agentrun.epoch": "3" })).value.map((info) => info.ref.id), [mine.ref.id]);
+	assert.equal((await fakes.provider.list({})).value.length, 3);
 });
 
 test("Orgo list: a computer that is not running is listed stopped, and never woken to read its labels file", async () => {
@@ -281,6 +296,25 @@ test("Orgo list: a computer that is not running is listed stopped, and never wok
 	const byTeam = await fakes.provider.list({ team: "a" });
 	assert.deepEqual(byTeam.value, [], "its labels file cannot be read without waking it, so it proves no other label");
 	assert.deepEqual(fakes.channel.calls, []);
+});
+
+test("Orgo list: a Windows or macOS desktop in the workspace is the other provider's, so neither list nor the janitor's sweep touches it, past its deadline too", async () => {
+	const fakes = setup();
+	const past = new Date(Date.now() - HOUR);
+	const others = ["windows", "macos"].map((os, i) => fakes.api.add({ name: orgoName(SPEC.labels, `00000000000${i + 1}`, past), os, workspace_id: WORKSPACE }));
+	const mine = fakes.api.add({ name: orgoName(SPEC.labels, "00000000000c", past), os: "linux", workspace_id: WORKSPACE });
+	assert.deepEqual((await fakes.provider.list({})).value.map(({ ref }) => ref.id), [mine.id]);
+	const swept = await sweep(fakes.provider, { now: new Date() });
+	assert.deepEqual(swept, { ok: true, value: { deleted: [mine.name], kept: 0 } });
+	for (const other of others) assert.notEqual(fakes.api.computers.get(other.id).deleted, true, other.os);
+});
+
+test("Orgo list: the deadline is the name's alone; a computer whose name has none is listed with none, whatever Orgo's end, and the janitor ends it", async () => {
+	const fakes = setup();
+	const bare = fakes.api.add({ name: orgoName(SPEC.labels, "00000000000e"), ends_at: new Date(Date.now() + 2 * HOUR).toISOString() });
+	const listed = (await fakes.provider.list({})).value;
+	assert.deepEqual(listed.map(({ ref, deadline }) => [ref.id, deadline]), [[bare.id, undefined]], "Orgo's end is not a deadline");
+	assert.deepEqual(await sweep(fakes.provider, { now: new Date() }), { ok: true, value: { deleted: [bare.name], kept: 0 } });
 });
 
 test("Orgo attach: the labels file is the truth; the spec read back from inside; a name that disagrees with the file is drift", async () => {
