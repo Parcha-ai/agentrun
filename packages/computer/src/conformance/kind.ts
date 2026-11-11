@@ -53,7 +53,8 @@ export function kindVerdict(kind: ComputerSettingKind, capabilities: KindCapabil
 	for (const group of SETTING_KINDS[kind].required) {
 		const ofGroup = report.results.filter((result) => byId.get(result.id)?.needs.includes(group));
 		for (const result of ofGroup) {
-			if (result.status === "skip" && result.undeclared === undefined && byId.get(result.id)?.level === "core") reasons.push(`${result.id} was skipped: ${result.reason ?? "no reason given"}`);
+			// A case written for another system is not this computer's: its skip is no reason the kind fails.
+			if (result.status === "skip" && result.undeclared === undefined && result.os === undefined && byId.get(result.id)?.level === "core") reasons.push(`${result.id} was skipped: ${result.reason ?? "no reason given"}`);
 		}
 		if (!ofGroup.some((result) => result.status === "pass")) reasons.push(`no case of ${group} passed`);
 	}

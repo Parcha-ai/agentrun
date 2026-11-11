@@ -23,8 +23,9 @@ export function formatReport(report: ConformanceReport): string {
 	const reached = daemon ? `${answers} ${daemon.version} ${daemon.os}/${daemon.arch}` : report.daemonMode === "none" ? "no computer reached" : "no daemon reached";
 	const lines = [`computer conformance · ${report.provider} · ${report.kind}, daemon ${report.daemonMode} · ${reached}`];
 	// A Core case skipped for an optional group the computer does not declare is not Core for this kind of computer (a
-	// linux computer is never held to screen): it is listed as optional, out of Core's lines and count.
-	const optional = (r: CaseResult) => r.status === "skip" && r.undeclared !== undefined;
+	// linux computer is never held to screen), nor one written for another system: it is listed as optional, out of
+	// Core's lines and count, its reason kept.
+	const optional = (r: CaseResult) => r.status === "skip" && (r.undeclared !== undefined || r.os !== undefined);
 	const levelOf = (r: CaseResult) => (r.level === "core" && optional(r) ? "optional" : r.level);
 	for (const level of ["core", "full", "optional"] as const) {
 		for (const group of GROUPS) {

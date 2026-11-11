@@ -33,7 +33,11 @@ export const ORGO_CONFIGURATIONS = [
 export const ORGO = defineProvider({
 	id: "orgo",
 	label: "Orgo",
-	keys: [{ name: "ORGO_API_KEY", option: "apiKey", required: true }],
+	// The workspace this server's computers live in: every Orgo provider (Linux, Windows) is built in one, and lists only it.
+	keys: [
+		{ name: "ORGO_API_KEY", option: "apiKey", required: true },
+		{ name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: true },
+	],
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.
 	mounts: [],

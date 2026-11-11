@@ -362,6 +362,17 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.equal((await call("files.list", { path: `${dir}\\sub` })).value.entries.length, 1, "PowerShell's one object is a list of one");
 	assert.equal((await call("files.move", { from: `${dir}\\a.txt`, to: `${dir}\\big.bin` })).error.code, "exists");
 	assert.deepEqual((await call("files.move", { from: `${dir}\\a.txt`, to: `${dir}\\b.txt` })).value, {});
+	// overwrite replaces what is at `to` itself, as rename(2) does: a folder onto an empty folder takes its place (it never
+	// lands inside it); onto a folder with entries, a file onto a folder, or a folder onto a file, it is refused.
+	const box = fake.boxOf(ref.id);
+	await call("files.mkdir", { path: `${dir}\\src` });
+	await call("files.write", { path: `${dir}\\src\\in.txt`, data: Buffer.from("in").toString("base64") });
+	await call("files.mkdir", { path: `${dir}\\empty` });
+	assert.deepEqual((await call("files.move", { from: `${dir}\\src`, to: `${dir}\\empty`, overwrite: true })).value, {});
+	assert.deepEqual([box.files.has(`${dir}\\empty\\in.txt`), box.files.has(`${dir}\\empty\\src\\in.txt`), box.dirs.has(`${dir}\\src`)], [true, false, false], "the folder took the empty one's place");
+	assert.equal((await call("files.move", { from: `${dir}\\empty`, to: `${dir}\\sub`, overwrite: true })).error.code, "exists", "a folder with entries is not replaced");
+	assert.equal((await call("files.move", { from: `${dir}\\b.txt`, to: `${dir}\\sub`, overwrite: true })).error.code, "is_dir");
+	assert.equal((await call("files.move", { from: `${dir}\\empty`, to: `${dir}\\b.txt`, overwrite: true })).error.code, "not_dir");
 	assert.equal((await call("files.remove", { path: `${dir}\\sub` })).error.code, "invalid");
 	assert.deepEqual((await call("files.remove", { path: `${dir}\\sub`, recursive: true })).value, {});
 	assert.equal((await call("files.read", { path: `${dir}\\sub\\only.txt` })).error.code, "not_found");
@@ -497,6 +508,10 @@ test("the conformance suite's desktop kind on the Windows fake: it passes, the W
 		assert.equal(report.results.find((result) => result.id === id)?.status, "pass", id);
 	}
 	const linuxOnly = report.results.find((result) => result.id === "exec.argv");
-	assert.deepEqual([linuxOnly?.status, linuxOnly?.reason], ["skip", "the case is written for linux, and this computer runs windows"]);
+	assert.deepEqual([linuxOnly?.status, linuxOnly?.reason, linuxOnly?.os], ["skip", "the case is written for linux, and this computer runs windows", ["linux"]]);
+	// A case written for another system is not this computer's to pass or fail: Core's verdict leaves it out, so with
+	// every case that applies passing, Core passes (it failed on these skips before).
+	assert.ok(report.results.some((result) => result.level === "core" && result.os !== undefined), "Core cases were skipped as Linux's");
+	assert.equal(report.core, "pass");
 	assert.deepEqual(report.cleanup.left, []);
 });

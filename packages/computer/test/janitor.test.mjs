@@ -114,6 +114,17 @@ test("sweep() never deletes an agent's computer by a deadline: past, missing or 
 	assert.deepEqual(calls.filter(([what]) => what === "release"), [["release", "run-past", "delete"]]);
 });
 
+test("sweep() of a provider that declares no persistence keeps no agent's computer: an owner label a caller put on a run's spec, or an info marked owned, keeps nothing past its deadline", async () => {
+	const { provider, calls } = fakeProvider([
+		{ name: "labelled-past", deadline: at(-1), labels: agent("a1") },
+		{ name: "unreadable-past", deadline: at(-1), labels: { "agentrun.owner": "nobody" } },
+		{ name: "marked-past", deadline: at(-1), owned: true },
+		{ name: "labelled-ahead", deadline: at(60_000), labels: agent("a1") },
+	]);
+	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["labelled-past", "unreadable-past", "marked-past"], kept: 1 } });
+	assert.deepEqual(calls.filter(([what]) => what === "release").map(([, , how]) => how), ["delete", "delete", "delete"]);
+});
+
 test("sweep() keeps a computer its provider lists as owned, with no owner label and no deadline; a run's computer with no deadline is still swept", async () => {
 	const { provider, calls } = fakeProvider(
 		[

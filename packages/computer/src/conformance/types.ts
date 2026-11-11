@@ -192,9 +192,14 @@ export interface CaseResult {
 	reason?: string;
 	/**
 	 * On a skip: the needs that were not declared and are optional for this kind of computer. A Core case skipped for
-	 * these does not fail Core; any other skip of a Core case does.
+	 * these does not fail Core; any other skip of a Core case does, but one for `os`.
 	 */
 	undeclared?: Capability[];
+	/**
+	 * On a skip: the systems the case is written for (Case.os, caseOs), none of them this computer's. A Core case skipped
+	 * for this is not this computer's to pass or fail, so it does not fail Core; its reason stays in the report.
+	 */
+	os?: readonly string[];
 	/** What the case saw and recorded without asserting it (CaseContext.observe); absent when nothing. */
 	observed?: string[];
 }

@@ -91,6 +91,7 @@ async function desktopOn(provider) {
   const sealKey = randomBytes(32);
   await putSealedKey(store, sealKey, "E2B_API_KEY", PLANTED.storeKey);
   await putSealedKey(store, sealKey, "ORGO_API_KEY", PLANTED.orgoKey);
+  await putSealedKey(store, sealKey, "ORGO_WORKSPACE_ID", "ws-orgo-1");
   const record = { created: [], released: [], loaded: [] };
   // The provider builder's load (providerFor in production): what the server-side provider call is given.
   const load = async (id, options) => (record.loaded.push([id, structuredClone(options)]), fakeDesktop(root, record));
@@ -122,7 +123,7 @@ test("a key named in the server's environment wins over its saved one, and goes 
 test("a key only saved in the store is opened with the server's seal key for the provider call alone: the computer's spec carries none of it", async () => {
   const { answer, record } = await desktopOn("orgo");
   assert.equal(answer.computer?.kind, "desktop");
-  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.apiKey]), [["orgo", PLANTED.orgoKey]], "the saved key, opened for the provider");
+  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.apiKey, options.workspaceId]), [["orgo", PLANTED.orgoKey, "ws-orgo-1"]], "the saved key and the workspace, opened for the provider");
   const [spec] = record.created;
   assert.deepEqual(plantsIn(spec), [], `no planted value in the computer's spec: ${JSON.stringify(spec)}`);
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
@@ -133,7 +134,7 @@ test("a key only saved in the store is opened with the server's seal key for the
 /** A store with saved computer keys (Settings → Computers'), as a server that has some keeps them. */
 async function savedKeysStore(sealKey) {
   const store = memoryStore();
-  for (const [name, value] of Object.entries({ E2B_API_KEY: PLANTED.storeKey, ORGO_API_KEY: PLANTED.orgoKey, FAUX_SANDBOX_KEY: mark("faux-key") })) await putSealedKey(store, sealKey, name, value);
+  for (const [name, value] of Object.entries({ E2B_API_KEY: PLANTED.storeKey, ORGO_API_KEY: PLANTED.orgoKey, ORGO_WORKSPACE_ID: "ws-orgo-1", FAUX_SANDBOX_KEY: mark("faux-key") })) await putSealedKey(store, sealKey, name, value);
   return store;
 }
 

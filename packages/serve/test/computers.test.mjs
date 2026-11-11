@@ -161,7 +161,7 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
   assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs groups cdp, which the provider does not declare; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
   assert.match(await routes.claimRefusal({ kind: "desktop", provider: "nobody" }), /names the provider nobody, which this server does not have/);
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY and ORGO_WORKSPACE_ID saved: save them in Settings → Computers (PUT /v2/computers/orgo/keys)");
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
 });

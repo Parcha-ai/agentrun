@@ -179,6 +179,22 @@ test("a computer its provider lists as owned, with no owner label, is detached a
 	assert.deepEqual([result.value.detached, result.value.released], [[owned.value], []]);
 });
 
+test("a provider that declares no persistence keeps no agent's computer: a run's computer whose labels a caller gave an owner is deleted, never asked to detach", async () => {
+	const fake = fakeComputers();
+	const made = await fake.provider.create({ ...SPEC, labels: { ...runLabels("a", 1) } });
+	const release = fake.provider.release;
+	const asked = [];
+	fake.provider.release = (ref, how) => (asked.push(how), release(ref, how));
+	const list = fake.provider.list;
+	fake.provider.list = async (labels) => {
+		const listed = await list(labels);
+		return { ok: true, value: listed.value.map((info) => ({ ...info, labels: { ...info.labels, "agentrun.owner": "agent:ag1" } })) };
+	};
+	const result = await releaseOlder(fake.provider, "a", 2);
+	assert.equal(result.ok, true, JSON.stringify(result));
+	assert.deepEqual([result.value.released, result.value.detached, asked], [[made.value], [], ["delete"]]);
+});
+
 test("a release that fails: every release is still attempted, and the result is a failure naming each computer left and why", async () => {
 	const { provider, refs, released, alive } = await setup(
 		[

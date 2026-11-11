@@ -279,7 +279,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		}
 		// A case written for other systems (a POSIX program, /proc) is not this computer's to pass or fail: skipped in words.
 		const systems = caseOs(c);
-		if (systems !== undefined && !systems.includes(capabilities.os)) return result("skip", `the case is written for ${systems.join(" or ")}, and this computer runs ${capabilities.os}`);
+		if (systems !== undefined && !systems.includes(capabilities.os)) return { ...result("skip", `the case is written for ${systems.join(" or ")}, and this computer runs ${capabilities.os}`), os: systems };
 		// The shared computer is made, bounded on its own, before the case's time starts.
 		const sharedComputer = (c.computer ?? "shared") === "shared" ? await getShared() : undefined;
 		const timeoutMs = c.timeoutMs ?? caseTimeoutMs;
@@ -524,8 +524,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		}
 		await cleanup(provider, capabilities.lifetime, runLabels, report, deleted, cleanupTimeoutMs);
 	}
-	// A Core case skipped for an optional group the computer does not declare is not part of Core's verdict.
-	const core = report.results.filter((r) => r.level === "core" && !(r.status === "skip" && r.undeclared !== undefined));
+	// A Core case skipped for an optional group the computer does not declare, or written for another system, is not part
+	// of Core's verdict.
+	const core = report.results.filter((r) => r.level === "core" && !(r.status === "skip" && (r.undeclared !== undefined || r.os !== undefined)));
 	const clean = report.cleanup.left.length === 0 && report.cleanup.errors.length === 0;
 	const corePassed = core.every((r) => r.status === "pass") && clean;
 	if ((report.coreNotRun ?? []).length === 0) report.core = core.length > 0 && corePassed ? "pass" : "fail";

@@ -31,7 +31,7 @@ function scratch() {
   return root;
 }
 
-const SAVED = { daytona: { DAYTONA_API_KEY: "dk", UNRELATED: "x" }, e2b: { E2B_API_KEY: "ek" }, orgo: { ORGO_API_KEY: "ok" }, "phone-harness": { PHONE_HARNESS_API_KEY: "pk" }, browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } };
+const SAVED = { daytona: { DAYTONA_API_KEY: "dk", UNRELATED: "x" }, e2b: { E2B_API_KEY: "ek" }, orgo: { ORGO_API_KEY: "ok", ORGO_WORKSPACE_ID: "ws-1" }, "phone-harness": { PHONE_HARNESS_API_KEY: "pk" }, browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } };
 /** The claim's side: the saved keys by provider, and a launch that makes a loopback fake of the kind asked. */
 function claim(root, saved = SAVED) {
   const launched = [];

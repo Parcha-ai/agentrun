@@ -35,7 +35,7 @@ test("computer keys: the saved keys become each provider's create() options; a n
     ["daytona", { DAYTONA_API_KEY: KEY, DAYTONA_API_URL: "https://daytona.example/api", DAYTONA_TARGET: "eu" }, { apiKey: KEY, apiUrl: "https://daytona.example/api", target: "eu" }],
     ["modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { tokenId: KEY, tokenSecret: SECRET, app: "agentrun" }],
     ["e2b", { E2B_API_KEY: KEY }, { apiKey: KEY }],
-    ["orgo", { ORGO_API_KEY: KEY }, { apiKey: KEY }],
+    ["orgo", { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" }, { apiKey: KEY, workspaceId: "ws-1" }],
     ["phone-harness", { PHONE_HARNESS_API_KEY: KEY }, { apiKey: KEY }],
     ["browserbase", { BROWSERBASE_API_KEY: KEY, BROWSERBASE_PROJECT_ID: "proj-1" }, { apiKey: KEY, projectId: "proj-1" }],
     ["kernel", { KERNEL_API_KEY: KEY }, { apiKey: KEY }],
@@ -119,7 +119,7 @@ test("computer keys: a provider that cannot be made, or that throws, is a failed
   assert.deepEqual([made.ok, made.error.code], [false, "invalid"]);
   assert.match(made.error.message, /^Modal's settings are not valid\. \(the vendor said: the Modal provider refuses \[the key\]\)$/);
   const exploding = fakeModule(() => { throw new Error(`socket closed near ${KEY}`); });
-  const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY } }, { orgo: exploding.create });
+  const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" } }, { orgo: exploding.create });
   assert.deepEqual([thrown.ok, thrown.error.code], [false, "unreachable"]);
   assert.ok(!thrown.error.message.includes(KEY));
   const leaky = fakeModule({ ok: true, value: { detail: `token ${KEY} works` } });

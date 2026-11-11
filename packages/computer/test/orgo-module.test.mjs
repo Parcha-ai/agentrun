@@ -46,11 +46,12 @@ test("the Orgo module makes nothing without its live switch, checked before any 
 	assert.deepEqual(api.requests, [], "building providers calls nothing");
 });
 
-test("the registry holds orgo, and its Settings entry: the desktop kind, the ORGO_API_KEY key, no mount, metered, its module's capabilities", async () => {
+test("the registry holds orgo, and its Settings entry: the desktop kind, the ORGO_API_KEY and ORGO_WORKSPACE_ID keys, no mount, metered, its module's capabilities", async () => {
 	assert.ok(providerIds.includes("orgo"));
 	const entry = PROVIDERS.find((one) => one.id === "orgo");
 	assert.deepEqual(entry.kinds, ["desktop"], "a desktop only: an agent that wants a sandbox gets a cheaper one");
-	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }]);
+	// The workspace fills workspaceId, which every Orgo provider is built with (Linux and Windows alike).
+	assert.deepEqual(entry.keys, [{ name: "ORGO_API_KEY", option: "apiKey", required: true }, { name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: true }]);
 	assert.deepEqual(entry.mounts, []);
 	assert.equal(entry.metered, true);
 	const orgo = await import("../dist/orgo.js");

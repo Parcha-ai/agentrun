@@ -154,7 +154,7 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			return { httpStatus: 503, body: { error: "Computer not ready", request_id: "r1" } };
 		}
 		if (windows) {
-			if (command.startsWith(FILES_MARK)) return filesOp(box, JSON.parse(Buffer.from(/FromBase64String\('([^']*)'\)/.exec(command)[1], "base64").toString("utf8")));
+			if (command.startsWith(FILES_MARK)) return filesOp(box, JSON.parse(Buffer.from(/FromBase64String\('([^']*)'\)/.exec(command)[1], "base64").toString("utf8")), command);
 			const write = /FromBase64String\('([A-Za-z0-9+/=]*)'\)\)\n\$p = '([^']+)'/.exec(command);
 			if (write) {
 				box.files.set(write[2], Buffer.from(write[1], "base64"));
@@ -207,8 +207,9 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 		return run(words, { cwd, env, box });
 	};
 
-	/** The Windows files script's request, done on the box's files, answered as the script answers. */
-	const filesOp = (box, p) => {
+	/** The Windows files script's request, done on the box's files, answered as the script answers. `script`: the script
+	 *  itself, whose move PowerShell runs as it is written (a Move-Item onto a folder moves into it). */
+	const filesOp = (box, p, script) => {
 		const norm = winPath;
 		const parent = (path) => path.slice(0, path.lastIndexOf("\\"));
 		const say = (o) => ran(0, JSON.stringify(o));
@@ -278,9 +279,20 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			}
 			case "move": {
 				const from = norm(p.from);
-				const to = norm(p.to);
+				let to = norm(p.to);
 				if (!box.files.has(from) && !box.dirs.has(from)) return no("not_found", `no ${from}`);
 				if ((box.files.has(to) || box.dirs.has(to)) && !p.overwrite) return no("exists", `${to} is there already`);
+				// What PowerShell does with what is at `to`: the script that checks and removes it first replaces it (rename(2));
+				// one that does not leaves it, and Move-Item onto a folder moves into it.
+				if (box.files.has(to) || box.dirs.has(to)) {
+					if (script.includes("Remove-Item -LiteralPath $p.to -Force")) {
+						if (box.dirs.has(to) && !box.dirs.has(from)) return no("is_dir", `${to} is a folder`);
+						if (box.dirs.has(from) && !box.dirs.has(to)) return no("not_dir", `${to} is not a folder`);
+						if (box.dirs.has(to) && children(to).length > 0) return no("exists", `${to} is a folder that is not empty`);
+						box.files.delete(to);
+						box.dirs.delete(to);
+					} else if (box.dirs.has(to)) to = `${to}\\${from.slice(from.lastIndexOf("\\") + 1)}`;
+				}
 				if (box.files.has(from)) {
 					box.files.set(to, box.files.get(from));
 					box.files.delete(from);
