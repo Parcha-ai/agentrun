@@ -45,7 +45,9 @@ function loopOn(store, clock, { answers = [KEEP], commit = async () => MERGED, r
     readMain,
     ask: async (request, signal) => {
       calls.ask.push({ request, aborted: signal.aborted });
-      const answer = queue.shift();
+      // A function is the grade's request in flight: it runs with the request's signal, and gives the answer or throws.
+      const next = queue.shift();
+      const answer = typeof next === "function" ? await next(signal) : next;
       if (answer instanceof Error) throw answer;
       return { text: answer, usd: 0.01 };
     },
@@ -188,16 +190,41 @@ test("a stop row ends the learning run stopped, its row taken, with nothing merg
   await loop.stop({ kind: "command", commandId: stop.id });
   const end = await loop.start(claim);
   assert.equal(end.state, "stopped");
+  assert.equal(calls.ask.length, 0, "stopped before its grade: nothing is asked");
   assert.equal(calls.commit.length, 0, "nothing merged");
-  assert.equal((await store.runs.get("learn-1")).state, "stopped");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", 0], "nothing sent, nothing spent");
   assert.notEqual((await store.commands("learn-1", 0)).find((row) => row.id === stop.id).takenAt, null, "its row taken");
+});
+
+test("a stop row cuts the grade's request in flight at once: its signal aborts, the run ends stopped with its row taken, nothing merged", async (t) => {
+  const { store, clock, claim } = await setUp(t);
+  let loop;
+  const stop = await store.command("learn-1", { kind: "stop" });
+  const inFlight = async (signal) => {
+    // The request waits for an answer that never comes; only its signal ends it.
+    void loop.stop({ kind: "command", commandId: stop.id });
+    await new Promise((_, reject) => (signal.aborted ? reject(signal.reason) : signal.addEventListener("abort", () => reject(signal.reason), { once: true })));
+  };
+  const made = loopOn(store, clock, { answers: [inFlight] });
+  loop = made.loop;
+  assert.equal((await loop.start(claim)).state, "stopped");
+  assert.equal(made.calls.ask.length, 1);
+  assert.equal(made.calls.commit.length, 0, "nothing merged");
+  const row = await store.runs.get("learn-1");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
+  assert.notEqual((await store.commands("learn-1", 0)).find((one) => one.id === stop.id).takenAt, null, "its row taken");
 });
 
 test("a learning run stopped after its grade booked keeps that grade's cost on its row, and /v2/usage's learning spend counts it", async (t) => {
   const { store, clock, claim } = await setUp(t);
-  const { loop, calls } = loopOn(store, clock);
+  let loop;
   const stop = await store.command("learn-1", { kind: "stop" });
-  await loop.stop({ kind: "command", commandId: stop.id });
+  // The stop lands while the grade's request is out, which answers anyway (booked before the cut could take).
+  const answered = async () => (void loop.stop({ kind: "command", commandId: stop.id }), KEEP);
+  const made = loopOn(store, clock, { answers: [answered] });
+  loop = made.loop;
+  const { calls } = made;
   assert.equal((await loop.start(claim)).state, "stopped");
   assert.equal(calls.ask.length, 1, "the grade was asked and booked before the stop was seen");
   const row = await store.runs.get("learn-1");
@@ -208,9 +235,11 @@ test("a learning run stopped after its grade booked keeps that grade's cost on i
 
 test("a learning run stopped while its grade request was cut keeps an unknown cost (null), and /v2/usage's learning spend says so", async (t) => {
   const { store, clock, claim } = await setUp(t);
-  const { loop } = loopOn(store, clock, { answers: [new Error("the grade request was cut")] });
+  let loop;
   const stop = await store.command("learn-1", { kind: "stop" });
-  await loop.stop({ kind: "command", commandId: stop.id });
+  // The stop lands while the grade's request is out, which fails cut.
+  const cut = async () => (void loop.stop({ kind: "command", commandId: stop.id }), new Error("the grade request was cut"));
+  loop = loopOn(store, clock, { answers: [cut] }).loop;
   assert.equal((await loop.start(claim)).state, "stopped");
   const row = await store.runs.get("learn-1");
   assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
@@ -227,4 +256,24 @@ test("a learning run whose source kept nothing ends with nothing graded", async 
   assert.deepEqual(await loop.start(claim), { state: "ended" });
   assert.equal(calls.ask.length, 0);
   assert.deepEqual(await kindsOf(store, claim), [KINDS.learningDropped]);
+});
+
+// LS-07: a kept proposal's `held` (the learning end's: a draft calling an unpriced MCP tool) holds that draft for its
+// owner's OK whatever the grade: its README is merged pending.
+test("a draft the proposal holds as unpriced is merged pending though the grader keeps it; without the hold it is merged active", async (t) => {
+  const FLOW = { file: "workflows/file-ticket/workflow.json", text: "{}" };
+  const README = { file: "workflows/file-ticket/README.md", text: "---\nname: file-ticket\ndescription: Files a ticket\n---\n" };
+  const keepAll = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }, { file: FLOW.file, decision: "keep", why: "a repeatable job" }] });
+  for (const [held, want] of [[{ [FLOW.file]: ["its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap"] }, [README.file]], [undefined, undefined]]) {
+    const { store, clock } = await storeOn(t);
+    await agentWithRevision(store);
+    await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+    const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+    const proposal = { ...PROPOSAL, files: [FLOW, README], ...(held ? { held } : {}) };
+    await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: { state: "proposed", notes: ["Retries"], skills: [], workflows: ["file-ticket"], proposal, detail: "Proposed." } } }, { table: "learning_run", row: { id: "learn-1" } }] });
+    const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
+    const { loop, calls } = loopOn(store, clock, { answers: [keepAll] });
+    assert.deepEqual(await loop.start(claim), { state: "ended" });
+    assert.deepEqual(calls.commit[0].change.held, want, JSON.stringify(calls.commit[0].change));
+  }
 });
