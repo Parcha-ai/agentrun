@@ -72,9 +72,18 @@ export interface PiAdapterOptions {
    *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
    *  its model from the root's agent, through this session's proxy and its booking. */
   readonly extensions?: readonly Extension[];
+  /** The run's other model tiers (a subagent's model: runner/subagent.ts), each on its own model proxy with the session's
+   *  one booking (io.models), so its requests are admitted and booked under the run's one cap as pi's own are. Each is
+   *  listed in pi's models under tierProvider(tier). */
+  readonly tiers?: Readonly<Record<string, TierRoute>>;
 }
 
+/** A tier's route, as the session's own: its model, the provider its proxy forwards to, its catalog entry and price. */
+export type TierRoute = Pick<PiAdapterOptions, "model" | "provider" | "like" | "price" | "fetch">;
+
 const PROVIDER = "agentrun-session";
+/** The provider a tier's model is listed under in pi's models (PiAdapterOptions.tiers). */
+export const tierProvider = (tier: string): string => `${PROVIDER}-${tier}`;
 const INPUT_REQUEST = "agentrun:input";
 
 /** pi as an AgentAdapter for one claim's run. */
@@ -95,27 +104,36 @@ const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
   (options.extensions ?? []).flatMap((extension) => extension.tools ?? []).map((tool) => tool.name);
 
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
-  const { model } = options;
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
+  const names = [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)];
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
-  // through the runner's booking (io.models).
-  const proxy = await startModelProxy({
-    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]),
+  // through the runner's booking (io.models). Each tier's route the same way, on the same booking.
+  const proxyOf = async (route: TierRoute): Promise<ModelProxy> => startModelProxy({
+    policy: await policyFor(route.provider, route.model, names),
     hooks: io.models,
-    model,
-    origin: options.provider.origin,
-    credential: async () => (await options.provider.credential()) ?? "",
-    ...(options.price ? { price: options.price as never } : {}),
-    ...(options.provider.headers ? { headers: options.provider.headers } : {}),
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    model: route.model,
+    origin: route.provider.origin,
+    credential: async () => (await route.provider.credential()) ?? "",
+    ...(route.price ? { price: route.price as never } : {}),
+    ...(route.provider.headers ? { headers: route.provider.headers } : {}),
+    ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(options.redact ? { redact: options.redact } : {}),
   }, randomBytes(32).toString("base64url"));
-  // An open that fails from here (the claim lost while the session opened) closes the proxy: its server would hold the
-  // runner's process open.
+  const opened: ModelProxy[] = [];
+  // An open that fails from here (the claim lost while the session opened) closes the proxies: their servers would hold
+  // the runner's process open.
   try {
-    return await sessionOn(proxy, options, spec, io, context);
+    const proxy = await proxyOf(options);
+    opened.push(proxy);
+    const tiers: [string, TierRoute, ModelProxy][] = [];
+    for (const [tier, route] of Object.entries(options.tiers ?? {})) {
+      const tierProxy = await proxyOf(route);
+      opened.push(tierProxy);
+      tiers.push([tier, route, tierProxy]);
+    }
+    return await sessionOn(proxy, options, spec, io, context, tiers);
   } catch (error) {
-    await proxy.close().catch(() => undefined);
+    for (const proxy of opened) await proxy.close().catch(() => undefined);
     throw error;
   }
 }
@@ -141,7 +159,7 @@ export async function policyFor(provider: PiAdapterOptions["provider"], model: s
 }
 
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
-async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context): Promise<AdapterSession> {
+async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context, tiers: readonly [string, TierRoute, ModelProxy][] = []): Promise<AdapterSession> {
   const { run, model, like } = options;
   const { api } = options.provider;
   const models = createModels();
@@ -149,6 +167,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // proxy's booking does), so the model's cost stays $0. Image input on either wire (sessionModel): a host tool's images
   // (a screenshot) reach the model in its tool result.
   models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
+  // Each tier's model at its own proxy, under its own provider id (tierProvider): a conversation whose agent names it
+  // (a subagent's) is sent there, and booked as the session's own requests are.
+  for (const [tier, route, at] of tiers) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
   run.setModels(models);
 
   // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
@@ -266,6 +287,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     async close() {
       closed = true;
       await proxy.close().catch(() => undefined);
+      for (const [, , at] of tiers) await at.close().catch(() => undefined);
     },
     // The session's own model route for a request the host sends beside pi's (a learned workflow's model node): its proxy
     // with a side key minted for `label`, pi's model and the provider's wire (never a literal), so the request goes through

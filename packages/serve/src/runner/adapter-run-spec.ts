@@ -51,7 +51,10 @@ import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
-import { entriesOf } from "./loop.js";
+import { agentEntriesOf } from "./loop.js";
+import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentExtension } from "./subagent.js";
+import { type TierRoute, tierProvider } from "./adapters/pi.js";
+import { wireName } from "../catalog.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { runMetrics } from "./metrics.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -169,6 +172,15 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
+/** A tier's route as the pi adapter takes it (PiAdapterOptions.tiers): the route's own fields. */
+export const tierRouteOf = (route: ModelRoute): TierRoute => ({
+  model: route.model,
+  provider: route.provider,
+  ...(route.like ? { like: route.like } : {}),
+  ...(route.price ? { price: route.price as never } : {}),
+  ...(route.fetch ? { fetch: route.fetch } : {}),
+});
+
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
  *  the workflow loop). */
 type RevisionBody = {
@@ -180,6 +192,8 @@ type RevisionBody = {
   readonly skills?: Record<string, unknown>;
   /** The revision's own model ("provider/model-id"), absent for the host's. */
   readonly model?: string;
+  /** The model of each of its tiers it names (a subagent's: runner/subagent.ts), absent for the host's tier model. */
+  readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
 };
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
@@ -393,6 +407,20 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
+  // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
+  // host's for the tier, each on a route of its own (its proxy on the session's booking, adapters/pi.ts tiers). A tier no
+  // route can be made for here is no failure of the run: a call on it answers why.
+  const tierRoutes = new Map<SubagentTier, ModelRoute>();
+  const tierWhy = new Map<SubagentTier, string>();
+  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+    for (const tier of SUBAGENT_TIERS) {
+      try {
+        tierRoutes.set(tier, await deps.routeOf(body.modelTiers?.[tier], withModelKeys(deps.env, toolEnv), tier, PI_WIRES, undefined, cut));
+      } catch (error) {
+        tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
+      }
+    }
+  }
   const adapter = piAdapter({
     run,
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
@@ -403,6 +431,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(tierRoutes.size ? { tiers: Object.fromEntries([...tierRoutes].map(([tier, at]) => [tier, tierRouteOf(at)])) } : {}),
   });
 
   // The gate before a call's intent: the run's revision's tool settings through runGate (approvals "never" turns the one
@@ -419,9 +448,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // tool calls and its decisions all on one rule and one booking), so the spec carries no beforeRequest of its own.
   const capUsd = launch.maxCostUsd;
   const capModel = capModelOf(route);
+  // A subagent's tier models are the run's models too: the cap prices their requests as it prices the run's own.
+  const tierCaps = new Map([...tierRoutes.values()].map((at) => [at.model, capModelOf(at)] as const));
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
-    modelOf: (id) => (id === route.model ? capModel : undefined),
+    modelOf: (id) => (id === route.model ? capModel : tierCaps.get(id)),
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
@@ -508,6 +539,22 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
+  // The subagent tool, in the root agent beside the run's other native extensions: a child's tools are a subset of the
+  // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model one
+  // of the tiers resolved above.
+  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+    const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
+    native.push(subagentExtension({
+      granted,
+      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
+      tier: (tier) => {
+        const at = tierRoutes.get(tier);
+        return at ? { ref: { provider: tierProvider(tier), modelId: at.model } } : { why: tierWhy.get(tier) ?? "none is set" };
+      },
+      preamble: environmentLine(),
+    }));
+  }
+
   // The level pi thinks at: the launch's effort (the run's own, else its revision's, else the host's), every level pi's
   // agent takes; none, pi's default.
   const thinking = thinkingLevel(launch.effort);
@@ -567,7 +614,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
     endPatch: async () => {
-      const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
+      // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
+      const entries = await agentEntriesOf(deps.journal(claim), context);
       const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.

@@ -53,13 +53,15 @@ export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: 
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
 export type ToolSettings = Record<string, unknown>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown> };
+/** The model of each tier an agentic revision names (its definition's `model_tiers`: fast, strong), each "provider/model-id". */
+export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown> };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown> }
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown> }
   | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
@@ -131,11 +133,13 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") invalid("learning is not true or false");
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
+    if (input.modelTiers !== undefined && !(isObject(input.modelTiers) && Object.keys(input.modelTiers).length && Object.entries(input.modelTiers).every(([tier, ref]) => (tier === "fast" || tier === "strong") && typeof ref === "string" && ref !== ""))) invalid("the modelTiers are not fast and strong to a non-empty model");
     const body: AgenticBody = {
       instructions: input.instructions,
       skills: skillShas,
       tools: [...tools],
       ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.modelTiers !== undefined ? { modelTiers: Object.fromEntries(Object.entries(input.modelTiers).sort(([a], [b]) => a.localeCompare(b))) as ModelTiers } : {}),
       ...(input.thinking !== undefined ? { thinking: input.thinking } : {}),
       ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}),
       ...host,

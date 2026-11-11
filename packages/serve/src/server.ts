@@ -119,7 +119,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
@@ -1720,7 +1720,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const model = picked.model;
     // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
     // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
-    const modelWarnings: InputIssue[] = "warning" in picked && picked.warning ? [{ field: "model", reason: "not_an_option", message: picked.warning }] : [];
+    // The model of each tier its subagents run on (packageTiers): the package's where this server runs it.
+    const tiers = await packageTiers(env, pkg.model, harness ?? DEFAULT_HARNESS, model);
+    const modelWarnings: InputIssue[] = [...("warning" in picked && picked.warning ? [picked.warning] : []), ...(tiers.warning ? [tiers.warning] : [])].map((message) => ({ field: "model", reason: "not_an_option", message }));
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
     // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
@@ -1729,7 +1731,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
     // never), else ask. Deny and pins hold either way.
     const chosenApprovals = approvals ?? pkg.approvals;
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
     const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());

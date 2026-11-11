@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+An agent can run subagents: a revision that names `subagent` in its tools (pi only) gets a tool that runs a fresh conversation with the call's prompt as its whole task and a subset of the agent's own tools (MCP tools and `bash` included), and answers with the child's final text. The child runs on the agent's own model unless the call names a tier (`fast` or `strong`); a revision's `model_tiers` (a template's `model.fast` / `model.strong` in agent.md) names each tier's model, else the server's `AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`. Every tool call a child makes passes the run's gate, so the agent's bash policy (`read-only`) holds its bash too, and every request books on the run's one cap, which ends a child when it is reached. A child is never given `subagent` or `ask_person` (one level deep), at most 4 children of a run work at once, the run's timeline nests each child under its call, and the run's cost and metrics count every child's requests.
