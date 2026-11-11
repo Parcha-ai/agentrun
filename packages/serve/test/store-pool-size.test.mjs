@@ -3,10 +3,11 @@
 // other value is refused in words before a store is opened, on either store, so a server or a runner never starts on a
 // pool it was not asked for. The pool it sets on Postgres is held in store-postgres.test.mjs.
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { parse } from "yaml";
 import { sqliteOnly } from "./store-target.mjs";
 
 const { DEFAULT_STORE_POOL_SIZE, MAX_STORE_POOL_SIZE, openStore, storePoolSize } = await import("../dist/store/index.js");
@@ -45,4 +46,17 @@ test("a store opened with a pool size that is no size is refused before anything
   assert.deepEqual(readdirSync(dir), [], "no store made in the data directory");
   const store = await openStore({ dataDir: dir, role: "server", url: "", env: { AGENTRUN_STORE_POOL_SIZE: "3" } });
   await store.close();
+});
+
+test("a compose deploy gives the server and every runner each store setting the opener reads (AGENTRUN_STORE_POOL_SIZE among them)", async () => {
+  // The names store/open.ts reads, from its source: a setting added there and not passed here fails this.
+  const opener = readFileSync(new URL("../src/store/open.ts", import.meta.url), "utf8");
+  const names = [...new Set(opener.match(/AGENTRUN_STORE_[A-Z_]+/g))].sort();
+  assert.ok(names.includes("AGENTRUN_STORE_POOL_SIZE") && names.includes("AGENTRUN_STORE_URL") && names.includes("AGENTRUN_STORE_SCHEMA"), names.join(" "));
+  const compose = parse(readFileSync(new URL("../../../deploy/compose.yaml", import.meta.url), "utf8"), { merge: true });
+  const services = Object.entries(compose.services).filter(([name]) => name === "server" || name.startsWith("runner"));
+  assert.ok(services.length >= 3, "the server and its runners");
+  for (const [service, { environment }] of services) {
+    assert.deepEqual(names.filter((name) => !(name in (environment ?? {}))), [], `${service} is given every store setting`);
+  }
 });
