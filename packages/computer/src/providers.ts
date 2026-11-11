@@ -6,7 +6,7 @@
 // (README, Settings). The caller owns its settings' names: serve passes its own (DAYTONA_API_KEY, MODAL_TOKEN_ID, ...),
 // and the conformance CLI's modules read their COMPUTER_<ID>_* names and pass them in.
 import type { RunFolder } from "./conformance/types.js";
-import type { HostCommand, KindCapabilities } from "./kinds.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider, NetworkForm } from "./provider.js";
 
@@ -49,11 +49,6 @@ export interface ProviderModule {
 	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
 	 */
 	readonly CAPABILITIES: readonly KindCapabilities[];
-	/**
-	 * The program its computers need on the server's own machine, found on PATH (the phone's adb); the kind registry's
-	 * entry holds the same as its hostCommand, so a server says it is missing from the registry alone. Absent: none.
-	 */
-	readonly HOST_COMMAND?: HostCommand;
 	/**
 	 * The provider, built from its options alone, its key included; it reads no environment, and throws in words when an
 	 * option is missing or wrong, never echoing a key. Each provider file types its own options.

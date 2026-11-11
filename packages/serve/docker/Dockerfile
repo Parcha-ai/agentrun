@@ -31,7 +31,8 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
 
 # adb (Android platform-tools), which the phone provider drives its phone with from this machine: r35.0.2, its zip
 # pinned by sha256. Google builds platform-tools for x86-64 Linux alone, so the arm64 image carries no adb, and the
-# server says so in Settings → Computers ("adb isn't installed on this server"). It needs only the C library.
+# server says so in Settings → Computers ("this server's image has no adb for arm64 (…): Phone harness needs an x86-64
+# server"). It needs only the C library.
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS adb
 ARG TARGETARCH
 ARG PLATFORM_TOOLS_ZIP=https://dl.google.com/android/repository/platform-tools_r35.0.2-linux.zip

@@ -12,7 +12,7 @@ import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "./e2b.js";
 import { MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./modal.js";
 import type { MountKind } from "./mount.js";
 import { ORGO_BASE_IMAGE } from "./orgo.js";
-import { HOST_COMMAND as PHONE_HOST_COMMAND, PHONE_IMAGE } from "./phone-harness.js";
+import { PHONE_IMAGE } from "./phone-harness.js";
 import type { ComputerKind, Group } from "./protocol.js";
 import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
@@ -107,7 +107,10 @@ export interface ProviderEntry {
 	 * none: serve builds its image itself (DOCKER_RECIPE).
 	 */
 	defaultImage?: Partial<Record<ComputerSettingKind, string>>;
-	/** A program the server's machine must have on its PATH to run the provider's computers: its module's HOST_COMMAND. */
+	/**
+	 * A program the server's own machine must have on its PATH to run the provider's computers (the phone's adb): what a
+	 * server checks at its start to say, from the registry alone, that the provider can't run there and why.
+	 */
 	hostCommand?: HostCommand;
 }
 
@@ -116,6 +119,11 @@ export interface HostCommand {
 	readonly command: string;
 	/** What gives the command, in words a person installs it by: "Android platform-tools". */
 	readonly from: string;
+	/**
+	 * The machines it is built for, as Node names them (`${process.platform}-${process.arch}`: "linux-x64"). A server on
+	 * any other cannot install it, and says so. Absent: every machine.
+	 */
+	readonly builds?: readonly string[];
 }
 
 const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
@@ -190,7 +198,9 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		metered: true,
 		capabilities: [{ kind: "android", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"] }],
 		defaultImage: { phone: PHONE_IMAGE },
-		hostCommand: PHONE_HOST_COMMAND,
+		// The phone is driven by adb from the server's machine (the module's adb option, adb on PATH by default). Google
+		// builds platform-tools for x86-64 Linux, macOS and x86-64 Windows alone.
+		hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"] },
 	}),
 	entry({
 		id: "browserbase",

@@ -134,7 +134,7 @@ test("each entry's kinds are derived by serves() from its static capabilities, n
 	}
 });
 
-test("every registry provider has an entry, and its module's static capabilities, mounts, network and host command are the entry's", async () => {
+test("every registry provider has an entry, and its module's static capabilities, mounts and network are the entry's", async () => {
 	for (const id of providerIds) {
 		const entry = PROVIDERS.find((one) => one.id === id);
 		assert.ok(entry, `${id} has a PROVIDERS entry`);
@@ -142,11 +142,14 @@ test("every registry provider has an entry, and its module's static capabilities
 		assert.deepEqual(module.CAPABILITIES, entry.capabilities, `${id}: its module's CAPABILITIES are its entry's`);
 		assert.deepEqual(module.MOUNT, entry.mounts, `${id}: its module's MOUNT is its entry's mounts`);
 		assert.deepEqual(module.NETWORK, entry.network, `${id}: its module's NETWORK is its entry's network`);
-		assert.deepEqual(module.HOST_COMMAND, entry.hostCommand, `${id}: its module's HOST_COMMAND is its entry's hostCommand`);
 	}
-	// The phone is driven by adb on the server's own machine. Docker's daemon is the boxes' own start-time probe, so
-	// Docker names none here.
-	assert.deepEqual(PROVIDERS.filter((entry) => entry.hostCommand).map((entry) => [entry.id, entry.hostCommand.command]), [["phone-harness", "adb"]]);
+});
+
+test("the phone's entry names adb as the program its server needs, built for x86-64 Linux, macOS and x86-64 Windows; no other entry names one", () => {
+	// Docker's daemon is the boxes' own start-time probe, so Docker names none here.
+	assert.deepEqual(PROVIDERS.filter((entry) => entry.hostCommand).map((entry) => [entry.id, entry.hostCommand]), [
+		["phone-harness", { command: "adb", from: "Android platform-tools", builds: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"] }],
+	]);
 });
 
 test("an entry whose provider file has not landed is data alone; once it lands, the test above holds it to its file", () => {

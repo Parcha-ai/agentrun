@@ -49,19 +49,32 @@ export interface ProviderEntry {
   readonly network?: readonly string[];
   readonly metered: boolean;
   readonly capabilities: readonly KindCapabilities[];
-  /** A program its computers need on this machine's PATH, and what installs it (the phone's adb). Absent: none. */
-  readonly hostCommand?: { readonly command: string; readonly from: string };
+  /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
+   *  (`${platform}-${arch}`; absent, every one): the phone's adb. Absent: none. */
+  readonly hostCommand?: HostCommand;
 }
 
+/** A provider's host command, as the kind registry's entry names it. */
+export type HostCommand = { readonly command: string; readonly from: string; readonly builds?: readonly string[] };
+
+const ARCH_NAMES: Readonly<Record<string, string>> = { x64: "x86-64", arm64: "arm64" };
+const PLATFORM_NAMES: Readonly<Record<string, string>> = { linux: "Linux", darwin: "macOS", win32: "Windows" };
+
 /** Why a provider whose host command is not on this machine's PATH cannot run here, in words that say how to fix it,
- *  as the boxes say Docker's (boxes.ts). */
-export const hostCommandWhy = ({ command, from }: { readonly command: string; readonly from: string }): string =>
-  `${command} isn't installed on this server (no ${command} command on PATH): install ${from}, then restart AgentRun`;
+ *  as the boxes say Docker's (boxes.ts). On a machine the command has no build for (adb on arm64 Linux: AgentRun's
+ *  arm64 image has none either), they say which machine it needs, not how to install it. */
+export function hostCommandWhy(label: string, { command, from, builds }: HostCommand, platform: string = process.platform, arch: string = process.arch): string {
+  if (!builds || builds.includes(`${platform}-${arch}`)) return `${command} isn't installed on this server (no ${command} command on PATH): install ${from}, then restart AgentRun`;
+  const name = (one: string): string => ARCH_NAMES[one] ?? one;
+  const others = builds.filter((one) => one.startsWith(`${platform}-`)).map((one) => name(one.slice(platform.length + 1)));
+  const needs = others.length ? `an ${others.join(" or ")} server` : `a server where ${from} runs (${builds.join(", ")})`;
+  return `this server's image has no ${command} for ${name(arch)} (${from} has no ${PLATFORM_NAMES[platform] ?? platform} build for ${name(arch)}): ${label} needs ${needs}`;
+}
 
 /** Each provider whose host command is not on `path` (the server's PATH at its start), by its id, with hostCommandWhy's
  *  words: what Settings → Computers, a run's start and the claim say for it. A command is there when a folder of `path`
  *  holds an executable file of its name. */
-export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "hostCommand">[], path: string | undefined): Readonly<Record<string, string>> {
+export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "label" | "hostCommand">[], path: string | undefined, platform: string = process.platform, arch: string = process.arch): Readonly<Record<string, string>> {
   const found = (command: string): boolean =>
     (path ?? "").split(delimiter).some((folder) => {
       if (!folder) return false;
@@ -72,7 +85,7 @@ export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id"
         return false;
       }
     });
-  return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !found(provider.hostCommand.command) ? [[provider.id, hostCommandWhy(provider.hostCommand)]] : [])));
+  return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !found(provider.hostCommand.command) ? [[provider.id, hostCommandWhy(provider.label, provider.hostCommand, platform, arch)]] : [])));
 }
 
 /** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */

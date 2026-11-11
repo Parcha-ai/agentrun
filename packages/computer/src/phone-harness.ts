@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { crc32, deflateSync } from "node:zlib";
 import { checkActions } from "./actions.js";
-import type { HostCommand, KindCapabilities } from "./kinds.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
 	type ComputerClient,
@@ -65,8 +65,6 @@ export const NETWORK: readonly NetworkForm[] = ["open"];
 export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
 /** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
 export const PHONE_IMAGE = "android";
-/** The program on the server's own machine that drives a phone: adb, found on PATH unless the adb option names one. */
-export const HOST_COMMAND: HostCommand = { command: "adb", from: "Android platform-tools" };
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */

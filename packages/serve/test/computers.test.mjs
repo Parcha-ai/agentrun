@@ -12,7 +12,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { createComputerRoutes, folderModeOf, hostCommandRefusals, KeysRefused, networkWords } from "../dist/computers.js";
+import { createComputerRoutes, folderModeOf, hostCommandRefusals, hostCommandWhy, KeysRefused, networkWords } from "../dist/computers.js";
 import { getSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_KINDS, fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
@@ -204,13 +204,19 @@ test("a provider whose host command is not on this machine's PATH is not ready, 
   await mkdir(join(dir, "plain"));
   await writeFile(join(dir, "with", "adb"), "#!/bin/sh\n", { mode: 0o755 });
   await writeFile(join(dir, "plain", "adb"), "not a program", { mode: 0o644 });
-  const phone = { id: "phone-harness", hostCommand: { command: "adb", from: "Android platform-tools" } };
-  const docker = { id: "docker" };
-  assert.deepEqual(hostCommandRefusals([phone, docker], [join(dir, "plain"), join(dir, "with")].join(delimiter)), {});
-  assert.deepEqual(hostCommandRefusals([phone, docker], [join(dir, "plain"), join(dir, "nowhere")].join(delimiter)), { "phone-harness": NO_ADB });
-  assert.deepEqual(hostCommandRefusals([phone, docker], undefined), { "phone-harness": NO_ADB }, "no PATH at all has none");
+  const phone = PROVIDERS.find((one) => one.id === "phone-harness");
+  const docker = PROVIDERS.find((one) => one.id === "docker");
+  const on = (path, platform = "linux", arch = "x64") => hostCommandRefusals([phone, docker], path, platform, arch);
+  assert.deepEqual(on([join(dir, "plain"), join(dir, "with")].join(delimiter)), {});
+  assert.deepEqual(on([join(dir, "plain"), join(dir, "nowhere")].join(delimiter)), { "phone-harness": NO_ADB });
+  assert.deepEqual(on(undefined), { "phone-harness": NO_ADB }, "no PATH at all has none");
+  assert.deepEqual(on(join(dir, "nowhere"), "darwin", "arm64"), { "phone-harness": NO_ADB }, "macOS on arm64 has a build: install it");
+  // On arm64 Linux, platform-tools has no build, and AgentRun's arm64 image carries none: the words say what it needs.
+  assert.deepEqual(on(join(dir, "nowhere"), "linux", "arm64"), { "phone-harness": "this server's image has no adb for arm64 (Android platform-tools has no Linux build for arm64): Phone harness needs an x86-64 server" });
+  assert.deepEqual(on(join(dir, "with"), "linux", "arm64"), {}, "an adb found there is used");
+  assert.match(hostCommandWhy("Phone harness", phone.hostCommand, "freebsd", "x64"), /: Phone harness needs a server where Android platform-tools runs \(linux-x64, darwin-x64, darwin-arm64, win32-x64\)$/);
   // The computer package's own registry names adb for the phone, and nothing else.
-  assert.deepEqual(Object.keys(hostCommandRefusals(PROVIDERS, join(dir, "nowhere"))), ["phone-harness"]);
+  assert.deepEqual(Object.keys(hostCommandRefusals(PROVIDERS, join(dir, "nowhere"), "linux", "x64")), ["phone-harness"]);
 
   const sealKey = randomBytes(32);
   const { store } = await storeOn(t);
