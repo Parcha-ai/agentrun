@@ -330,3 +330,21 @@ test("a saved workflow whose JSON spells a bank account number in \\u escapes is
   assert.deepEqual(chosen.map((flow) => flow.name), ["find-policies"]);
   assert.deepEqual(left, ["pay-0", "pay-1"]);
 });
+
+// #2358 review (PRRT_kwDOUmdVMs62F2_2): a draft's workflow.json nested far past any workflow (6,000 arrays, about 12 KB)
+// is refused on its own, in words, and never throws: the decoded scan walks it with a bound, so the run's other items are
+// still checked and kept, and the "never stored" pass over the whole answer reads it without throwing either.
+test("a workflow.json nested 6,000 deep is refused on its own as nesting deeper than the bound, never a throw: the note beside it is kept, and a saved one is never chosen", async () => {
+  const { DRAFT_PATH, README_PATH, readme } = await import("./learn-format-support.mjs");
+  const { DECODED_DEPTH } = await import("../dist/learn/skills.js");
+  const { chooseWorkflows, secretsShown } = await import("../dist/learning.js");
+  const dsl = await import("@parcha/agentrun-dsl");
+  const deep = `${"[".repeat(6000)}${"]".repeat(6000)}`;
+  const changes = [added(NEW, note()), added(DRAFT_PATH, deep), added(README_PATH, readme)];
+  const result = check(changes, { outcome: "completed", dsl, tools: [] });
+  assert.ok(result.problems.some((p) => p.path === DRAFT_PATH && p.detail === `its workflow.json nests deeper than ${DECODED_DEPTH}`), JSON.stringify(result.problems));
+  assert.deepEqual(result.notes.map((one) => one.file), [NEW], "the note beside it is checked and kept");
+  assert.deepEqual(checks.unstorable(changes), [], "nothing in it must never be stored, and reading it throws nothing");
+  const { flows, left } = chooseWorkflows({ sha: null, notes: {}, files: [], skipped: [], workflows: [{ name: "deep", description: "Deep", workflow: deep }] }, secretsShown([]));
+  assert.deepEqual([flows, left], [[], ["deep"]]);
+});
