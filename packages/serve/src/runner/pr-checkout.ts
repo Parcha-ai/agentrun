@@ -95,7 +95,11 @@ export interface PrCheckoutOptions {
   /** GitHub's site, where the repository is fetched from: a test's own (a folder of bare repositories, or a git server
    *  on loopback). Absent, https://github.com. */
   readonly web?: string;
+  /** Ends the fetch at once: the claim's signal, aborted by a person's stop too. The checkout's removal is handed to
+   *  `held` before the fetch starts, so a fetch cut short leaves its folder to the claim's release. */
   readonly signal?: AbortSignal;
+  /** The checkout's removal, given the moment the fetch starts (the spec's holds), so whatever ends the claim removes it. */
+  readonly held?: (part: { end(): Promise<void> }) => void;
   readonly timeoutMs?: number;
 }
 
@@ -145,6 +149,8 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
     return noCheckout(`The pull request ${name} could not be checked out (${why}), so there is no ${CHECKOUT_DIR}/ folder: read the change through the GitHub tools (its diff, and each file at the head sha ${pull.head}).`);
   };
 
+  // From here a folder may exist: its removal is the claim's to run, whatever ends it.
+  options.held?.({ end: removal });
   let result;
   try {
     result = await workspace.exec(
@@ -152,6 +158,7 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
       { env: shellEnv(), stdin: Buffer.from(`${header}\n`, "utf8"), timeoutMs: options.timeoutMs ?? CHECKOUT_MS, ...(options.signal ? { signal: options.signal } : {}) },
     );
   } catch (error) {
+    // Cut short (a stop, a lost claim): the claim's release removes what the fetch made (`held`).
     if (options.signal?.aborted) throw error;
     return failed(`the fetch could not run: ${tail(String((error as Error)?.message ?? error), secrets)}`);
   } finally {
@@ -179,16 +186,18 @@ function checkoutNote(pull: GithubPull, mergeBase: string | undefined): string {
 }
 
 /** The checkout a claim's spec makes (the pi and the CLI spec alike): the server's GitHub App opened as the MCP step opens
- *  it (github-app.ts), its secrets held by the run's redactor `redact`. */
+ *  it (github-app.ts), its secrets held by the run's redactor `redact`, its removal by the spec's holds (`held`) from the
+ *  moment the fetch starts, and `signal` (the claim's, a person's stop included) ending the fetch. */
 export async function prCheckoutForClaim(
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "githubApi" | "githubWeb">,
   workspace: Workspace,
   input: unknown,
   redact: { hold(values: readonly string[]): void },
   signal?: AbortSignal,
+  held?: (part: { end(): Promise<void> }) => void,
 ): Promise<PrCheckout> {
   const access = await githubAppAccess(deps.store, deps.sealKey, input, deps.githubApi ? { api: deps.githubApi } : {});
   const at = access?.api;
   const revoke = async (token: string): Promise<void> => void (at && (await githubCall(at, "/installation/token", { method: "DELETE", jwt: token })));
-  return prCheckout({ workspace, input, ...(access ? { mint: access.mint, revoke } : {}), hold: (secrets) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}) });
+  return prCheckout({ workspace, input, ...(access ? { mint: access.mint, revoke } : {}), hold: (secrets) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) });
 }

@@ -143,6 +143,29 @@ test("a head the repository does not have, and a run no pull request started, ea
   assert.deepEqual(await readdir(folder), []);
 });
 
+test("a fetch cut short by the claim's signal (a person's stop) ends at once and leaves its folder to the removal it handed the claim before it started", { timeout: 60_000 }, async (t) => {
+  const { createServer } = await import("node:http");
+  const dir = await scratch(t);
+  // GitHub that never answers: the fetch waits until the signal ends it.
+  const asked = [];
+  const silent = createServer((req) => asked.push(req));
+  await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
+  t.after(() => { for (const req of asked) req.socket.destroy(); return new Promise((resolve) => silent.close(resolve)); });
+  const { folder, workspace } = await runFolder(dir);
+  const stop = new AbortController();
+  const held = [];
+  const started = Date.now();
+  const made = prCheckout({ workspace, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
+  while (asked.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+  stop.abort(new Error("stopped by a person"));
+  await assert.rejects(made, /stopped by a person/);
+  assert.ok(Date.now() - started < 30_000, "the stop did not wait for the fetch");
+  assert.equal(held.length, 1, "its removal was the claim's before the fetch started");
+  assert.ok((await readdir(folder)).includes(CHECKOUT_DIR), "the cut fetch left its folder");
+  await held[0].end();
+  assert.deepEqual(await readdir(folder), [], "the claim's release removed it");
+});
+
 test("an agent's definition takes checkout pull_request on an agentic revision, none to clear it, and nothing else; its body keeps pull_request alone", async () => {
   const { definitionIssues } = await import("../dist/validate.js");
   const { bodyOf } = await import("../dist/store/agent-body.js");

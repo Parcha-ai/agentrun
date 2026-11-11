@@ -352,8 +352,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
-  // there is none. Removed at the release, after the tools' end.
-  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch.input, cut, run.signal) : undefined;
+  // there is none. Held from the fetch's start, so the release (after the tools' end) removes it however the claim ends; a
+  // person's stop ends the fetch at once (run.stopped).
+  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch.input, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
 
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its

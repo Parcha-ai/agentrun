@@ -204,7 +204,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
   holds.hold({ ws });
   // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts).
-  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch.input, cut, run.signal) : undefined;
+  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch.input, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
   if (launch.files?.length) {
     const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
