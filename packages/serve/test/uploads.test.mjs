@@ -240,8 +240,7 @@ test.skip("a run whose files are still being copied does not start for a message
   assert.equal(await readFile(join(work, "inputs", "notes.txt"), "utf8"), "copied before the start\n");
 });
 
-// SKIP (follow-up #2078): a failed copy does not fail the run as before on the runner
-test.skip("a copy that fails ends the run failed with why, starts no process, and the server keeps serving", async (t) => {
+test("a copy that fails ends the run failed with why, its first turn never sent, and the server keeps serving", async (t) => {
   const server = await serve(t);
   const { api } = server;
   const notes = await upload(server, "notes.txt", Buffer.from("never copied\n"));
@@ -252,12 +251,14 @@ test.skip("a copy that fails ends the run failed with why, starts no process, an
   t.after(() => void (uploadTestHooks.beforeCopy = undefined));
   const run = await api("POST", "/agents/unlucky/runs", { input: { content: "Hello." }, file_ids: [notes.file_id] });
   assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The copy is the runner's, at its claim, before the first turn.
+  const { rows } = await follow(api, run.body.run_id, ["failed"]);
   const read = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.deepEqual([read.status, read.error?.code], ["failed", "run_failed"], JSON.stringify(read));
-  assert.match(read.error.message, /could not be copied into its workspace: no space left on the test's disk/);
-  const dir = join(runDir(server.data, run.body.run_id));
+  assert.match(read.error.message, /^The run's files could not be copied into its workspace: no space left on the test's disk/);
   assert.equal(storeRun(server.data, run.body.run_id)?.state, "failed", "the store has its end");
-  assert.deepEqual([await stat(join(dir, "process.log")).catch(() => null), await stat(join(dir, "launching")).catch(() => null)], [null, null], "no process, and, its end in the store, no launch mark left");
+  assert.deepEqual(rows.filter((r) => ["final_answer", "text_block", "tool_use"].includes(r.kind)), [], "no turn ran");
+  assert.deepEqual(await readdir(join(server.data, "files", ".held")).catch(() => []), [], "and its hold of the file went with it");
   const message = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "Go on." });
   assert.equal(message.status, 409, "a failed run takes no message");
   uploadTestHooks.beforeCopy = undefined;

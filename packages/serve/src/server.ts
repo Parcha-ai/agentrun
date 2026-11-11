@@ -1178,6 +1178,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // temp file found now is a crashed one's.
   const swept = await uploads.sweep();
   if (swept > 0) log?.(logLine("uploads_swept", { removed: swept }));
+  // A run's hold of its files goes at its claim, once they are in its workspace; one that ended before any claim copied
+  // them (cancelled while queued) leaves its hold, which goes here, as does one whose run is gone.
+  for (const runId of await uploads.holders()) {
+    const row = await store.runs.get(runId);
+    if (!row || FINAL_STATES.includes(row.state)) await uploads.release(runId);
+  }
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
@@ -1225,6 +1231,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     told: (error) => told(error),
     runnable,
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
+    files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
     workflowTitle,
     serverSecrets,
