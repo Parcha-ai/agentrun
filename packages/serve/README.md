@@ -1493,8 +1493,13 @@ asked by default.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
-  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
-  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model reads the text blocks and embedded text resources joined (GitHub's `get_file_contents` answers a file as one);
+  past 60,000 characters it reads the answer's first lines, whole, and the rest is filed under the run's
+  `evidence/mcp/<server>/` as lines (JSON laid out a value a line, its indent capped at 32 levels, and filed as
+  written when the layout would pass twice its size and 64 KiB; a line past 10,000 characters broken), the text
+  naming the file and the `read` offset that goes on, so a run with `read` and no shell pages through it. With blocks
+  that are neither (an image, a blob), the whole answer is filed there as JSON and the text says where. On pi, every
+  host tool's answer reaches the model whole within the host's result bound, as each CLI harness is told. A tool's own error (`isError`) reaches the
   model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
   expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
   there"; another failure names the server and the HTTP status, never a header. A stop, or a
@@ -2690,6 +2695,9 @@ stretch, a release that takes longer than 30 s to be confirmed, and the time a r
 session (spent before any process could hold it). A session whose release is never confirmed is billed in full
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
 last charges booked before its process exits.
+
+A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
+AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
 
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:
