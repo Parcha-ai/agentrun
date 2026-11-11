@@ -31,7 +31,7 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: {}, secrets: [], budget: null, triggers: [] };
 
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean };
+type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: string[]; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void> };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; overrides?: Record<string, unknown> }; key: string }[] = [];
@@ -41,6 +41,7 @@ async function open(name?: string, fake: Fake = {}) {
     // A trigger the apply made, read back (GET /triggers/{id}); one the fake doesn't have is a 404.
     getTrigger: async (id: string) => {
       if (fake.stallTriggers) return new Promise(() => {});
+      if (fake.triggersAfter) await fake.triggersAfter;
       if (!fake.triggers?.[id]) throw new ClientError(404, "not_found", `No trigger ${id}.`);
       return fake.triggers[id];
     },
@@ -427,6 +428,21 @@ describe("applying a template", () => {
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
     expect(t.host.querySelector('section[aria-label="Applied"]')!.textContent).toContain(SAYS);
+  });
+
+  // The owner left while Apply read its triggers back: when the read ends, the page they left takes them nowhere.
+  it("an Apply whose trigger read-back ends after the owner left the page never takes them to the agent", async () => {
+    let release!: () => void;
+    const after = new Promise<void>((resolve) => (release = resolve));
+    const t = await open("pr-reviewer", { triggersAfter: after, apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_gone"], warnings: [] }) });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual([]);
+    await act(async () => { root!.unmount(); });
+    root = undefined;
+    release();
+    await t.settle();
+    expect(t.went).toEqual([]);
   });
 
   it("after Apply, a trigger that can't be read back (or isn't a schedule) leaves the agent to open at once", async () => {
