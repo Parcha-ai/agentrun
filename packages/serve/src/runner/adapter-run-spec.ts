@@ -53,7 +53,8 @@ import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig 
 import { piAdapter } from "./adapters/pi.js";
 import { entriesOf } from "./loop.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { runMetrics } from "./metrics.js";
+import { bookedSpend, costIsBooked, runMetrics } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -360,6 +361,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
+    // proxy admits that search's one request (it goes through the session's port: buildToolHost's `models`) and books it
+    // with each search it ran.
+    ...(launch.plane?.web_search === "native" ? { webSearch: true } : {}),
   });
 
   // The gate before a call's intent: the run's revision's tool settings through runGate (approvals "never" turns the one
@@ -517,7 +522,15 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      const { metrics, costUsd: recorded } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      // A run that booked a request the host sent beside pi's (web_search's hosted search, a learned workflow's model node:
+      // metrics.ts costIsBooked) costs its booking, as a CLI run does: every model request and decision at what it was
+      // booked at, its own and the host's, once each. Else its answers' own booked costs.
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      const booked = costIsBooked(all, false);
+      const model = booked ? bookedSpend(all, "model").usd : recorded;
+      const decisions = booked ? bookedSpend(all, "decisions").usd : 0;
+      const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
@@ -666,6 +679,10 @@ export function buildToolHost(opts: {
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,
+    // The run's models for a tool's own request beside the harness's (web_search's hosted search): the session's port,
+    // under a key labelled for the tool, so the request is shaped, priced and booked on the run's one ledger as the
+    // harness's own are (port-models.ts).
+    models: (label) => run.ledger.models(label),
   };
 }
 

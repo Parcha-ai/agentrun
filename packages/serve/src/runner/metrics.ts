@@ -69,9 +69,16 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
 
 /** Whether a run's record carries no cost of its own, so its usage row and its live spend are its booking's: a CLI
  *  harness's record (`cli`), or a workflow's (its model nodes' answers carry pi-ai's $0). A pi run's answers carry their
- *  booking (adapters/pi.ts afterResponse). */
+ *  booking (adapters/pi.ts afterResponse), but not a request the host sent beside them (web_search's hosted search, a
+ *  learned workflow's model node), which no answer of pi's holds: a pi run that booked one costs its booking too. */
 export function costIsBooked(entries: readonly EntryLike[], cli: boolean): boolean {
-  return cli || sessionConversations(entries).has(WORKFLOW_SESSION);
+  return cli || sessionConversations(entries).has(WORKFLOW_SESSION) || hostRequestsBooked(entries);
+}
+
+/** Whether the run's sessions booked a request the host sent beside the harness's own (its `host` label: a tool's own
+ *  request, under a side key the harness never holds). */
+export function hostRequestsBooked(entries: readonly EntryLike[]): boolean {
+  return entries.some((e) => e.kind === RUNNER_RECORDS.request && typeof (e.data as { host?: unknown } | undefined)?.host === "string");
 }
 
 /** What the run has spent as its cap reads it (the kernel's sessionSpendOf over every session's records: a request still

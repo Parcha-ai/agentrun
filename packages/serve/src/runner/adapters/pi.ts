@@ -13,11 +13,12 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
-import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
+import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
+import { HOSTED_SEARCH_ALLOWANCE_TOKENS } from "../../hosted-search.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
@@ -72,6 +73,10 @@ export interface PiAdapterOptions {
    *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
    *  its model from the root's agent, through this session's proxy and its booking. */
   readonly extensions?: readonly Extension[];
+  /** The run's web_search is its provider's own hosted search (its plane resolves it "native", hosted-search.ts): the
+   *  session's policy admits that hosted tool, a request carrying it held at its search allowance, and the proxy prices
+   *  each search the provider reports at its fee, so the search's one request is booked once with its searches. */
+  readonly webSearch?: boolean;
 }
 
 const PROVIDER = "agentrun-session";
@@ -99,13 +104,14 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
+  const price = options.price && options.webSearch ? await withSearches(options.provider.api, options.price) : options.price;
   const proxy = await startModelProxy({
-    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]),
+    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)], options.webSearch === true),
     hooks: io.models,
     model,
     origin: options.provider.origin,
     credential: async () => (await options.provider.credential()) ?? "",
-    ...(options.price ? { price: options.price as never } : {}),
+    ...(price ? { price: price as never } : {}),
     ...(options.provider.headers ? { headers: options.provider.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.redact ? { redact: options.redact } : {}),
@@ -125,19 +131,52 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
  *  every one of pi's tool definitions would be dropped and the model offered none. Every other tool definition is
  *  dropped, and a request that offers the session's tools is the turn's answer request. `auth`: how the provider takes
  *  its credential (default x-api-key). */
-export function piPolicy(model: string, tools: readonly string[], auth?: "bearer" | "x-api-key"): ProviderPolicy {
-  return anthropicPolicy({ model, tools: [], builtins: tools, ...(auth ? { auth } : {}) });
+export function piPolicy(model: string, tools: readonly string[], auth?: "bearer" | "x-api-key", webSearch = false): ProviderPolicy {
+  return anthropicPolicy({ model, tools: [], builtins: tools, ...(auth ? { auth } : {}), ...(webSearch ? { webSearch: true, webSearchAllowance: HOSTED_SEARCH_ALLOWANCE_TOKENS } : {}) });
 }
 
 /** The policy of the session's wire, the one each CLI harness of that wire applies (no fork of either): Anthropic's
  *  Messages as claude-agent's (piPolicy), OpenAI's Responses as codex's, which takes pi's tools as the session's own by
  *  name. Either way every other tool definition is dropped and the request that offers them is the turn's answer
- *  request. */
-export async function policyFor(provider: PiAdapterOptions["provider"], model: string, tools: readonly string[]): Promise<ProviderPolicy> {
-  if (provider.api === "anthropic-messages") return piPolicy(model, tools, provider.auth);
+ *  request. `webSearch`: the run's web_search is the provider's hosted search, whose one tool each wire's policy admits
+ *  as its CLI's own search (claude-agent's on Messages, codex's live search on Responses). */
+export async function policyFor(provider: PiAdapterOptions["provider"], model: string, tools: readonly string[], webSearch = false): Promise<ProviderPolicy> {
+  if (provider.api === "anthropic-messages") return piPolicy(model, tools, provider.auth, webSearch);
   // Loaded when a session of its wire opens, as the runner loads the codex harness.
-  const { codexPolicy } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[] }): ProviderPolicy };
-  return codexPolicy({ model, tools });
+  const { codexPolicy } = (await import("@parcha/agentrun-harness-codex")) as { codexPolicy(options: { model: string; tools: readonly string[]; webSearch?: "live" }): ProviderPolicy };
+  if (!webSearch) return codexPolicy({ model, tools });
+  return searchOnce(codexPolicy({ model, tools, webSearch: "live" }), codexPolicy({ model, tools }));
+}
+
+/** Codex's live-search policy (`live`) as pi's session takes it. The Codex CLI offers its search on every request; pi
+ *  offers it on one request alone, its web_search's hosted search (hosted-search.ts), so two of its rules are pi's here:
+ *  - an answer that shows no search call ran none (0), where codex's reads every answer that does not state its count as
+ *    unknown; one that shows a search call and states no count stays unknown;
+ *  - the hosted search's request has an input bound, its body's (`plain`, the policy with no search) plus the input
+ *    HOSTED_SEARCH_ALLOWANCE_TOKENS allows its at most HOSTED_MAX_USES searches, as claude-agent's policy bounds Claude's
+ *    search, so a capped run holds it and does not refuse it as unmeasured. */
+function searchOnce(live: ProviderPolicy, plain: ProviderPolicy): ProviderPolicy {
+  const offersSearch = (body: Record<string, unknown>) => Array.isArray(body.tools) && body.tools.some((tool) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "web_search");
+  return {
+    ...live,
+    usageOf: (text) => {
+      const usage = live.usageOf(text) as ({ webSearches?: number | null } & object) | undefined;
+      return usage && usage.webSearches === null && !text.includes("web_search_call") ? { ...usage, webSearches: 0 } : usage;
+    },
+    serverInputOverhead: (body) => {
+      if (!offersSearch(body)) return live.serverInputOverhead?.(body);
+      const base = plain.serverInputOverhead?.({ ...body, tools: (body.tools as unknown[]).filter((tool) => !(typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "web_search")) });
+      return base === undefined ? undefined : base + HOSTED_SEARCH_ALLOWANCE_TOKENS;
+    },
+  } as ProviderPolicy;
+}
+
+/** `price` with each web search a response reports added at its provider's fee, as the wire's CLI prices its own search
+ *  (claude-agent's flat fee on Messages, codex's per model on Responses). */
+async function withSearches(api: Wire, price: NonNullable<PiAdapterOptions["price"]>): Promise<NonNullable<PiAdapterOptions["price"]>> {
+  if (api === "anthropic-messages") return withWebSearches(price as never) as never;
+  const codex = (await import("@parcha/agentrun-harness-codex")) as unknown as { withWebSearches(price: unknown): NonNullable<PiAdapterOptions["price"]> };
+  return codex.withWebSearches(price);
 }
 
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
