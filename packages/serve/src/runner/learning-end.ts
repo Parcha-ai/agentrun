@@ -27,11 +27,11 @@ import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";
 import { SKILL_NAME } from "../learn/skills.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
-import { gradeModelOf, PROPOSAL } from "../learning.js";
-import { reflects, type Reflect } from "../learning-run.js";
+import { PROPOSAL } from "../learning.js";
+import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
-import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
@@ -59,8 +59,6 @@ export interface LearningEndDeps {
   /** Every secret the server keeps sealed, read once at the run's end (store-secrets.ts storeSecrets over the store, the
    *  seal key and the data directory), never learned. A throw is a list that can't be read: the run learns nothing. */
   readonly stored?: () => Promise<readonly string[]>;
-  /** The grade model the server names (learning.ts gradeModelOf); none, from `env` as the server reads it. */
-  readonly gradeModel?: string;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -69,7 +67,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const start = learningStartOf(launch);
   if (!start) return undefined;
   const env = deps.env ?? process.env;
-  const gradeModel = deps.gradeModel ?? gradeModelOf(env);
+  // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
+  const gradeModel = start.gradeModel;
   const capUsd = launch.maxCostUsd;
   const hookFor = (runId: string) => createReflectHook({
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
@@ -113,7 +112,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   return async (input) => {
     // A seed that could not be read (no seedNotes, no commit): the server dropped its learning at the start, and the run
     // was never asked to look back.
-    if (start.seed === null && start.seedNotes === undefined) {
+    if (seedFailed(start)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) } } }] };
     }
     return hookFor(input.runId)(input);
