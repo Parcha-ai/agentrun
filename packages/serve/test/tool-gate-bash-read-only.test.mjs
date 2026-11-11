@@ -497,13 +497,13 @@ test("the API: POST /v2/agents keeps bash's policy and GET answers it; the serve
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 
-/** A copy of the code-review package with its manifest's `tools: [read]` line replaced by `lines`, read. */
+/** A copy of the code-review package with its manifest's `tools:` line replaced by `lines`, read. */
 async function packageWith(t, lines) {
   const dir = join(await scratch(t), "code-review");
   mkdirSync(dir, { recursive: true });
   cpSync(REVIEW, dir, { recursive: true });
   const manifest = join(dir, "agent.md");
-  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("tools: [read]", lines));
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace(/^tools: \[.*\]$/m, lines));
   try {
     return { p: readPackage(dir), problems: [] };
   } catch (error) {
