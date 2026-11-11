@@ -17,15 +17,22 @@ const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 // endWaitMs: how long the park's end waits for the steer's held delivery before it writes (and drops that delivery's answer).
 // Only a bound, so short: the steer's row is answered by the park and the resume whatever the wait.
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30, endWaitMs: 1 };
-const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 
 test("pi through the adapter: a steer that reaches the loop as the run parks is taken by the resume, never refused", async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const { tools } = suiteTools();
-  const inner = piAdapterSubject.createLoop({ script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+  // The run's first ask parks only once the steer has entered the original loop's delivery: the steer is in flight, held
+  // before the loop, when the run parks, so the steer meets a loop whose journal is sealed, never a resume that has not
+  // yet started.
+  let steerEntered = () => {};
+  const entered = new Promise((resolve) => (steerEntered = resolve));
+  let askedOnce = false;
+  const hooks = { beforeIntent: async () => {}, beforeResult: async () => { if (!askedOnce) { askedOnce = true; await entered; } } };
+  const inner = piAdapterSubject.createLoop({ script: [{ call: "asked" }, { say: "done" }], tools, hooks });
   let held = false;
+  let loops = 0;
   let parkedNow = () => {};
   const parked = new Promise((resolve) => (parkedNow = resolve));
   const onEvent = (event) => {
@@ -33,12 +40,15 @@ test("pi through the adapter: a steer that reaches the loop as the run parks is 
   };
   const createLoop = (deps) => {
     const loop = inner(deps);
+    const original = ++loops === 1;
     return {
       ...loop,
-      // The first steer is handed over only once the run is released parked: the loop's journal is sealed by then.
+      // The first steer, to the original loop, is handed over only once the run is released parked: the loop's journal is
+      // sealed by then.
       command: async (command) => {
-        if (command.kind === "steer" && !held) {
+        if (command.kind === "steer" && original && !held) {
           held = true;
+          steerEntered();
           await parked;
         }
         return loop.command(command);

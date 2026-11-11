@@ -331,6 +331,8 @@ test("a take-over survives a server restart: it is read from the store, never fr
   const run = await world.start();
   await world.until(world.live, "the desktop is live");
   await world.route("takeOverRunComputer");
+  // The take is the runner's to apply (the route only wrote the command): let the look end only once the hold is pending.
+  await world.until(async () => run.hold.state() === "pending", "the runner applied the take: pending");
   run.letGo();
   await world.until(async () => (await world.hold()) === "person", "the person holds the desktop");
 
