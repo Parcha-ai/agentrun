@@ -406,7 +406,8 @@ export async function installSettled(entry: HarnessInstallEntry, dir: string, pi
   for (;;) {
     if (entry.lacking(dir, pins) === undefined) return "installed";
     const mark = await readMark(dir);
-    if (mark === undefined) return "none";
+    // No mark: an install that landed since the look above (its tree whole, then its mark gone) is installed, not none.
+    if (mark === undefined) return entry.lacking(dir, pins) === undefined ? "installed" : "none";
     if ("failed" in mark) return { failed: mark.failed };
     if (Date.now() - mark.startedAt > timeoutMs || (mark.host === host && !isAlive(mark.pid))) return "none";
     signal?.throwIfAborted();
