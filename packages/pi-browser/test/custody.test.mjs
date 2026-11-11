@@ -398,6 +398,38 @@ function fakeClock() {
   };
 }
 
+test("a read of the answer that fails backs off, doubling, and a read that answers pending starts the short poll again (review)", async (t) => {
+  const clock = fakeClock();
+  // Fails twice, answers pending, fails once more, then the person's answer.
+  const reads = ["throw", "throw", "pending", "throw", "done"];
+  const polled = [];
+  const handoff = {
+    request: async (ask) => ({ interactionId: `int-${ask.requestId}` }),
+    outcome: async () => {
+      polled.push(clock.time);
+      const read = reads.shift() ?? "done";
+      if (read === "throw") throw new Error("the host could not be read");
+      return read;
+    },
+  };
+  const { root, ctx, settled } = await inProcess(t, { handoff }, {}, ["browser_read", ["browser_request_handoff", ASK]], clock);
+  const turn = await root.submit({ type: "input", content: "go" }, ctx);
+  let ended = false;
+  const done = turn.wait(ctx).then(() => (ended = true));
+  const real = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let i = 0; i < 400 && polled.length === 0; i += 1) await real(25);
+  // The clock moves 100 ms at a time, each step's poll seen before the next.
+  for (let step = 0; step < 100 && !ended && polled.length < 5; step += 1) {
+    const seen = polled.length;
+    clock.advance(100);
+    for (let i = 0; i < 20 && polled.length === seen; i += 1) await real(5);
+  }
+  await Promise.race([done, real(5_000)]);
+  assert.equal(ended, true, "the answer reached the agent");
+  assert.deepEqual(polled.slice(1).map((at, i) => at - polled[i]), [500, 1_000, 500, 500], "after a failed read 500 ms, after two 1,000 ms; after pending 500 ms again, and after the next failed read 500 ms");
+  await settled();
+});
+
 test("a hand-back resumes the agent within one poll of the person's answer, however long the wait was: 40 s in, at most HANDOFF_POLL_MS more", async (t) => {
   const { HANDOFF_POLL_MS } = await import("@parcha/pi-browser/durable");
   assert.equal(HANDOFF_POLL_MS, 500);
