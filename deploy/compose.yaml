@@ -29,7 +29,16 @@ x-agentrun-env: &agentrun-env
 
 # A runner: the same image with `runner --data /data --name <name>` as its command. It never sets the store up, so it
 # starts once the server is healthy, and a runner that still finds a store it does not know (exit 3) is started again.
-# On SIGTERM it hands its runs back at once and gives up a stuck loop at 25 s, inside the 35 s it is given.
+# On SIGTERM it claims nothing more and lets each busy run finish its turn for up to its drain (--drain-timeout, else
+# AGENTRUN_DRAIN_TIMEOUT, else 6 s), then hands the rest back and gives up a stuck loop 25 s after that: 31 s in all,
+# inside the 35 s it is given.
+# Each runner claims runs by the memory it has, each run weighed by its harness (a claude-agent run 288 MB, a pi run
+# 128 MB), and reads that memory from its container's limit. Without a limit every runner reads the whole host's and
+# budgets all of it, so two runners on one host could take twice what it holds. Each gets 2 GB here (runs then hold
+# 1920 MB: six claude-agent runs or fifteen pi runs at once, the rest wait queued); set AGENTRUN_RUNNER_MEMORY in .env
+# (512m, 4g, ...) so that the runners' limits together, with room left for the server, fit the host. A run whose
+# harness never fits a runner's limit (an opencode run, 704 MB, under 512m) fails at that runner's claim, in words, and
+# never starts there.
 x-runner: &runner
   image: ${AGENTRUN_IMAGE:-ghcr.io/parcha-ai/agentrun-server:beta}
   volumes:
@@ -39,6 +48,7 @@ x-runner: &runner
       condition: service_healthy
   restart: on-failure
   stop_grace_period: 35s
+  mem_limit: ${AGENTRUN_RUNNER_MEMORY:-2g}
 
 # A runner's health: its heartbeat (runner-<name>.alive in /data) is younger than 20 s. `runner --check` reads no store
 # and needs no secret, so it runs with an empty environment: the seal key the container was given stays out of it.
