@@ -1,7 +1,8 @@
 // One local browser's supervisor: a detached Node process of its own per browser (local.ts starts it), so the browser
 // outlives neither its deadline nor its release, whatever becomes of the process that made it. It reads the browser's
-// directory (browser.json), starts the browser's egress proxy (docker/egress-proxy.ts, with no list: every public host
-// and nothing else) on a Unix socket in that directory, with a relay on an ephemeral loopback port in front of it
+// directory (browser.json), starts the browser's egress proxy (docker/egress-proxy.ts: with no list, every public host
+// and nothing else; with the record's list, only its hosts, public ones still) on a Unix socket in that directory, with
+// a relay on an ephemeral loopback port in front of it
 // (Chrome takes a proxy over TCP alone; the relay passes each connection to the socket unread, the proxy decides), then
 // starts Chrome behind that fence (chrome.ts chromeFence) with a fresh profile in the directory and a debugging port
 // Chrome picks on 127.0.0.1. Once Chrome's DevTools socket answers it writes state.json and one line on stdout, which
@@ -56,6 +57,8 @@ export interface BrowserRecord {
 	executablePath: string;
 	/** Every argument but the fence, the profile, the debugging port and the page: CHROME_FLAGS, headless, the window. */
 	args: string[];
+	/** The spec's allowlist (parseAllow's), when its network is one: the proxy reaches only these hosts. Absent: open. */
+	allow?: string[];
 }
 
 /** What the supervisor writes in state.json. */
@@ -107,6 +110,7 @@ export async function supervise(dir: string, out: (line: SupervisorLine) => void
 		socketPath: join(dir, EGRESS_SOCKET_FILE),
 		maxTunnels: BROWSER_MAX_TUNNELS,
 		maxConnections: BROWSER_MAX_CONNECTIONS,
+		...(record.allow ? { allow: record.allow } : {}),
 		log: (line) => {
 			if (logged > EGRESS_LOG_BYTES) return;
 			logged += line.length + 1;

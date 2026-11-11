@@ -464,6 +464,24 @@ test("startRun inserts a queued run and its launch body with the run's cap", asy
   assert.deepEqual(launch.model, { provider: "anthropic", modelId: "claude" });
 });
 
+// A run's effort is its own (the start body's), else its revision's thinking, else the host's AGENT_THINKING: the level its
+// harness thinks at, its guidance and its metrics name. A saved setting is never dropped; nothing saved, no effort.
+test("startRun's effort: the run's own, else its revision's thinking, else the host's AGENT_THINKING; none of them, none", async () => {
+  const effortOf = async (body, { thinking, env = {} } = {}) => {
+    const store = await freshStore();
+    const revision = revisionOf(thinking ? { thinking } : {});
+    const deps = startDeps({ pinnedOf: async () => ({ revision, version: 1 }), planeEnv: () => env });
+    const run = await startRun(store, deps, { ...entryOf(), revision }, { input: { content: "hi" }, ...body });
+    return readLaunchBody((await store.runs.launch(run.id)).body).effort;
+  };
+  assert.equal(await effortOf({ effort: "low" }, { thinking: "high", env: { AGENT_THINKING: "max" } }), "low", "the run's own wins");
+  assert.equal(await effortOf({}, { thinking: "high", env: { AGENT_THINKING: "max" } }), "high", "else its revision's thinking");
+  assert.equal(await effortOf({}, { env: { AGENT_THINKING: "xhigh" } }), "xhigh", "else the host's AGENT_THINKING");
+  assert.equal(await effortOf({}, { env: { AGENT_THINKING: " high " } }), undefined, "a host setting that names no level exactly is no effort");
+  assert.equal(await effortOf({}, { env: { AGENT_THINKING: "off" } }), undefined, "nor is off: thinking is never off");
+  assert.equal(await effortOf({}), undefined, "none of them: none");
+});
+
 test("startRun names the run's ready files in its launch, in order, for the runner to copy", async () => {
   const store = await freshStore();
   const seen = [];
