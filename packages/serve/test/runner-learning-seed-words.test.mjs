@@ -8,10 +8,11 @@ import { test } from "node:test";
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { said, STOPPED } = await import("../dist/learning-words.js");
 
-/** The end-of-run step's answer for a run launched with `learning`, which fails at its start: what it keeps. */
-async function endOf(learning) {
+/** The end-of-run step's answer for a run launched with `learning`, which fails at its start: what it keeps. `asked`
+ *  collects every end-of-run turn it asks (none: the run started from no seed, so it is asked nothing). */
+async function endOf(learning, asked = []) {
   const end = learningEndOfRun({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }, { store: {}, data: "/nonexistent", env: {} });
-  return (await end({ runId: "run-1", agentId: "agent-1", outcome: "completed" })).also[0].row.proposal;
+  return (await end({ runId: "run-1", agentId: "agent-1", outcome: "completed", ask: async (prompt) => (asked.push(prompt), { ended: true, answer: "No notes." }) })).also[0].row.proposal;
 }
 
 test("a learning folder that could not be read at the start: dropped seed_failed, in main's could-not-be-read words", async () => {
@@ -24,4 +25,11 @@ test("a start that could not be made from the seed it read: dropped seed_failed,
   const proposal = await endOf({ given: [], seed: null, section: "", seedFailed: "not_copied" });
   assert.deepEqual(proposal, { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) });
   assert.match(proposal.detail, /could not be copied/);
+});
+
+test("a start with no seed and no reason is asked nothing: no model request, dropped seed_failed, in words that name no reason", async () => {
+  const asked = [];
+  const proposal = await endOf({ given: [], seed: null, section: "" }, asked);
+  assert.deepEqual(asked, [], "no end-of-run turn");
+  assert.deepEqual(proposal, { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.noSeed) });
 });
