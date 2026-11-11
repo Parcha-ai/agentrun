@@ -734,6 +734,31 @@ test("a DELETE whose secret removal fails has dropped the pending messages first
   assert.deepEqual((await store.settings.get(OUTBOX_SETTING)).messages.filter((m) => m.status === "pending"), [], "and nothing of the old one goes to it");
 });
 
+test("a notice told while a DELETE is under way is never queued: once the DELETE has answered, nothing of the removed webhook is left to send", async (t) => {
+  const hook = await receiver(t, () => 503);
+  const store = await storeIn(t, await scratch(t));
+  // The DELETE's drop of the pending messages held in its outbox write, so a notice comes while it is under way.
+  let removing = false;
+  let reachedDrop;
+  const atDrop = new Promise((resolve) => (reachedDrop = resolve));
+  let letDrop;
+  const dropped = new Promise((resolve) => (letDrop = resolve));
+  const webhooks = await webhooksSeeing(t, store, writesThrough(store, async (key) => {
+    if (key === OUTBOX_SETTING && removing) (reachedDrop(), await dropped);
+  }), randomBytes(32), [60_000]);
+  await webhooks.save({ url: hook.url });
+  removing = true;
+  const removed = webhooks.remove();
+  await atDrop;
+  const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, "m-late");
+  letDrop();
+  await removed;
+  removing = false;
+  assert.equal(await told, "off", "told while the webhook was being removed: nothing to send it to");
+  const pending = ((await store.settings.get(OUTBOX_SETTING))?.messages ?? []).filter((m) => m.status === "pending");
+  assert.deepEqual(pending.map((m) => m.id), [], "no message of the removed webhook is left to send");
+});
+
 test("a PUT that makes a new secret for a webhook whose secret no longer opens, and fails to write the webhook, shows none and keeps none: the next PUT makes one and shows it", async (t) => {
   const hook = await receiver(t);
   const store = await storeIn(t, await scratch(t));

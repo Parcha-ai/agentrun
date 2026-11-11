@@ -128,6 +128,8 @@ export class Webhooks {
   /** What reads the webhook and then writes it (a PUT, a DELETE, a try's 410 that turns it off), one after another: each
    *  reads it as the last one left it, so a 410 never turns off a webhook a PUT set again meanwhile. */
   private changing: Promise<unknown> = Promise.resolve();
+  /** A DELETE under way: no notice is queued meanwhile, so none slips past its drop of the pending messages. */
+  private removing = false;
   /** The messages with a try in flight, by id, and how many: kept in the outbox until each lands, so one whose earlier
    *  attempts left the log meanwhile can still be redelivered. */
   private readonly sending = new Map<string, number>();
@@ -192,11 +194,17 @@ export class Webhooks {
   remove(): Promise<void> {
     return this.change(async () => {
       if (this.config()) {
-        // Its pending messages fail first: whatever fails after, none of them is sent, to this receiver or a later one.
-        await this.drop("the webhook was removed");
-        await this.store.settings.remove(WEBHOOK_SETTING);
-        await this.store.flush();
-        this.current = undefined;
+        // Shut to new notices first, then its pending messages fail: whatever fails after, none of them is sent, to this
+        // receiver or a later one, and none told meanwhile is queued.
+        this.removing = true;
+        try {
+          await this.drop("the webhook was removed");
+          await this.store.settings.remove(WEBHOOK_SETTING);
+          await this.store.flush();
+          this.current = undefined;
+        } finally {
+          this.removing = false;
+        }
       }
       // Its secret goes last, and on every DELETE (a no-op once gone): a removal of it that failed is finished by the
       // next DELETE, which finds no webhook.
@@ -223,7 +231,7 @@ export class Webhooks {
     // The waits told, this one newest; the oldest go past WAITS_KEPT.
     const waits = [...(seen?.waits ?? []), marker].slice(-WAITS_KEPT);
     const config = this.config();
-    if (!config || config.disabled) {
+    if (!config || config.disabled || this.removing) {
       // A wait seen while nothing is to be sent is noted here, never written for it: told again, it writes nothing.
       if (!ends) this.notices[run.run_id] = { waits };
       return "off";
@@ -245,7 +253,7 @@ export class Webhooks {
   async emitTrigger(failed: TriggerFailed, firingKey: string): Promise<Emitted> {
     if (this.closed) return "closed";
     const config = this.config();
-    if (!config || config.disabled) return "off";
+    if (!config || config.disabled || this.removing) return "off";
     const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
     if (this.messages.some((m) => m.id === id)) return this.landed();
     const { message, saved } = this.enqueue(id, "trigger.failed", failed);
