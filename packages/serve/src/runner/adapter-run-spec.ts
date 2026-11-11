@@ -598,14 +598,18 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      // Its cost is its booking's, as a CLI run's is (metrics.ts bookedSpend, the one reader): every model request its
+      // session's proxy booked, pi's own answers and its side calls (a learned workflow's nodes, web_search's hosted search
+      // with its fee) alike, and its decisions. A request a cancel or a stop cut while it streamed is booked at no known cost
+      // (the provider may bill what it streamed), so the run's cost is unknown, never the $0 its cut answer carries.
+      const all = (await journalEntries(deps.journal(claim), context)) as never;
+      const model = bookedSpend(all, "model").usd;
+      const decisions = bookedSpend(all, "decisions").usd;
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
-      // So are its side calls (a learned workflow's nodes, web_search's hosted search with its fee): booked in its session,
-      // carried by none of pi's answers (metrics.ts bookedSpend "side").
-      const side = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "side");
-      const total = costUsd === null || paid === null || side.usd === null ? null : costUsd + paid + side.usd;
+      const total = model === null || decisions === null || paid === null ? null : model + decisions + paid;
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
