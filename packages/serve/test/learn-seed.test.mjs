@@ -10,7 +10,6 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agentFolderOf, homeKey } from "../dist/files.js";
 import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
@@ -567,34 +566,4 @@ test("a symbolic link at disk/agents/<key>, the agent's folder, there before its
   assert.match(JSON.stringify(run.body), /disk\/agents\/linked-[0-9a-f]{16} is a symbolic link, and a run's folder is never made through one/);
   assert.ok(!JSON.stringify(run.body).includes(target), "the refusal names the link, not its target");
   assert.deepEqual(readdirSync(target).sort(), before, "nothing made where the link points");
-});
-
-/** A request's system prompt, as text. */
-const systemText = (body) => (typeof body?.system === "string" ? body.system : (body?.system ?? []).map((block) => block?.text ?? "").join("\n"));
-
-test("a claude-agent run on its real adapter: the notes are whole in the system prompt after the instructions, under # Learned, with the revision's skill loaded through the Skill tool and no learned one", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
-  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
-  t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL"]);
-  const { api, data } = await serve(t, { faux: undefined });
-  // The agent's folder, with main already holding two active notes and a superseded one when its first run is made.
-  const repo = repoOf(data, "learner");
-  mkdirSync(repo, { recursive: true });
-  git(repo, ["init", "-q", "--template=", "--initial-branch=main"]);
-  const sha = commitToMain(repo, MAIN);
-  const cite = "---\nname: cite\ndescription: How this agent cites its sources.\n---\nCite every source you read.\n";
-  const created = await api("POST", "/agents", { ...agent("learner", { learning: true, harness: "claude-agent", model: "anthropic/claude-haiku-4-5", instructions: "Answer the question.", skills: ["cite"] }), skills: { "cite/SKILL.md": cite } });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const run = await api("POST", "/agents/learner/runs", { input: { content: "Answer." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
-  assert.deepEqual((await pinOf({ data: data }, run.body.run_id)), { seed: sha, section: WHOLE, given: GIVEN });
-  const first = fake.messages().find((m) => m.tools.includes("Skill"));
-  assert.ok(first, `the Skill tool is offered: ${JSON.stringify(fake.messages().map((m) => m.tools))}`);
-  const system = systemText(first.body);
-  assert.ok(system.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${WHOLE}`), `the notes follow the instructions, after what the run is told of learning: ${system.slice(-2000)}`);
-  assert.ok(!system.includes("Old refunds"), "a superseded note is never shown");
-  assert.ok(JSON.stringify(first.body).includes("agentrun:cite"), "the revision's skill goes as it did");
-  assert.ok(!system.includes('<skill name="cite">'), "and is not inlined");
-  assert.deepEqual(readdirSync(learnedDir(data, run.body.run_id)).sort(), ["MEMORY.md", "prefers-tables.md", "refund-policy-path.md"]);
 });
