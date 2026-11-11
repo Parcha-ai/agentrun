@@ -101,7 +101,9 @@ function proxyCapRefusal(errorMessage: unknown): boolean {
   const at = errorMessage.indexOf("{");
   if (at < 0) return false;
   const head = errorMessage.slice(0, at);
-  if (!/^\d{3}\s*$/.test(head) && !/^[\w.-]+ API error \(\d{3}\):\s*$/.test(head)) return false;
+  // The provider's name is any word with no space (agentrun-session today; a route's own, such as openrouter/anthropic):
+  // the body's fields, never the name, say whose refusal it is.
+  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return false;
   try {
     const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } } | null;
     const error = body?.error ?? body;
