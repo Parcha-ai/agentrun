@@ -275,7 +275,8 @@ test("a retired workflow draft with a judge node is restored when the server has
     input: { schemaId: "In" }, output: { schemaId: "Check", path: "check" },
     root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check" }] },
   });
-  const README = "---\nname: claim-check\ndescription: Checks whether a claim is right\nstatus: retired\n---\n";
+  // Retired while active (#2316: a restore gives back the status its retire recorded, else waits for the owner's OK).
+  const README = "---\nname: claim-check\ndescription: Checks whether a claim is right\nstatus: retired\nretired_from: active\n---\n";
   const { api, cookie, origin, restore } = await keeper(t, { "workflows/claim-check/workflow.json": JUDGE, "workflows/claim-check/README.md": README }, {}, undefined, { TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX_JEV: new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname });
   const restored = await restore("workflows/claim-check/README.md", { ...json, cookie, origin });
   assert.equal(restored.status, 200, restored.text);
