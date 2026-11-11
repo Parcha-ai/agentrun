@@ -263,7 +263,27 @@ export interface ClaudeCodeHarnessOptions {
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** The host's gate (SessionIO.gate), asked by the tool bridge about each call of `tools` before its intent. */
   gate?: (call: GateCall) => Promise<GateAnswer>;
+  /** The clock a user turn's day is read from (dateLine). Default the system's. */
+  now?: () => Date;
 }
+
+/**
+ * The line a user turn starts with when the session's model was not yet told its day: today's date, in UTC.
+ *
+ * The CLI records a session's system prompt at its first request and every resume sends that record, so a date the
+ * host put there (serve's environment line) stays the first day's. Re-rendering it (`snapshot: false`) records nothing
+ * and drops the prompt-cache prefix, so the day rides in the turn instead: the first message sent on a day the model has
+ * not been told carries this line, in the CLI's transcript only (the host's log keeps the person's words). The
+ * session's first launch sends no line on its first day: its fresh system prompt is the one recorded.
+ */
+export function dateLine(now: Date): string {
+  return `Today is ${dayOf(now)} (UTC).`;
+}
+
+const dayOf = (now: Date) => now.toISOString().slice(0, 10);
+
+/** The effect a user message that told its model the day is recorded under (`date:<message uuid>`, input `{ day }`). */
+const DATE_EFFECT = 'date';
 
 /** The default model. */
 export const DEFAULT_MODEL = 'claude-sonnet-4-5';
@@ -723,6 +743,15 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
         // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
         const recovered = recoverySystemNote(ctx.state());
+        // The day this drive's system prompt names, while the CLI holds no record of the session: its first launch's
+        // prompt is fresh, and the first launch with snapshot on records its own (a first launch that recovers records
+        // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
+        // never recorded: every other day reaches the model in its turn (dateLine).
+        const now = options.now ?? (() => new Date());
+        const recordedDay = !store.hasSession ? dayOf(now()) : undefined;
+        /** A message the CLI's transcript holds told the model `day`. */
+        const told = (day: string) =>
+          ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
@@ -795,6 +824,14 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           const uuid = !first ? randomUUID() : how.synthetic ? uuidFrom(`note:${first}`) : uuidFrom(first);
           // A recovery message carries placed prompts' words: which, under its uuid, before it goes (lostPrompts reads it).
           if (how.covers?.length) await ctx.effect(`covers:${uuid}`, { name: 'covers', replay: 'safe', input: { ids: how.covers } }, async () => true);
+          // The first message on a day the model was not told carries that day (dateLine), the session's recorded first
+          // day aside. Recorded under the message's uuid: the day counts as told once the transcript holds the message.
+          const at = now();
+          const day = dayOf(at);
+          if (!told(day)) {
+            if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
+            await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
+          }
           outstanding.add(uuid);
           input.push({
             type: 'user',

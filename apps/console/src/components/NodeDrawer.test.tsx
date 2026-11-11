@@ -63,3 +63,36 @@ describe("NodeDrawer, a model node's model", () => {
     expect(header("/root/steps/1")).toBe("extract · gpt-5-4-mini");
   });
 });
+
+// An MCP server's tool in a call node (`tool: "mcp:<server>/<tool>"`): the drawer's header and its tool call card read
+// "<tool> on <server>" with an MCP mark, as the graph's card does, never the raw key; any other tool reads as before.
+describe("NodeDrawer, an MCP call node", () => {
+  const workflow = { v: 2, name: "t", root: { node: "call", label: "file the bug", via: "tool", tool: "mcp:linear/create_issue", args: {}, out: "Out", as: "issue" } };
+  const graph = workflowGraph(workflow);
+  const run = (tool: string): RunGraph => ({
+    run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:00:02Z" },
+    workflow: tool === "web_fetch" ? { ...workflow, root: { ...workflow.root, tool } } : workflow, graph, decisions: [], effects: [effect({ node: "/root", tool, output: { id: "ISS-1" } })],
+    totals: { cost_usd: null, decisions: 0, effects: 1, elapsed_ms: 2000 }, nodes: { "/root": { status: "done" } },
+  });
+  const drawer = (tool: string) => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(<NodeDrawer data={run(tool)} selected={{ path: "/root", item: null }} onSelect={() => {}} onClose={() => {}} fileUrl={(r) => r} />);
+    return host;
+  };
+  it("its header and its tool call read <tool> on <server>, each with an MCP mark, never the raw mcp: key", () => {
+    const h = drawer("mcp:linear/create_issue");
+    expect(h.querySelector("header p")?.textContent).toContain("call · create_issue on linear");
+    expect([...h.querySelectorAll("[data-mcp]")].map((x) => x.textContent)).toEqual(["MCP", "MCP"]);
+    const card = h.querySelector("section header")!;
+    expect(card.textContent).toContain("create_issue on linear");
+    // The raw key stays where the node's JSON is shown as written (its Definition), and nowhere a person reads it as a name.
+    for (const named of [h.querySelector("header")!, card]) expect(named.textContent).not.toContain("mcp:linear/create_issue");
+    expect(card.querySelector("[title]")?.getAttribute("title")).toBe("mcp:linear/create_issue");
+  });
+  it("another tool reads as before: its name, no MCP mark", () => {
+    const h = drawer("web_fetch");
+    expect(h.querySelector("header p")?.textContent).toContain("call · web_fetch");
+    expect(h.querySelector("section header")?.textContent).toContain("web_fetch");
+    expect(h.querySelectorAll("[data-mcp]")).toHaveLength(0);
+  });
+});

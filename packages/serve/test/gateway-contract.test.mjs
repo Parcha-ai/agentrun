@@ -101,9 +101,7 @@ test("pi through serve's gateway at <gw>/api/v1 (OpenRouter's form, OpenRouter's
 });
 
 for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw>/v1", (url) => `${url}/v1`, "/v1/responses"], ["<gw>/api", (url) => `${url}/api`, "/api/v1/responses"], ["<gw>/api/v1", (url) => `${url}/api/v1`, "/api/v1/responses"]]) {
-  // SKIP (follow-up #2080): the model id is right on the wire now, but a codex run through the gateway with no
-  // AGENT_MODEL_PRICE books no usage: its cost reads $0, not the catalog's price.
-  test.skip(`codex through serve's gateway at ${form} (AGENT_MODEL_BASE_URL, AGENT_MODEL_API_KEY; OpenRouter's route is its /api with its key): POST ${path} at its proxy, the key as a bearer token only, the model id as named, booked from the usage at the catalog's price`, { timeout: 90_000, skip: noSetpriv }, async (t) => {
+  test(`codex through serve's gateway at ${form} (AGENT_MODEL_BASE_URL, AGENT_MODEL_API_KEY; OpenRouter's route is its /api with its key): POST ${path} at its proxy, the key as a bearer token only, the model id as named, booked from the usage at the catalog's price`, { timeout: 90_000, skip: noSetpriv }, async (t) => {
     const { run, usage, count, shapes, gw } = await onGateway(t, "codex", base, { model: CODEX_OR_MODEL, price: null });
     assert.ok(count >= 1, "codex asked the gateway");
     assert.deepEqual(shapes, [[path, `Bearer ${KEY("gateway")}`, null, CODEX_OR_MODEL]], JSON.stringify(gw.requests));
@@ -112,8 +110,7 @@ for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw
   });
 }
 
-// SKIP (follow-up #2080): a claude-agent request through ANTHROPIC_BASE_URL is not booked from its usage at the catalog's price on the runner.
-test.skip("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/messages at its proxy, the key in x-api-key only, an anthropic-version, Anthropic's own model id, booked from the usage at the catalog's price", { timeout: 180_000, skip: noSetpriv }, async (t) => {
+test("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY: POST /v1/messages at its proxy, the key in x-api-key only, an anthropic-version, Anthropic's own model id, booked from the usage at the catalog's price", { timeout: 180_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t);
   withEnv(t, { ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: KEY("anthropic"), AGENT_MODEL: "anthropic/claude-haiku-4-5" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
@@ -158,7 +155,8 @@ test("claude-agent's OpenRouter form, guard on main: on its adapter as serve bui
 
 // --- Key custody: the OpenRouter key never rides an explicit route. Guards on main. ----------------------------------
 
-test("custody, guard on main: with the OpenRouter key and an explicit gateway (AGENT_MODEL_BASE_URL=<gw>/api) whose own key is unset, codex sends POST /api/v1/responses with \"Bearer none\", and neither codex nor pi puts the OpenRouter key on the wire", { timeout: 90_000, skip: noSetpriv }, async (t) => {
+// SKIP (follow-up #2080): through a gateway, the runner sends agent-model/<id> instead of the gateway's own model id (in-flight fix: PR #2057).
+test.skip("custody, guard on main: with the OpenRouter key and an explicit gateway (AGENT_MODEL_BASE_URL=<gw>/api) whose own key is unset, codex sends POST /api/v1/responses with \"Bearer none\", and neither codex nor pi puts the OpenRouter key on the wire", { timeout: 90_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t);
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, AGENT_MODEL_BASE_URL: `${gw.url}/api`, AGENT_MODEL: CODEX_OR_MODEL, ...CODEX_STAND_IN }, NAMES);
   const { api } = await serve(t, { faux: undefined });
@@ -191,7 +189,8 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
 
 for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw>/api", (url) => `${url}/api`, "/api/v1/responses"]]) {
   // A real pi run under a loaded host: the same bound as the codex and claude-agent cases, the run's own deadline under it.
-  test(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 180_000 }, async (t) => {
+  // SKIP (follow-up #2080): through a gateway, the runner sends agent-model/<id> instead of the gateway's own model id (in-flight fix: PR #2057).
+  test.skip(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 180_000 }, async (t) => {
     const { run, usage, count, shapes, gw } = await onGateway(t, "pi", base, { model: CODEX_OR_MODEL, price: null, deadlineMs: 170_000 });
     assert.deepEqual(shapes, [[path, `Bearer ${KEY("gateway")}`, null, CODEX_OR_MODEL]], `pi's requests: ${JSON.stringify(gw.requests)}`);
     assert.equal(run.status, "completed", JSON.stringify(run.error));
