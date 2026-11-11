@@ -22,8 +22,8 @@ const { checkProposal } = await import("../dist/learn/check.js");
 const { keptOf, mergeChangeOf, NOTE_NAME_IN_RUN, NOTE_NAME_TAKEN, takenOnMain } = await import("../dist/runner/learning-loop.js");
 const { SAME_NOTE, wordsOf } = await import("../dist/learning-words.js");
 const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
-const { learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
-const { learningCommit, mainTexts } = await import("../dist/learn/commit.js");
+const { folderTestHooks, learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
+const { learningCommit, mainTexts, mergedAt } = await import("../dist/learn/commit.js");
 const { CAPS } = await import("../dist/learn/check.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalEntries } = await import("../dist/runner/journal-reader.js");
@@ -534,4 +534,28 @@ test("a resumed merge reads each note as its own commit saved it: a person's edi
   assert.equal(learning.state, "merged", JSON.stringify(learning));
   assert.deepEqual(learning.learned.map(({ file }) => file), [NOTE.file], JSON.stringify(learning));
   assert.equal(words, "Learned: Retries");
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62GnoZ, P1): a resume reads the kept notes alone at the run's merge commit, one read of
+// those paths, never the whole folder and its history: a big folder never keeps a resume parked.
+test("a resume reads only the kept notes' paths at the run's merge commit, never the whole folder or its log", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-merged-at-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const many = Array.from({ length: 60 }, (_, i) => ({ path: `other-${i}.md`, text: noteNamed(`other-${i}`, `Other ${i}`, `Other rule number ${i}.`).text }));
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-old", reason: "many", graded: {}, files: many })).ok, true);
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "first attempt", graded: {}, files: [{ path: NOTE.file, text: NOTE.text }] })).ok, true);
+    const ops = [];
+    folderTestHooks.exec = (argv) => ops.push(argv.slice(2));
+    t.after(() => void (folderTestHooks.exec = undefined));
+    const merge = await mergedAt(folder.workspace, "run-1", [NOTE.file, "not-there.md"]);
+    assert.deepEqual(Object.keys(merge.texts), [NOTE.file]);
+    assert.match(merge.texts[NOTE.file], /Retry a flaky fetch twice\./);
+    assert.equal(ops.some(([op]) => op === "read"), false, `no whole-folder read: ${JSON.stringify(ops)}`);
+    assert.ok(ops.length <= 1, `one read of the asked paths: ${JSON.stringify(ops)}`);
+  } finally {
+    await folder.end();
+  }
 });
