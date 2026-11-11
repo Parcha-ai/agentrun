@@ -32,7 +32,7 @@ test("on claude-agent's real adapter, with no tool of its own, the end-of-run tu
       // The grader: one call with no tools, on the agent's own model, which keeps both notes.
       if (r.text.includes("Answer with one JSON object and nothing else")) {
         graded += 1;
-        return { text: JSON.stringify({ merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", keep: true, why: "It holds as a general rule." }, { file: "cite-sources.md", keep: true, why: "It holds as a general rule." }] }) };
+        return { text: JSON.stringify({ merge: true, reason: "Each note is general and new.", items: [{ file: "check-units.md", decision: "keep", why: "It holds as a general rule." }, { file: "cite-sources.md", decision: "keep", why: "It holds as a general rule." }] }) };
       }
       cwd ??= CWD.exec(JSON.stringify(r.body))?.[1];
       // The end-of-run turn: its message asks for the notes, and the answer holds them.

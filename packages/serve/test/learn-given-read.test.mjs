@@ -15,13 +15,13 @@ const seedOf = (notes, index) => ({ sha: "a".repeat(40), notes, files: Object.ke
 
 test("given: a run whose notes all fit its budget is given each one whole, and the pin names them", () => {
   const seed = seedOf({ "units.md": note({ name: "Check units" }), "tables.md": note({ name: "Answer in tables" }) });
-  assert.deepEqual(learning.givenOf(seed, { budget: 8000, read: true, shown }).map(({ file, name }) => [file, name]).sort(), [["tables.md", "Answer in tables"], ["units.md", "Check units"]]);
+  assert.deepEqual(learning.learnedParts(seed, { budget: 8000, read: true, shown }).given.map(({ file, name }) => [file, name]).sort(), [["tables.md", "Answer in tables"], ["units.md", "Check units"]]);
 });
 
 test("given: past the budget, the notes given whole and those its index names are given; a note in neither is not", () => {
   const big = note({ name: "Big", body: `${"x".repeat(3000)}\n` });
   const seed = seedOf({ "units.md": note({ name: "Check units" }), "big.md": big, "other.md": note({ name: "Other", body: `${"y".repeat(3000)}\n` }) }, "- [Check units](units.md) — units\n- [Big](big.md) — big\n");
-  const given = learning.givenOf(seed, { budget: 900, read: true, shown }).map(({ file }) => file).sort();
+  const given = learning.learnedParts(seed, { budget: 900, read: true, shown }).given.map(({ file }) => file).sort();
   assert.deepEqual(given, ["big.md", "units.md"], JSON.stringify(given));
 });
 
@@ -64,7 +64,7 @@ test("the contract: a run's learning has given and read of its notes (whether it
 test("given: an index line a person edited to name two notes, neither of which fits whole, gives the run both", () => {
   const big = (name, fill) => note({ name, body: `${fill.repeat(3000)}\n` });
   const seed = seedOf({ "units.md": big("Check units", "u"), "tables.md": big("Answer in tables", "t") }, "- [Check units](units.md) and [Answer in tables](tables.md) — both\n");
-  const given = learning.givenOf(seed, { budget: 900, read: true, shown }).map(({ file }) => file).sort();
+  const given = learning.learnedParts(seed, { budget: 900, read: true, shown }).given.map(({ file }) => file).sort();
   assert.deepEqual(given, ["tables.md", "units.md"], JSON.stringify(given));
 });
 

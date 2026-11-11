@@ -121,6 +121,9 @@ export const said = {
     return dropped ? `${base}${base.endsWith(".") ? "" : "."} ${dropped}` : base;
   },
   empty: "Nothing new to remember from this run.",
+  /** A run whose only work was its learned workflows, each answering, with nothing said after its first message: it was
+   *  not asked to look back (runner/learning-end.ts onlyLearnedWorkflows). */
+  onlyWorkflow: "Nothing new: the run only ran a learned workflow.",
   /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
   retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
@@ -146,7 +149,7 @@ export const said = {
 /** The reasons learn/grade.ts' parseVerdict gives of its own, never the grader's: an answer it could not read, and one
  *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
  *  did not keep every note). Found by asking it, so they follow it. */
-const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
+const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","decision":"drop","why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","decision":"drop","why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","decision":"drop","why":"w"},{"file":"a.md","decision":"drop","why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
 /** The skill or the workflow draft at `file` as a person names it ("the skill X", "the workflow Y"), or undefined for a
  *  note's file or a draft's README.md. */
 const learnedWords = (file: string): string | undefined => {
