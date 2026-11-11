@@ -396,7 +396,7 @@ export function startRunner(options: RunnerOptions): Runner {
    * so it throws EndNotWithdrawn and the run is left as it stands, not final, its stop untaken (endRefused retries it). A
    * lost claim (Fenced) writes neither.
    */
-  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[]) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn") => {
     // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
     const data = { ...given, summary: redact(given.summary) };
     // Unknown means it may withdraw: false only once the journal was read and no call of it waits.
@@ -414,7 +414,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A stopped end withdraws every call still waiting for its answer (an ask with no answer), in this commit: the
       // approval card of a run whose loop could not start reads answered, never waiting for good.
       if (data.state === "stopped" && root) {
-        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString());
+        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString(), withdrawnAs);
         mayWithdraw = withdrawn.length > 0;
         for (const answer of withdrawn) {
           const answerId = (await journal.mintId()) as unknown as EntryId;
@@ -437,7 +437,7 @@ export function startRunner(options: RunnerOptions): Runner {
    *  call and the journal would not take it or could not be read: the refusal is then the run's (endRefused). */
   const endStopped = async (claim: Claim, stop: Command): Promise<boolean> => {
     try {
-      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id]);
+      await endRun(claim, { state: "stopped", summary: endedBy(stop.kind === "cancel") }, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn");
       return true;
     } catch (error) {
       if (!(error instanceof EndNotWithdrawn)) throw error;

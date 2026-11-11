@@ -12,6 +12,9 @@ import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 export const KINDS = {
   /** A tool call about to run: written before it runs (and before the flush that precedes a side effect). */
   callStart: "agentrun.call.start",
+  /** A call whose start was written at its park (CallStartData.parked) is about to be sent: committed and flushed before
+   *  the send, once. Only a parked call with this mark may have been sent; one without it never left. */
+  callSent: "agentrun.call.sent",
   /** How it ended: written after it ran, or by recovery for a start with no end (replay-safe reruns and ends done;
    *  any other ends interrupted, and the model is told). */
   callEnd: "agentrun.call.end",
@@ -127,6 +130,9 @@ export interface CallStartData {
   readonly input: unknown;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
   readonly replaySafe: boolean;
+  /** Written as the call reached its gate through a CLI's own MCP client, before any answer: nothing is sent until its
+   *  agentrun.call.sent mark (KINDS.callSent). */
+  readonly parked?: true;
   /** When it was written (ms, the loop's clock): the Timeline dates the call's row by it. */
   readonly at?: number;
 }
@@ -180,13 +186,13 @@ export interface AskData {
   readonly price?: ApprovalPrice | null;
 }
 
-/** How an ask was answered: approved, denied, or withdrawn (a stop or cancel while the call waited). */
-export type AnswerDecision = "allow" | "deny" | "withdrawn";
+/** How an ask was answered: approved, denied, withdrawn (a stop while the call waited) or canceled (a cancel). */
+export type AnswerDecision = "allow" | "deny" | "withdrawn" | "canceled";
 
 export interface AnswerData {
   readonly callId: string;
   readonly approved: boolean;
-  /** allow, deny, or withdrawn: main's resolved entry. Optional for an answer written before it. */
+  /** allow, deny, withdrawn or canceled: main's resolved entry. Optional for an answer written before it. */
   readonly decision?: AnswerDecision;
   /** When it was answered (ISO), from the loop's clock (or the runner's, for an end it writes itself). */
   readonly answeredAt?: string;
@@ -216,8 +222,9 @@ function finished(entries: readonly { readonly kind: string; readonly data?: unk
 /** The withdrawn answers a stopped end writes in `entries`: for every call still waiting (an ask with no answer), and
  *  for every approved call that had not finished (no result, or one its abort wrote), which the stop overrides, keeping
  *  the allow it was given (main's supersede: an answer the run had not acted on to the end is withdrawn by the stop). A
- *  call that finished before the stop keeps its allow and its result. */
-export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], answeredAt: string): AnswerData[] {
+ *  call that finished before the stop keeps its allow and its result. `decision`: "canceled" for a cancel's end, whose
+ *  calls read cancelled with their run; "withdrawn" for a stop's. */
+export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], answeredAt: string, decision: "withdrawn" | "canceled" = "withdrawn"): AnswerData[] {
   const answers = new Map<string, AnswerData>();
   for (const entry of entries) if (entry.kind === KINDS.answer) answers.set((entry.data as AnswerData).callId, entry.data as AnswerData);
   const out: AnswerData[] = [];
@@ -228,9 +235,9 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
     if (seen.has(callId)) continue;
     seen.add(callId);
     const given = answers.get(callId);
-    if (!given) out.push({ callId, approved: false, decision: "withdrawn", answeredAt });
-    else if (given.approved && given.decision !== "withdrawn" && !finished(entries, callId)) {
-      out.push({ callId, approved: false, decision: "withdrawn", answeredAt, superseded: { decision: "allow", ...(given.answeredAt ? { answeredAt: given.answeredAt } : {}) } });
+    if (!given) out.push({ callId, approved: false, decision, answeredAt });
+    else if (given.approved && given.decision !== "withdrawn" && given.decision !== "canceled" && !finished(entries, callId)) {
+      out.push({ callId, approved: false, decision, answeredAt, superseded: { decision: "allow", ...(given.answeredAt ? { answeredAt: given.answeredAt } : {}) } });
     }
   }
   return out;
@@ -255,3 +262,6 @@ export interface SessionKeyData {
   /** The conversation whose entries are this session's resume log. */
   readonly conversation: number;
 }
+
+/** The session a workflow's model requests are booked under, in its run's journal. */
+export const WORKFLOW_SESSION = "workflow";
