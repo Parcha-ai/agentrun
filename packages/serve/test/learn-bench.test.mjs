@@ -86,3 +86,41 @@ test("the summary: one table row per series, and a refused series said as stoppe
   assert.equal(text.split("\n").filter((line) => line.startsWith("| j |")).length, 2);
   assert.match(text, /SERIES STOPPED: starting the run: 409/);
 });
+
+// The review's four: the bench's deadline caps every wait and starts no grader past it; a known $0 stays $0 and only a
+// run that booked no request reads unknown; the active and pending items follow the notes' pages.
+const bench = await import("../scripts/learn-bench.mjs");
+
+test("a wait ends at the earlier of the run's timeout and the bench's deadline", () => {
+  const now = 1_000_000;
+  assert.equal(bench.waitUntil({ runTimeoutMs: 900_000, deadline: now + 60_000 }, now), now + 60_000);
+  assert.equal(bench.waitUntil({ runTimeoutMs: 30_000, deadline: now + 60_000 }, now), now + 30_000);
+});
+
+test("no grader run starts past the bench's deadline", async () => {
+  const calls = [];
+  const api = async (method, path) => (calls.push(`${method} ${path}`), { status: 500, body: null, headers: new Headers() });
+  const verdict = await bench.gradeLlm({ api, options: { deadline: Date.now() - 1, runTimeoutMs: 1000 } }, "rubric");
+  assert.deepEqual([verdict.pass, verdict.cost_usd, calls], [false, null, []]);
+  assert.match(verdict.reason, /deadline/);
+});
+
+test("a known $0 stays $0; only a completed run that booked no request reads unknown", () => {
+  const view = (usd, status = "completed") => ({ status, cost: { usd } });
+  assert.deepEqual(bench.runCost(view(0), { usd: 0, requests: 2 }, { requests: 2 }), { total: 0, unpriced: false }, "priced at zero");
+  assert.deepEqual(bench.runCost(view(0), null, null), { total: null, unpriced: true }, "no request booked");
+  assert.deepEqual(bench.runCost(view(null), null, null), { total: null, unpriced: false }, "the server's own unknown");
+  assert.deepEqual(bench.runCost(view(0.002), { usd: 0.002, requests: 1 }, { requests: 1 }), { total: 0.002, unpriced: false });
+});
+
+test("the active and pending items follow the notes' pages", async () => {
+  const note = (i, status) => ({ file: `n${i}.md`, status, text: `note ${i}` });
+  const api = async (method, path) => {
+    if (path.endsWith("/learning")) return { status: 200, body: { notes: { items: [note(1, "active")], next_cursor: "c2" }, skills: [], workflows: [] }, headers: new Headers() };
+    if (path.includes("/learning/notes?cursor=c2")) return { status: 200, body: { items: [note(2, "pending"), note(3, "active")], next_cursor: null }, headers: new Headers() };
+    return { status: 404, body: null, headers: new Headers() };
+  };
+  const got = await bench.activeOf(api, "a");
+  assert.deepEqual(Object.keys(got.notes).sort(), ["n1.md", "n3.md"]);
+  assert.deepEqual(got.pending, ["n2.md"]);
+});
