@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { inspect } from "node:util";
 import { AgentRun, AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunTimeout, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage } from "../dist/index.js";
 import { JSON_HEADERS, listener } from "./helpers.mjs";
+import { pause } from "../dist/http.js";
 import { scrubberOf, secretsOf } from "../dist/scrub.js";
 
 const KEY = `test-key-${randomBytes(12).toString("hex")}`;
@@ -313,6 +314,19 @@ test("runs.follow waits out a gateway's Retry-After before it reconnects", async
   for await (const p of client.runs.follow("r1")) pages.push(p);
   assert.deepEqual(pages, [done]);
   assert.ok(at[1] - at[0] >= 1000, `it waited the gateway's second: ${at[1] - at[0]} ms`);
+});
+
+test("a pause waits its whole time by the wall clock, even when its timer fires a millisecond early", async (t) => {
+  // The wall clock as the pause reads it: its start, then a timer that fired 1 ms short, then the time reached.
+  const reads = [10_000, 10_029, 10_030];
+  const seen = [];
+  t.mock.method(Date, "now", () => {
+    const now = reads[Math.min(seen.length, reads.length - 1)];
+    seen.push(now);
+    return now;
+  });
+  await pause(30);
+  assert.deepEqual(seen, reads, "the early timer read 1 ms left and waited it out, then read the time reached");
 });
 
 test("a caller's abort while a refusal's body is still coming is the caller's abort, never a refusal or a bad key", async (t) => {
