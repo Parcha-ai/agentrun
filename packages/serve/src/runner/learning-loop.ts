@@ -142,6 +142,9 @@ export type CheckedAnswer = { readonly state: "proposed"; readonly proposal: Kep
  *  checks and the hold left out, the notes that stay active, what its ask spent, and `beside`, the other side of each
  *  pair the proposal writes one side of, as main holds it (the grader compares the two, and grades neither). */
 type ConsolidationData = { readonly proposal: KeptProposal; readonly left: readonly Problem[]; readonly stayActive: readonly string[]; readonly usd: number | null; readonly beside?: readonly NoteText[] };
+/** A consolidation run's paid ask as it returned (journal-kinds.ts learningConsolidationAsked): its answer's text, what it
+ *  spent (null when unknown), and the main (`seed`) it was asked on. */
+type ConsolidationAskedData = { readonly text: string; readonly usd: number | null; readonly tokens?: Tokens | null; readonly seed: string };
 
 const ROOT = ROOT_CONVERSATION_ID;
 
@@ -580,8 +583,10 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           const entries = await journalEntries(journal, context);
           rooted = entries.length > 0;
           let made = entries.find((entry) => entry.kind === KINDS.learningConsolidation)?.data as ConsolidationData | undefined;
+          // Its paid ask, as it returned on an earlier claim: reused, never asked again.
+          const saved = entries.find((entry) => entry.kind === KINDS.learningConsolidationAsked)?.data as ConsolidationAskedData | undefined;
           const graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
-          asked = made ? made.usd : 0;
+          asked = made ? made.usd : saved ? saved.usd : 0;
           spend = graded ? plus(asked, graded.usd) : asked;
           const nothing = async (detail: string, problems?: readonly Problem[]): Promise<LoopEnd> => {
             await append(KINDS.learningDropped, { source: who.runId, reason: problems?.length ? "checker" : "empty", detail: problems?.length ? said.checker(problems as never) : detail, ...(problems?.length ? { problems } : {}) } satisfies DroppedData, "ended");
@@ -639,21 +644,31 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               clusters: clusters.map((cluster) => cluster.map((note) => ({ file: note.file, text: texts.get(note.file)!, ...counts(note.file) }))),
               pairs: asking,
             });
-            let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
-            try {
-              answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS)]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
-            } catch {
-              // A cut request may have been billed: its cost is unknown before a pending stop ends the run on it.
-              asked = null;
-              spend = null;
-              const end = await halted();
-              if (end) return end;
-              await append(KINDS.learningDropped, { source: who.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: null, tokens: null } satisfies DroppedData, "ended");
-              return { state: "ended" };
+            // The paid ask, once a run: an earlier claim's answer (saved as it returned) is reused, on the main it was asked
+            // on, so a runner that went down after the request never asks or bills it again.
+            let reply: ConsolidationAskedData;
+            if (saved) reply = saved;
+            else {
+              let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
+              try {
+                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS)]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+              } catch {
+                // A cut request may have been billed: its cost is unknown before a pending stop ends the run on it.
+                asked = null;
+                spend = null;
+                const end = await halted();
+                if (end) return end;
+                await append(KINDS.learningDropped, { source: who.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: null, tokens: null } satisfies DroppedData, "ended");
+                return { state: "ended" };
+              }
+              reply = { text: typeof answer.text === "string" ? answer.text : "", usd: answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd, ...(answer.tokens !== undefined ? { tokens: answer.tokens } : {}), seed: main.seed };
+              // Saved, with what it spent, before anything that can be cut: durable before its checks.
+              await append(KINDS.learningConsolidationAsked, reply);
+              await deps.flush();
             }
-            asked = answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd;
+            asked = reply.usd;
             spend = asked;
-            const checked = await consolidating.checkAnswer(ws, { seed: main.seed, answer: typeof answer.text === "string" ? answer.text : "", ...(job.tools ? { tools: job.tools } : {}) });
+            const checked = await consolidating.checkAnswer(ws, { seed: reply.seed, answer: reply.text, ...(job.tools ? { tools: job.tools } : {}) });
             if (checked.state !== "proposed") return nothing(checked.reason === "empty" ? said.empty : (checked.detail ?? said.empty), checked.problems);
             // Held to what it was asked (the code check behind the grader's question): each note supersedes only notes of
             // one cluster, and a skill or a draft is one of a pair out of step. A cluster note no kept note supersedes stays.
@@ -663,7 +678,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             });
             const held = heldToClusters(replacements, checked.proposal.files ?? [], clusters.map((cluster) => cluster.map(({ file }) => file)), asking.map(({ skill, workflow }) => ({ skill: skill.name, workflow: workflow.name })));
             const keptFiles = new Set(held.files);
-            let proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: main.seed };
+            let proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: reply.seed };
             const left = [...leftOut, ...(checked.left ?? []), ...held.problems];
             if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
             // A pair the answer wrote one side of (the other given back unchanged, which the checks take out): the other
@@ -691,7 +706,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               }
             }
             if (files.length !== (proposal.files ?? []).length) {
-              proposal = { notes: proposal.notes, ...(files.length ? { files } : {}), seed: main.seed };
+              proposal = { notes: proposal.notes, ...(files.length ? { files } : {}), seed: reply.seed };
               if (!proposal.notes.length && !files.length) return nothing(said.stale(left as never), left);
             }
             const beside = [...companions.values()];
