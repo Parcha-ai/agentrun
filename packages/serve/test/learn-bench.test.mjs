@@ -252,7 +252,7 @@ test("a cost the server could not price stops the bench: a grade that failed aft
   };
   assert.equal(await bench.spentOf(api(0)), 0.6, "every cost known");
   assert.equal(await bench.spentOf(api(1)), null, "one unknown: the spend is not known");
-  assert.match(bench.capStop(null, 0.1, 10, "05"), /could not be priced .*--max-usd 10 could not be held before step 05/);
+  assert.match(bench.capStop(null, 0.1, 10, "05"), /could not be priced.*--max-usd 10 could not be held before step 05/);
 });
 
 test("a bench stopped at its cap exits 3, as learn-eval does", async () => {
