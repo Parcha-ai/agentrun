@@ -371,3 +371,35 @@ test("a companion the grader read beside the rewrite that changes on main before
   assert.ok(dropped.problems.some((p) => p.path === "skills/find-policies/SKILL.md"), JSON.stringify(dropped.problems));
   assert.equal(snapshot.log[0].by.run, "run-later", "the draft was not written");
 });
+
+/** The rubric's consolidation rule, as the grader's prompt holds it. */
+const CONSOLIDATION_RULE = /Consolidation: a new note that supersedes several active notes replaces them\. Keep it only when it keeps every rule/;
+/** A strict grader: it applies the consolidation rule when its prompt holds it, dropping as Contradicts a note that
+ *  supersedes several and changes a rule (every new note here does); else it keeps every item. */
+const strictGrader = (prompt) => {
+  if (!CONSOLIDATION_RULE.test(prompt)) return graderAnswer(prompt);
+  const files = /for each of these files, each once, and for no other: (.*)\.\n/.exec(prompt)[1].split(", ");
+  return JSON.stringify({ merge: false, reason: "It changes a rule.", items: files.map((file) => ({ file, decision: "drop", question: "Contradicts", why: "It changes a rule of the notes it replaces." })) });
+};
+
+test("an ordinary run's note that supersedes two old notes with an updated rule is graded without the consolidation rule, and kept: an owner's correction replaces the outdated guidance", async (t) => {
+  const w = await world(t, { "invoice-0.md": FILES["invoice-0.md"], "invoice-1.md": FILES["invoice-1.md"] });
+  const updated = note("invoice rule", "Match invoice totals to the ledger, now within one cent", "Match each invoice total to its ledger entry within one cent before reconciling.\n", "supersedes: [invoice-0.md, invoice-1.md]\norigin: you\n");
+  w.clock.now += 1000;
+  await w.store.runs.create({ id: "run-fix", agentId: "agent-1", revisionId: "rev-1" });
+  const claim = await w.store.claim("run-fix", "runner-a", { leaseMs: 60_000 });
+  await w.store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "proposed", proposal: { notes: [{ file: "invoice-rule.md", text: updated }] } } } }, { table: "learning_run", row: { id: "run-fix-learning" } }] });
+  const learningClaim = await w.store.claim("run-fix-learning", "runner-b", { leaseMs: 60_000 });
+  const asks = [];
+  const loop = learningLoopFactory({ refuse: async () => [], store: w.store, data: w.data, now: () => w.clock.now, ask: async ({ prompt }) => (asks.push(prompt), { text: strictGrader(prompt), usd: 0 }) })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
+  assert.deepEqual(await loop.start(learningClaim), { state: "ended" });
+  assert.doesNotMatch(asks[0], CONSOLIDATION_RULE, "a run's grade holds no consolidation rule");
+  const status = statusOf(await w.onFolder((ws) => readSnapshot(ws)));
+  assert.deepEqual([status["invoice-rule.md"], status["invoice-0.md"], status["invoice-1.md"]], ["active", "superseded:invoice-rule.md", "superseded:invoice-rule.md"], JSON.stringify(status));
+});
+
+test("a consolidation's grade holds the consolidation rule: a replacement must keep every rule of the notes it supersedes", async (t) => {
+  const w = await world(t);
+  const { asks } = await consolidate(w, replaceAsked);
+  assert.match(asks[1], CONSOLIDATION_RULE);
+});
