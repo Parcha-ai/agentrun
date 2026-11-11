@@ -2,8 +2,7 @@
 // reserves (a claude-agent run 288 MiB, a pi run 128), and the runner claims a waiting run only while the runs it holds
 // and that run fit its budget. A run that does not fit waits queued, and so does every run behind it (oldest first, so a
 // heavy run is never passed over for ever by light ones). A run heavier than the whole budget is claimed when the runner
-// holds nothing, so it is never stuck; one whose harness never fits the runner's memory at all (RunnerMemory.refuses) is
-// failed in words, never started. The budget and the weights are a test's: no memory is allocated. Each loop holds
+// holds nothing, so it is never stuck. The budget and the weights are a test's: no memory is allocated. Each loop holds
 // its turn until the test lets it end, and "nothing more is claimed" is read across the runner's own polls (onBeat).
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -60,13 +59,13 @@ function heldTurns() {
   return { loops, createLoop, most: () => most };
 }
 
-async function memoryRunner(t, budgetMib, ids, refuses) {
+async function memoryRunner(t, budgetMib, ids) {
   const { server, runners: [store] } = await stores();
   for (const id of ids) await queue(server, id);
   const turns = heldTurns();
   const events = [];
   let beats = 0;
-  const runner = startRunner({ store: observed(store, recorder()), createLoop: turns.createLoop, name: "runner-a", loops: 10, memory: { budgetMib, weigh, ...(refuses ? { refuses } : {}) }, onEvent: (event) => events.push(event), onBeat: () => void beats++, ...TIMING });
+  const runner = startRunner({ store: observed(store, recorder()), createLoop: turns.createLoop, name: "runner-a", loops: 10, memory: { budgetMib, weigh }, onEvent: (event) => events.push(event), onBeat: () => void beats++, ...TIMING });
   t.after(() => {
     for (const loop of turns.loops.values()) loop.finishTurn();
     return runner.close();
@@ -78,9 +77,8 @@ async function memoryRunner(t, budgetMib, ids, refuses) {
   };
   const held = () => runner.held().map((claim) => claim.runId).sort();
   const state = async (id) => (await server.runs.get(id)).state;
-  const summary = async (id) => (await server.runs.get(id)).summary;
   const released = (id) => until(() => events.some((event) => event.type === "released" && event.runId === id), `${id} released`);
-  return { turns, polls, held, state, summary, released, events };
+  return { turns, polls, held, state, released };
 }
 
 test("a 400 MiB budget holds one claude-agent run: the next heavy run waits queued, and the light run behind it waits too, though it would fit", async (t) => {
@@ -124,18 +122,6 @@ test("a run heavier than the whole budget is claimed when the runner holds nothi
   await until(() => turns.loops.has("run-2"), "the next claimed once it ended");
 });
 
-test("a run the runner's memory can never hold (its harness never fits here) is failed in the memory's words, never started or held, and the runs behind it are claimed", async (t) => {
-  const WHY = "This server has 512 MB of memory and keeps 128 MB for itself; an opencode run needs about 704 MB more, so it can't start here.";
-  const { turns, polls, held, state, summary, released, events } = await memoryRunner(t, 384, ["run-1-huge", "run-2-heavy", "run-3"], (id) => (id.includes("huge") ? WHY : undefined));
-  await released("run-1-huge");
-  await until(() => turns.loops.has("run-2-heavy") && turns.loops.has("run-3"), "the runs behind it claimed");
-  await polls();
-  assert.equal(turns.loops.has("run-1-huge"), false, "no loop was made for it: nothing of it ran on this runner");
-  assert.deepEqual(held(), ["run-2-heavy", "run-3"], "it holds no place and weighs nothing: 288 + 128 fit the 384");
-  assert.deepEqual([await state("run-1-huge"), await summary("run-1-huge")], ["failed", WHY]);
-  assert.deepEqual(events.filter((event) => event.type === "released" && event.runId === "run-1-huge").map((event) => event.end), ["failed"]);
-});
-
 test("the weights and the budget a runner claims by (memory-claim.ts): each run by the harness its launch names, of the host's memory less the server's", async () => {
   const { runnerMemory, claimMibOf } = await import("../dist/runner/memory-claim.js");
   const { server } = await stores();
@@ -157,17 +143,6 @@ test("the weights and the budget a runner claims by (memory-claim.ts): each run 
   // by weight the budget holds 6.
   assert.equal(Math.floor(memory.budgetMib / 128), 15);
   assert.equal(Math.floor(memory.budgetMib / 288), 6);
-  assert.deepEqual(["run-claude", "run-opencode", "run-pi"].map((id) => memory.refuses(id)), [undefined, undefined, undefined], "on 2 GB every harness fits");
-  // A runner in a 512 MB container (384 MiB for runs): an opencode run never fits, in the server's admission's words
-  // (host.ts neverFits); a claude-agent run does; a pi run always has one place, even on 200 MB.
-  const small = runnerMemory(server, 512 * MiB);
-  await small.weigh(["run-claude", "run-opencode", "run-pi", "run-learning", "run-no-launch"]);
-  assert.equal(small.refuses("run-opencode"), "This server has 512 MB of memory and keeps 128 MB for itself; an opencode run needs about 704 MB more, so it can't start here. pi, claude-agent and codex runs fit.");
-  assert.deepEqual(["run-claude", "run-pi", "run-learning", "run-no-launch"].map((id) => small.refuses(id)), [undefined, undefined, undefined, undefined]);
-  const tiny = runnerMemory(server, 200 * MiB);
-  await tiny.weigh(["run-pi", "run-claude"]);
-  assert.equal(tiny.refuses("run-pi"), undefined, "pi always has one place");
-  assert.match(tiny.refuses("run-claude"), /^This server has 200 MB of memory .*a claude-agent run needs about 288 MB more/);
 });
 
 test("a claim that throws after others landed keeps those: the runs already claimed start, and the one that threw is claimed at a later poll", async (t) => {

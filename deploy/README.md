@@ -98,8 +98,8 @@ the whole host's memory and budget all of it, so two runners on one host could t
 `AGENTRUN_RUNNER_MEMORY` in `.env` (`1g`, `4g`, ...) so the runners' limits together, with room for the server, fit
 the host: about 5 GB for the default two. `docker compose logs runner-1` shows the budget each runner read
 (`Runner runner-1 memory: 1920 MiB for runs, ...`). A run whose harness never fits a runner's limit (an opencode run,
-704 MB, under `512m`) is never started there: the runner ends it failed, saying how much memory it needs. An opencode
-run needs a limit of at least 832 MB (its 704 and the runner's own 128); a claude-agent run 416 MB.
+704 MB, under `512m`) is never started there: the runner fails it at its claim, saying how much memory it needs. An
+opencode run needs a limit of at least 832 MB (its 704 and the runner's own 128); a claude-agent run 416 MB.
 
 **More runners.** Copy the `runner-2` service as `runner-3` and so on, with its own `--name` and the same name in its
 health check. Every runner on SQLite must mount the same `agentrun-data` volume, so all of them run on this

@@ -37,8 +37,8 @@ x-agentrun-env: &agentrun-env
 # budgets all of it, so two runners on one host could take twice what it holds. Each gets 2 GB here (runs then hold
 # 1920 MB: six claude-agent runs or fifteen pi runs at once, the rest wait queued); set AGENTRUN_RUNNER_MEMORY in .env
 # (512m, 4g, ...) so that the runners' limits together, with room left for the server, fit the host. A run whose
-# harness never fits a runner's limit (an opencode run, 704 MB, under 512m) is failed by the runner, in words, never
-# started there.
+# harness never fits a runner's limit (an opencode run, 704 MB, under 512m) fails at that runner's claim, in words, and
+# never starts there.
 x-runner: &runner
   image: ${AGENTRUN_IMAGE:-ghcr.io/parcha-ai/agentrun-server:beta}
   volumes:
