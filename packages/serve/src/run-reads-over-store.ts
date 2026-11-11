@@ -186,7 +186,8 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
   async function once(store: Store, runId: string, after: number, limit: number): Promise<TimelinePage> {
     // The view first, then the rows, never both at once: the journal only grows, so the rows read after the view hold
     // every entry its status was read from. Read together, a message committed between the two reads gave a page that
-    // said working before the message row it works on (#2307). The rows may run ahead of the status, never behind it.
+    // said working before the message row it works on (#2307), or a waiting status with its parked call's row still
+    // missing. The rows may run ahead of the status, never behind it.
     const view = await deps.runView(store, runId);
     if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
     const rows = await deps.timelineRows(store, runId, deps.context);

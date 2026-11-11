@@ -56,14 +56,8 @@ export function neverFits(harness: string, memory: number): string | undefined {
   return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))} more, so it can't start here. ${listed(fit)} runs fit.`;
 }
 
-/** Why a run of `harness` cannot start now, with `heldMib` of the memory for runs held: the memory runs hold, in words. */
-export function memoryFull(harness: string, memory: number, heldMib: number): string {
-  const free = Math.max(0, runsMemoryMib(memory) - heldMib);
-  return `This server's memory is held by the runs it has going: ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))}, and ${sizeOf(free)} of the ${sizeOf(runsMemoryMib(memory))} it has for runs is free; start this one when another ends.`;
-}
-
-/** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. The
- *  memory each run reserves is checked beside it (runs.ts): both apply. */
+/** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. A runner
+ *  holds at most this many; a run past it waits queued, never refused for a place. */
 export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
   const value = given ?? (env.AGENTRUN_MAX_RUNS ? Number(env.AGENTRUN_MAX_RUNS) : defaultMaxRuns(hostMemory()));
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`max runs is a positive integer (--max-runs, AGENTRUN_MAX_RUNS), not ${given ?? env.AGENTRUN_MAX_RUNS}`);
