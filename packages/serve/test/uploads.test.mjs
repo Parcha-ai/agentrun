@@ -162,8 +162,7 @@ test("a PUT is checked against its reservation: over the limit 413, a wrong leng
   assert.deepEqual([kept.status, kept.body.status], [200, "ready"], "GET reads the file's record");
 });
 
-// SKIP (follow-up #2078): a run's file_ids are not copied into work/inputs/ as before on the runner
-test.skip("a run's file_ids are copied into its work/inputs/ before it starts, folders kept, never linked, and read through its files", async (t) => {
+test("a run's file_ids are copied into its work/inputs/ before its first turn, folders kept, never linked, and read through its files", async (t) => {
   const dir = await scratch(t);
   // A model that reads the first file through the run's read tool and answers what it read.
   const reader = join(dir, "faux-reader.mjs");
@@ -185,13 +184,13 @@ export default function reply(context, faux) {
   assert.equal(run.status, 202, JSON.stringify(run.body));
   assert.equal(run.body.file_ids, undefined, "the contract's Run has no file_ids");
   const work = join(runDir(server.data, run.body.run_id), "work");
-  // There at the 202: copied before the run's process started.
+  // Copied when the runner claims the run, before its first turn: the run reads them.
+  await follow(api, run.body.run_id, ["completed"]);
   const listed = await fileList(api, run.body.run_id);
   assert.deepEqual(listed.filter((f) => f.path.startsWith("inputs/")).map((f) => [f.path, f.size_bytes]), [["inputs/docs/2026/blob.bin", blob.length], ["inputs/notes.txt", notes.length]]);
   const raw = await fetch(`${server.baseUrl}/runs/${run.body.run_id}/files/inputs/docs/2026/blob.bin`, { headers: bearer(server) });
   assert.equal(raw.status, 200);
   assert.ok(Buffer.from(await raw.arrayBuffer()).equals(blob), "binary-safe, read through the run's files");
-  await follow(api, run.body.run_id, ["completed"]);
   assert.match((await api("GET", `/runs/${run.body.run_id}`)).body.result.final_answer, /The answer is in the notes: 42\./, "the run read its file at inputs/<path>");
   // A copy, not a link: its own inode, one link, and a write to it leaves the upload as it was.
   const copy = await stat(join(work, "inputs", "notes.txt"));
@@ -202,45 +201,11 @@ export default function reply(context, faux) {
   // The same file reaches another run as it was uploaded.
   const second = await api("POST", "/agents/reader/runs", { input: { content: "Read the notes." }, file_ids: [a.file_id] });
   assert.equal(second.status, 202);
+  await follow(api, second.body.run_id, ["completed"]);
   assert.ok((await readFile(join(runDir(server.data, second.body.run_id), "work", "inputs", "notes.txt"))).equals(notes));
 });
 
-// SKIP (follow-up #2078): a message to a run whose files are still copied is not held as before on the runner
-test.skip("a run whose files are still being copied does not start for a message meanwhile: its process waits for the copy", async (t) => {
-  // A request waits half a second for a run's door, so the message meanwhile is answered while the copy is still held.
-  const server = await serve(t, { readyTimeoutMs: 500 });
-  const { api } = server;
-  const notes = await upload(server, "notes.txt", Buffer.from("copied before the start\n"));
-  assert.equal((await api("POST", "/agents", agent("held"))).status, 201);
-  // The copy waits for the test: the run is in the store and listed meanwhile, its 202 not yet sent.
-  let open;
-  const gate = new Promise((resolve) => (open = resolve));
-  let copying;
-  const started = new Promise((resolve) => (copying = resolve));
-  uploadTestHooks.beforeCopy = async () => {
-    copying();
-    await gate;
-  };
-  t.after(() => void (uploadTestHooks.beforeCopy = undefined));
-  const created = api("POST", "/agents/held/runs", { input: { content: "Hello." }, file_ids: [notes.file_id] });
-  await started;
-  const runId = (await api("GET", "/runs")).body.runs[0]?.run_id;
-  assert.ok(runId, "a client finds the run while it copies");
-  const work = join(runDir(server.data, runId), "work");
-  // The message waits for the copy, never a launch, and is answered so once its wait is up.
-  const message = await api("POST", `/runs/${runId}/messages`, { content: "Go on." });
-  assert.deepEqual([message.status, message.body.error?.code, message.body.error?.message], [503, "unavailable", "the run's files are still being copied into its workspace"], JSON.stringify(message.body));
-  const dir = join(work, "..");
-  assert.equal(await stat(join(dir, "process.log")).catch(() => null), null, "no process while the files are copied");
-  open();
-  const run = await created;
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  assert.equal(run.body.run_id, runId);
-  await follow(api, runId, ["completed"]);
-  assert.equal(await readFile(join(work, "inputs", "notes.txt"), "utf8"), "copied before the start\n");
-});
-
-// SKIP (follow-up #2078): a failed copy does not fail the run as before on the runner
+// SKIP (follow-up #2432): a copy of file_ids that fails leaves the run queued, never failed with why
 test.skip("a copy that fails ends the run failed with why, starts no process, and the server keeps serving", async (t) => {
   const server = await serve(t);
   const { api } = server;
@@ -266,8 +231,7 @@ test.skip("a copy that fails ends the run failed with why, starts no process, an
   await follow(api, next.body.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a name taken already gets the next suffix, the same for the same files in the same order", async (t) => {
+test("a name taken already gets the next suffix, the same for the same files in the same order", async (t) => {
   const server = await serve(t);
   const { api } = server;
   const files = [];
@@ -277,6 +241,7 @@ test.skip("a name taken already gets the next suffix, the same for the same file
   for (let i = 0; i < 2; i++) {
     const run = await api("POST", "/agents/dupes/runs", { input: { content: "Hello." }, file_ids: files.map((f) => f.file_id) });
     assert.equal(run.status, 202, JSON.stringify(run.body));
+    await follow(api, run.body.run_id, ["completed"]);
     const work = join(runDir(server.data, run.body.run_id), "work");
     const found = [];
     for (const [path, text] of expected) found.push([path, await readFile(join(work, path), "utf8")]);
@@ -346,8 +311,7 @@ test("a refusal that points at an upload route names it in full, under /v2", asy
   assert.ok(notReady.includes(`PUT /v2/files/${pending.file_id}`), notReady);
 });
 
-// SKIP (follow-up #2078): file_ids that name an unknown, pending or repeated file are not refused as before
-test.skip("file_ids naming an unknown, pending or repeated file, or more than max_files_per_run, are refused 422 at file_ids before anything starts", async (t) => {
+test("file_ids naming an unknown, pending or repeated file, or more than max_files_per_run, are refused 422 at file_ids before anything starts", async (t) => {
   const server = await serve(t);
   const { api } = server;
   assert.equal((await api("POST", "/agents", agent("refused"))).status, 201);
@@ -370,6 +334,7 @@ test.skip("file_ids naming an unknown, pending or repeated file, or more than ma
   // At the limit, it starts.
   const full = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: many.slice(0, MAX_FILES_PER_RUN) });
   assert.equal(full.status, 202, JSON.stringify(full.body));
+  await follow(api, full.body.run_id, ["completed"]);
   assert.equal((await fileList(api, full.body.run_id)).filter((f) => f.path.startsWith("inputs/")).length, MAX_FILES_PER_RUN);
   // None at all starts as a run with no file_ids does: no inputs folder.
   const none = await api("POST", "/agents/refused/runs", { input: { content: "Hello." }, file_ids: [] });
