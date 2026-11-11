@@ -25,7 +25,7 @@ import { surviveClosedPipes } from "./closed-pipes.js";
 // command, the server and the runner alike.
 surviveClosedPipes();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -43,6 +43,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --faux-browser MODULE
                     with --faux only: the browser tool's provider and driver from MODULE's default export (a fake
                     browser, no vendor, no key), for the console's real-browser tests
+  --faux-github     with --faux only: a fake GitHub App, connected at the start and answered in this process, so
+                    GitHub triggers run with nothing sent to GitHub; its webhook secret is in DIR/faux-github.json.
+                    On a scratch data directory: refused where another GitHub App is connected
   --allow-host NAME another Host name to accept (repeatable)
   --max-runs N      the most runs the runner beside the server holds at once, the rest waiting queued (default
                     AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds); the capabilities'
@@ -242,6 +245,7 @@ try {
       open: { type: "boolean", default: false },
       faux: { type: "string" },
       "faux-browser": { type: "string" },
+      "faux-github": { type: "boolean", default: false },
       "allow-host": { type: "string", multiple: true, default: [] },
       "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
@@ -283,6 +287,10 @@ if (values["faux-browser"] && !values.faux) {
   console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
   process.exit(2);
 }
+if (values["faux-github"] && !values.faux) {
+  console.error(`--faux-github goes with --faux\n\n${USAGE}`);
+  process.exit(2);
+}
 const budget = values["learning-budget"];
 if (budget !== undefined && !/^\d+$/.test(budget)) {
   console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
@@ -290,6 +298,19 @@ if (budget !== undefined && !/^\d+$/.test(budget)) {
 }
 const data = values.data ?? defaultData();
 const given = secret("AGENTRUN_TOKEN") || undefined;
+// The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
+// moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
+// what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
+// drain. A second signal a while after the first, still during the start, is a person who wants out now: exit 130.
+let stopping: (() => void) | undefined;
+let askedAt: number | undefined;
+const signalled = () => {
+  if (stopping) return stopping();
+  if (askedAt === undefined) askedAt = Date.now();
+  else if (Date.now() - askedAt >= REPEAT_MS) process.exit(130);
+};
+process.on("SIGINT", signalled);
+process.on("SIGTERM", signalled);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
 let apiOnly: boolean;
 try {
@@ -312,7 +333,7 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
@@ -332,7 +353,8 @@ try {
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
-if (!values["no-runner"]) {
+// A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
+if (!values["no-runner"] && askedAt === undefined) {
   try {
     // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
     // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
@@ -376,9 +398,10 @@ const stop = stopOnSignals({
   done: (code) => (removeOwnRecord(record), process.exit(code)),
   say: (line) => console.error(line),
 });
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+stopping = stop;
 // Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
 // waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
 writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
 chmodSync(record, 0o600);
+// A stop asked during the start runs now, as one asked from here on would.
+if (askedAt !== undefined) stop(askedAt);

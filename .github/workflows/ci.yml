@@ -113,10 +113,22 @@ jobs:
         # agentrun-serve's pdf_pages draws pages with poppler, and its tests make their PDFs with Ghostscript and a wide
         # PNG with ffmpeg: serve's suite runs in the any pool's shards.
         if: startsWith(matrix.shard, 'any-')
+        # The mirror is sometimes unreachable for a moment ("Network is unreachable"): apt retries each download three
+        # times, and the update and install are tried three times in all, 10 s then 30 s apart, failing after the third.
         run: |
           printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils ghostscript ffmpeg
+          for try in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils ghostscript ffmpeg; then
+              break
+            fi
+            if [ "$try" = 3 ]; then
+              echo "apt-get failed three times" >&2
+              exit 1
+            fi
+            pause=$([ "$try" = 1 ] && echo 10 || echo 30)
+            echo "apt-get failed (try $try of 3); trying again in ${pause} s" >&2
+            sleep "$pause"
+          done
           pdftoppm -v && gs --version && ffmpeg -version | head -1
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - uses: actions/download-artifact@v4

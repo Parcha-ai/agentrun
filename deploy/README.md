@@ -6,7 +6,8 @@ AgentRun runs as two kinds of process on one store:
   each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner beside itself
   (a single container, as on Render).
 - **A runner** claims runs from the store and runs them, many at once, as many as its host's memory holds by each run's
-  harness (a claude-agent run 288 MB, a pi run 128 MB) and at most `--loops` (default `AGENTRUN_MAX_RUNS`, else as
+  harness (a claude-agent run 288 MB, a pi run 128 MB; its host's memory is its container's limit when it has one, so
+  give each runner on a shared host its own) and at most `--loops` (default `AGENTRUN_MAX_RUNS`, else as
   many pi runs as its host's memory holds, as the server's `--max-runs`); the rest wait queued. Run as many runners as
   you need; each one holds a run under a claim it renews every 10 s. A runner that stops lets each busy run finish its
   turn for up to `--drain-timeout` (default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`, the image's server drain), then hands the rest back, and the runs of
@@ -46,13 +47,14 @@ What each takes, from its environment alone:
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
 port. A runner listens on nothing.
 
-A runner says it is ready in one line once it can claim runs:
+A runner says it is ready in one line once it can claim runs, then what memory its runs may hold in another:
 
 ```
 Runner runner-1 ready: store sqlite schema v<N>, <N> loops
+Runner runner-1 memory: <N> MiB for runs, each weighed by its harness
 ```
 
-and from then writes its heartbeat, `/data/runner-<name>.alive`, as its loop turns. `runner --check --data /data --name
+The memory is its host's, or its container's limit, less 128 MiB kept for the process itself. From then it writes its heartbeat, `/data/runner-<name>.alive`, as its loop turns. `runner --check --data /data --name
 <name>` exits 0 while the heartbeat is younger than 20 s: that is a runner's health check.
 
 A runner exits with:
@@ -87,7 +89,17 @@ docker compose logs runner-1     # Runner runner-1 ready: ...
 
 The server's port is published on this machine's loopback (`127.0.0.1:7340`); put a reverse proxy with TLS in front of
 it before you publish it anywhere else. Each runner starts once the server is healthy (only the server sets the store
-up), is started again if it exits with an error, and is given 35 s to stop.
+up), is started again if it exits with an error, and is given 35 s to stop: its drain (6 s by default) and 25 s for a
+stuck loop after it, 31 s in all.
+
+**Memory.** Each runner container is limited to 2 GB (`mem_limit`), and a runner budgets its runs from that limit:
+1920 MiB, six claude-agent runs or fifteen pi runs at once, the rest queued. Without a limit, each runner would read
+the whole host's memory and budget all of it, so two runners on one host could take twice what it holds. Set
+`AGENTRUN_RUNNER_MEMORY` in `.env` (`1g`, `4g`, ...) so the runners' limits together, with room for the server, fit
+the host: about 5 GB for the default two. `docker compose logs runner-1` shows the budget each runner read
+(`Runner runner-1 memory: 1920 MiB for runs, ...`). A run whose harness never fits a runner's limit (an opencode run,
+704 MB, under `512m`) is never started there: the runner fails it at its claim, saying how much memory it needs. An
+opencode run needs a limit of at least 832 MB (its 704 and the runner's own 128); a claude-agent run 416 MB.
 
 **More runners.** Copy the `runner-2` service as `runner-3` and so on, with its own `--name` and the same name in its
 health check. Every runner on SQLite must mount the same `agentrun-data` volume, so all of them run on this

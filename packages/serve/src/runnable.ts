@@ -32,7 +32,7 @@ export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never"; maxToolCalls?: number }
   | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
@@ -185,6 +185,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
         unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
       }
     });
+    // The tool-call budget is counted from pi's own journal (tool-budget.ts): on another harness it would hold nothing, so
+    // the definition is refused, never saved to run without it.
+    if (revision.maxToolCalls !== undefined && onAdapter(env, harness)) out.push({ field: "definition.max_tool_calls", reason: NOT_SET_UP, message: `A tool-call budget is held on pi here; on ${harness} it is not counted yet.`, fix: "Run the agent on pi, or set max_tool_calls to 0.", host: false, harness });
     const resolved = await harnessModel(env, harness, revision.model, offer?.available === true);
     if (!resolved) return out;
     if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
@@ -192,6 +195,15 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     // Under a cap, a model serve has no price for (unpricedModels: a gateway id no price names and the catalog does not
     // list) cannot be kept to it: the run is refused now, never started and refused at its first request.
     else if (capped) for (const id of await unpricedModels(env, revision.model, ["default"], harness)) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true });
+    return out;
+  }
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  // A workflow the DSL cannot read is the definition's fault (422 on the field), never the server's (500).
+  let inspection: ReturnType<typeof inspectWorkflow>;
+  try {
+    inspection = inspectWorkflow(revision.workflow);
+  } catch (error) {
+    out.push({ field: "definition.workflow", reason: "not_an_option", message: `The workflow is not one this server can read: ${String((error as Error)?.message ?? error).slice(0, 500)}`, host: false });
     return out;
   }
   // Every MCP tool a workflow grants, at its top level or on a node, is held to the one check (mcpGrant): refused at the
@@ -204,8 +216,6 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
   if (onAdapter(env, harness)) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
-  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
-  const inspection = inspectWorkflow(revision.workflow);
   const { requires } = inspection;
   const nodes = workflowNodes(revision.workflow, inspection);
   const runs = "agentrun-serve runs a workflow's model nodes (agent, decide, extract, report)";

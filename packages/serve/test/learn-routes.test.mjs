@@ -93,7 +93,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // Run 2: its learning whole shows the drop, and its diff its proposal against its seed.
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
-  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, given: [{ file: "check-units.md", name: "Check units" }, { file: "quote-sources.md", name: "Quote sources" }], merged: null, pending: [], verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
+  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, given: [{ file: "check-units.md", name: "Check units" }, { file: "quote-sources.md", name: "Quote sources" }], merged: null, pending: [], used: { skills: [], workflows: [] }, verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
   assert.ok(Object.keys(learned2.cost_usd).join() === "grade" && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
   assert.deepEqual((await api("GET", `/runs/${two}/learning/diff`)).body, { base: main1, head: null, files: [{ path: "prefers-tables.md", status: "added", patch: added(TABLES) }] });
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
@@ -134,7 +134,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal((await write(`${files}/quote-sources.md/retire`, undefined)).status, 428);
   const retired = await write(`${files}/quote-sources.md/retire`, undefined, { "if-match": before });
   assert.equal(retired.status, 200, retired.text);
-  assert.equal(retired.text, SOURCES.replace("type: reference\n", "type: reference\nstatus: retired\n"));
+  assert.equal(retired.text, SOURCES.replace("type: reference\n", "type: reference\nstatus: retired\nretired_from: active\n"));
   assert.equal(retired.headers.get("etag"), blob("quote-sources.md"));
   assert.equal((await write(`${files}/quote-sources.md/retire`, undefined, { "if-match": before })).status, 412, "a stale retire");
   const index = git(repo, ["show", "main:MEMORY.md"]);
@@ -445,7 +445,7 @@ test("a note's name that holds a value made secret after it was written is never
   assert.equal(old.status, 200);
   // A retire by that name revokes the note, whatever its name holds: out of the index, its answer and the log cut of it.
   const retire = await api("POST", `/agents/namer/learning/files/${named}/retire`, undefined, { "if-match": own.headers.get("etag") });
-  assert.deepEqual([retire.status, retire.body], [200, NEW.replace("supersedes: [old-plan.md]\n", "supersedes: [old-plan.md]\nstatus: retired\n")]);
+  assert.deepEqual([retire.status, retire.body], [200, NEW.replace("supersedes: [old-plan.md]\n", "supersedes: [old-plan.md]\nstatus: retired\nretired_from: active\n")]);
   assert.equal(git(repoOf(data, "namer"), ["show", "main:MEMORY.md"]), "", "no active note is left in the index");
   const after = (await api("GET", "/agents/namer/learning")).body;
   assert.deepEqual([after.index, after.log.items[0].by, after.log.items[0].reason, after.log.items[0].files], ["", { user: true }, "retired by a person: [redacted].md", ["MEMORY.md", "[redacted]"]]);
@@ -533,9 +533,9 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   process.env.AGENT_MODEL_API_KEY = value;
   const { api } = await serve(t, { data });
   const etag = async (file) => (await api("GET", `${files}/${file}`)).headers.get("etag");
-  // The note at the cap retires, its status line on top of the cap.
+  // The note at the cap retires, its status lines (status, and the status it was retired from) on top of the cap.
   const capped = await api("POST", `${files}/full.md/retire`, undefined, { "if-match": await etag("full.md") });
-  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4112], JSON.stringify(capped.body).slice(0, 200));
+  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4096 + Buffer.byteLength("status: retired\nretired_from: active\n")], JSON.stringify(capped.body).slice(0, 200));
   // The note holding the value made secret retires: out of the index, its answer and the log cut of the value.
   const vault = await api("POST", `${files}/vault.md/retire`, undefined, { "if-match": await etag("vault.md") });
   assert.equal(vault.status, 200, JSON.stringify(vault.body));
