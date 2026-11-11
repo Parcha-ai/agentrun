@@ -142,3 +142,25 @@ test("(d) the release-notes package this server ships: without GitHub its trigge
   assert.match(content, /^Write the release notes for the release/);
   assert.match(content, /v1\.2\.0/, "the event, with its tag, rides in the input");
 });
+
+test("the code-review package as it ships: its pull-requests trigger takes the repo parameter in its where, so a pull_request for that repository fires a run and one for another fires none; with GitHub not connected its own words say what connecting does", { timeout: 120_000 }, async (t) => {
+  const server = await connectable(t);
+  const unconnected = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
+  assert.equal(unconnected.status, 201, JSON.stringify(unconnected.body));
+  assert.deepEqual(unconnected.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: connectWords("Code review") }]);
+  await connect(server);
+  const applied = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [id] = applied.body.trigger_ids;
+  const trigger = (await server.api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual(trigger.source.accept[0].where, [{ pointer: "/repository/full_name", in: [REPO] }], "the repo parameter filled in");
+  assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_an_option", message: `Code review runs on each pull request to ${REPO}.` }]);
+  const { webhook_secret: secret } = server.github.app;
+  assert.deepEqual((await deliver(server.baseUrl, secret, "pull_request", pr("acme/other"))).body, { ok: "ignored" }, "another repository: no trigger takes it");
+  const fired = await deliver(server.baseUrl, secret, "pull_request", pr(REPO));
+  assert.equal(fired.status, 202, JSON.stringify(fired.body));
+  const hash = `sha256:${createHash("sha256").update(fired.body_text).digest("hex")}`;
+  assert.deepEqual(fired.body.firings.map((f) => f.key), [keyOf("github", id, hash)]);
+  const [firing] = await firings(server.api, id, 1);
+  assert.equal((await server.api("GET", `/runs/${firing.run_id}`)).body.agent_id, applied.body.agent_id);
+});
