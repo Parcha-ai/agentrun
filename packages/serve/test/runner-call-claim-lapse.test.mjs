@@ -78,6 +78,9 @@ test("a call node's effect cut by a lapsed claim: the next claim reads it unknow
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   release();
+  // The runners stop before the stores close (the stores' cleanup was registered first, and after-hooks run in order).
+  await runnerA.close().catch(() => {});
+  await runnerB.close().catch(() => {});
   // What the store holds at rest (its file on SQLite, its rows on Postgres): the engine's words for the cut effect.
   const text = (await storeAtRest(file)).map(([, bytes]) => Buffer.from(bytes).toString("utf8")).join("\n");
   assert.equal(row.state, "failed", `the resumed run fails at the unknown call: ${JSON.stringify({ state: row.state, summary: row.summary, epoch: row.epoch })}`);

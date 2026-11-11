@@ -846,17 +846,18 @@ type MemoApi = { memo(name: string, context: Context): Promise<unknown>; memo(na
 
 /** `execute` behind the gate, for the tool `name`. A call it lets through is marked so in its task first, so when
  *  pi-durable's recovery runs the same call again on a later claim (the first attempt cut with its claim, maybe after it
- *  was sent) and the tool is now denied, the refusal says that whether it took effect is not known (RAN_UNKNOWN), never
- *  that nothing was sent and nothing was charged. */
+ *  was sent) and the tool is now denied or set to ask, the refusal says that whether it took effect is not known
+ *  (RAN_UNKNOWN), never that it was not run or that nothing was sent and nothing was charged. */
 export function gatedNodeCall(name: string, policy: CallPolicy, execute: GatedExecute): GatedExecute {
   return async (args, api, context) => {
     const task = api as unknown as MemoApi;
     const { permission, denyFrom } = await policy(name);
-    if (permission === "deny") {
+    if (permission !== "allow") {
+      // A call an earlier attempt of which this gate let through may have reached its host: whatever refuses it now, its
+      // effect is not known, never "not run".
       const ran = (await task.memo(LET_THROUGH, context as unknown as Context)) === true ? "unknown" : "no";
-      return forModel(deniedText(name, undefined, denyFrom, ran), { isError: true });
+      return forModel(permission === "deny" ? deniedText(name, undefined, denyFrom, ran) : modelNodeAskText(name, ran), { isError: true });
     }
-    if (permission === "ask") return forModel(modelNodeAskText(name), { isError: true });
     await task.memo(LET_THROUGH, true, context as unknown as Context);
     return execute(args, api, context);
   };
