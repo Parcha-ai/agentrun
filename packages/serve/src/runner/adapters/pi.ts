@@ -12,7 +12,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
@@ -21,6 +21,7 @@ import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
+import { countCalls } from "../../tool-budget.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -38,6 +39,9 @@ export interface PreIntentCall {
   /** An earlier attempt of the call may have been sent (a CLI's kernel bridge, asking about a replay-safe call a crash
    *  cut: GateCall's `replayed`), so a refusal never says nothing was. */
   readonly replayed?: true;
+  /** The tool calls the call's conversation made before it, at most `upTo`, read from its committed entries (tool-budget.ts
+   *  countCalls), for the gate's tool-call budget: pi's model-issued calls only, never a nested call or a CLI's. */
+  readonly callsBefore?: (upTo: number) => Promise<number>;
 }
 
 /** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */
@@ -169,9 +173,12 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     tools,
     hooks: [
       hook(ToolTask, {
-        beforeTool: async (call, _api, hookContext: Context) => {
+        beforeTool: async (call, api, hookContext: Context) => {
           if (!io.gate) return undefined;
-          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
+          // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
+          // parent's part.
+          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext) } : {};
+          const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...counted }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);
             return undefined;
@@ -314,6 +321,20 @@ export function refusalWords() {
       return words.size;
     },
   };
+}
+
+/** The tool calls a hook's conversation made before `callId`, at most `upTo`: its committed entries read oldest first, a
+ *  page at a time, only as far as the count needs (tool-budget.ts countCalls). */
+async function callsBefore(api: HookApi, callId: string, upTo: number, context: Context): Promise<number> {
+  let counted = { count: 0, done: upTo <= 0 };
+  let cursor: Cursor | undefined;
+  while (!counted.done) {
+    const page = await api.entries({ order: "ascending" }, 100, cursor, context);
+    counted = countCalls(page.items, callId, upTo, counted.count);
+    cursor = page.next;
+    if (cursor === undefined) break;
+  }
+  return counted.count;
 }
 
 /** pi's output limits for a host tool, from the host's result bound: a result within it holds at most that many
