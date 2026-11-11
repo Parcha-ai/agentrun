@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { type DraftDryRun, draftProblems, type DraftReader, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -152,19 +152,22 @@ function textOf(path: string, bytes: Uint8Array | undefined, refused: (text: str
   return found ? undefined : text;
 }
 
-/** A skill's SKILL.md or a draft's README.md at `path`, its front matter read as YAML reads it (skills.ts frontValues:
- *  its escapes decoded, the value a harness is served): a hidden character, a secret's shape or the host's value there
- *  is refused as one in its text is, though the text as stored spells it in escapes. True when it found one. */
-function frontScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
+/** A learned file at `path` as it is read later, its escapes decoded: a skill's SKILL.md or a draft's README.md, its front
+ *  matter read as YAML reads it (skills.ts frontValues, the value a harness is served); a draft's workflow.json, every
+ *  string it decodes to, keys too, as JSON.parse reads it (skills.ts decodedStrings, what draftProblems and a learned
+ *  call's run read). A hidden character, a secret's shape or the host's value there is refused as one in its text is,
+ *  though the text as stored spells it in escapes. True when it found one. */
+function decodedScanned(path: string, text: string, refused: (text: string) => boolean, add: Add): boolean {
   const place = learnedPlace(path);
-  if (!place || place.kind === "workflow") return false;
+  if (!place) return false;
+  const [values, read] = place.kind === "workflow" ? [decodedStrings(text), "its JSON, read as JSON reads it,"] : [frontValues(text), "its front matter, read as YAML reads it,"];
   let found = false;
-  for (const value of frontValues(text)) {
+  for (const value of values) {
     const hidden = hiddenCharacter(value);
-    if (hidden) found = (add("invisible_unicode", `its front matter, read as YAML reads it, holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
+    if (hidden) found = (add("invisible_unicode", `${read} holds U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")}, a character a reader does not see`, path), true);
     // Learning's shapes, a bank's numbers beside their words too (learnedSecretShapes), as the text's own scan reads them.
-    for (const kind of learnedSecretShapes(value)) found = (add("secret_shape", `its front matter, read as YAML reads it, holds text shaped like a secret (${kind})`, path), true);
-    if (refused(value)) found = (add("secret_value", "its front matter, read as YAML reads it, holds a value the host named as secret", path), true);
+    for (const kind of learnedSecretShapes(value)) found = (add("secret_shape", `${read} holds text shaped like a secret (${kind})`, path), true);
+    if (refused(value)) found = (add("secret_value", `${read} holds a value the host named as secret`, path), true);
   }
   return found;
 }
@@ -186,7 +189,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   const readmeOf = `${path.slice(0, path.lastIndexOf("/"))}/README.md`;
   if (input.kept?.includes(path) || (place.kind === "workflow" && input.kept?.includes(readmeOf))) return add("skill_status", "a person retired it, or it waits for its owner's OK: a run never changes it", path);
   const text = textOf(path, change.bytes, refused, add);
-  if (text === undefined || frontScanned(path, text, refused, add)) return;
+  if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy);
@@ -231,7 +234,7 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
     if (change.path === INDEX_FILE) continue;
     nameScanned(change.path, refused, add);
     const text = change.bytes ? textOf(change.path, change.bytes, refused, add) : undefined;
-    if (text !== undefined) frontScanned(change.path, text, refused, add);
+    if (text !== undefined) decodedScanned(change.path, text, refused, add);
   }
   return problems;
 }

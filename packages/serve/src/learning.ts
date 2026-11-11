@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -753,7 +753,8 @@ export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkf
   const left: string[] = [];
   let room = LEARNED_WORKFLOWS_BUDGET;
   for (const flow of seed.workflows ?? []) {
-    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name)) {
+    // Its JSON read as JSON reads it too (decodedStrings: its escapes decoded, as its learned call's run reads it).
+    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name) || decodedStrings(flow.workflow).some(shown.holds)) {
       // Named, but for a name that is itself a secret.
       if (!shown.holds(flow.name)) left.push(flow.name);
       continue;

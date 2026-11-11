@@ -661,6 +661,27 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
 
+/** Every string a learned workflow's workflow.json decodes to, each object's keys too, as JSON.parse reads them (its
+ *  escapes decoded: what draftProblems and a learned call's run read, and a model node is given). Text a scan of the
+ *  stored JSON misses, spelled in \u escapes, is there as it will be read. None for a text that does not parse (the
+ *  checks refuse it as no workflow). */
+export function decodedStrings(json: string): string[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const walk = (value: unknown): void => {
+    if (typeof value === "string") return void out.push(value);
+    if (Array.isArray(value)) return value.forEach(walk);
+    if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) (out.push(key), walk(child));
+  };
+  walk(doc);
+  return out;
+}
+
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
 export const LEARNED_MAX_TURNS = 8;
