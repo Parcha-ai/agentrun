@@ -60,3 +60,43 @@ test("on claude-agent, a run reads reflecting while its end-of-run turn runs: af
   assert.equal(done.status, "completed");
   assert.equal(done.learning?.state, "merged", JSON.stringify(done.learning));
 });
+
+// The live wake (#2365 review): an already-open Timeline stream (server.ts timeline, its watchRun) re-reads its page only
+// when a commit gives it events. A CLI run's end-of-run turn starts with one commit that holds only the turn's prompt (the
+// CLI record's answering): that commit gives the turn's message, labelled the turn's, so the open stream shows "Looking
+// back" at once, never on its 15-second beat.
+test("a stream already open when a CLI run's end-of-run turn is asked is woken by the turn's prompt, labelled the turn's", async (t) => {
+  const { KINDS } = await import("../dist/runner/journal-kinds.js");
+  const { REFLECT_LABEL } = await import("../dist/runner/end-of-run.js");
+  const { watchRun } = await import("../dist/live/stream.js");
+  let seq = 0;
+  const commits = [];
+  const commit = (entries) => commits.push({ seq: ++seq, entries, documents: [], tasks: [], submissions: [] });
+  const entry = (kind, data, model) => ({ id: seq + 1, conversationId: 1, kind, data, ...(model ? { model } : {}) });
+  // The run so far: the person's message and the job's answer, as a CLI run records them.
+  commit([entry(KINDS.message, { role: "person", text: "Answer." })]);
+  commit([entry(KINDS.message, { role: "model", text: "Answered." })]);
+  const store = {
+    runs: { get: async () => ({ id: "run-1", epoch: 1, state: "running" }) },
+    journal: () => ({
+      commitsAfter: async (after) => ({ commits: commits.filter((one) => one.seq > after) }),
+      close: async () => {},
+    }),
+    live: { read: async () => [] },
+  };
+  const stream = await watchRun(store, "run-1", { pollMs: 20 });
+  t.after(() => stream.stop());
+  const woken = [];
+  stream.start((events) => void woken.push(...events));
+  await sleep(100);
+  const before = woken.length;
+  // The turn is asked: the CLI record writes its prompt in a commit of its own (adapter-loop.ts answering).
+  const prompt = "Answer with one block per note to keep.";
+  commit([entry(KINDS.endOfRunTurn, { role: "person", text: prompt, requestId: "learn-reflect-run-1" }, [{ role: "user", content: prompt, timestamp: 1 }])]);
+  for (let i = 0; i < 100 && woken.length === before; i++) await sleep(20);
+  const turn = woken.slice(before);
+  assert.ok(turn.length > 0, "the turn's prompt wakes the open stream");
+  const ended = turn.find((event) => event.type === "message_end");
+  assert.ok(ended, `the prompt is a message: ${JSON.stringify(turn)}`);
+  assert.equal(ended.agent_label, REFLECT_LABEL, "labelled the turn's");
+});
