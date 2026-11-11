@@ -15,10 +15,6 @@
     "runtime.ts": {
       "blob": "03242d1cabe18b0c13de8fc72766094bbb0560c9",
       "sha256": "67e19f29a79d24d1cfeb73700d54beac9b07d43d6150e8f1b86e78ef010c8b82"
-    },
-    "screenshot-transport.ts": {
-      "blob": "065bff1dbc47ad50946f0bb98b5ceb5560a9626d",
-      "sha256": "a4c6b68225ae2fd61eb00e692b602a1d44f782eb676d86284d3ac5eb94b05406"
     }
   }
 }

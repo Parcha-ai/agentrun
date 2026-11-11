@@ -7,9 +7,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { Agents } from "../dist/agents.js";
+import { commitAgent, createAgent, getAgent } from "../dist/agents-store.js";
 import { BOX_IDS } from "../dist/place-offers.js";
 import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
@@ -157,17 +158,16 @@ test("an edit identical to the current revision is a no-op, whether it names the
 });
 
 test("an edit without If-Match that another edit overtakes while it is checked is built again on the new current revision: it never restores the place or harness it read", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
-  const made = await agents.create({ definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
+  const { store } = await storeOn(t);
+  const made = await createAgent(store, { definition: { id: "raced", name: "raced", instructions: "Answer.", place: { mode: "runner" } } });
   let overtaken = false;
   const checked = [];
-  const edited = await agents.commit(made, { definition: { instructions: "Answer briefly." } }, {
+  const edited = await commitAgent(store, made, { definition: { instructions: "Answer briefly." } }, {
     check: async (revision) => {
-      checked.push(revision.place);
+      checked.push(revision.body.place);
       if (overtaken) return;
       overtaken = true;
-      await agents.commit(await agents.get("raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
+      await commitAgent(store, await getAgent(store, "raced"), { definition: { instructions: "Answer.", place: { mode: "sandbox", box: "docker" }, harness: "codex" } });
     },
   });
   assert.equal(edited.revision.body.instructions, "Answer briefly.");

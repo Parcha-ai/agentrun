@@ -215,7 +215,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
-    if (run?.redact) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
+    if (run?.redact && deps.sealKey) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
 
     // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
@@ -291,7 +291,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const nodeHost: ToolHost = {
       where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
       env: callEnv,
-      coding: { tools: [], extension: { name: "coding", tools: [] } } as unknown as ToolHost["coding"],
       install: (extension) => void installed.push(extension),
       onConversation: () => {},
       beforeResume: () => {},

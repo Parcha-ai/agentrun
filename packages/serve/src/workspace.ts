@@ -4,12 +4,10 @@
 // check and the open is refused, not followed. On top of it: the path must be the root joined with its own names (a link
 // anywhere on the way, even one pointing inside the root, is refused), only regular files and directories are read, and a
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
-import { randomBytes } from "node:crypto";
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
 import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Confinement } from "@parcha/pi-durable-disk/internals";
-import { syncDir, writeDurable } from "./files.js";
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
  *  it has another hard link, it is larger than the reader takes, or it is unreadable to this server (a tool in the box
@@ -232,35 +230,6 @@ async function entryOf(pin: { entry: string }, refuse: (error: unknown) => never
   return stats;
 }
 
-/**
- * Writes `bytes` to `rel` under `work` whole and durably (files.ts writeDurable), as a file of `mode`: through a temporary
- * file in the same directory, a dot-name of the server's own, renamed over the file. The directories on the way are made
- * when missing, and each is synced into its parent before this resolves. A link on the way or at the file, or a directory
- * there, is refused: never followed and never replaced. Answers the stats of the file this call wrote. `asTool`, a run's
- * file tool writing a bound box's work/ (bound-files.ts): a file with another hard link is refused, a file already there
- * keeps its mode, and a new one gets `mode` as given, whatever this process's umask.
- */
-export async function writeWorkFile(work: string, rel: string, bytes: Uint8Array, mode = 0o600, asTool = false): Promise<Stats> {
-  const { pin, refuse, real, making } = await pinForWrite(work, rel, true);
-  try {
-    const before = await entryOf(pin, refuse, rel);
-    if (asTool && before && before.nlink !== 1) throw new WorkRefused(rel, "hard_link");
-    const kept = asTool && before ? before.mode & 0o777 : mode;
-    // A link swapped in after that check is replaced by the rename, never written through.
-    const stats = await writeDurable(pin.entry, bytes, kept, `${pin.dir}/.agentrun-${process.pid}-${randomBytes(6).toString("hex")}.tmp`, asTool).catch(refuse);
-    // writeDurable synced the file's own directory; a directory made above it survives a crash once its parent is synced.
-    if (making) {
-      let at = real;
-      for (const name of dirname(rel).split("/")) {
-        await syncDir(at);
-        at = join(at, name);
-      }
-    }
-    return stats;
-  } finally {
-    await pin.close();
-  }
-}
 
 /** Removes the regular file `rel` under `work`, reached through no link: refused when it is missing, a link, or not a
  *  regular file. A directory it leaves empty stays. */

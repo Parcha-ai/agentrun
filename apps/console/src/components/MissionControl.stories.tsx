@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MissionControl } from "@/components/MissionControl";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { StartHere } from "@/components/StartHere";
@@ -49,7 +49,7 @@ export const AnalyticsNoRuns: Story = { render: () => <Shell active="mission"><M
 // What needs a person, first: two questions (one with the choices it offers), two runs stopped by the same error and one
 // by its own, and a run at work.
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
-const needRun = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const needRun = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: id, agent_id: agent, agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: id, created_at: ago(12),
   ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });

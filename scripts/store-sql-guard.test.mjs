@@ -13,7 +13,6 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STORE = "packages/serve/src/store/";
 /** The files outside the store that held SQL when the store landed. Each goes at the cutover. */
 const TODAY = [
-  "packages/serve/src/agents.ts",
   "packages/serve/src/cap.ts",
   "packages/serve/src/import-summary.ts",
   "packages/serve/src/run-db.ts",
@@ -26,12 +25,10 @@ const SQLITE_FILE = /\.sqlite\b/;
 /** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
  *  cutover; the list only shrinks. */
 const TODAY_FILE = [
-  "packages/serve/src/agents.ts",
   "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server.ts",
   "packages/serve/src/stats.ts",
-  "packages/serve/src/tool-plane.ts",
   "packages/serve/src/webhooks.ts",
 ];
 
@@ -134,7 +131,6 @@ const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSyn
  *  the list only shrinks. One file joined it after: pi/src/durable/readers.ts loads node:sqlite through createRequire,
  *  which the guard first saw when it learnt that form. */
 const TODAY_DRIVER = [
-  "packages/serve/src/agents.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
   // The copy of pi/src/durable/readers.ts serve runs, as on TODAY.

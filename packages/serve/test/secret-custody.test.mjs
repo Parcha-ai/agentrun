@@ -14,7 +14,9 @@ import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
 import { BOX_KEYS } from "../dist/place-offers.js";
-import { ToolKeys } from "../dist/tool-keys.js";
+import { toolKeysOverStore } from "../dist/tool-keys-store.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
@@ -158,7 +160,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
   // The seal key the launcher makes when none is given goes in the test's own config directory, never the user's.
-  const child = spawn(LAUNCHER, typeof args === "function" ? args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
+  const child = spawn(LAUNCHER, typeof args === "function" ? await args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), ...env, TMPDIR: tmp } });
   // Whether the launcher's pid is still its own: once it exits and Node reaps it, that number, and so its group's id, can
   // be given to another process (on this box the PIDs wrap in minutes under test load, so another lane's), and a kill of
   // it or of the group, or a walk from it, would reach that process. Each is done only while it is alive.
@@ -278,11 +280,17 @@ test.skip("started by its launcher with a store URL that holds a database passwo
 });
 
 /** The launcher's arguments for a server whose data directory holds `saved` (by key id, its fields) as tool keys already,
- *  sealed under `key`: written as the server writes them, before it starts. */
-const savedBefore = (key, saved) => (data) => {
+ *  sealed under `key`: written into its store as the server writes them, before it starts. */
+const savedBefore = (key, saved) => async (data) => {
   mkdirSync(data, { recursive: true, mode: 0o700 });
-  const keys = new ToolKeys(data, { AGENTRUN_SEAL_KEY: key }, () => undefined);
-  for (const [id, values] of Object.entries(saved)) keys.save(id, { values });
+  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server" });
+  try {
+    const keys = toolKeysOverStore(store, { AGENTRUN_SEAL_KEY: key }, () => undefined);
+    await keys.load();
+    for (const [id, values] of Object.entries(saved)) await keys.save(id, { values });
+  } finally {
+    await store.close();
+  }
   return ["--data", data, "--port", "0", "--faux", CUSTODY];
 };
 

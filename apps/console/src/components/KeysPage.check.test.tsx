@@ -30,7 +30,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 async function open(v2: ReturnType<typeof createClient>) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(KeysPage, { v2, atRest: "sealed", writable: true })));
+  act(() => root!.render(createElement(KeysPage, { v2, writable: true })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   return { host, settle, text: () => host.textContent ?? "" };

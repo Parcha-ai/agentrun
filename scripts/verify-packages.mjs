@@ -325,7 +325,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import * as browser from '@parcha/pi-browser';
-import * as browserAgent from '@parcha/pi-browser/coding-agent';
+import * as browserDurable from '@parcha/pi-browser/durable';
 import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 import * as decisions from '@parcha/agentrun-decisions';
@@ -360,7 +360,7 @@ assert.deepEqual((await runWorkflow(JSON.parse(JSON.stringify(typed)),{text:'ser
 const judge=createJevRunner({client:{async systemOne(){return {model:'fake',answers:{ok:{type:'noul',noul:.9}},usage:{input_tokens:1,output_tokens:1}};}}});
 assert.equal((await judge({label:'check',kind:'judge',state:{ok:true},questions:{ok:{type:'noul',instructions:'Is it okay?'}}})).answers.ok.noul,.9);
 assert.equal(typeof authorWorkflow,'function');
-assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
+assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
@@ -492,7 +492,7 @@ void [place, kernel];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'adapters-consumer.ts'], consumer);
   await writeFile(join(consumer, 'browser-consumer.ts'), `import { BROWSER_TOOLS, type BrowserPolicy } from '@parcha/pi-browser';
-import { createBrowserExtension } from '@parcha/pi-browser/coding-agent';
+import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 const browser: [typeof BROWSER_TOOLS, typeof createBrowserExtension, typeof FakeBackend, BrowserPolicy | undefined] = [BROWSER_TOOLS, createBrowserExtension, FakeBackend, undefined];
 void browser;
