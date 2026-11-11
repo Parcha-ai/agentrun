@@ -85,7 +85,10 @@ function replyTo(context, faux) {
     // A node that writes a report in a fixed format (a learned workflow's last node, as a skill's format asks it).
     if (canary.includes("Write the card report")) {
       if (answered) return faux.message("Submitted.");
-      return faux.message(faux.toolCall("submit", { report: REPORT }), { stopReason: "toolUse" });
+      // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+      const params = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit")?.parameters;
+      const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1);
+      return faux.message(faux.toolCall("submit", enveloped ? { value: { report: REPORT } } : { report: REPORT }), { stopReason: "toolUse" });
     }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
