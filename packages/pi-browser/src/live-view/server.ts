@@ -59,7 +59,7 @@ export type LiveViewHost = {
   open(tag: string, cdpUrl: string): Promise<LiveView>;
   /** The view `open` gave for a tag, or null: for a caller that must not start anything (`liveViewProvider` asks before it attaches). */
   known(tag: string): LiveView | null;
-  /** True while a person is driving this session (viewer input within the gate's idle window): the frame recorder holds its capture meanwhile. */
+  /** True while a person is driving this session (viewer input within the gate's idle window). */
   driving(tag: string): boolean;
   /** The token is dead, the viewer's socket closed, the stream and the gate ended. Idempotent. */
   release(tag: string): Promise<void>;

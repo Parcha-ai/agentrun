@@ -393,15 +393,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // Whether a key saved in the first screen's card (ModelKeyCard) gives this server its model, so the start-here step can
   // point at the card: no model ready for want of a key, no AGENT_MODEL named (its provider's key may not be among the
-  // card's), no gateway (a provider's key names no gateway model), and keys kept sealed (with no seal key every save is
-  // refused). Anything else keeps the step's own setup text.
+  // card's), no gateway (a provider's key names no gateway model), and the key routes there. Anything else keeps the
+  // step's own setup text.
   const keyCardSavesModel = caps?.models?.ready === false && caps.models.needs !== "model" && !caps.models.default && caps.models.source !== "gateway"
-    && !!caps.features?.tool_keys?.routes && caps.features.tool_keys.at_rest === "sealed";
+    && !!caps.features?.tool_keys?.routes;
   // The server lists its tools as objects (name, available, missing).
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
-  // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings. None from an older server.
+  // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings.
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
@@ -585,7 +585,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
           {imported.state !== "running" && <Button type="button" size="xs" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
-      {caps?.models?.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
+      {caps?.models?.ready === false && where.section !== "mission" && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true} />}
     </>}>
       {where.section === "playground" && startError
         ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={() => setRetry((n) => n + 1)}>Try again</Button>}><p className="font-mono">The agents could not be read: {startError}</p></Banner>
@@ -596,13 +596,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
-              : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
-              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+              : where.settings === "webhook" ? <WebhookPage v2={v2} />
+              : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
           </Settings>
         : where.section === "mission"
         // The first screen asks for a model key while the server says no agent that names no model runs here yet.
         ? <div className="flex h-full flex-col">
-            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} atRest={caps.features.tool_keys?.at_rest} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+            {caps?.models?.ready === false && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
             {boxComing && <BoxImageBanner box={boxComing} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
