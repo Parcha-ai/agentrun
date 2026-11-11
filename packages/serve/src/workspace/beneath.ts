@@ -13,8 +13,10 @@ import { closeSync, constants, lstatSync, openSync } from "node:fs";
 import { type FileHandle, lstat, open } from "node:fs/promises";
 
 const { O_DIRECTORY, O_NOFOLLOW, O_RDONLY } = constants;
-/** macOS's O_NOFOLLOW_ANY (sys/fcntl.h): no link anywhere in the path. */
+/** macOS's O_NOFOLLOW_ANY (sys/fcntl.h): no link anywhere in the path, the last name included. */
 const O_NOFOLLOW_ANY = 0x20000000;
+/** `flags` as macOS opens them: O_NOFOLLOW_ANY in place of O_NOFOLLOW, which the kernel refuses beside it (EINVAL). */
+const darwinFlags = (flags: number): number => (flags & ~O_NOFOLLOW) | O_NOFOLLOW_ANY;
 const DIR_FLAGS = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
 const DARWIN = process.platform === "darwin";
 const LINUX = process.platform === "linux";
@@ -37,7 +39,7 @@ const asLoop = (error: unknown, at: string, link: boolean): unknown =>
 /** `root`/`below` opened with `flags` (O_NOFOLLOW added), through no link anywhere below `root` (else ELOOP). */
 export async function openBeneath(root: string, below: string, flags: number, mode?: number): Promise<FileHandle> {
   const names = namesOf(below);
-  if (DARWIN) return open(names.length === 0 ? root : `${root}/${below}`, flags | O_NOFOLLOW | O_NOFOLLOW_ANY, mode);
+  if (DARWIN) return open(names.length === 0 ? root : `${root}/${below}`, darwinFlags(flags), mode);
   if (!LINUX) throw failure("ENOSYS", `no open on ${process.platform} refuses a symbolic link on the way`);
   if (names.length === 0) return open(root, flags | O_NOFOLLOW, mode);
   const step = async (dir: FileHandle, name: string, how: number, made?: number): Promise<FileHandle> => {
@@ -64,7 +66,7 @@ export async function openBeneath(root: string, below: string, flags: number, mo
 /** openBeneath, synchronous (grep's worker): the descriptor. */
 export function openBeneathSync(root: string, below: string, flags: number, mode?: number): number {
   const names = namesOf(below);
-  if (DARWIN) return openSync(names.length === 0 ? root : `${root}/${below}`, flags | O_NOFOLLOW | O_NOFOLLOW_ANY, mode);
+  if (DARWIN) return openSync(names.length === 0 ? root : `${root}/${below}`, darwinFlags(flags), mode);
   if (!LINUX) throw failure("ENOSYS", `no open on ${process.platform} refuses a symbolic link on the way`);
   if (names.length === 0) return openSync(root, flags | O_NOFOLLOW, mode);
   const step = (dir: number, name: string, how: number, made?: number): number => {
