@@ -188,3 +188,12 @@ test("a value saved after the snapshot read a row that holds it is cut from that
   assert.ok(!JSON.stringify(timeline).includes(KEY), "the timeline holds the key saved after its rows were read");
   assert.ok(timeline.some((row) => row.kind === "final_answer" && /\[redacted\]/.test(row.text ?? "")), "its answer row is cut where the key was");
 });
+
+test("a snapshot only reads: a write through its nested transaction is refused and changes nothing", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.snapshot(async (snapshot) => {
+    await assert.rejects(snapshot.agents.archive("agent-1", true), /only reads/);
+  });
+  assert.equal((await store.agents.get("agent-1")).archivedAt ?? null, null);
+});

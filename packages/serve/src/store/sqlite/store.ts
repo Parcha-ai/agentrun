@@ -313,8 +313,23 @@ function snapshotOf(connection: StoreConnection, tx: Tx): StoreConnection {
     get: (sql, ...params) => tx.get(sql, ...params),
     all: (sql, ...params) => tx.all(sql, ...params),
     write: () => Promise.reject(new Error("a store snapshot only reads")),
-    transaction: (callback) => callback(tx),
+    // A transaction inside the snapshot reads through the same handle, and refuses what writes (SQLite's deferred BEGIN is
+    // not read-only, so the refusal is here, as Postgres's read-only transaction makes it).
+    transaction: (callback) => callback(readOnly(tx)),
     close: () => Promise.resolve(),
+  };
+}
+
+function readOnly(tx: Tx): Tx {
+  const refuse = () => Promise.reject(new Error("a store snapshot only reads"));
+  return {
+    dialect: tx.dialect,
+    get: (sql, ...params) => tx.get(sql, ...params),
+    all: (sql, ...params) => tx.all(sql, ...params),
+    exec: refuse,
+    run: refuse,
+    runCounted: refuse,
+    step: refuse,
   };
 }
 

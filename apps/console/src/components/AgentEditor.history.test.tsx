@@ -36,7 +36,8 @@ describe("AgentEditor's History, a workflow agent's past revision", () => {
     expect(validate).not.toHaveBeenCalled();
     await page.click(/^Back to History$/);
     expect(page.host.querySelector("textarea[aria-label='Workflow JSON']")).toBeNull();
-    expect(page.button(/^Save revision$/)).toBeTruthy();
+    // Save is back, off until an edit: it names the revision saved.
+    expect(page.button(/^(Save revision|Saved · rev \d+|Saved)$/)).toBeTruthy();
   });
 
   it("Make current beside the graph makes that revision current", async () => {
