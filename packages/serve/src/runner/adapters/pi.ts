@@ -72,7 +72,15 @@ export interface PiAdapterOptions {
    *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
    *  its model from the root's agent, through this session's proxy and its booking. */
   readonly extensions?: readonly Extension[];
+  /** The run's models of other tiers than its own (a learned workflow's node of a tier: AGENT_MODEL_FAST,
+   *  AGENT_MODEL_STRONG), by tier, each a model route as the session's is: read when the session opens, each on a proxy of
+   *  its own beside the session's (its origin, credential, price and fetch), on the session's booking (io.models), so its
+   *  requests are the run's, under its one cap, each priced at its own model. Reached through `port(label, tier)`. */
+  readonly tiers?: ReadonlyMap<string, PiTierModel>;
 }
+
+/** A tier's model as the session's proxy for it takes it: its route's provider, model, catalog entry, price and fetch. */
+export type PiTierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch">;
 
 const PROVIDER = "agentrun-session";
 const INPUT_REQUEST = "agentrun:input";
@@ -99,23 +107,29 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
-  const proxy = await startModelProxy({
-    policy: await policyFor(options.provider, model, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]),
+  const proxyOf = async (route: PiTierModel, tools: readonly string[]) => startModelProxy({
+    policy: await policyFor(route.provider, route.model, tools),
     hooks: io.models,
-    model,
-    origin: options.provider.origin,
-    credential: async () => (await options.provider.credential()) ?? "",
-    ...(options.price ? { price: options.price as never } : {}),
-    ...(options.provider.headers ? { headers: options.provider.headers } : {}),
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    model: route.model,
+    origin: route.provider.origin,
+    credential: async () => (await route.provider.credential()) ?? "",
+    ...(route.price ? { price: route.price as never } : {}),
+    ...(route.provider.headers ? { headers: route.provider.headers } : {}),
+    ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(options.redact ? { redact: options.redact } : {}),
   }, randomBytes(32).toString("base64url"));
-  // An open that fails from here (the claim lost while the session opened) closes the proxy: its server would hold the
-  // runner's process open.
+  const proxy = await proxyOf(options, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]);
+  // Each tier's proxy, on the session's booking: only the host's own requests (side keys) reach it, so it admits no tool
+  // of the session's by name.
+  const tiers = new Map<string, { proxy: ModelProxy; route: PiTierModel }>();
+  // An open that fails from here (the claim lost while the session opened) closes the proxies: their servers would hold
+  // the runner's process open.
   try {
-    return await sessionOn(proxy, options, spec, io, context);
+    for (const [tier, route] of options.tiers ?? []) tiers.set(tier, { proxy: await proxyOf(route, []), route });
+    return await sessionOn(proxy, options, spec, io, context, tiers);
   } catch (error) {
     await proxy.close().catch(() => undefined);
+    for (const { proxy: each } of tiers.values()) await each.close().catch(() => undefined);
     throw error;
   }
 }
@@ -141,7 +155,7 @@ export async function policyFor(provider: PiAdapterOptions["provider"], model: s
 }
 
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
-async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context): Promise<AdapterSession> {
+async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context, tiers: ReadonlyMap<string, { readonly proxy: ModelProxy; readonly route: PiTierModel }>): Promise<AdapterSession> {
   const { run, model, like } = options;
   const { api } = options.provider;
   const models = createModels();
@@ -265,11 +279,18 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     async close() {
       closed = true;
       await proxy.close().catch(() => undefined);
+      for (const each of tiers.values()) await each.proxy.close().catch(() => undefined);
     },
     // The session's own model route for a request the host sends beside pi's (a learned workflow's model node): its proxy
     // with a side key minted for `label`, pi's model and the provider's wire (never a literal), so the request goes through
-    // the same policy, origin, credential, price and booking as pi's own, labelled. None once the session is closed.
-    port: (label: string) => (closed ? undefined : { url: proxy.url, key: proxy.sideKey(label), model, api }),
+    // the same policy, origin, credential, price and booking as pi's own, labelled. `tier`: that tier's proxy and model
+    // instead (options.tiers), on the same booking; none for a tier the session has no proxy of. None once closed.
+    port: (label: string, tier?: string) => {
+      if (closed) return undefined;
+      if (tier === undefined) return { url: proxy.url, key: proxy.sideKey(label), model, api };
+      const at = tiers.get(tier);
+      return at ? { url: at.proxy.url, key: at.proxy.sideKey(label), model: at.route.model, api: at.route.provider.api } : undefined;
+    },
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
     // commit that places it is the one that takes its row. `origin` (a trigger's message): its input is the host's user
     // entry (KINDS.input) with that origin, in the same submission, so the attribution lands with the message or not at all.

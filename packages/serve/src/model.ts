@@ -43,6 +43,9 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as cons
 export const TIERS = ["fast", "default", "strong"] as const;
 export type Tier = (typeof TIERS)[number];
 const TIER_ENV: Record<Tier, string> = { fast: "AGENT_MODEL_FAST", default: "AGENT_MODEL", strong: "AGENT_MODEL_STRONG" };
+/** The model `env` names for `tier` of its own (AGENT_MODEL_FAST, AGENT_MODEL_STRONG; AGENT_MODEL for the default), or
+ *  undefined when it names none: a tier the host has no model of, whose request runs on the run's own model. */
+export const tierModelOf = (env: NodeJS.ProcessEnv, tier: Tier): string | undefined => env[TIER_ENV[tier]] || undefined;
 /** The workflow node kinds that run on a model. */
 export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 

@@ -13,12 +13,13 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
+import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { BeforeRequest, HostTool, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import type { Approvals } from "../approvals.js";
 import type { installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
-import type { PinnedModel, Tier } from "../model.js";
+import { llmTiers, nodeTiers, type PinnedModel, type Tier, TIERS, tierModelOf, workflowNodes } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -37,7 +38,7 @@ import { layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowTool } from "../learned-workflow.js";
-import { PORT_PROVIDER } from "../port-models.js";
+import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
@@ -340,7 +341,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   holdClaimed(cut, toolEnv);
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys).
-  const route = await deps.routeOf(modelAskOf(launch.model, body.model), withModelKeys(deps.env, toolEnv), "default", PI_WIRES, undefined, cut);
+  const modelEnv = withModelKeys(deps.env, toolEnv);
+  const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
+  // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
+  // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.
+  const tierRoutes = new Map<Tier, ModelRoute>();
   // The run's pi-native extensions, in the root agent through the pi adapter (PiAdapterOptions.extensions), which installs
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
@@ -360,6 +365,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.like ? { like: route.like } : {}),
     ...(route.price ? { price: route.price as never } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    tiers: tierRoutes,
   });
 
   // The gate before a call's intent: the run's revision's tool settings through runGate (approvals "never" turns the one
@@ -376,9 +382,15 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // tool calls and its decisions all on one rule and one booking), so the spec carries no beforeRequest of its own.
   const capUsd = launch.maxCostUsd;
   const capModel = capModelOf(route);
+  // And each tier's model (tierRoutes, filled below), priced as its own: a learned node's request on it is admitted and
+  // booked at its price.
+  const tierCapModel = (id: string): CapModel | undefined => {
+    for (const tierRoute of tierRoutes.values()) if (tierRoute.model === id) return capModelOf(tierRoute);
+    return undefined;
+  };
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
-    modelOf: (id) => (id === route.model ? capModel : undefined),
+    modelOf: (id) => (id === route.model ? capModel : tierCapModel(id)),
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
@@ -426,7 +438,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // onto the tools' environment alone. The model's route was built on the revision's keys above, so a decision key never
   // becomes its model's.
   const workflows = seedLaid?.workflows ?? [];
+  // A tier a learned workflow's node names and the host has a model of: none can't be reached is left as `why`, and its
+  // node fails in those words (learnedWorkflowHostTool), never on another model.
+  const tierUnreachable = new Map<Tier, string>();
   if (learnsWorkflows(revision.kind, workflows)) {
+    for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
+      if ("why" in routed) tierUnreachable.set(tier, routed.why);
+      else tierRoutes.set(tier, routed);
+    }
     const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
     holdClaimed(cut, learnedKeys);
     Object.assign(toolEnv, learnedKeys);
@@ -447,7 +466,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const handTools = tools.hostTools(withKindTools(granted, tools), results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions)).map((tool) => answersCut(tool, cut));
+  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -558,6 +578,43 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
  *  the tool among its own: the run has it beside them, so the harness is told of it as of theirs. */
 export const learnsWorkflows = (kind: string, workflows: readonly LearnedWorkflow[]): boolean => kind === "agentic" && workflows.length > 0;
 
+/** A tier a learned workflow's node names, as the run has it: its model's id, or why it could not be reached. */
+export type LearnedTier = { readonly model: string } | { readonly why: string };
+
+/** The tiers other than the default that `workflows`' model nodes and `llm` calls name (model.ts nodeTiers, llmTiers),
+ *  in TIERS order. A workflow that does not parse names none: its call refuses it. */
+export function learnedTiers(workflows: readonly LearnedWorkflow[]): Tier[] {
+  const named = new Set<Tier>();
+  for (const flow of workflows) {
+    let doc: Workflow;
+    try {
+      doc = JSON.parse(flow.workflow) as Workflow;
+      const nodes = workflowNodes(doc, inspectWorkflow(doc));
+      for (const tier of llmTiers(nodes, nodeTiers(nodes))) named.add(tier);
+    } catch {
+      continue;
+    }
+  }
+  return TIERS.filter((tier) => tier !== "default" && named.has(tier));
+}
+
+/** The route of each tier `workflows` name (learnedTiers) that `env` names a model of its own for (tierModelOf:
+ *  AGENT_MODEL_FAST, AGENT_MODEL_STRONG), through `routeOf` (the run's one route, as its own model's): the model a node
+ *  of that tier runs on, priced at its own price. A tier with no model of its own is left out (its nodes run on the
+ *  run's model); one whose route is refused is `why`, so its nodes fail in those words and never run on another model. */
+export async function learnedTierRoutes(workflows: readonly LearnedWorkflow[], env: NodeJS.ProcessEnv, routeOf: (tier: Tier) => Promise<ModelRoute>): Promise<Map<Tier, ModelRoute | { why: string }>> {
+  const routes = new Map<Tier, ModelRoute | { why: string }>();
+  for (const tier of learnedTiers(workflows)) {
+    if (tierModelOf(env, tier) === undefined) continue;
+    try {
+      routes.set(tier, await routeOf(tier));
+    } catch (error) {
+      routes.set(tier, { why: String((error as Error)?.message ?? error).slice(0, 300) });
+    }
+  }
+  return routes;
+}
+
 /** The run's learned_workflow tool as a HostTool, listed when the run has it (learnsWorkflows: an agentic revision whose
  *  agent learned workflows, by learning.ts chooseWorkflows as main's start chooses them, so the tool set the model sees
  *  matches main). `granted`, the revision's own tools, are the ones its workflows' call nodes may call. Every run's session — pi's and every CLI harness's — has a model
@@ -576,11 +633,23 @@ export async function learnedWorkflowHostTool(opts: {
   /** The run's gate's permissions (adapterRunGate): each call node's tool is held to them, as main holds it. */
   readonly permissions: RunPermissions;
   readonly ctx: HostToolCtx;
+  /** The run's models of other tiers (pi's: learnedTierRoutes), by tier: a node of one runs on that model, through the
+   *  session's port of the tier (AdapterSession.port's `tier`); one with `why` fails in those words. A tier not here runs
+   *  on the session's model. */
+  readonly tiers?: ReadonlyMap<string, LearnedTier>;
 }): Promise<HostTool | undefined> {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
-  const models = await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL);
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: models as never, modelOf: () => ({ provider: PORT_PROVIDER, modelId: "session" }), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh });
+  const tiers = opts.tiers ?? new Map<string, LearnedTier>();
+  const byProvider = new Map([[PORT_PROVIDER, await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL)]]);
+  for (const [tier, model] of tiers) if ("model" in model) byProvider.set(tierProvider(tier), await opts.run.ledger.models(LEARNED_WORKFLOW_TOOL, tier));
+  const modelOf = (tier: string | undefined) => {
+    const model = tier === undefined ? undefined : tiers.get(tier);
+    if (model === undefined) return { provider: PORT_PROVIDER, modelId: "session" };
+    if ("why" in model) throw new Error(`the run's ${tier} model could not be reached: ${model.why}`);
+    return { provider: tierProvider(tier!), modelId: model.model };
+  };
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -690,7 +759,7 @@ export async function webHostTools(host: ToolHost, granted: readonly string[], c
   return tools;
 }
 
-async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>): Promise<AdapterRunSpec["session"]["tools"]> {
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. learned_workflow
   // binds below with no web tool, so a learned run with no web tool still lists it.
@@ -704,7 +773,7 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // the session's tools the harness is told of: its model nodes run on the session's proxied models (run.ledger.models),
   // each a request on the run's one route labelled learned_workflow. The agent's scoped keys (host.env) are its call
   // nodes'.
-  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx });
+  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal

@@ -325,8 +325,10 @@ export interface AdapterSession {
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
    *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of
-   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. */
-  port?(label: string): SessionPort | undefined;
+   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. `tier`: the run's
+   *  model of that tier instead (a learned workflow's node of a tier), on a proxy of its own beside the session's, with
+   *  that model's origin, credential and price and the session's booking; undefined when the session has none for it. */
+  port?(label: string, tier?: string): SessionPort | undefined;
 }
 
 /** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */

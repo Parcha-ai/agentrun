@@ -309,8 +309,9 @@ test("a learned workflow holding one of the server's secrets is left out, and th
   assert.deepEqual([pin.workflows, pin.workflows_left_out], [["answer"], ["leaky"]], JSON.stringify(pin));
 });
 
-test("a learned workflow's model node of a tier the run has no model of runs on the run's own model, never on one the run was not made with", { timeout: 120_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL_FAST: "faux-fast" });
+test("a learned workflow's model node of a tier the host has no model of (no AGENT_MODEL_FAST) runs on the run's own model", { timeout: 120_000 }, async (t) => {
+  // learn-workflow-tiers.test.mjs: a tier the host has a model of runs on it, at its own price.
+  withEnv(t, {}, ["AGENT_MODEL_FAST"]);
   const { api, data } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps[0].tier = "fast";
