@@ -18,8 +18,12 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
-import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
+import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
+import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
+import { raiseFollowUpId } from "../run-view.js";
+
+/** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
+const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, endedBy, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, type StopReason } from "./loop-contract.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
@@ -31,7 +35,7 @@ import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold 
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { portModels, type PortModels } from "../port-models.js";
+import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions">;
@@ -244,8 +248,9 @@ export interface RunLedger {
   readonly paid: RunTools;
   /** The session's proxied models for a request the host sends beside the harness's own, under `label` (portModels on
    *  the session's port), read at each request: a spec may take them at its build, before the session opens; a request
-   *  made while no port is up (no session, or a harness with none) finds no model. */
-  models(label: string): Promise<PortModels>;
+   *  made while no port is up (no session, or a harness with none) finds no model. `tier`: the run's model of that tier
+   *  (AdapterSession.port's `tier`), listed under tierProvider(tier). */
+  models(label: string, tier?: string): Promise<PortModels>;
   /** A paid call the run's cap refused that pauses the run (an agent's ask for a person's browser time: main's paidCall
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
@@ -704,6 +709,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let mcpHosted: HostCalls["mcp"] = () => undefined;
   let mcpStale = false;
 
+  /** Marks the raise's follow-up the server's (MESSAGE_ORIGIN, timeline/origin.ts) before it is sent: its own commit, the
+   *  input's user entry left as pi writes it (its submission, which a re-claim answers from, unchanged), so the Timeline
+   *  shows the next user entry with exactly this text as "AgentRun: …". Once per follow-up: the marker names its request
+   *  id, and a re-claim that finds one under it writes none (a second would stay open, and could take a person's later
+   *  message of the same words for the server's). A CLI's run records its follow-up through its own record, which carries
+   *  the origin itself. */
+  const markServerFollowUp = async (theHarness: Harness, theRoot: Conversation, text: string, requestId: string): Promise<void> => {
+    if (cliRecord) return;
+    const marked = (await entriesOf(gate!.journal, theRoot.id, context)).some((entry) => entry.kind === MESSAGE_ORIGIN && (entry.data as { requestId?: unknown } | undefined)?.requestId === requestId);
+    if (marked) return;
+    await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: MESSAGE_ORIGIN, data: { origin: CAP_RAISED_ORIGIN, text, requestId } as unknown as JsonValue }), context);
+  };
+
   /** The run's raise state, read from its root: the newest budget entry with no raise entry after it is the pause it
    *  waits at (its pending cap is the cap a raise is checked against); the newest raise entry is its last raise. */
   async function raiseStateOf(): Promise<RaiseState> {
@@ -1018,7 +1036,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           // Lazy, as main's process takes them (portModels(() => sessionPort?.(...))): a spec takes them at its build, and
           // each request reads the session's port then, there once the session is open.
-          models: (label) => portModels(() => session?.port?.(label)),
+          models: (label, tier) => portModels(() => session?.port?.(label, tier), undefined, tier === undefined ? PORT_PROVIDER : tierProvider(tier)),
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },
@@ -1354,9 +1372,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The run's journal so far: a take an earlier claim's computer left in force ends released here (computer-journal.ts).
           await computerNow.up(await entriesOf(gate.journal, root.id, context));
         }
-        // The cap a raise left the run at, from its root (the newest raise entry), before any request of this claim: a
-        // claim that takes over a raised run (a resume, another runner's) holds it to the raise, never the launch's cap.
-        if (spec.cap) raisedCapUsd = (await raiseStateOf()).lastRaise?.to ?? raisedCapUsd;
+        // The cap a raise left the run at, before any request of this claim, through the one reader the run view and its
+        // budget card read too (capNowOf: the newest raise entry, else the launch's cap): a claim that takes over a raised
+        // run (a resume, another runner's, a restarted server's) holds it to the raise, never the launch's cap.
+        if (spec.cap) raisedCapUsd = capNowOf(spec.cap.capUsd, await entriesOf(gate.journal, root.id, context)) ?? raisedCapUsd;
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
         // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.
@@ -1399,7 +1418,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await takeRaises();
           if (paused) {
             if (!resumes || raising.capUsd === undefined || !spec.cap?.followUpOf) return await parkAtCap(harness, root, gate, paused);
-            await session!.send(spec.cap.followUpOf(raising.capUsd).text, { id: `agentrun:raise:${raising.state?.lastRaise?.pause ?? "follow-up"}` });
+            // The server's words, shown as its row ("AgentRun: …"), never as the person's; under the id a raise's answer named.
+            const followUp = spec.cap.followUpOf(raising.capUsd).text;
+            const followUpId = raiseFollowUpId(raising.state?.lastRaise?.pause ?? "follow-up");
+            await markServerFollowUp(harness, root, followUp, followUpId);
+            await session!.send(followUp, { id: followUpId });
             followedUp = true;
           }
         }
@@ -1410,7 +1433,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // the run's, is the follow-up's, never the first input's.
           const state = await raiseStateOf();
           if (state.pause === undefined && state.lastRaise?.pause !== undefined) {
-            await session!.send(spec.cap.followUpOf(state.lastRaise.to).text, { id: `agentrun:raise:${state.lastRaise.pause}` });
+            const followUp = spec.cap.followUpOf(state.lastRaise.to).text;
+            const followUpId = raiseFollowUpId(state.lastRaise.pause);
+            await markServerFollowUp(harness, root, followUp, followUpId);
+            await session!.send(followUp, { id: followUpId });
             followedUp = true;
           }
         }
