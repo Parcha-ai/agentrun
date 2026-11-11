@@ -42,7 +42,7 @@ export interface ProviderEntry {
   readonly keys: readonly { readonly name: string; readonly required: boolean }[];
   /** The mounts its computers take; none means it cannot mount the run's folder. */
   readonly mounts: readonly string[];
-  /** The network forms its computers make ("none", "open", "allow"), as its module's NETWORK declares them. Absent (a
+  /** The network forms its computers make ("none", "open", "allow"), as its descriptor declares them. Absent (a
    *  test's fixture): nothing is said of its network. */
   readonly network?: readonly string[];
   readonly metered: boolean;
@@ -94,15 +94,18 @@ export type GpuView = GpuCapability & { why?: string };
 
 /** A computer with no network: its programs run in a network of their own, so a run's allow-list is never offered it. */
 export const NO_NETWORK_WORDS = "no network, so this server's allow-list isn't offered";
-/** A computer on an open network (the vendor's own, or Local Chrome's public addresses from this machine), which this
- *  server's allow-list doesn't narrow. */
-export const VENDOR_NETWORK_WORDS = "an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply";
+/** A computer on the vendor's own network: open, which this server's allow-list doesn't reach. */
+export const VENDOR_NETWORK_WORDS = "the vendor's own network; this server's allow-list doesn't apply";
+/** A browser behind its own egress proxy (Local Chrome): every public host, unless the operator set a list. */
+export const OPERATOR_LIST_WORDS = "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts";
 
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
- *  makes "none" alone or "open" alone; none where the allow-list applies (Docker), or nothing is declared. */
+ *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where
+ *  the allow-list applies as it is (Docker), or nothing is declared. */
 export function networkWords(network: readonly string[] | undefined): string | undefined {
   if (network?.length === 1 && network[0] === "none") return NO_NETWORK_WORDS;
   if (network?.length === 1 && network[0] === "open") return VENDOR_NETWORK_WORDS;
+  if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
 }
 export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] };

@@ -9,7 +9,9 @@
 // where Chrome cannot start its sandbox, is refused in words, never retried without it), and every request Chrome makes
 // goes through the egress proxy, which reaches public addresses only, checked after its lookup: this machine's loopback
 // and its other services, private networks, link-local and a cloud's metadata address are each refused (chrome.ts
-// chromeFence). Chrome resolves no name itself, speaks no QUIC and sends WebRTC over no UDP.
+// chromeFence). Chrome resolves no name itself, speaks no QUIC and sends WebRTC over no UDP. A spec's network is "open"
+// (every public host) or { allow: [...] }: then the proxy reaches only the listed names and CIDRs, on ports 80 and 443,
+// and refuses every other host by name before any lookup; the public-address rule holds for a listed host too.
 //
 // What it does not fence: the DevTools socket has no auth, so any process of this machine that finds its port can drive
 // the browser; and the browser is a process of this machine, as the user AgentRun runs as, isolated by Chrome's sandbox
@@ -29,6 +31,7 @@ import { browserClient, browserHello, carries, labelsProblem } from "./browser.j
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
 import { LOCAL } from "./descriptors/local-chrome.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
+import { parseAllow } from "./docker/egress-proxy.js";
 import type { KindCapabilities } from "./kinds.js";
 import { BROWSER_FILE, type BrowserRecord, type BrowserState, CHROME_PID_FILE, EGRESS_SOCKET_FILE, PROFILE_DIR, READY_MS, STATE_FILE, SUPERVISOR_FILE, type SupervisorLine } from "./local-supervisor.js";
 import type { MountKind } from "./mount.js";
@@ -62,10 +65,36 @@ const SOCKET_PATH_MAX = 107;
 /** How long a release waits for the supervisor, then for Chrome, to end. */
 const END_MS = 10_000;
 
-/** A browser takes no mount: its descriptor's (descriptors/local.ts). */
+/** A browser takes no mount: its descriptor's (descriptors/local-chrome.ts). */
 export const MOUNT: readonly MountKind[] = LOCAL.mounts;
-/** The network a local browser runs on, its descriptor's: public addresses only, through its egress proxy. */
+/** The networks a local browser runs on, its descriptor's: through its egress proxy, public addresses ("open"), or only
+ *  the hosts of a list ("allow"), public ones still. */
 const NETWORK: readonly NetworkForm[] = LOCAL.network;
+
+/** A spec's network as this browser's proxy takes it: open (no list), a list (parseAllow's), or why it can't. */
+export function browserNetworkOf(network: unknown): { allow?: string[] } | { problem: string } {
+	if (network === "open") return {};
+	const given = typeof network === "object" && network !== null ? (network as { allow?: unknown }).allow : undefined;
+	if (!Array.isArray(given) || !given.every((entry) => typeof entry === "string"))
+		return { problem: `a local browser reaches public addresses through its egress proxy: network is "open" or { allow: [names and CIDRs] }, not ${JSON.stringify(network)}` };
+	let allow: string[];
+	try {
+		allow = parseAllow(given);
+	} catch (error) {
+		return { problem: (error as Error).message };
+	}
+	if (allow.length === 0) return { problem: 'a local browser\'s allowlist needs at least one name or CIDR; for every public host ask for "open"' };
+	return { allow };
+}
+
+/** What browser.json keeps of a checked spec's network: its list, when it has one. */
+const networkRecord = (network: unknown): { allow?: string[] } => {
+	const net = browserNetworkOf(network);
+	return "problem" in net ? {} : net;
+};
+
+/** A browser's network as list, attach and network() read it back from browser.json. */
+const networkRead = (record: BrowserRecord): NetworkPolicy => (record.allow ? { allow: [...record.allow] } : "open");
 
 /** The one configuration it offers, its descriptor's: a browser with a CDP target. */
 export const CAPABILITIES: readonly KindCapabilities[] = LOCAL.capabilities;
@@ -121,7 +150,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 
 	/**
 	 * A browser: our supervisor ends it at its deadline, and list reads that deadline, so the janitor sweeps one whose
-	 * supervisor is gone (lifetime janitor); it reaches public addresses only, through its egress proxy (network open);
+	 * supervisor is gone (lifetime janitor); it reaches public addresses only, through its egress proxy (network open), or
+	 * only a list's hosts among them (network allow);
 	 * it runs on this host, as this user, isolated by Chrome's sandbox alone (isolation host).
 	 */
 	capabilities(): ComputerCapabilities {
@@ -159,7 +189,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 		if (image !== BROWSER_IMAGE) refusals.push({ field: "image", message: `a local browser is this machine's Chrome: image is "${BROWSER_IMAGE}", not ${JSON.stringify(image)}` });
 		// A run's browser: it declares no persistence, so an agent's (spec.owner) is refused in words.
 		refusals.push(...checkTenure({ lifetimeMs, owner }, this.capabilities(), LOCAL.label));
-		if (network !== "open") refusals.push({ field: "network", message: `a local browser reaches public addresses through its egress proxy: network is "open", not ${JSON.stringify(network)}` });
+		const net = browserNetworkOf(network);
+		if ("problem" in net) refusals.push({ field: "network", message: net.problem });
 		if (labels !== undefined) {
 			const problem = labelsProblem(labels);
 			if (problem) refusals.push({ field: "labels", message: problem });
@@ -205,6 +236,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 			deadline: new Date(now + runLifetimeMs(spec)).toISOString(),
 			executablePath: this.executable() as string,
 			args: [...CHROME_FLAGS, ...(this.#headed ? [] : ["--headless=new"]), WINDOW],
+			...networkRecord(spec.network),
 		};
 		try {
 			await mkdir(join(dir, PROFILE_DIR), { recursive: true, mode: 0o700 });
@@ -327,7 +359,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 		return ok(
 			found.value.map(({ record, running }) => {
 				const deadline = new Date(record.deadline);
-				return { ref: refOf(record.id), labels: { ...record.labels }, deadline: Number.isNaN(deadline.getTime()) ? undefined : deadline, state: running ? "running" : "stopped", network: "open" };
+				return { ref: refOf(record.id), labels: { ...record.labels }, deadline: Number.isNaN(deadline.getTime()) ? undefined : deadline, state: running ? "running" : "stopped", network: networkRead(record) };
 			}),
 		);
 	}
@@ -335,7 +367,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 	#attached(record: BrowserRecord): AttachedComputer {
 		const deadline = new Date(record.deadline);
 		const user = `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}`;
-		return { ...refOf(record.id), spec: { image: BROWSER_IMAGE, user, network: "open", kind: "browser", ...(Number.isNaN(deadline.getTime()) ? {} : { deadline }) } };
+		return { ...refOf(record.id), spec: { image: BROWSER_IMAGE, user, network: networkRead(record), kind: "browser", ...(Number.isNaN(deadline.getTime()) ? {} : { deadline }) } };
 	}
 
 	async attach(ref: { id: string } | { labels: Record<string, string> }, _context: CallContext = {}): Promise<Result<AttachedComputer>> {
@@ -360,13 +392,19 @@ export class LocalBrowserProvider implements ComputerProvider {
 		return ok(this.#attached((running[0] as { record: BrowserRecord }).record));
 	}
 
-	/** Always open: public addresses through the proxy, and a change is refused in words. */
+	/** The network it was made with (open, or its list), read back; its proxy is started with it, so a change is refused in words. */
 	async network(ref: ComputerRef, policy?: NetworkSpec, _context: CallContext = {}): Promise<Result<NetworkPolicy>> {
-		if (policy !== undefined && policy !== "open") return fail("refused", `a local browser reaches public addresses through its egress proxy; its network cannot be set to ${JSON.stringify(policy)}`);
 		const problem = idProblem(ref?.id);
 		if (problem) return fail("invalid", problem);
-		if (!(await this.#record(ref.id))) return fail("not_found", `no local browser has the id ${ref.id}`);
-		return (await this.#live(ref.id)) ? ok("open") : fail("gone", `the local browser ${ref.id} no longer runs`);
+		const record = await this.#record(ref.id);
+		if (!record) return fail("not_found", `no local browser has the id ${ref.id}`);
+		const now = networkRead(record);
+		const asked = policy === undefined ? undefined : browserNetworkOf(policy);
+		// The same network, a list's entries in any order, is no change.
+		const same = (a: { allow?: string[] }, b: { allow?: string[] }) => JSON.stringify(a.allow ? [...a.allow].sort() : null) === JSON.stringify(b.allow ? [...b.allow].sort() : null);
+		if (asked !== undefined && ("problem" in asked || !same(asked, networkRecord(now))))
+			return fail("refused", `a local browser's network is set when it starts, by its egress proxy; it is ${JSON.stringify(now)} and cannot be set to ${JSON.stringify(policy)}`);
+		return (await this.#live(ref.id)) ? ok(now) : fail("gone", `the local browser ${ref.id} no longer runs`);
 	}
 
 	/**

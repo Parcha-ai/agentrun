@@ -185,8 +185,9 @@ test("every provider's descriptor declares network beside mounts: the network fo
 		assert.equal(new Set(network).size, network.length, `${id}'s network names each form once`);
 		if (network.includes("allow")) lists.push(id);
 	}
-	// Which provider takes this server's allowlist, read from the descriptors alone: Docker, through the egress proxy.
-	assert.deepEqual(lists, ["docker"]);
+	// Which provider takes this server's allowlist, read from the descriptors alone: Docker and Local Chrome, each through
+	// its egress proxy.
+	assert.deepEqual(lists, ["docker", "local-chrome"]);
 });
 
 test("providerFor() names the known ids for an id it does not know", async () => {

@@ -771,6 +771,11 @@ function runLocally(argv, { input, onSpawn } = {}) {
 		child.stderr.on("data", (chunk) => (stderr += chunk));
 		child.on("close", (code) => resolve({ code, stdout, stderr, pid: child.pid }));
 		onSpawn?.(child);
+		// A script that refuses before it reads its input exits with its stdin unread: the write's EPIPE is that exit, which
+		// the close above reports, never a failure of the run.
+		child.stdin.on("error", (error) => {
+			if (error.code !== "EPIPE") throw error;
+		});
 		child.stdin.end(input);
 	});
 }
