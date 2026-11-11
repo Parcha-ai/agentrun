@@ -1150,7 +1150,7 @@ export class OrgoDesktopClient implements ComputerClient {
 					rgba.set([red, green, blue, 255], (y * width + x) * 4);
 				}
 			}
-			bytes = encodePng(rgba, width, rect);
+			bytes = await encodePng(rgba, width, rect);
 		}
 		const id = randomBytes(6).toString("hex");
 		this.#held = { id, bytes };
