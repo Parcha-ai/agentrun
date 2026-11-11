@@ -53,8 +53,6 @@ import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode
 import { CAP_WRAPUP, type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
-/** A run's cap in USD, passed to its process. */
-export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
 /** How near two dollar figures are the same figure: a sum a float puts a hair past the cap (0.0028 + 0.3072 is
@@ -79,8 +77,6 @@ export const BOUND_FIELD = "boundUsd";
  *  case, so no request can pass it. */
 export const CAP_MODES = ["expected", "strict"] as const;
 export type CapMode = (typeof CAP_MODES)[number];
-/** A run's cap mode, passed to its process; absent is "expected". */
-export const CAP_MODE_ENV = "AGENTRUN_SERVE_CAP_MODE";
 
 /** How long after a request ended the next one in its conversation is expected to read its cache: 4 minutes, inside
  *  Anthropic's 5 (a cache kept that long from its last use; OpenAI's lasts longer). A request later than that is priced
