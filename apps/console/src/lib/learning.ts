@@ -253,10 +253,11 @@ const value = (v: string) => {
 /** The parts as a note's whole text, the one a write sends. */
 export const noteText = (p: NoteParts) => `---\nname: ${value(p.name)}\ndescription: ${value(p.description)}\ntype: ${p.type}\n${p.rest.map((l) => `${l}\n`).join("")}---\n${p.body.replace(/^\n*/, "\n")}`;
 /** The notes a note says it replaces, by file: its front matter's `supersedes`, a `[a.md, b.md]` list or one name, read
- *  as the server reads it (serve's learn/notes.ts listOf). None when it names none. */
+ *  as the server reads it (serve's learn/notes.ts: the whole value unquoted, then listOf). None when it names none. */
 export function supersedesOf(text: string): string[] {
   const line = noteParts(text).rest.find((l) => /^supersedes:/.test(l));
-  const raw = line ? line.replace(/^supersedes:\s*/, "").trim() : "";
+  // The whole value unquoted first, then the list split, as the server reads it: a quoted `"[old.md]"` is one list.
+  const raw = line ? unquote(line.replace(/^supersedes:\s*/, "").trim()).trim() : "";
   if (!raw) return [];
   return (/^\[.*\]$/.test(raw) ? raw.slice(1, -1).split(",") : [raw]).map((item) => unquote(item.trim())).filter(Boolean);
 }
