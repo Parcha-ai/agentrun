@@ -158,6 +158,8 @@ export class Webhooks {
   private changing: Promise<unknown> = Promise.resolve();
   /** A DELETE under way: no notice is queued meanwhile, so none slips past its drop of the queued messages. */
   private removing = false;
+  /** The timers of tries' writes the store refused, each written again (resettle): stopped at the close. */
+  private readonly rewriting = new Set<NodeJS.Timeout>();
   /** The message writes in flight (posted), each settled or not: a DELETE waits for them before its drop. */
   private readonly posting = new Set<Promise<void>>();
 
@@ -432,8 +434,9 @@ export class Webhooks {
    *  still queued in the store, for the next server (its receiver may get it twice, under the same webhook-id). */
   async close(): Promise<void> {
     this.closed = true;
-    for (const timer of this.timers.values()) clearTimeout(timer);
+    for (const timer of [...this.timers.values(), ...this.rewriting]) clearTimeout(timer);
     this.timers.clear();
+    this.rewriting.clear();
     this.stop.abort();
     await Promise.allSettled([...this.trying]);
   }
@@ -637,18 +640,22 @@ export class Webhooks {
       // Not written. This try's own outcome is known, so only its write is tried again, soon and until it lands, never
       // the send: a message its receiver has is not sent again when its claim runs out, and a failed one keeps its
       // schedule. A redelivery's outcome (the message's own state left as it was) is let go.
-      if (to !== undefined) this.resettle(id, write, () => this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing));
+      if (to !== undefined) this.resettle(id, how.redelivery, write, () => this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing));
       return attempt;
     }
     await this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing);
     return attempt;
   }
 
-  /** What follows a try's write: its next try armed, its failure said, and a 410's turn-off of the webhook as it stands. */
+  /** What follows a try's write: its next try armed, its failure said, and a 410's turn-off of the webhook as it stands.
+   *  The 410 is checked again against the webhook as it stands now: one whose write landed late (resettle), after a PUT set
+   *  another URL or a DELETE removed it, was the old URL's, and turns nothing off. */
   private async afterSettle(id: string, to: { state: ChannelPostRow["state"]; nextAt?: number } | undefined, delay: number | undefined, attempt: Attempt, attempts: number, failure: string | undefined, gone: boolean, standing: Config | undefined): Promise<void> {
     if (delay !== undefined) this.schedule(id, Math.max(0, (to?.nextAt ?? Date.now()) - Date.now()));
     if (to?.state === "dropped") this.say({ condition: "delivery_failed", type: attempt.type, webhook_id: id, attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
-    if (gone) {
+    const current = this.config;
+    const stillGone = gone && standing !== undefined && current !== undefined && !current.disabled && current.url === standing.url && current.secret_scope === standing.secret_scope && current.updated_at === standing.updated_at;
+    if (stillGone) {
       // Gone: the receiver says this endpoint is no more. Off, its queued messages dropped, until a PUT sets it again.
       const off = { ...standing!, disabled: { at: attempt.at, reason: "the receiver answered 410 Gone" } };
       try {
@@ -664,27 +671,28 @@ export class Webhooks {
   }
 
   /** A try's write the store refused (`write`), written again after the store's wait until it lands, then what follows it
-   *  (`after`), among the webhook's changes. Under the message's timer, so a DELETE's drop ends it; a message another try or
-   *  a redelivery has settled since is not this try's to write. Closed, it is left as the store holds it, for the next
-   *  server. */
-  private resettle(id: string, write: () => Promise<void>, after: () => Promise<void>): void {
+   *  (`after`), among the webhook's changes. Its own timer, beside the message's: the message keeps its schedule meanwhile.
+   *  A message's own try writes only while the message is still its (sending, its claim): one a DELETE dropped, or another
+   *  try settled, is not its to write. A redelivery, which claims nothing, writes its landing whatever the message's state
+   *  (a queued one reads sent, and its next try then finds nothing to send). Closed, it is left as the store holds it, for
+   *  the next server. */
+  private resettle(id: string, redelivery: boolean, write: () => Promise<void>, after: () => Promise<void>): void {
     if (this.closed) return;
-    clearTimeout(this.timers.get(id));
     const timer = setTimeout(() => {
-      this.timers.delete(id);
+      this.rewriting.delete(timer);
       void this.change(async () => {
         if (this.closed) return;
         try {
-          if ((await this.store.channels.get(id))?.state !== "sending") return;
+          if (!redelivery && (await this.store.channels.get(id))?.state !== "sending") return;
           await write();
         } catch {
-          return this.resettle(id, write, after);
+          return this.resettle(id, redelivery, write, after);
         }
         await after();
       }).catch((error: Error) => this.say({ condition: "attempt_unsaved", webhook_id: id, error: error.message }));
     }, this.storeRetryMs);
     timer.unref();
-    this.timers.set(id, timer);
+    this.rewriting.add(timer);
   }
 
   /** Every queued message dropped, with `why` in the log. `strict`: a drop the store refuses throws (a DELETE then fails

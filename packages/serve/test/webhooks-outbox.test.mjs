@@ -1021,6 +1021,62 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.ok(failed.includes("attempts=3"), failed);
   });
 
+  test("a 410 whose write the store refuses, written once a PUT has set another URL, turns nothing off: the new webhook stays on and its queued messages stay", async (t) => {
+    const old = await receiver(t, () => 410);
+    // The new receiver answers 503 at first: its message stays queued, its next try a minute away.
+    const fresh = await receiver(t, (n) => (n === 1 ? 503 : 200));
+    const dir = await scratch(t);
+    const log = logged();
+    let refuse = false;
+    const on = await webhookOn(t, dir, { retryMs: [60_000], storeRetryMs: 100, wrap: seeing("channels", (channels) => ({ settle: async (...args) => {
+      if (refuse) throw new Error("the store stayed locked past its busy wait: database is locked");
+      return channels.settle(...args);
+    } })) });
+    await on.runs("run_1", "run_2");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: old.url });
+    refuse = true;
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await log.when("condition=attempt_unsaved");
+    // The 410's write not landed yet, the webhook is set to another URL, and that one's message queued.
+    await webhooks.save({ url: fresh.url });
+    refuse = false;
+    await webhooks.emit("run.ended", { run_id: "run_2", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await fresh.when(1);
+    // The 410's write lands (its try in the log), then a test send settles behind everything before it.
+    await onDisk(dir, () => outboxOf(dir).attempts.some((a) => a.status_code === 410) && outboxOf(dir).attempts.some((a) => a.status_code === 503));
+    await webhooks.test().catch(() => undefined);
+    const view = webhooks.view();
+    assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the new webhook stands, on: the 410 was the old URL's");
+    assert.equal(settingOf(dir).disabled, undefined, "and the store holds it on");
+    assert.equal(outboxOf(dir).messages.filter((m) => m.status === "pending" && JSON.parse(m.body).data.run_id === "run_2").length, 1, "its queued message stays");
+    assert.ok(!log.lines.some((line) => line.includes("condition=webhook_disabled")), "nothing turned off");
+  });
+
+  test("a redelivery that lands but whose write the store refuses is written once the store takes it: the message reads delivered, and its own schedule stays until then", async (t) => {
+    // Its own first try answered 503 (queued, its next try a minute away); the redelivery answered 200.
+    const hook = await receiver(t, (n) => (n === 1 ? 503 : 200));
+    const dir = await scratch(t);
+    const log = logged();
+    let refuse = 0;
+    const on = await webhookOn(t, dir, { retryMs: [60_000], storeRetryMs: 100, wrap: seeing("channels", (channels) => ({ settle: async (...args) => {
+      if (refuse > 0) throw ((refuse -= 1), new Error("the store stayed locked past its busy wait: database is locked"));
+      return channels.settle(...args);
+    } })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
+    refuse = 1;
+    const id = hook.got[0].headers["webhook-id"];
+    assert.equal((await webhooks.redeliver(id)).status_code, 200);
+    await log.when("condition=attempt_unsaved");
+    await onDisk(dir, () => outboxOf(dir).messages.find((m) => m.id === id)?.status === "delivered", "the redelivery's write, landed");
+    assert.equal(hook.got.length, 2, "the message was not sent again");
+    assert.deepEqual(outboxOf(dir).attempts.map((a) => [a.status_code, a.redelivery]), [[503, false], [200, true]]);
+  });
+
   test("a try whose timer fires a little before its message is due is armed again for its time: every try comes, then the failure is said", async (t) => {
     const down = await receiver(t, () => 200, true);
     const log = logged();
