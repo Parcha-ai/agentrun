@@ -21,7 +21,7 @@ import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS } from "../journal-kinds.js";
 import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
-import { timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { timelineReducer, type TimelineEvent } from "../../timeline/index.js";
 import { emptyState, translate } from "../../live/translate.js";
 
 /** The one row a person's stop gives on the live timeline (live/translate.ts STOPPED_BY_YOU), the same on every harness. */

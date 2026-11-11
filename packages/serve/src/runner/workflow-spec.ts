@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { defineExtension, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "../agent-rows.js";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type Wire } from "@parcha/agentrun-kernel";
@@ -44,7 +44,7 @@ import { PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
 import { sessionProvider } from "../port-models.js";
 import { journalSessions } from "./sessions.js";
-import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
+import { type BudgetData, type EndData, KINDS, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
@@ -57,7 +57,7 @@ import type { Store } from "../store/store.js";
 export const SUBMIT_TOOL = "submit";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
-const SESSION = "workflow";
+const SESSION = WORKFLOW_SESSION;
 /** A call node's tool failure and a cap-held effect, as app.ts's runEffect completed them (the loop's `failing` reads them). */
 const TOOL_FAILED = "agentrun_serve_tool_failed";
 const CAP_HELD = "agentrun_serve_cap_held";
@@ -293,7 +293,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const callEnv = callEnvOf(claimedEnv, claimed);
     const installed: Extension[] = [];
     const nodeHost: ToolHost = {
-      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } } as unknown as ToolHost["where"],
+      where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } },
       env: callEnv,
       install: (extension) => void installed.push(extension),
       onConversation: () => {},

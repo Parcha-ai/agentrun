@@ -23,12 +23,13 @@ import { type HostRead, unionOf } from "../docker-host-addresses.js";
 import type { ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
+import { boxAllowOf } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
-import type { ComputerSettingKind, KindRegistry, ProviderEntry } from "./resolve-computer.js";
+import { type ComputerSettingKind, type KindRegistry, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
 
@@ -43,6 +44,10 @@ const refused = (words: string): Error => Object.assign(new Error(words), { code
  *  container): a comma list of IP addresses. The Docker provider's egress proxy refuses them as the host's, so a
  *  computer's allow-list never reaches the host itself; without them it refuses any allow-list there. */
 export const DOCKER_HOST_ADDRESSES_ENV = "AGENTRUN_DOCKER_HOST_ADDRESSES";
+
+/** The variables the local browser's provider finds its Chrome by (the computer package's findChrome): the server's own
+ *  values are handed to it, and no other variable of the server's. */
+export const CHROME_LOOKUP = ["CHROME_PATH", "PI_BROWSER_CHROME", "PATH"] as const;
 
 /** `env`'s AGENTRUN_DOCKER_HOST_ADDRESSES: its addresses, each once; undefined when unset or empty, never one made up.
  *  An entry that is not an IP address throws, naming it: the server's start checks the setting, so no run meets one. */
@@ -104,12 +109,13 @@ export interface ComputerDepsOptions {
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (Docker's: the
  *  owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox the package's recipe; any other provider's: its registry
  *  entry's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in
- *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network. box_allow is a
- *  sandbox's egress list: a sandbox with none, or "none", has no network; a browser, desktop or phone with none has its
- *  provider's own ("open"); an explicit list or "none" applies to any kind, narrowed to "none" for a provider that makes
- *  no other (networkOf). No key and no environment. */
+ *  words, a Docker desktop's saying it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its network
+ *  (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read from `env`) for a launch that names
+ *  none. No key and no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
+  // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
+  const current = (): readonly string[] | "none" => boxAllowOf(env as NodeJS.ProcessEnv);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
     if (entry.id === "docker" && named !== undefined) return named;
     // Docker's sandbox: the package's own recipe, which serve builds (the registry gives Docker no default).
@@ -123,20 +129,28 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
     image: imageOf(entry, kind),
     // The leak bound, within the longest the provider makes (E2B's is an hour): a longer one it refuses at create.
     lifetimeMs: Math.min(COMPUTER_LIFETIME_MS, run.maxLifetimeMs ?? COMPUTER_LIFETIME_MS),
-    network: networkOf(kind, run),
+    network: networkOf(entry, kind, run, current),
   });
 }
 
-/** The network a computer of `kind` asks for: as the run allows (box_allow), narrowed to "none" when its provider makes
- *  "none" but not what the run allows. A remote computer (Daytona's or E2B's, each one whose capabilities' network is
- *  ["none"]) runs its programs in a network of their own, so an open or listed network is one it refuses at create;
- *  "none" reaches less than the run allows, never more. The one exception is a vendor-hosted computer that runs only on
- *  the vendor's own network (its capabilities' network is ["open"]: a cloud phone, a hosted browser): it is "open"
- *  whatever the run allows, since this server's allow-list can't reach it, and it is never refused for a list. */
-function networkOf(kind: ComputerKindOf, run: ComputerRun): ComputerSpec["network"] {
-  if (run.networks && run.networks.length > 0 && run.networks.every((one) => one === "open")) return "open";
-  const allowed: ComputerSpec["network"] = run.boxAllow === undefined ? (kind === "sandbox" ? "none" : "open") : run.boxAllow === "none" ? "none" : { allow: [...run.boxAllow] };
-  const form = allowed === "none" || allowed === "open" ? allowed : "allow";
+/** The network a computer of `kind` on `entry` asks for: what the run allows (its box_allow), narrowed to "none" when its
+ *  provider makes "none" but not what the run allows. A launch that names no box_allow (a row from before every launch
+ *  was stamped with it) allows what this server allows now (`current`), never "open"; a sandbox with none still has no
+ *  network, as it always had. A remote computer (Daytona's or E2B's, each one whose capabilities' network is ["none"])
+ *  runs its programs in a network of their own, so an open or listed network is one it refuses at create; "none" reaches
+ *  less than the run allows, never more. The one exception is a vendor-hosted computer that runs only on the vendor's own
+ *  network (its capabilities' network is ["open"]: a cloud phone, a hosted browser): under a list, the default or the
+ *  operator's, it is "open", since this server's list can't reach it, and Settings says so (computers.ts networkWords);
+ *  under "none", the operator's word for no network at all, it is refused in words (noNetworkRefusal), as the run's
+ *  start refuses it (resolve-computer.ts computerReadiness). */
+function networkOf(entry: ProviderEntry, kind: ComputerKindOf, run: ComputerRun, current: () => readonly string[] | "none"): ComputerSpec["network"] {
+  const boxAllow = run.boxAllow ?? (kind === "sandbox" ? "none" : current());
+  if (vendorNetworkOnly(run.networks)) {
+    if (boxAllow === "none") throw refused(noNetworkRefusal(entry.label, kind));
+    return "open";
+  }
+  const allowed: ComputerSpec["network"] = boxAllow === "none" ? "none" : { allow: [...boxAllow] };
+  const form = allowed === "none" ? "none" : "allow";
   return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
 }
 
@@ -189,12 +203,20 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   const dockerOptions = async (boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const where = options.dockerPaths ? await (paths ??= options.dockerPaths()) : ({ here: true } as const);
     const volume = dockerVolumeOf(where);
-    const read = volume && Array.isArray(boxAllow) && options.hostAddresses ? await options.hostAddresses() : undefined;
+    // A launch that names no box_allow (a row from before every launch was stamped) allows what this server allows now,
+    // as its computer's network does (networkOf), so the provider's options follow the same setting.
+    const allow = boxAllow ?? boxAllowOf(env as NodeJS.ProcessEnv);
+    const read = volume && Array.isArray(allow) && options.hostAddresses ? await options.hostAddresses() : undefined;
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
     return { image: dockerImage, ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);
-  const providers = computerProviderMakers({ load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : given) });
+  // The local browser finds its Chrome where the server's environment names one (CHROME_PATH, PI_BROWSER_CHROME, else
+  // PATH): those three alone, for the claim and Settings → Computers' test alike.
+  const chromeEnv = { env: Object.fromEntries(CHROME_LOOKUP.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]]))) };
+  const providers = computerProviderMakers({
+    load: async (id, given, claim) => load(id, id === "docker" ? { ...given, ...(await dockerOptions(claim?.boxAllow)) } : id === "local" ? { ...given, ...chromeEnv } : given),
+  });
   const computerDeps: ComputerDeps = {
     kinds,
     providers,

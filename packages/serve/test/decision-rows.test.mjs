@@ -2,7 +2,7 @@
 // adds to the run's usage row.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS } from "@parcha/pi-durable-agent/timeline";
+import { CAPS } from "../dist/timeline/index.js";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
 import { soFarOf } from "../dist/run-view.js";
 

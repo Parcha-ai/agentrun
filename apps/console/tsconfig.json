@@ -12,7 +12,7 @@
     "isolatedModules": true,
     "types": ["vite/client"],
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"], "@dsl/*": ["../../packages/dsl/src/*"], "@timeline/*": ["../../packages/pi-durable-agent/src/timeline/*"], "@pi-browser/*": ["../../packages/pi-browser/src/core/*"] }
+    "paths": { "@/*": ["src/*"], "@dsl/*": ["../../packages/dsl/src/*"], "@timeline/*": ["../../packages/serve/src/timeline/*"], "@pi-browser/*": ["../../packages/pi-browser/src/core/*"] }
   },
   "include": ["src", ".storybook/*.ts", ".storybook/*.tsx"]
 }

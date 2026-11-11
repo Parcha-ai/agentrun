@@ -3,18 +3,23 @@
 // pipes, a missing root, and durability on return, shown with pi-durable-disk's fsync-snapshot shim.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
-import { runDirIn } from "@parcha/pi-durable-agent";
+import { Worker } from "node:worker_threads";
+import { agentDiskDir } from "../dist/server-fs.js";
 import { learningRepo } from "../dist/learning.js";
+import { sendFile } from "../dist/run-files.js";
 import { ID } from "../dist/validate.js";
 import { agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
 
-const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
+const SHIM = new URL("./store-fixtures/fsync-snapshot.c", import.meta.url).pathname;
 const WRITER = new URL("./fixtures/workspace-durable-writer.mjs", import.meta.url).pathname;
+const GREP_WORKER = new URL("../dist/workspace/grep-worker.js", import.meta.url);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -31,13 +36,20 @@ suite("LocalWorkspace", async () => {
   return { workspace: localWorkspace(root), root, outside };
 });
 
+// The branch every platform without /proc/self/fd takes (macOS, where Docker Desktop binds the run's folder), forced
+// here so Linux CI runs it: the same answers, each path checked under the root.
+suite("LocalWorkspace, resolving paths (as off Linux)", async () => {
+  const { root, outside } = scratch();
+  return { workspace: localWorkspace(root, { procFd: false }), root, outside };
+});
+
 async function refused(promise, code) {
   await assert.rejects(promise, (error) => error?.name === "WorkspaceError" && error.code === code);
 }
 
 test("paths: a run's folder and an agent's learning folder are where today's code keeps them", () => {
   for (const agent of ["acme", "Acme", "a.b_c-9", "x".repeat(128)]) {
-    assert.equal(runFolder("/data", agent, "run-1"), join(runDirIn("/data", agent, "run-1"), "work"), agent);
+    assert.equal(runFolder("/data", agent, "run-1"), join(join(agentDiskDir("/data", agent), "runs", "run-1"), "work"), agent);
     assert.equal(agentLearningFolder("/data", agent), learningRepo("/data", agent), agent);
   }
   assert.match(runFolder("/data", "acme", "r1"), /^\/data\/disk\/agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);
@@ -262,8 +274,9 @@ test("local: a folder swapped for a link to outside, over and over, never sends 
   const swapper = spawn(process.execPath, ["-e", swap, root, outside], { detached: true, stdio: "ignore" });
   const calls = { done: 0, refused: 0 };
   try {
-    const until = Date.now() + 3_000;
-    while (Date.now() < until) {
+    // At least 30 rounds of every call against the swapper, and on until more than 50 calls went through: counted, never
+    // timed, so a loaded box races the swapper as long as an idle one does.
+    for (let round = 0; round < 30 || calls.done <= 50; round += 1) {
       for (const call of [
         () => workspace.read("a/victim").then((bytes) => assert.notEqual(Buffer.from(bytes).toString("utf8"), "outside\n", "a read never returns the outside file")),
         () => workspace.remove("a/victim", { force: true }),
@@ -283,6 +296,182 @@ test("local: a folder swapped for a link to outside, over and over, never sends 
   assert.ok(calls.done > 50, `calls went through between swaps (${JSON.stringify(calls)})`);
   assert.deepEqual(readdirSync(outside), ["victim"], "nothing was made or removed outside");
   assert.equal(readFileSync(join(outside, "victim"), "utf8"), "outside\n", "the outside file is unchanged");
+});
+
+// A box process swapping a folder of the run's for a link to the host, landed at the worst moment: once the walk holds
+// the folder, before anything is done in it (the onHeld hook). Shown for both branches: through /proc/self/fd (Linux)
+// and resolving paths (macOS's, forced so Linux CI runs it).
+const BRANCHES = [
+  { name: "through /proc/self/fd", procFd: true, skip: process.platform !== "linux" && "only Linux has /proc/self/fd" },
+  { name: "resolving paths (as off Linux)", procFd: false, skip: false },
+];
+
+/** A hook that, the `nth` time folder `target` is held, moves it aside and puts a link to `to` in its place. */
+function swapWhenHeld(target, to, nth = 1) {
+  let seen = 0;
+  return (abs) => {
+    if (abs !== target || ++seen !== nth) return;
+    renameSync(target, `${target}.real`);
+    symlinkSync(to, target);
+  };
+}
+
+/** A host folder beside the root: a file, and a folder holding another, that no call may touch. */
+function hostFiles(outside) {
+  writeFileSync(join(outside, "victim"), "the host's file\n");
+  mkdirSync(join(outside, "deep"));
+  writeFileSync(join(outside, "deep", "victim"), "the host's other file\n");
+}
+const hostUntouched = (outside) => {
+  assert.deepEqual(readdirSync(outside).sort(), ["deep", "victim"], "nothing outside was made or removed");
+  assert.equal(readFileSync(join(outside, "victim"), "utf8"), "the host's file\n");
+  assert.equal(readFileSync(join(outside, "deep", "victim"), "utf8"), "the host's other file\n");
+};
+
+for (const branch of BRANCHES) {
+  test(`local, ${branch.name}: the end-of-run sweep never unlinks a host file through a folder swapped for a link mid-walk`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "output", "sub", "deep"), { recursive: true });
+    writeFileSync(join(root, "output", "sub", "victim"), "the run's file\n");
+    writeFileSync(join(root, "output", "sub", "deep", "victim"), "the run's other file\n");
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "output", "sub"), outside) });
+    // The sweep's own call (run-tools.ts sweep): the run's output/ removed, recursive and forced.
+    const swept = workspace.remove("output", { recursive: true, force: true });
+    if (branch.procFd) await swept.catch(() => undefined);
+    else await refused(swept, "ESCAPE");
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: a read never returns a host file through a folder swapped for a link once walked`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "a"));
+    writeFileSync(join(root, "a", "victim"), "the run's file\n");
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "a"), outside) });
+    const read = workspace.read("a/victim");
+    if (branch.procFd) assert.equal(Buffer.from(await read).toString("utf8"), "the run's file\n", "read in the folder held, never through the link");
+    else await refused(read, "ESCAPE");
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: a file GET of the run refuses a host file through a folder swapped for a link, or a link at the path`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "a"));
+    writeFileSync(join(root, "a", "victim"), "the run's file\n");
+    symlinkSync(join(outside, "victim"), join(root, "a", "linked"));
+    /** GET /runs/{id}/files/<rel> through run-files.ts sendFile, as the route calls it: the bytes sent, or its error. */
+    const get = async (workspace, rel) => {
+      const sent = [];
+      const res = { destroyed: false, writeHead() {}, write(chunk) { sent.push(Buffer.from(chunk)); return true; }, end() {}, destroy() { this.destroyed = true; }, once() {} };
+      await sendFile({ method: "GET" }, res, new URL(`http://x/files/${rel}`), workspace, rel, "a tool");
+      return Buffer.concat(sent).toString("utf8");
+    };
+    const notFound = (error) => error?.code === "not_found";
+    // The listing holds a/ first (the 1st time), then the read holds it again (the 2nd): swapped between the two.
+    const swapped = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "a"), outside, 2) });
+    if (branch.procFd) assert.equal(await get(swapped, "a/victim"), "the run's file\n");
+    else await assert.rejects(get(swapped, "a/victim"), notFound, "a GET through a swapped folder is a 404, never the host's bytes");
+    // A link at the path itself, made by the box before the GET: never listed, never followed.
+    // The first swap's link (unlinkSync: node 24.11's rmSync follows a link to a folder), and the run's folder back.
+    unlinkSync(join(root, "a"));
+    renameSync(join(root, "a.real"), join(root, "a"));
+    await assert.rejects(get(localWorkspace(root, { procFd: branch.procFd }), "a/linked"), notFound, "a link at the path is a 404");
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: an append that makes a file, its folder replaced by another under the root once held, lands it and syncs the folder it is in`, { skip: branch.skip }, async () => {
+    const { root } = scratch();
+    const a = join(root, "a");
+    mkdirSync(a);
+    let replaced = false;
+    // Once a/ is held, it is moved aside and a new folder put at its path: no link, still under the root.
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: (abs) => { if (abs === a && !replaced) { replaced = true; renameSync(a, `${a}.old`); mkdirSync(a); } } });
+    await workspace.append("a/log", "line\n");
+    assert.equal(replaced, true, "the folder was replaced while held");
+    // Through /proc/self/fd the file is made in the folder held, now a.old; by path, in the folder at a/ now.
+    const madeIn = branch.procFd ? `${a}.old` : a;
+    assert.equal(readFileSync(join(madeIn, "log"), "utf8"), "line\n");
+    assert.equal(existsSync(join(branch.procFd ? a : `${a}.old`, "log")), false, "and only there");
+  });
+
+  test(`local, ${branch.name}: grep never searches a host file through a folder swapped for a link once walked`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    mkdirSync(join(root, "a"));
+    writeFileSync(join(root, "a", "victim"), "the run's file\n");
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: swapWhenHeld(join(root, "a"), outside) });
+    const found = await workspace.grep("file", { path: "a" }).then(({ matches }) => matches.map((match) => match.text), (error) => {
+      assert.equal(error?.code, "ESCAPE", `refused as a link, not ${error}`);
+      return [];
+    });
+    assert.ok(found.every((text) => !text.includes("host")), `no host line was searched: ${JSON.stringify(found)}`);
+    hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: a read never returns a host file opened through a link that is a folder again when the path is checked`, { skip: branch.skip }, async () => {
+    const { root, outside } = scratch();
+    hostFiles(outside);
+    const a = join(root, "a");
+    mkdirSync(a);
+    writeFileSync(join(a, "victim"), "the run's file\n");
+    const toLink = () => { renameSync(a, `${a}.real`); symlinkSync(outside, a); };
+    const toFolder = () => { unlinkSync(a); renameSync(`${a}.real`, a); };
+    // The box's swap: a/ is a link to the host when the file is opened, the run's folder again while the path is
+    // resolved (realpath), and the link once more when that real path is stat'd. A check that resolves the path again
+    // after the open finds a real path under the root that leads to the very file opened, the host's.
+    const realpath = fsPromises.realpath;
+    let armed = false;
+    fsPromises.realpath = async (path, ...rest) => {
+      if (!armed || path !== join(a, "victim")) return realpath(path, ...rest);
+      armed = false;
+      toFolder();
+      try { return await realpath(path, ...rest); } finally { toLink(); }
+    };
+    syncBuiltinESMExports();
+    try {
+      const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: (abs) => { if (abs === a) { toLink(); armed = true; } } });
+      const read = workspace.read("a/victim");
+      if (branch.procFd) assert.equal(Buffer.from(await read).toString("utf8"), "the run's file\n", "read in the folder held, never through the link");
+      else await refused(read, "ESCAPE");
+    } finally {
+      fsPromises.realpath = realpath;
+      syncBuiltinESMExports();
+    }
+    hostUntouched(outside);
+  });
+}
+
+/** grep's worker on its own (grep-worker.ts) with `job` over the defaults, as local.ts starts it off /proc/self/fd:
+ *  each match as "path: text". */
+function grepWorker(root, job) {
+  return new Promise((resolve, reject) => {
+    const workerData = { pattern: "file", limit: 100, fileMax: 1 << 20, lineMax: 1000, probe: 8000, procFd: false, root, ...job };
+    const worker = new Worker(GREP_WORKER, { workerData, execArgv: [] });
+    const found = [];
+    let done;
+    worker.on("message", (message) => {
+      if (message.matches) found.push(...message.matches.map((match) => `${match.path}: ${match.text}`));
+      if (message.done !== undefined) done = message.done;
+    });
+    worker.on("error", reject);
+    worker.on("exit", () => (done === undefined ? reject(new Error("the worker stopped before it was done")) : resolve(found)));
+  });
+}
+
+// local.ts confirms the folder before it starts the worker; the box can swap it for a link to the host after that, while
+// the worker searches. The worker is handed the folder's path, as then: each entry it opens must still be under the root.
+test("local, resolving paths (as off Linux): grep's worker, handed a folder swapped for a link to the host, searches no host file", { skip: process.platform !== "linux" && process.platform !== "darwin" && "only Linux and macOS" }, async () => {
+  const { root, outside } = scratch();
+  hostFiles(outside);
+  mkdirSync(join(root, "b"));
+  writeFileSync(join(root, "b", "kept"), "the run's file\n");
+  symlinkSync(outside, join(root, "a"));
+  assert.deepEqual(await grepWorker(root, { dir: join(root, "b"), rel: "b" }), ["b/kept: the run's file"], "a folder of the run's is searched");
+  assert.deepEqual(await grepWorker(root, { dir: join(root, "a"), rel: "a" }), [], "a folder through the link: no host file searched");
+  assert.deepEqual(await grepWorker(root, { dir: join(root, "a"), rel: "a/victim", only: "victim" }), [], "one file through the link: not searched");
+  hostUntouched(outside);
 });
 
 test("local: every write is durable on return (a crash after it keeps it whole); plain node:fs writes are lost", { skip: SHIM_SKIP, timeout: 60_000 }, () => {

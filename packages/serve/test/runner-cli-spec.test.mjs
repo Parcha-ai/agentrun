@@ -1,7 +1,7 @@
 // A CLI harness's run as the runner runs it (runner/cli-run-spec.ts cliRunSpecFromLaunch): a run stored with its launch,
 // claimed by a runner whose dispatch resolves a CLI harness to the kernel's adapter loop on this spec, runs its first
 // turn and ends, its answer in the run's own record (record "loop"). The adapter is the one main builds for the harness
-// (adapters.ts adapterFor: its provider on its wire, its catalog price); the run's tools are the kernel registry's hands
+// (its harness-table.ts entry's adapter: its provider on its wire, its catalog price); the run's tools are the kernel registry's hands
 // on its Workspace, its gate the store's tool settings. Every harness here is a stand-in on loopback: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
