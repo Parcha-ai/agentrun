@@ -25,6 +25,7 @@ import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
+import type { PortModels } from "./port-models.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
 import { deniedText, type SettingFrom } from "./tool-gate.js";
@@ -101,6 +102,9 @@ export type LearnedWorkflowRun = {
   modelOf(tier: string | undefined): ModelRef | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
+  /** The run's models a call node's tool sends its own request through, by the tool's label (the run's session port,
+   *  as the agent's own call of it: a native web_search's hosted search). */
+  toolModels?: (label: string) => Promise<PortModels>;
   /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
    *  refused before any node runs, and asked again as each call node runs, a composed workflow's inner ones too, so one
    *  set to either since the call began is refused there, never run. Required: a learned workflow never runs a tool
@@ -240,7 +244,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
     const booked = ledger ? { ledger: { call: `${ledger.call}/${node.label}@${executionPath ?? ""}${item ? `#${item.index}` : ""}`, record: ledger.record } } : {};
-    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
+    return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.toolModels ? { models: run.toolModels } : {}), ...booked });
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, ...(signal ? { signal } : {}) } as never);

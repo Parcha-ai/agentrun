@@ -154,7 +154,9 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 
 /** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
  *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
+/** A call node's run. `models`: the run's models a request of the tool's own goes through, by its label (on the runner,
+ *  the session's port: ToolHost.models), as the agent's own call of the tool sends it. */
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; models?: (label: string) => Promise<PortModels> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -587,7 +589,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     nodes: true,
     // On the runner its hosted search goes through the run's models (host.models), labelled web_search.
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.models ? { models: () => host.models!(WEB_SEARCH_TOOL) } : {})) as unknown as ToolRegistration),
-    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.models ? () => run.models!(WEB_SEARCH_TOOL) : undefined)),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.
