@@ -56,7 +56,7 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow, inspect }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
@@ -77,7 +77,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   await before?.({ server, store, fake });
   const sent = [];
   const origin = scriptedOrigin(script, sent);
-  const base = piAdapterSpec({ script, tools: hostTools, hooks: { beforeIntent: async () => {}, beforeResult: async () => {} } }, { fetch: events ? (...args) => (events.push("request"), origin(...args)) : origin });
+  const base = piAdapterSpec({ script, tools: hostTools, hooks: { beforeIntent, beforeResult: async () => {} } }, { fetch: events ? (...args) => (events.push("request"), origin(...args)) : origin });
   // `events`: each model request, in order with whatever else the test pushes there.
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
@@ -303,12 +303,13 @@ test("R10: a priced MCP call with room is sent once, held at its price and booke
   assert.deepEqual(await entriesOf(server, TOOL_COST), [], "no second booking on the run's root");
 });
 
-// The money fence on the runner's ledger path: a priced MCP call's hold is written and made durable before the call
-// leaves, so a box lost once the server has it still counts its charge after the next claim (the ledger's box-loss case:
-// run-adapters' kernel-cap-decisions-one-ledger.test.mjs). Read from the order on a real store and runner: each flush of
-// the runner's store, noting whether the call's hold was already committed when it began, and the moment the fake
-// server receives the call.
-test("R10b: a priced MCP call reaches its server only after a flush that began with its hold committed", async (t) => {
+// The money fence on the runner's path: a priced MCP call, not replay-safe, has its intent made durable (side-effects.ts,
+// the flush before a call that is not replay-safe) and then its hold (the run's ledger, the flush before a paid request
+// leaves) before it reaches its server. So a box lost once the server has it neither runs it again (its intent is on
+// disk: the next claim ends it interrupted) nor loses its charge (its hold is on disk: the next claim counts it). Read
+// from the order on a real store and runner: the moment its intent is about to be written, each flush of the runner's
+// store (noting whether the call's hold was already committed when it began), and the moment the fake server receives it.
+test("R10b: a priced MCP call reaches its server only after a flush of its intent and then a flush of its hold", async (t) => {
   const script = [{ call: "mcp__fake__paid", args: { query: "q" } }, { sayLastResult: true }];
   const events = [];
   let fake;
@@ -328,12 +329,15 @@ test("R10b: a priced MCP call reaches its server only after a flush that began w
     const last = fake.log.at(-1);
     if (last?.method === "tools/call" && last.tool === "paid") events.push("sent");
   };
-  const { row } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 5, before, inspect });
+  const beforeIntent = async (call) => void (call.tool === "mcp:fake/paid" && events.push("intent"));
+  const { row } = await mcpRun(t, { script, grants: ["mcp:fake/paid"], settings: { "mcp:fake/paid": { permission: "allow" } }, prices: { paid: 0.5 }, capUsd: 5, before, inspect, beforeIntent });
   assert.equal(row.state, "ended", JSON.stringify(row));
   const sent = events.indexOf("sent");
   assert.ok(sent > 0, `the call reached its server once: ${JSON.stringify(events)}`);
   assert.equal(events.filter((event) => event === "sent").length, 1, `once: ${JSON.stringify(events)}`);
-  assert.ok(events.slice(0, sent).includes("flushed with the hold"), `its hold was flushed before it left: ${JSON.stringify(events)}`);
+  const between = events.slice(events.indexOf("intent") + 1, sent);
+  assert.ok(events.indexOf("intent") >= 0 && events.indexOf("intent") < sent, `its intent came first: ${JSON.stringify(events)}`);
+  assert.deepEqual(between, ["flushed", "flushed with the hold"], `between its intent and its send: its intent's flush, then its hold's: ${JSON.stringify(events)}`);
 });
 
 /** An OAuth sign-in's token set, its authorization server at auth.example.com, its access token ending at `expires`. */
