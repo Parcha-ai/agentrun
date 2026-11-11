@@ -227,6 +227,9 @@ export interface RunLedger {
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
   pause(refusal: Refusal): Promise<void>;
+  /** The store's flush (what the runner's flush before a side effect runs): a record a tool writes during its call that
+   *  must be on disk before the call's next step leaves the box (a browser session's open, before its vendor is asked). */
+  flush(): Promise<void>;
 }
 
 export interface AdapterLoopOptions {
@@ -826,6 +829,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },
+          flush: () => deps.flush(),
         };
         // A phase of the host's: queued until the root exists (written in its creating commit, above), else written at once.
         const phasing = harness;
