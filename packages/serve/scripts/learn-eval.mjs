@@ -135,17 +135,17 @@ function systemOf(c) {
 }
 
 /** The end-of-run turn on `profile`: the conversation, then the prompt. A `read` of the run's copy answers its notes; any
- *  other tool answers that it is not there. The answer is every message's text, as the server reads it. */
-async function reflect(c, profile) {
+ *  other tool answers that it is not there. The answer is every message's text, as the server reads it. Each request's
+ *  cost is booked on `row` as it is spent, so a turn the cap (or an error) cuts between its requests keeps what it spent. */
+async function reflect(c, profile, row) {
   const { models, model, unpriced } = await modelOf(profile);
   const copy = new Map([["MEMORY.md", learn.buildIndex(notesOf(c.active))], ...c.active.map((n) => [n.file, n.text])]);
   const messages = [...messagesOf(c.transcript), { role: "user", content: learn.reflectPrompt({ dir: ".learning", active: c.active.length }), timestamp: Date.now() }];
   const texts = [];
-  let usd = 0;
   for (let step = 0; step < 6; step++) {
     mayAsk();
     const message = await models.completeSimple(model, { systemPrompt: systemOf(c), messages, tools: TOOLS }, { reasoning: "medium", maxTokens: 8000, signal: AbortSignal.timeout(180_000) });
-    usd += spent(message, unpriced);
+    row.usd += spent(message, unpriced);
     if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(`the turn: ${message.errorMessage ?? message.stopReason}`);
     messages.push(message);
     const text = message.content.filter((p) => p.type === "text").map((p) => p.text).join("");
@@ -158,7 +158,7 @@ async function reflect(c, profile) {
       messages.push({ role: "toolResult", toolCallId: call.id, toolName: call.name, content: [{ type: "text", text: result }], isError: false, timestamp: Date.now() });
     }
   }
-  return { answer: texts.join("\n\n"), usd };
+  return { answer: texts.join("\n\n") };
 }
 
 /** What the server keeps of `notes` for case `c`: checked against its seed, as propose.ts does. */
@@ -220,9 +220,9 @@ await Promise.all(Array.from({ length: Number(opts.concurrency) }, async () => {
     try {
       let notes = c.notes;
       if (mode === "reflect") {
-        const turn = await reflect(c, profile);
+        const turn = await reflect(c, profile, row);
         const parsed = learn.parseReflection(turn.answer);
-        Object.assign(row, { answer: turn.answer.slice(0, 8000), usd: turn.usd });
+        Object.assign(row, { answer: turn.answer.slice(0, 8000) });
         notes = parsed.ok ? parsed.notes : [];
         if (!parsed.ok) Object.assign(row, { merged: false, stage: parsed.reason });
       }
