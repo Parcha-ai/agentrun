@@ -37,7 +37,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import type { Store } from "../store/store.js";
+import type { McpServerRow, Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
@@ -87,7 +87,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const { tools } = await draftTools(deps, runId);
       const draftFor = await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
-      const described = draftFor.length ? await describedOf(tools) : [];
+      const described = draftFor.length ? await describedOf(tools, deps.store) : [];
       return { active: start.seedNotes ?? start.given.length, tools, draftFor, described };
     },
     asked: async (runId) => {
@@ -153,14 +153,40 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
   return calls.every((row) => answered.has(row.tool_use_id));
 }
 
+/** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
+ *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
+async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
+  const rows = await store.mcp.servers().catch(() => [] as McpServerRow[]);
+  const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
+  return (server) => byName.get(server) ?? [];
+}
+
 /** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
- *  summary): the draft ask's `describe`. */
-async function describedOf(tools: readonly string[]): Promise<{ name: string; does: string }[]> {
+ *  summary): the draft ask's `describe`. An MCP tool (`mcp:<server>/<tool>`, LS-07) is described by its server's listing
+ *  as the store keeps it: what it does, the schema it takes and, when it lists one, the one it gives (reflect.ts cuts
+ *  each line to its cap). A server or a tool the store does not list is described by none. */
+async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">): Promise<{ name: string; does: string }[]> {
   const { toolOf } = await import("../tools.js");
-  return tools.flatMap((name) => {
-    const does = toolOf(name)?.summary;
-    return does ? [{ name, does }] : [];
-  });
+  const listed = new Map<string, Promise<McpServerRow | undefined>>();
+  const out: { name: string; does: string }[] = [];
+  for (const name of tools) {
+    const mcp = /^mcp:([^/]+)\/(.+)$/.exec(name);
+    if (!mcp) {
+      const does = toolOf(name)?.summary;
+      if (does) out.push({ name, does });
+      continue;
+    }
+    const server = mcp[1]!;
+    const tool = mcp[2]!;
+    if (!listed.has(server)) listed.set(server, store.mcp.server(server).catch(() => undefined));
+    const row = await listed.get(server)!;
+    const entry = ((row?.tools ?? []) as { name?: unknown; title?: unknown; description?: unknown; input_schema?: unknown; output_schema?: unknown }[]).find((one) => one?.name === tool);
+    if (!entry) continue;
+    const said = typeof entry.description === "string" && entry.description.trim() ? entry.description.trim() : typeof entry.title === "string" ? entry.title.trim() : "";
+    const does = [said ? `${said.replace(/[.\s]+$/, "")}.` : "", `Takes ${JSON.stringify(entry.input_schema ?? {})}.`, entry.output_schema !== undefined ? `Gives ${JSON.stringify(entry.output_schema)}.` : ""].filter(Boolean).join(" ");
+    out.push({ name, does });
+  }
+  return out;
 }
 
 /** How many of an agent's latest runs draftForOf reads at most: a skill offered to fewer than DRAFT_AFTER_RUNS of them is
@@ -216,13 +242,15 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
   if (revision?.kind !== "agentic") return { tools: [], gated: {} };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
-  const [{ learnedDraftTools }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
+  const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
   // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
   const server = (await loadToolSettings(deps.store)).settings;
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
-  const { tools, gated } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
+  // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
+  const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
+  const { tools, gated } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
   return { tools, gated };
 }
 

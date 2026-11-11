@@ -476,6 +476,27 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
 
+/** An MCP tool a learned workflow's call node may run, by its address (`via: "tool"`, `tool: "mcp:<server>/<tool>"`,
+ *  LS-07): its server's name as a server is named (mcp-probe.ts MCP_SERVER_NAME) and one tool's name in MCP's own
+ *  charset, never a wildcard. The one rule for it: the tools a draft may name (tools.ts learnedWorkflowTools), the
+ *  end-of-run prompt that prints them (reflect.ts), and what the grader is told of a draft (grade.ts). */
+export const LEARNED_MCP_TOOL = /^mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+
+/** The MCP tools a draft's call nodes run, each once, in the order they come (LS-07): every call node in `doc`, nested
+ *  ones too, whose tool is an MCP tool's address. Read from the JSON as it is, for the grader's words; never a check. */
+export function draftMcpTools(doc: unknown): string[] {
+  const found = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(walk);
+    if (!value || typeof value !== "object") return;
+    const node = value as Record<string, unknown>;
+    if (node.node === "call" && node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
+    for (const child of Object.values(node)) walk(child);
+  };
+  walk(doc);
+  return [...found];
+}
+
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
 export const LEARNED_MAX_TURNS = 8;
