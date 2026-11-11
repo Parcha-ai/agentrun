@@ -33,7 +33,9 @@ const CUT_STEP_MS = 2_000;
 
 /** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
  *  via the spec, so flat or tiered pricing is the cap's, not this loop's). */
-export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown };
+/** `node`: the label of the workflow node whose step the cap held (a model node's request, a call node's call, a
+ *  decision), which the run's pending budget names; absent when the step's node is not known. */
+export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown; readonly node?: string };
 /** A raise's state as the cap's checkRaise reads it (the kernel cap's RaiseState). */
 export type RaiseState = { capUsd?: number; final?: boolean; pause?: string; lastRaise?: { to: number; pause?: string } };
 /** What the cap's checkRaise says (the kernel cap's RaiseCheck). */
@@ -392,7 +394,8 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parked = spec?.cap?.park(refusal);
     if (!parked) return { state: "interrupted" };
     if (parked.outcome === "failed") return await writeEnd(journal, BACKGROUND_CONTEXT, { state: "failed", summary: parked.error });
-    const budget: BudgetData = { pending: parked.pending, words: parked.words };
+    // A workflow's pause names the node whose step waits at the cap (null when it is not known), as its pending budget shows.
+    const budget: BudgetData = { pending: parked.pending, words: parked.words, node: refusal.node ?? null };
     await append(journal, BACKGROUND_CONTEXT, KINDS.budget, budget, { run: { state: "parked", summary: parked.words } });
     return { state: "parked" };
   }
