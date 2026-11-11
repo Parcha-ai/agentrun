@@ -27,15 +27,22 @@ async function pasted(t, api, id, forms) {
   const content = `Keep these: ${forms.hex}, ${forms.base64} and ${forms.body}. Hold, then echo, until ${go}.`;
   const run = await api("POST", `/agents/${id}/runs`, { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
+  // The run reads working once it is claimed, a moment before its loop writes the message row: read the live pages again
+  // until one holds it. The run holds (the faux model waits for `go`), so it still works while they are read.
+  let live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
+  const livePages = [...live.pages];
+  for (let tries = 1; !live.rows.some((row) => row.kind === "user_message"); tries += 1) {
+    assert.ok(tries < 30, `a live page holds the message row: ${JSON.stringify(live.rows.map((row) => row.kind))}`);
+    live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
+    livePages.push(...live.pages);
+  }
   assert.equal(live.last.status, "working", "the page was read while the run still worked");
-  assert.ok(live.rows.some((row) => row.kind === "user_message"), `a live page holds the message row: ${JSON.stringify(live.rows.map((row) => row.kind))}`);
   await writeFile(go, "");
   const done = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.match(JSON.stringify(view), /On Keep these: .*: done\./, "the answer echoes the message, so it is checked with it");
   const listed = (await api("GET", "/runs")).body;
-  return JSON.stringify({ rows: done.rows, pages: [...live.pages, ...done.pages], view, listed });
+  return JSON.stringify({ rows: done.rows, pages: [...livePages, ...done.pages], view, listed });
 }
 
 test("a webhook trigger's secret pasted into a run's message, as hex, base64 or its bare key, is cut from every Timeline row, the run's title and its answer; after a rotation the new secret is cut the same", { timeout: 300_000 }, async (t) => {
