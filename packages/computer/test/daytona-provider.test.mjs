@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { checkLifetime, DaytonaProvider, kindRefusals } from "../dist/index.js";
+import { checkLifetime, DAYTONA_GPU_SNAPSHOT, DaytonaProvider, kindRefusals } from "../dist/index.js";
 import { API, DEFAULT_SNAPSHOT, fakeDaytona, HOSTS, KEY, PROXY, scriptOf, statusText, VERSION, wordsOf } from "./fake-daytona.mjs";
 
 const SPEC = { image: "agentrun-debian", lifetimeMs: 600_000, network: "none" };
@@ -329,7 +329,8 @@ test("create() of a GPU computer asks Daytona for daytona-gpu, gpu and gpuType, 
 	const made = await provider.create({ ...GPU_SPEC, gpu });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const [posted] = of(fake, "POST", "/api/sandbox");
-	assert.equal(posted.body.snapshot, "daytona-gpu", "a GPU sandbox is made from Daytona's GPU snapshot, though the spec named the default");
+	assert.equal(DAYTONA_GPU_SNAPSHOT, "daytona-gpu", "the package exports the GPU snapshot's name");
+	assert.equal(posted.body.snapshot, DAYTONA_GPU_SNAPSHOT, "a GPU sandbox is made from Daytona's GPU snapshot, though the spec named the default");
 	assert.equal(posted.body.gpu, 2, "CreateSandbox gpu: how many");
 	assert.deepEqual(posted.body.gpuType, ["H100"], "CreateSandbox gpuType: the one type asked, as Daytona's preference list");
 	assert.equal(posted.body.target, "earth", "a GPU sandbox runs in region earth alone");
