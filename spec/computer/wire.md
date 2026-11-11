@@ -41,6 +41,10 @@ A method a computer does not have is an error of kind `unsupported`, in words; t
 - `groups`: what it offers. It must be what the provider declared for it (`capabilities().groups`). `cdp`, `stream` and
   `downloads` are the provider's and never appear in a daemon's `hello`.
 - `display`: a desktop's X display, such as `":99"`; absent elsewhere.
+- `fence`: how init holds its programs off the computer's network when it gave them one of their own
+  (`init --own-network`): `"netns"`, a network namespace root made, or `"userns-netns"`, one made inside a user
+  namespace of its own where root may not make one. Absent when its programs have no network of their own. A provider
+  whose computers' programs must have a network of their own refuses a `hello` without it.
 
 ## Requests, replies and order
 

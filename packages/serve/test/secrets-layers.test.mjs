@@ -15,7 +15,7 @@ const UNLISTED = ["FOO_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "NODE_
 /** Names that are no key's, however close: the shell's working directories, and words that hold a segment's letters. */
 const NOT_KEYS = { PWD: "/w", OLDPWD: "/o", TOKENIZERS_PARALLELISM: "false", KEYBOARD: "us", SECRETARY: "ok", PATTERN: "x", COMPASS: "n", PASSENGER_APP: "a", AGENTRUN_SECRETS_FD: "3", AGENTRUN_SECRETS_LEN: "12" };
 
-test("one rule names a key, for a run's environment, the import's cut and pi-durable-disk's instance environment alike: what one leaves out by its name the import cuts by its value, and pi-durable-disk refuses", async () => {
+test("one rule names a key, for a run's environment and the import's cut alike: what one leaves out by its name the import cuts by its value", async () => {
   const value = (name) => `canary-value-of-${name}`;
   const names = [...UNLISTED, "AWS_SECRET_ACCESS_KEY", "MYSQL_PASSWORD_FILE", "PATH", "AGENT_MODEL", "AWS_REGION", ...Object.keys(NOT_KEYS)];
   const env = Object.fromEntries(names.map((name) => [name, value(name)]));
@@ -24,10 +24,10 @@ test("one rule names a key, for a run's environment, the import's cut and pi-dur
   const cut = names.filter((name) => !text(`said ${value(name)}`).includes(value(name)));
   assert.deepEqual(dropped, [...UNLISTED, "AWS_SECRET_ACCESS_KEY", "MYSQL_PASSWORD_FILE"], "every key's name, and nothing else");
   assert.deepEqual(cut, dropped, "the import's cut cuts each one's value, and no other");
-  // The rule is pi-durable-disk's, exported once, and the same function here.
-  const disk = await import("@parcha/pi-durable-disk/secret-name");
-  assert.equal(secretCut.keyShaped, disk.keyShaped, "serve's rule is pi-durable-disk's");
-  assert.deepEqual(names.filter((name) => disk.keyShaped(name)), dropped);
+  // The rule is secret-name.ts', written once, and the same function here.
+  const rule = await import("../dist/secret-name.js");
+  assert.equal(secretCut.keyShaped, rule.keyShaped, "serve's cut uses the one rule");
+  assert.deepEqual(names.filter((name) => rule.keyShaped(name)), dropped);
 });
 
 test("no allow list lets a key-shaped name past the rule: a run's own descriptors are set on its environment after the cut, and match no segment", () => {

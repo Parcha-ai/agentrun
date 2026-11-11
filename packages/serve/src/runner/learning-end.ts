@@ -121,10 +121,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
-    // A seed that could not be read (no seedNotes, no commit): the server dropped its learning at the start, and the run
-    // was never asked to look back.
+    // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
+    // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be
+    // read, or a start that could not be made from it; a start that records none names no reason.
     if (seedFailed(start)) {
-      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) } } }] };
+      const failed = start.seedFailed;
+      const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
     return hookFor(input.runId)(input);
   };
