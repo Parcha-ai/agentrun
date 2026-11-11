@@ -11,8 +11,7 @@ import { structuredAnswer } from "./answer-json.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
-import { MIN_SECRET } from "./learn/secrets.js";
-import { handedValuesOf, launchOf } from "./handed-values.js";
+import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
   momentOf,
