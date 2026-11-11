@@ -61,6 +61,10 @@ export const KINDS = {
   /** The resume of a paused workflow run (a `resume` row), taken: the workflow goes on from its journal. Neither a call nor
    *  a message, so the reader passes over it. */
   resume: "agentrun.resume",
+  /** A paid call the cap refused for room, kept at its refusal (the Refusal): its pause lands at the model's next request
+   *  (adapter-loop.ts pauseFor), and a claim lost before that restores it from here (pendingPauseOf). No run patch, and
+   *  neither a call nor a message, so the reader passes over it. */
+  pausePending: "agentrun.pause.pending",
   /** A workflow call node's effect, as it starts and as it ends (pause.ts NodeLine: its path, item, tool, label, input,
    *  then its status and output or error), on the run's node-log session (NODE_LOG_SESSION): the run's graph lists its
    *  effects from these. Written as the effect runs, never for one the driver answers from its receipt. */
