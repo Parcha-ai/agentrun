@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf } from "../dist/timeline/index.js";
 import { personHands } from "../dist/browser-person.js";
 import { waitingAsk } from "../dist/browser-commands.js";
 import { handBackOf } from "../dist/runner/hand-back.js";

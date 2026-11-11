@@ -19,7 +19,7 @@
 // reads the answer through `outcome`; a poll here ends any take-over at once and drops the hold. An ask outlives a process
 // that dies: the run's next claim reads it back from the journal and takes the wait up (`adopt`).
 import { createHash } from "node:crypto";
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "./timeline/index.js";
 
 /** How long a person's time lasts at most before it expires: an unanswered ask, and a take-over with no input. Its worth of session time is held up front. */
 export const PERSON_HOLD_MS = 15 * 60_000;

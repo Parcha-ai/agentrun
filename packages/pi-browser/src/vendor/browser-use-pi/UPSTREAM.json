@@ -1,0 +1,25 @@
+{
+  "repo": "github.com/browser-use/browser-use-pi",
+  "path": "src",
+  "commit": "e7007f219b10fa2c2baae1bf3e2f902a5a2706fd",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 Browser Use contributors",
+  "adapted": "Each file is adapted, not copied byte for byte: its header says what changed.",
+  "files": {
+    "ax.ts": {
+      "from": "src/ax.ts",
+      "blob": "ff6136126eb4b569c24e42827c680f87ec0a2034",
+      "sha256": "b7464264115728b279f5a194b306c7390f5cb6b35a2c038ac192b363f37d1017"
+    },
+    "cdp.ts": {
+      "from": "src/cdp.ts",
+      "blob": "b1cf591aa32a4cebd0e8c139b54061d1ebc73e30",
+      "sha256": "64f6211e67ced581ccf8642bd08797094f3ff712129e66582b144f7a10f4bb1b"
+    },
+    "page.ts": {
+      "from": "src/page.ts",
+      "blob": "44494a6d31659a11f47dc1731afd894dda384dde",
+      "sha256": "aa80d16e22ea2a3b5bbaeae132f0915f45a628b61a0d0ff33decbcb592b3e2c9"
+    }
+  }
+}

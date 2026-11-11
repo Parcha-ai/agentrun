@@ -6,8 +6,8 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "@parcha/pi-durable-agent/timeline";
-import type { RevisionKind } from "@parcha/pi-durable-agent";
+import { type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
+import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
