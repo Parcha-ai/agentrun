@@ -339,6 +339,11 @@ test("hello: the provider's version, its kind and exactly its groups, linux, and
 	one(helloDrift({ ...HELLO, os: "windows" }, EXPECTED), /os windows/);
 	one(helloDrift({ ...HELLO, arch: "arm64" }, EXPECTED), /arch arm64.*amd64/);
 	assert.deepEqual(helloDrift({ ...HELLO, arch: "arm64" }, { ...EXPECTED, arch: undefined }), [], "arch is checked only when known");
+	// init --own-network: hello says the fence, a network namespace init made or one made inside a user namespace.
+	for (const fence of ["netns", "userns-netns"]) assert.deepEqual(helloDrift({ ...HELLO, fence }, { ...EXPECTED, fence: true }), [], fence);
+	one(helloDrift(HELLO, { ...EXPECTED, fence: true }), /fence nothing: init was started with --own-network, so its programs must be held behind one, netns or userns-netns/);
+	one(helloDrift({ ...HELLO, fence: "none" }, { ...EXPECTED, fence: true }), /fence none: /);
+	assert.deepEqual(helloDrift(HELLO, EXPECTED), [], "no fence asked (Docker's own network), none checked");
 	one(drift(SPEC, inspected(), { ...HELLO, version: "0.0.1" }, EXPECTED), /version 0\.0\.1/);
 });
 

@@ -53,7 +53,11 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 		}
 	}
 	if isolation.OwnNetwork {
-		if err := isolate.OwnNetwork(); err != nil {
+		own := isolate.OwnNetwork
+		if isolation.StartedIn != "" {
+			own = func() error { return isolate.KeepOwnNetwork(isolation.StartedIn) }
+		}
+		if err := own(); err != nil {
 			return err
 		}
 		// No socket of the system's is the programs' to reach, since their own network does not cut a path socket.
@@ -75,9 +79,12 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 // Become refuses while another process holds uid (isolate.RefuseStrangers), moves init into a network namespace of
 // its own whose loopback alone is up (isolate.OwnNetwork), drops, and then refuses vsock and io_uring to every thread
 // (isolate.DenySockets): init and every program it starts reach their own loopback and nothing else, and a failure of
-// any step refuses to start.
+// any step refuses to start. With StartedIn, init was started in a network namespace of its own already, inside a user
+// namespace of its own (InitInUserNamespace), and StartedIn names the network namespace the init that started it was
+// in: Become brings the loopback up and reads it back (isolate.KeepOwnNetwork) instead of making the namespace.
 type Isolation struct {
 	OwnNetwork bool
+	StartedIn  string
 }
 
 // procRoot is the /proc RefuseStrangers reads.

@@ -1170,7 +1170,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           computerNow = journalHold(claim.runId, spec.computer, (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context), now);
-          await computerNow.up();
+          // The run's journal so far: a take an earlier claim's computer left in force ends released here (computer-journal.ts).
+          await computerNow.up(await entriesOf(gate.journal, root.id, context));
         }
         // The cap a raise left the run at, from its root (the newest raise entry), before any request of this claim: a
         // claim that takes over a raised run (a resume, another runner's) holds it to the raise, never the launch's cap.
@@ -1893,7 +1894,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A person's stop or cancel withdraws every call still waiting for its answer, in the end's own commit: the approval
     // card reads answered (withdrawn), never waiting for good on a final run.
     const byPerson = data.state === "stopped" || stopReason?.kind === "command";
-    const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow()) : [];
+    // A cancel's calls read cancelled with their run; a stop's, withdrawn.
+    const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow(), stopReason?.kind === "command" && stopReason.cancel ? "canceled" : "withdrawn") : [];
     // A CLI's call on the record from its gate and never sent (parked, or its runner gone before its send): its record ends
     // with the run's, in the same commit, saying it was not run (never interrupted: it never left).
     const recordEnds = cliRecord?.unsentParked() ?? [];
