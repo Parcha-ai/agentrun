@@ -13,9 +13,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
 import { startServe } from "../dist/index.js";
-import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
-/** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
-const fakeKey = (name) => ["not-a-secret", name].join("-");
+import { agent, answerFlow, client, FAUX, flowAgent, follow, scratch, serve, startRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold

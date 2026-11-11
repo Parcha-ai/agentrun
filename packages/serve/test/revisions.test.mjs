@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { commitAgent, createAgent } from "../dist/agents-store.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 

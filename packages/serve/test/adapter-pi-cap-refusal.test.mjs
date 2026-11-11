@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
-import { beforeRequestOf, cap, capRun, SONNET } from "./adapter-pi-cap-support.mjs";
+import { cap, capRun, SONNET } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const CAP = 0.0004295;
