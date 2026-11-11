@@ -598,3 +598,12 @@ test("a learned workflow whose last node writes a report in a fixed format hands
   assert.ok(view.result.final_answer.includes(REPORT), `the answer holds the report as written: ${JSON.stringify(view.result.final_answer)}`);
   assert.ok(!view.result.final_answer.includes("\\n"), "no JSON escape reached the answer");
 });
+
+test("a caller that replies with a learned workflow's text output as it is answers exactly the report its last node wrote, and the call's row sums the report up line by line (#2412)", { timeout: 120_000 }, async (t) => {
+  const { REPORT } = await import("./fixtures/faux-model.mjs");
+  const { api, data } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, "verbatim", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Reply with the learned workflow card-report's output on the week's card transactions." });
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.equal(view.result.final_answer, REPORT, "the answer is the report, exactly");
+  assert.equal(learnedResult(rows)?.summary, "Ran the learned workflow card-report: | Category | Count | Total | / |---|---|---| / | Office | 2 | 1663.10 | / Flagged: Best Buy / Grand total: $1663.10");
+});

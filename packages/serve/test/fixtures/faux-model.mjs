@@ -54,6 +54,12 @@ function replyTo(context, faux) {
   const read = first.includes("Read the example page");
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
   const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  // "Reply with the learned workflow <name>'s output on <question>.": the run's learned_workflow, then its output as the
+  // tool gave it, and nothing else (a caller that keeps the answer as the workflow wrote it).
+  const verbatim = /Reply with the learned workflow (\S+)'s output on (.+?)\.$/.exec(first);
+  if (verbatim && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: verbatim[1], input: { question: verbatim[2] } }), { stopReason: "toolUse" }) : faux.message(textOf(context.messages.at(-1)));
+  }
   if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
     return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
