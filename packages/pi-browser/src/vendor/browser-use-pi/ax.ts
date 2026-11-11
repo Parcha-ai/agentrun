@@ -7,7 +7,8 @@
 // also picks a native select's option) is split into fill, type (appending) and select, beside hover and press; actions
 // return their one line instead of printing it; no REPL prompt, no hidden file-input listing and no file chooser; type
 // appends after the field's whole text (not End, which stops at a line's end) and paces its characters by a delay; press
-// takes modifier combinations (Shift+Tab, Control+A). The
+// takes modifier combinations (Shift+Tab, Control+A); the hit-test also checks the point on each enclosing page of a
+// same-origin iframe, so an overlay over the iframe covers its target. The
 // AX-id scheme, the POINT_JS hit-test (point), scroll then centre, press and release click, insertText plus a real last
 // key, the settle wait and the one-line change result are Pi's.
 import { setTimeout as delay } from "node:timers/promises";
@@ -419,13 +420,18 @@ export class AxHelpers {
         if (!r.width || !r.height || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) throw Error('Target outside viewport');
         const hit = e.getRootNode().elementFromPoint(x, y);
         const textField = (n) => n && (['INPUT','TEXTAREA'].includes(n.tagName) || n.isContentEditable);
-        const covered = !e.contains(hit) && !(hit && hit.contains(e) && getComputedStyle(hit).pointerEvents !== 'none' && hit.tagName === 'LABEL') && !(editableCover && textField(e) && textField(hit));
-        // Inside same-origin iframes, add each frame's content-box offset to get top-level viewport coordinates.
+        let covered = !e.contains(hit) && !(hit && hit.contains(e) && getComputedStyle(hit).pointerEvents !== 'none' && hit.tagName === 'LABEL') && !(editableCover && textField(e) && textField(hit));
+        // Inside same-origin iframes, add each frame's content-box offset to get top-level viewport coordinates. At
+        // each enclosing page the point must land on the frame itself: an overlay there (a dialog over the iframe)
+        // covers the target as surely as one inside the frame does.
         let px = x, py = y;
         for (let w = e.ownerDocument.defaultView; w && w.frameElement; w = w.parent) {
           const f = w.frameElement, fr = f.getBoundingClientRect(), cs = getComputedStyle(f);
           px += fr.x + f.clientLeft + parseFloat(cs.paddingLeft);
           py += fr.y + f.clientTop + parseFloat(cs.paddingTop);
+          const pw = w.parent;
+          if (px < 0 || py < 0 || px >= pw.innerWidth || py >= pw.innerHeight) throw Error('Target outside viewport');
+          if (f.getRootNode().elementFromPoint(px, py) !== f) covered = true;
         }
         return {x: px, y: py, covered};
       }`,

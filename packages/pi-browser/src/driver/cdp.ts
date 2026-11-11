@@ -32,16 +32,28 @@ export const CDP_CODE_REFUSED =
 /** How long one CDP command may take before the action is said to be unanswered. */
 const COMMAND_MS = 30_000;
 
-/** One element's box once it is scrolled into view, in CSS pixels from the viewport's corner, or how many a selector matches. */
+/**
+ * One element's box once it is scrolled into view, in CSS pixels from the top page's viewport corner, or how many a
+ * selector matches. An element in a same-origin iframe (an id from the snapshot) gets each enclosing frame's
+ * content-box offset added, and the viewport is the top page's, as the screenshot's clip is.
+ */
 const LOCATE_JS = `function(selector){
-  const viewport = { width: innerWidth, height: innerHeight };
+  let top = (this && this.ownerDocument ? this.ownerDocument : document).defaultView;
+  while (top.frameElement) top = top.parent;
+  const viewport = { width: top.innerWidth, height: top.innerHeight };
   const found = selector === null ? null : selector === undefined ? this : document.querySelectorAll(selector);
   if (found === null) return { viewport };
   const list = found instanceof NodeList ? [...found] : [found.nodeType === 1 ? found : found.parentElement];
   if (list.length !== 1 || !list[0]) return { viewport, matches: list.filter(Boolean).length };
   list[0].scrollIntoView({ block: 'center', inline: 'center' });
   const r = list[0].getBoundingClientRect();
-  return { viewport, matches: 1, box: { x: r.x, y: r.y, width: r.width, height: r.height } };
+  let x = r.x, y = r.y;
+  for (let w = list[0].ownerDocument.defaultView; w && w.frameElement; w = w.parent) {
+    const f = w.frameElement, fr = f.getBoundingClientRect(), cs = getComputedStyle(f);
+    x += fr.x + f.clientLeft + parseFloat(cs.paddingLeft);
+    y += fr.y + f.clientTop + parseFloat(cs.paddingTop);
+  }
+  return { viewport, matches: 1, box: { x, y, width: r.width, height: r.height } };
 }`;
 
 type Tab = { targetId: string; url: string; openerId?: string };

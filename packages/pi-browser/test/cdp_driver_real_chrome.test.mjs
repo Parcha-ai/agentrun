@@ -32,7 +32,8 @@ async function raw(url) {
   return { send, close: () => ws.close() };
 }
 
-test("a real Chrome: snapshot, type in a field, select, click a button, read the result; run code is refused", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+/** A real Chrome showing `html` on its blank page, the driver's DevTools URL, and `evaluate` to change the page from outside. */
+async function chromeWith(t, html) {
   const root = await scratch(t, "cdpd-", "/tmp");
   const profile = path.join(root, "profile");
   // A TMPDIR of its own, inside the scratch directory: what Chrome leaves there on its kill goes with it.
@@ -57,9 +58,14 @@ test("a real Chrome: snapshot, type in a field, select, click a button, read the
   const { targetInfos } = await setup.send("Target.getTargets");
   const { sessionId } = await setup.send("Target.attachToTarget", { targetId: targetInfos.find((one) => one.type === "page").targetId, flatten: true });
   const { frameTree } = await setup.send("Page.getFrameTree", {}, sessionId);
-  await setup.send("Page.setDocumentContent", { frameId: frameTree.frame.id, html: HTML }, sessionId);
-  setup.close();
+  await setup.send("Page.setDocumentContent", { frameId: frameTree.frame.id, html }, sessionId);
+  t.after(() => setup.close());
+  const evaluate = (expression) => setup.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId);
+  return { url, evaluate };
+}
 
+test("a real Chrome: snapshot, type in a field, select, click a button, read the result; run code is refused", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+  const { url } = await chromeWith(t, HTML);
   const driver = await cdpDriver()({ sdkCdpUrl: url });
   t.after(() => driver.close(), { timeout: 30_000 });
   const shot = await driver.snapshot();
@@ -90,4 +96,38 @@ test("a real Chrome: snapshot, type in a field, select, click a button, read the
   const shotBytes = await driver.screenshot({ type: "png" });
   assert.equal(shotBytes.mimeType, "image/png");
   assert.ok(Buffer.from(shotBytes.data, "base64").subarray(1, 4).toString() === "PNG");
+});
+
+// A same-origin iframe away from the page's corner, under an overlay of the top page.
+const FRAMED = `<title>Framed</title><body style="margin:0">
+<iframe id="f" style="position:absolute;left:200px;top:150px;width:300px;height:200px;border:0" srcdoc="<body style='margin:0'><button id='b' style='margin:40px' onclick='document.title=&quot;clicked&quot;'>Inner</button></body>"></iframe>
+<div id="veil" role="dialog" aria-label="Cookie wall" style="position:fixed;inset:0;z-index:9;background:rgba(0,0,0,.3)">Accept cookies</div>`;
+
+test("a real Chrome: a button in an iframe under the top page's overlay is refused as covered, and its box is in the top page's coordinates", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+  const { url, evaluate } = await chromeWith(t, FRAMED);
+  await evaluate(`new Promise((done) => { const f = document.getElementById("f"); f.contentDocument?.getElementById("b") ? done() : f.onload = done; })`);
+  const driver = await cdpDriver()({ sdkCdpUrl: url });
+  t.after(() => driver.close(), { timeout: 30_000 });
+  const shot = await driver.snapshot();
+  const found = /\[(\d+-\d+)\] button "Inner"/.exec(shot);
+  assert.ok(found, `the snapshot shows the iframe's button:\n${shot}`);
+  const inner = found[1];
+
+  // The click's point is inside the frame, but the top page's overlay is on it there: nothing is clicked.
+  await assert.rejects(driver.run({ actions: [{ op: "click", id: inner }] }), /Target covered by .*nothing was clicked/);
+  assert.equal((await evaluate(`document.getElementById("f").contentDocument.title`)).result.value, "", "the button was not clicked");
+
+  // A screenshot's region for the button is where it is on the top page: past the frame's offset.
+  const located = await driver.locate({ id: inner });
+  const top = (await evaluate(`({ width: innerWidth, height: innerHeight })`)).result.value;
+  assert.deepEqual(located.viewport, top, "the top page's viewport");
+  assert.equal(located.matches, 1);
+  assert.ok(located.box.x >= 240 && located.box.y >= 190, `the box is offset by the frame and the button's margin: ${JSON.stringify(located.box)}`);
+
+  // The overlay goes: the same button is clicked.
+  await evaluate(`document.getElementById("veil").remove()`);
+  const again = /\[(\d+-\d+)\] button "Inner"/.exec(await driver.snapshot());
+  assert.ok(again, "the button is still there");
+  await driver.run({ actions: [{ op: "click", id: again[1] }] });
+  assert.equal((await evaluate(`document.getElementById("f").contentDocument.title`)).result.value, "clicked");
 });
