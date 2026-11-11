@@ -176,6 +176,19 @@ test("every registry module exports MOUNT beside create: the mount kinds its com
 	assert.deepEqual(binds, ["docker"]);
 });
 
+test("every provider's descriptor declares network beside mounts: the network forms its computers make, known without building a provider", () => {
+	const lists = [];
+	for (const id of providerIds) {
+		const { network } = index.descriptorOf(id);
+		assert.ok(Array.isArray(network) && network.length > 0, `${id}'s descriptor declares network, a non-empty array`);
+		for (const form of network) assert.ok(["none", "open", "allow"].includes(form), `${id}'s network holds ${JSON.stringify(form)}, which is not a network form`);
+		assert.equal(new Set(network).size, network.length, `${id}'s network names each form once`);
+		if (network.includes("allow")) lists.push(id);
+	}
+	// Which provider takes this server's allowlist, read from the descriptors alone: Docker, through the egress proxy.
+	assert.deepEqual(lists, ["docker"]);
+});
+
 test("providerFor() names the known ids for an id it does not know", async () => {
 	for (const id of ["nope", "constructor", "__proto__", "toString", ""]) {
 		await assert.rejects(providerFor(id, {}), (error) => {

@@ -8,6 +8,8 @@ export const DOCKER = defineProvider({
 	keys: [],
 	metered: false,
 	mounts: ["bind"],
+	// None, open, or an allowlist through the server's egress proxy.
+	network: ["none", "open", "allow"],
 	capabilities: [SANDBOX, LINUX_DESKTOP],
 	// No default image: the server makes one from the provider's recipe (prepareImage) before the first create.
 	prepareImage: true,

@@ -13,6 +13,8 @@ export const E2B = defineProvider({
 	keys: [{ name: "E2B_API_KEY", option: "apiKey", required: true }],
 	metered: true,
 	mounts: ["archil"],
+	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
+	network: ["none"],
 	capabilities: [SANDBOX, LINUX_DESKTOP],
 	defaultImage: { sandbox: E2B_BASE_TEMPLATE, desktop: E2B_DESKTOP_TEMPLATE },
 	load: () => import("../e2b.js"),

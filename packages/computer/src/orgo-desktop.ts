@@ -66,6 +66,7 @@ import {
 	MAX_CHUNK_BYTES,
 	MAX_LIST_ENTRIES,
 	MAX_OUTPUT_BYTES,
+	PROTOCOL_VERSION,
 	type Rect,
 	type ScreenWatchResult,
 } from "./protocol.js";
@@ -1011,7 +1012,7 @@ export class OrgoDesktopClient implements ComputerClient {
 		const shot = await this.#screenshot(1, signal);
 		if (!shot.ok) return shot;
 		this.#size = [shot.value.width, shot.value.height];
-		this.#hello = { version, os: this.profile.os, kind: "desktop", arch: this.profile.arch, groups: [...this.profile.groups] };
+		this.#hello = { protocol: PROTOCOL_VERSION, version, os: this.profile.os, kind: "desktop", arch: this.profile.arch, groups: [...this.profile.groups] };
 		return ok(this.#hello);
 	}
 

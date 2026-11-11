@@ -162,7 +162,7 @@ export class KernelProvider implements ComputerProvider {
 		return {
 			kind: "browser",
 			lifetime: "vendor",
-			network: ["open"],
+			network: [...KERNEL.network],
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",

@@ -11,6 +11,8 @@ export const BROWSERBASE = defineProvider({
 	],
 	metered: true,
 	mounts: [],
+	// Browserbase's own network, open: it cannot be closed or narrowed.
+	network: ["open"],
 	capabilities: [{ kind: "browser", groups: ["cdp", "stream"] }],
 	defaultImage: { browser: BROWSER_IMAGE },
 	load: () => import("../browserbase.js"),

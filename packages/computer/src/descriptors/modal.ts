@@ -16,6 +16,8 @@ export const MODAL = defineProvider({
 	settings: [{ name: "modalApp", option: "app", default: "agentrun" }],
 	metered: true,
 	mounts: ["archil"],
+	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
+	network: ["none"],
 	capabilities: [SANDBOX],
 	defaultImage: { sandbox: MODAL_DEFAULT_IMAGE },
 	load: () => import("../modal.js"),

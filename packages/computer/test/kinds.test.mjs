@@ -148,19 +148,20 @@ test("each entry's kinds are derived by serves() from its static capabilities, n
 	}
 });
 
-test("PROVIDERS is derived from the descriptors, and each provider module's MOUNT and CAPABILITIES are its descriptor's own", async () => {
-	assert.deepEqual(PROVIDERS, DESCRIPTORS.map(entryOf), "every entry is its descriptor through entryOf");
+test("PROVIDERS is derived from the descriptors, and each provider module's MOUNT and CAPABILITIES are its descriptor's own; a module declares no network beside it", async () => {
+	assert.deepEqual(PROVIDERS, DESCRIPTORS.map(entryOf), "every entry is its descriptor through entryOf, its network included");
 	assert.deepEqual(PROVIDERS.map((entry) => entry.id), [...providerIds], "one entry per registry provider, in the descriptors' order");
 	for (const descriptor of DESCRIPTORS) {
 		const module = await providerModule(descriptor.id);
 		assert.equal(module.CAPABILITIES, descriptor.capabilities, `${descriptor.id}: its module's CAPABILITIES are its descriptor's, not a copy`);
 		assert.equal(module.MOUNT, descriptor.mounts, `${descriptor.id}: its module's MOUNT is its descriptor's mounts, not a copy`);
+		assert.equal("NETWORK" in module, false, `${descriptor.id}: its network is its descriptor's alone`);
 		assert.equal("load" in PROVIDERS.find((entry) => entry.id === descriptor.id), false, `${descriptor.id}: an entry is data, without load()`);
 	}
 });
 
 test("a descriptor is checked when it is defined: its id, keys, settings and configurations, in words", () => {
-	const good = { id: "acme-cloud", label: "Acme", keys: [{ name: "ACME_KEY", option: "apiKey", required: true }], metered: true, mounts: [], capabilities: [{ kind: "linux", groups: ["exec"] }], load: async () => ({}) };
+	const good = { id: "acme-cloud", label: "Acme", keys: [{ name: "ACME_KEY", option: "apiKey", required: true }], metered: true, mounts: [], network: ["none"], capabilities: [{ kind: "linux", groups: ["exec"] }], load: async () => ({}) };
 	assert.equal(defineProvider(good), good);
 	assert.deepEqual(descriptorProblems(good), []);
 	for (const [change, words] of [
@@ -171,6 +172,8 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],
 		[{ capabilities: [] }, /capabilities is not a list of one configuration or more/],
 		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
+		[{ network: [] }, /network is not a list of the network forms/],
+		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
 		[{ ledger: {} }, /ledger names the option it fills/],
 		[{ capabilities: [{ kind: "desktop", groups: [], image: " windows" }] }, /a configuration's image " windows" is not a name/],
@@ -214,14 +217,14 @@ const BUILT = {
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
-test("a built provider's capabilities, in each configuration, are its entry's static capabilities", () => {
+test("a built provider's capabilities, in each configuration, are its entry's static capabilities, and its network forms its entry's", () => {
 	assert.deepEqual(Object.keys(BUILT).sort(), [...providerIds].sort(), "every registry provider is built here");
 	for (const [id, builds] of Object.entries(BUILT)) {
 		const entry = PROVIDERS.find((one) => one.id === id);
-		const seen = builds.map((build) => {
-			const { kind, groups } = build().capabilities();
-			return { kind, groups };
-		});
-		assert.deepEqual(seen, entry.capabilities.map(({ kind, groups }) => ({ kind, groups })), `${id}: each configuration's kind and groups`);
+		const built = builds.map((build) => build().capabilities());
+		assert.deepEqual(built.map(({ kind, groups }) => ({ kind, groups })), entry.capabilities.map(({ kind, groups }) => ({ kind, groups })), `${id}: each configuration's kind and groups`);
+		// Each configuration's network is among its entry's, and together they are all of it (Orgo: Linux none, Windows open).
+		for (const { network } of built) assert.ok(network.every((form) => entry.network.includes(form)), `${id}: ${network} is among ${entry.network}`);
+		assert.deepEqual([...new Set(built.flatMap(({ network }) => network))].sort(), [...entry.network].sort(), `${id}: its configurations make every form its entry declares`);
 	}
 });

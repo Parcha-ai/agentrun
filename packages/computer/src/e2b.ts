@@ -643,7 +643,7 @@ export class E2BProvider implements ComputerProvider {
 		return {
 			kind: this.#kind,
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...E2B.network],
 			networkReadBack: true,
 			isolation: "microvm",
 			os: "linux",

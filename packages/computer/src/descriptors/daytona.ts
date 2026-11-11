@@ -15,6 +15,8 @@ export const DAYTONA = defineProvider({
 	],
 	metered: true,
 	mounts: ["archil"],
+	// None: its programs run in a network of their own (isolation.ts OWN_NETWORK_ONLY).
+	network: ["none"],
 	capabilities: [SANDBOX],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	load: () => import("../daytona.js"),

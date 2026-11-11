@@ -10,7 +10,7 @@ import type { DescriptorKey, DescriptorSetting, ProviderDescriptor } from "./des
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerKind, Group } from "./protocol.js";
-import type { ComputerCapabilities } from "./provider.js";
+import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
 
 /**
@@ -103,6 +103,11 @@ export interface ProviderEntry {
 	readonly settings?: readonly DescriptorSetting[];
 	/** The mount kinds its computers take; [] cannot mount the run's folder. */
 	readonly mounts: readonly MountKind[];
+	/**
+	 * The network forms its computers make, its descriptor's: ["none"], a remote computer whose programs run in a network
+	 * of their own; ["open"], the vendor's own network, which no allowlist of this server reaches; Docker's all three.
+	 */
+	readonly network: readonly NetworkForm[];
 	/** The vendor bills by time; prices are the vendor's page, not ours. */
 	readonly metered: boolean;
 	/** Its static capabilities: the machine kind and groups of each configuration it offers. */

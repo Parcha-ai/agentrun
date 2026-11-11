@@ -332,7 +332,7 @@ export class DockerProvider implements ComputerProvider {
 		return {
 			kind: this.#desktop ? "desktop" : "linux",
 			lifetime: "janitor",
-			network: ["none", "open", "allow"],
+			network: [...DOCKER.network],
 			allow: { domains: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, cidrs: { max: MAX_ALLOW, ports: [...ALLOW_PORTS] }, mixed: true },
 			networkReadBack: true,
 			isolation: "container",

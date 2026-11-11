@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { kindOf, serves } from "../dist/index.js";
 import { readPng } from "../dist/conformance/png.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { API, KEY, WORKSPACE } from "./fake-orgo.mjs";
 import { fakeOrgoDesktop, MACOS_LABELS, WINDOWS_HOME, WINDOWS_LABELS } from "./fake-orgo-desktop.mjs";
 import { until } from "./fake-image-docker.mjs";
@@ -145,7 +146,7 @@ test("Orgo Windows connect: hello is the desktop's; screen.shot is a PNG of the 
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
 	const { client, hello } = connected.value;
-	assert.deepEqual(hello, { version: provider.version, os: "windows", kind: "desktop", arch: "amd64", groups: ["exec", "files", "screen", "input.pointer", "input.keys"] });
+	assert.deepEqual(hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "windows", kind: "desktop", arch: "amd64", groups: ["exec", "files", "screen", "input.pointer", "input.keys"] });
 	const shot = (await client.call("screen.shot", {})).value;
 	assert.deepEqual([shot.width, shot.height, shot.scale], [1280, 720, 1]);
 	const read = async (first) => {

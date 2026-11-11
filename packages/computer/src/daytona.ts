@@ -692,7 +692,7 @@ export class DaytonaProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...DAYTONA.network],
 			isolation: this.#class === "linux-vm" ? "vm" : "container",
 			os: "linux",
 			daemon: "child",

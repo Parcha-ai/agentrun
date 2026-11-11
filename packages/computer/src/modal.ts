@@ -786,7 +786,7 @@ export class ModalProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...MODAL.network],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",

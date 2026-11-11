@@ -5,6 +5,9 @@ import type { Result } from "./result.js";
 import type { ScreenWatch, ScreenWatchHandlers, WatchOptions } from "./screen-watch.js";
 
 export type NetworkSpec = "none" | "open" | { allow: string[] };
+/** A network's form, as a provider declares the ones it makes (capabilities().network, its descriptor's network): "allow"
+ *  is NetworkSpec's allowlist. */
+export type NetworkForm = "none" | "open" | "allow";
 
 /** The agent a persistent computer belongs to (spec.owner): it outlives the agent's runs, which take it one at a time. */
 export interface ComputerOwner {
@@ -74,7 +77,8 @@ export interface ComputerCapabilities {
 	kind: ComputerKind;
 	/** Who ends a computer at its deadline: the vendor, or our janitor by label. */
 	lifetime: "vendor" | "janitor";
-	network: Array<"none" | "open" | "allow">;
+	/** The network forms it makes: of its descriptor's network (the forms all its configurations make), its own. */
+	network: NetworkForm[];
 	/** With network "allow": what an allowlist may hold and which ports it opens. */
 	allow?: AllowCapability;
 	/**

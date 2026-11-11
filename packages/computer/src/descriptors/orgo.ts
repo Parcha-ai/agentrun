@@ -41,6 +41,9 @@ export const ORGO = defineProvider({
 	metered: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper.
 	mounts: [],
+	// The forms its configurations make: the Linux desktop none (computerd holds its programs to loopback), the Windows
+	// desktop open (Orgo has no egress control). Each built provider declares its own, one of these.
+	network: ["none", "open"],
 	// The Linux desktop (no os, the default), then Windows (os "windows").
 	capabilities: ORGO_CONFIGURATIONS,
 	defaultImage: { desktop: ORGO_BASE_IMAGE },

@@ -14,6 +14,8 @@ export const PHONE_HARNESS = defineProvider({
 	keys: [{ name: "PHONE_HARNESS_API_KEY", option: "apiKey", required: true }],
 	metered: true,
 	mounts: [],
+	// The vendor's own network, open: it cannot be closed or narrowed.
+	network: ["open"],
 	capabilities: [{ kind: "android", groups: [...PHONE_GROUPS] }],
 	defaultImage: { phone: PHONE_IMAGE },
 	// The phones it rents, by session: the server's store backs this ledger, so a phone is never lost across restarts.

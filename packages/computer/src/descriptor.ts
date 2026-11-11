@@ -4,6 +4,7 @@
 // the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
 import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
+import type { NetworkForm } from "./provider.js";
 import type { ProviderModule } from "./providers.js";
 
 /** One key a provider takes in Settings: its serve-side name, the create() option it fills, and whether it is needed. */
@@ -42,6 +43,12 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly metered: boolean;
 	/** The mount kinds its computers take, as its providers' capabilities().mount declare them; [] for none. */
 	readonly mounts: readonly MountKind[];
+	/**
+	 * The network forms its computers make, as its providers' capabilities().network declare them: ["none"], a remote
+	 * computer whose programs run in a network of their own; ["open"], the vendor's own network, which no allowlist of
+	 * this server reaches; Docker's makes all three. A provider of several configurations declares every form they make.
+	 */
+	readonly network: readonly NetworkForm[];
 	/**
 	 * The machine kind and groups of each configuration it offers, as each built provider's capabilities() declare them;
 	 * where it offers more than one image of a kind, each one's image (the name a setting selects it by) and the create()
@@ -86,6 +93,7 @@ export function descriptorProblems(value: unknown): string[] {
 	if (typeof d.metered !== "boolean") problems.push("metered is not true or false");
 	if (typeof d.load !== "function") problems.push("load is not a function that imports the provider module");
 	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil)");
+	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
 	else {

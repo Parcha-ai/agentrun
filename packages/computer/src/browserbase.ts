@@ -242,7 +242,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		return {
 			kind: "browser",
 			lifetime: "vendor",
-			network: ["open"],
+			network: [...BROWSERBASE.network],
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",

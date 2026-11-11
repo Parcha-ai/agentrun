@@ -13,7 +13,7 @@ import { ID } from "../dist/validate.js";
 import { agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
 
-const SHIM = new URL("../../pi-durable-disk/test/fixtures/fsync-snapshot/shim.c", import.meta.url).pathname;
+const SHIM = new URL("./store-fixtures/fsync-snapshot.c", import.meta.url).pathname;
 const WRITER = new URL("./fixtures/workspace-durable-writer.mjs", import.meta.url).pathname;
 
 const dirs = [];
@@ -262,8 +262,9 @@ test("local: a folder swapped for a link to outside, over and over, never sends 
   const swapper = spawn(process.execPath, ["-e", swap, root, outside], { detached: true, stdio: "ignore" });
   const calls = { done: 0, refused: 0 };
   try {
-    const until = Date.now() + 3_000;
-    while (Date.now() < until) {
+    // At least 30 rounds of every call against the swapper, and on until more than 50 calls went through: counted, never
+    // timed, so a loaded box races the swapper as long as an idle one does.
+    for (let round = 0; round < 30 || calls.done <= 50; round += 1) {
       for (const call of [
         () => workspace.read("a/victim").then((bytes) => assert.notEqual(Buffer.from(bytes).toString("utf8"), "outside\n", "a read never returns the outside file")),
         () => workspace.remove("a/victim", { force: true }),

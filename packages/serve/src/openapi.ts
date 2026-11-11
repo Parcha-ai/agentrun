@@ -586,6 +586,7 @@ const COMPUTER_PROVIDER = closedWith({
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+  network: { type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on the vendor's own network is open (\"the vendor's own network; this server's allow-list doesn't apply\"). Absent where the allow-list applies (Docker), or where it depends on the image (Orgo: its Linux desktop has none, its Windows desktop the vendor's own)." },
   images: { type: "array", items: { type: "string" }, description: "The images the provider offers for the kind, as an agent's `computer.image` names them (Orgo's desktop: `linux`, `windows`); the kind's default first when it is one of them. Absent when it offers none to choose." },
 });
 /** GET /computers' answer (computers.ts view). */

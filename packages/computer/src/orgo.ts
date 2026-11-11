@@ -159,7 +159,8 @@ const DELETE_TRIES = 5;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels"]);
 /** The states in which a computer runs, or is on its way to. */
 const RUNNING = new Set(["running", "creating", "restarting", "updating", "resuming"]);
-const NETWORK =
+/** Why a network other than "none" is refused: this configuration makes none alone. */
+const NETWORK_REFUSAL =
 	'an Orgo computer takes network "none" only: Orgo has no egress control, so its tools have no network of their own (init\'s namespace holds them to loopback), and open or an allowlist waits for the proxy-backed feature';
 
 /** The scripts the provider runs as root, each marked on its first line, its arguments after it. */
@@ -299,6 +300,7 @@ export class OrgoProvider implements ComputerProvider {
 		return {
 			kind: "desktop",
 			lifetime: "janitor",
+			// This configuration's form, one of Orgo's descriptor's: none (the Windows desktop's is open).
 			network: ["none"],
 			networkReadBack: false,
 			isolation: "vm",
@@ -320,7 +322,7 @@ export class OrgoProvider implements ComputerProvider {
 		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
 		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
 		refusals.push(...checkTenure(given, this.capabilities(), "Orgo"));
-		if (network !== "none") refuse("network", NETWORK);
+		if (network !== "none") refuse("network", NETWORK_REFUSAL);
 		if (memoryMb !== undefined && !RAM_GB.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", "memoryMb is one of Orgo's sizes: 4096, 8192, 16384 or 32768");
 		if (cpus !== undefined && !CPUS.includes(cpus as number)) refuse("cpus", "cpus is one of Orgo's sizes: 0.5, 1, 2, 4 or 6");
 		if (labels !== undefined) {
@@ -802,7 +804,7 @@ export class OrgoProvider implements ComputerProvider {
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (policy !== undefined && policy !== "none") return fail("refused", NETWORK);
+		if (policy !== undefined && policy !== "none") return fail("refused", NETWORK_REFUSAL);
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}: its network is read from inside, and a read would wake it`);
