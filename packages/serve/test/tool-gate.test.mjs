@@ -447,7 +447,8 @@ async function ownerAgain(server) {
   };
 }
 
-// SKIP (follow-up #2078): a parked call's answer, stop or declining message does not behave as before on the runner
+// SKIP (follow-up #2078): on claude-agent and codex the run's call is never refused here: the faux CLI harness (run-adapters'
+// fauxAdapter) runs its host tools without asking the run's gate (the real adapters' tool bridges ask it first), so it runs
 test.skip("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a tool set to deny or ask refuses its run, and a catalog tool is no call node's tool", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);

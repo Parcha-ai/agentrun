@@ -327,6 +327,9 @@ interface CliRecord {
   input(text: string, origin: MessageOrigin): Promise<void>;
   /** A call's start, before it runs (once per call id). */
   start(callId: string, tool: string, input: unknown, replaySafe: boolean): Promise<void>;
+  /** A call its gate refused (a deny set, no one to approve, or a person's deny of its ask): its start and its end, refused
+   *  in the gate's words, in one commit, as pi writes a refused call and its error result (once per call id). */
+  refused(callId: string, tool: string, input: unknown, replaySafe: boolean, words: string): Promise<void>;
   /** The end the record holds for a call, if any: a call issued again under its id is answered from it, never run. */
   endOf(callId: string): { status: CallStatus; output?: string } | undefined;
   /** A started call's end (once). */
@@ -408,6 +411,21 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         if (started.has(callId)) return;
         await append(KINDS.callStart, { callId, tool, input, replaySafe });
         started.set(callId, false);
+      });
+    },
+    async refused(callId, tool, input, replaySafe, words) {
+      await flushText();
+      await inTurn(async () => {
+        if (started.get(callId) === true) return;
+        const at = now();
+        const start: CallStartData = { callId, tool, input, replaySafe, at };
+        const end: CallEndData = { callId, status: "refused", output: words, at };
+        await harness.commit(async (tx) => {
+          if (!started.has(callId)) await tx.appendEntry(root.id, { kind: KINDS.callStart, data: start as unknown as JsonValue });
+          await tx.appendEntry(root.id, { kind: KINDS.callEnd, data: end as unknown as JsonValue });
+        }, context);
+        started.set(callId, true);
+        ends.set(callId, { status: "refused", output: words });
       });
     },
     endOf: (callId) => ends.get(callId),
@@ -945,7 +963,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // flush unless the tool is replay-safe, the call, then the beforeResult point. A throw there is the kernel's own
           // fault: the journal is sealed before the harness's result commit, so the Session fails with the call before
           // its result, and the loop restarts it. A CLI's call reaches here only once the gate allowed it (its tool
-          // bridge asks first), so its record's start is written here, before the flush and the call, and its end after.
+          // bridge asks first; one refused is on the record from the gate, bridgeGate), so its record's start is written
+          // here, before the flush and the call, and its end after.
           call: async (args, toolContext) => {
             // A call its CLI issues again under an id the record already ended (after the CLI's own resume) is answered
             // from that end, never run again.
@@ -1019,7 +1038,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           for (const turn of booking.turns) given.add(turn);
           return booking.usd;
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: gateOf, hostTool: hosted, bookedCost };
+        // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
+        // start and its end, refused in the gate's words, go on the record here, as pi writes a refused call and its error
+        // result (a deny set, no one to approve, or a person's deny of its ask on the claim that resumes it).
+        const bridgeGate: typeof gateOf = record
+          ? async (call, hookContext) => {
+              const answer = await gateOf(call, hookContext);
+              if (answer !== "allow" && "deny" in answer) {
+                const tool = tools.find((one) => one.name === call.tool);
+                await record.refused(call.callId, call.tool, call.args ?? {}, tool?.replay === "safe", answer.deny);
+              }
+              return answer;
+            }
+          : gateOf;
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: bridgeGate, hostTool: hosted, bookedCost };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
         // MCP its adapter mounts on its proxy, each call asking the gate first (an ask parks the run, nothing sent).
         const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));
