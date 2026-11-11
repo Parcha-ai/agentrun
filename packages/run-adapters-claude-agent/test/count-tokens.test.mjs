@@ -78,6 +78,29 @@ test("straight to Anthropic, a request's input bound is Anthropic's count of it 
   assert.deepEqual(Object.keys(counts[0].body).sort(), ['messages', 'model', 'system', 'tools']);
 });
 
+test("a client that goes while its request is counted is gone before anything is admitted: the count is cut, and nothing is admitted or sent", async (t) => {
+  let cut;
+  const wasCut = new Promise((resolve) => (cut = resolve));
+  let counting;
+  const counted = new Promise((resolve) => (counting = resolve));
+  const { p, counts, asked, sent } = await proxyOn(t, 'https://api.anthropic.com', {
+    count: (init) => new Promise((_, reject) => {
+      counting();
+      init.signal.addEventListener('abort', () => { cut(); reject(init.signal.reason); }, { once: true });
+    }),
+  });
+  const { hostname, port } = new URL(p.url);
+  const req = request({ host: hostname, port, method: 'POST', path: '/v1/messages?beta=true', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' } });
+  req.on('error', () => {});
+  req.end(JSON.stringify(firstTurn));
+  await counted;
+  req.destroy();
+  await wasCut;
+  // The proxy's own turn after the cut: its admission, if it made one, is before this.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([counts.length, asked.length, sent.length], [1, 0, 0], 'counted, then nothing admitted and nothing sent');
+});
+
 test("an unmeasured bound stays unmeasured: a request with the web search tool (whose pages it reads have no bound) is never counted into a number", async (t) => {
   const searching = anthropicPolicy({ ...options, webSearch: true });
   const counts = [];

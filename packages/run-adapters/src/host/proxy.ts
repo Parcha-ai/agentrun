@@ -776,12 +776,14 @@ export const COUNT_TIMEOUT_MS = 3_000;
  * margin; undefined (the request keeps its byte bound) when the policy has no counter, the upstream `origin` is not
  * the counter's own, or the count fails, times out or says no count. Never throws: a count is only ever a tighter bound.
  */
-export async function countedInputOf(policy: ProviderPolicy, origin: string, body: Record<string, unknown>, headers: Record<string, string>, fetch: typeof globalThis.fetch, say: (message: string, detail?: Record<string, unknown>) => void = () => {}, timeoutMs = COUNT_TIMEOUT_MS): Promise<number | undefined> {
+export async function countedInputOf(policy: ProviderPolicy, origin: string, body: Record<string, unknown>, headers: Record<string, string>, fetch: typeof globalThis.fetch, say: (message: string, detail?: Record<string, unknown>) => void = () => {}, timeoutMs = COUNT_TIMEOUT_MS, signal?: AbortSignal): Promise<number | undefined> {
   const counter = policy.countInput;
   if (!counter) return undefined;
   try {
     if (baseOf(counter.origin) !== origin) return undefined;
-    const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: AbortSignal.timeout(timeoutMs) });
+    // Cut at its timeout, or when `signal` aborts (its client went).
+    const cut = signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs);
+    const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: cut });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound`);
@@ -1051,7 +1053,18 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
     let inputTokensCounted = false;
     if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
-      const counted = await countedInputOf(policy, origin, body, headers, forward, say);
+      // A client that goes while its request is counted is gone before anything is admitted: the count is cut, and the
+      // request is neither admitted nor sent (nothing is booked, and no paid answer starts for no one).
+      const gone = new AbortController();
+      const onGone = () => gone.abort(new Error("the client went while its request was counted"));
+      res.once("close", onGone);
+      let counted: number | undefined;
+      try {
+        counted = await countedInputOf(policy, origin, body, headers, forward, say, COUNT_TIMEOUT_MS, gone.signal);
+      } finally {
+        res.off("close", onGone);
+      }
+      if (gone.signal.aborted || res.destroyed) return;
       if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
         inputTokensMax = counted;
         inputTokensCounted = true;
