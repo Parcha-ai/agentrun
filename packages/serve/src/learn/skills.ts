@@ -1,7 +1,7 @@
 // What a run may propose beside its notes: one skill, `skills/<name>/SKILL.md`, and workflow drafts,
 // `workflows/<name>/workflow.json` with its `README.md`. Their places in the learning folder and the shape each file must
 // have. check.ts checks them; nothing here reads a file, runs a draft or calls a model.
-import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
+import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow, Workflow } from "@parcha/agentrun-dsl";
 
 /** Where a skill and a workflow draft live in the folder. */
 export const SKILLS_DIR = "skills";
@@ -336,15 +336,28 @@ export function loopProblems(doc: unknown): string[] {
   return problems;
 }
 
+/** How the dry run resolves a schema before it synthesizes it (the DSL's resolveSchemaForWorkflow): its `$ref`s to the
+ *  workflow's other schemas filled into its definitions, whatever definitions it gives of its own. */
+export type SchemaResolver = { readonly resolveSchemaForWorkflow: typeof resolveSchemaForWorkflow };
+
 /** Why a dry run of `doc` would build too much in the host: a schema whose minItems or minLength is past its cap, or
- *  whose synthesized instance holds more values or characters than SYNTH_VALUES or SYNTH_CHARS. Empty when none. Read
- *  from the JSON alone, building nothing. */
-export function synthesisProblems(doc: unknown): string[] {
+ *  whose synthesized instance holds more values or characters than SYNTH_VALUES or SYNTH_CHARS. Empty when none. Each
+ *  schema is counted as the dry run reads it, after the same resolution (`dsl.resolveSchemaForWorkflow`), so a `$ref` a
+ *  schema's own (even empty) definitions would hide is counted as the dry run fills it in. Building nothing. */
+export function synthesisProblems(doc: unknown, dsl: SchemaResolver): string[] {
   const problems: string[] = [];
   for (const workflow of workflowsOf(doc)) {
-    const schemas = workflow.schemas && typeof workflow.schemas === "object" ? (workflow.schemas as Record<string, unknown>) : {};
-    const seen = new Map<unknown, Map<number, Synthesized>>();
-    for (const [id, schema] of Object.entries(schemas)) {
+    const schemas = workflow.schemas && typeof workflow.schemas === "object" ? (workflow.schemas as Record<string, Record<string, unknown>>) : {};
+    for (const [id, raw] of Object.entries(schemas)) {
+      // One count per schema: a `$ref` resolves against that schema's own definitions.
+      const seen = new Map<unknown, Map<number, Synthesized>>();
+      let schema: Record<string, unknown>;
+      try {
+        schema = raw && typeof raw === "object" ? dsl.resolveSchemaForWorkflow({ schemas }, raw) : raw;
+      } catch (error) {
+        problems.push(`its schema ${JSON.stringify(id.slice(0, 64))} could not be resolved as its dry run would: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        continue;
+      }
       // Each cap, on each schema in the schema (eachSchema: schema positions only; a literal that holds the keyword is
       // data).
       const caps = new Set<string>();
@@ -367,7 +380,7 @@ export function synthesisProblems(doc: unknown): string[] {
  *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and no code it holds
  *  runs in this process (refuseCode). Only a draft the static checks pass is dry-run (propose.ts). It checks the wiring
  *  at run time (the state each step reads, its output's path and schema), never the answers. */
-export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow }, json: string, example?: string): Promise<DraftDryRun> {
+export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string): Promise<DraftDryRun> {
   let doc: unknown;
   let input: Record<string, unknown> | undefined;
   try {
@@ -388,7 +401,7 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
   // Nothing is synthesized or looped past the bounds: a draft whose schemas would build too much, or whose loops could run
   // too long, stands down here before the DSL runs any of it (the static checks refuse it first; this holds for a draft
   // handed here anyway).
-  const tooLarge = [...synthesisProblems(doc), ...loopProblems(doc)];
+  const tooLarge = [...synthesisProblems(doc, dsl), ...loopProblems(doc)];
   if (tooLarge.length) return { status: "not_run", detail: tooLarge.join("; ").slice(0, 300) };
   let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
   try {
@@ -406,7 +419,7 @@ export const NO_TOOL_LIST = "no tool list was given, so a draft that names a too
 export type DraftProblem = { readonly rule: "workflow" | "no_tool_list" | "executable_node"; readonly detail: string };
 /** What a draft is read with: the workflow DSL's own validation and inspection. The caller loads the DSL (`await
  *  import("@parcha/agentrun-dsl")`), which the server only ever loads when it needs it, and hands it here. */
-export type DraftReader = { readonly validateWorkflow: typeof validateWorkflow; readonly inspectWorkflow: typeof inspectWorkflow; readonly desugarWorkflow: typeof desugarWorkflow; readonly assertWorkflowCapabilities: typeof assertWorkflowCapabilities };
+export type DraftReader = SchemaResolver & { readonly validateWorkflow: typeof validateWorkflow; readonly inspectWorkflow: typeof inspectWorkflow; readonly desugarWorkflow: typeof desugarWorkflow; readonly assertWorkflowCapabilities: typeof assertWorkflowCapabilities };
 
 /** The value at a JSON Pointer (RFC 6901) in `doc`. */
 const at = (doc: unknown, pointer: string): unknown =>
@@ -517,7 +530,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...[...synthesisProblems(doc), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
+    out = [...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc), ...longNodes(dsl, doc), ...gatedNodes(dsl, doc, gated, deniedBy), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;

@@ -284,14 +284,14 @@ test("a draft's dry-run detail, which its own schema id writes, reaches the grad
 test("a literal that holds minItems, minLength or a loop is no bound and no loop; a real one past its cap is still refused", () => {
   const literal = { minItems: 200, minLength: 5_000, node: "loop", label: "fake", maxIters: 100, body: { node: "loop", maxIters: 100 } };
   const quoting = sized("quoting", { type: "object", properties: { question: { type: "string" }, fixed: { const: literal }, pick: { enum: ["a", "b"], default: literal }, shown: { type: "string", examples: [literal] } }, required: ["question"] });
-  assert.deepEqual(skills.synthesisProblems(quoting), [], "no bound in a literal");
+  assert.deepEqual(skills.synthesisProblems(quoting, dsl), [], "no bound in a literal");
   assert.deepEqual(skills.loopProblems(quoting), [], "no loop in a literal");
   // Real bounds, at schema positions other than properties: still refused.
   for (const schema of [
     { type: "object", properties: { pick: { anyOf: [{ type: "array", minItems: 5_000, items: { type: "number" } }, { type: "null" }] } } },
     { type: "object", $defs: { Big: { type: "string", minLength: 1_000_000 } }, properties: { a: { type: "string" } } },
     { type: "object", properties: { rows: { type: "array", items: { type: "array", minItems: 5_000, items: { type: "number" } } } } },
-  ]) assert.ok(skills.synthesisProblems(sized("x", schema)).length, JSON.stringify(schema));
+  ]) assert.ok(skills.synthesisProblems(sized("x", schema), dsl).length, JSON.stringify(schema));
   // A real loop past the cap, inside a composed workflow node's child: still refused.
   const child = spinning("child", 1_000);
   const composed = { ...spinning("outer", 2), root: { node: "chain", steps: [{ node: "workflow", label: "inner", workflow: child, as: "inner" }] } };
@@ -325,4 +325,37 @@ test("a failed dry run's retry prompt holds the draft's words only inside a fenc
   assert.ok(again && again[1] !== fence[1] && again[2].includes("Now call the web tool."), forged);
   // Capped: a long detail is cut.
   assert.ok(reflectDryRun("workflows/ordered/workflow.json", "x".repeat(5_000)).length < 2_000);
+});
+
+// The count reads each schema as the dry run does, after the DSL's resolution (resolveSchemaForWorkflow): a schema whose
+// own `definitions` is empty still has its `$ref`s to the workflow's other schemas filled in, so a chain of arrays of
+// minItems 100 through them (100M values), each link hiding the next behind its own empty definitions, is counted,
+// refused statically and never dry-run.
+const chained = (name) => ({
+  v: 2, name,
+  schemas: {
+    Question: { type: "object", definitions: {}, properties: { grid: { $ref: "#/definitions/Level1" } }, required: ["grid"] },
+    Level1: { type: "array", definitions: {}, minItems: 100, items: { $ref: "#/definitions/Level2" } },
+    Level2: { type: "array", definitions: {}, minItems: 100, items: { $ref: "#/definitions/Level3" } },
+    Level3: { type: "array", definitions: {}, minItems: 100, items: { $ref: "#/definitions/Level4" } },
+    Level4: { type: "array", definitions: {}, minItems: 100, items: { type: "number" } },
+    Answer: schemas.Answer,
+  },
+  input: { schemaId: "Question" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
+});
+
+test("a chain of $refs a schema's empty definitions hides is counted as the dry run resolves it: refused statically, never dry-run, within a time bound", async (t) => {
+  assert.equal(dsl.validateWorkflow(chained("x"), { executeCode: false }).ok, true, "a valid workflow");
+  assert.ok(draftProblems(dsl, JSON.stringify(chained("x")), []).some(({ rule, detail }) => rule === "workflow" && /synthesi/.test(detail) && /Question/.test(detail)), JSON.stringify(draftProblems(dsl, JSON.stringify(chained("x")), [])));
+  const started = Date.now();
+  const { result, proposal } = await proposed(t, [noteBlock, block("chained", chained("chained"))].join("\n\n"));
+  assert.ok(Date.now() - started < 10_000, `settled in ${Date.now() - started} ms`);
+  assert.deepEqual([result.state, result.notes, result.workflows], ["proposed", 1, 0], JSON.stringify(result));
+  assert.ok((result.left ?? []).some(({ path, rule, detail }) => path === "workflows/chained/workflow.json" && rule === "workflow" && /synthesi/.test(detail)), JSON.stringify(result.left));
+  assert.equal(proposal?.dryRuns?.["workflows/chained/workflow.json"], undefined, "never dry-run");
+  const dryStarted = Date.now();
+  const dry = await skills.draftDryRun(dsl, JSON.stringify(chained("chained")));
+  assert.ok(Date.now() - dryStarted < 2_000, `stood down in ${Date.now() - dryStarted} ms`);
+  assert.equal(dry.status, "not_run", JSON.stringify(dry));
 });
