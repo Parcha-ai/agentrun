@@ -273,16 +273,31 @@ const FILES_SCRIPT = [
 	"$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('@@REQUEST@@')) | ConvertFrom-Json",
 	"function Say($o) { [Console]::Out.Write(($o | ConvertTo-Json -Compress -Depth 6)) }",
 	"function Refuse($kind, $words) { Say @{ error = $kind; message = $words }; exit 2 }",
+	"function IsLink($i) { $i.LinkType -eq 'SymbolicLink' -or $i.LinkType -eq 'Junction' }",
 	"function StatOf($i) {",
-	"  $t = if ($i.LinkType) { 'symlink' } elseif ($i.PSIsContainer) { 'dir' } else { 'file' }",
+	"  $t = if (IsLink $i) { 'symlink' } elseif ($i.PSIsContainer) { 'dir' } else { 'file' }",
 	"  $m = if ($i.PSIsContainer) { 493 } elseif ($i.IsReadOnly) { 292 } else { 420 }",
 	"  $s = if ($i.PSIsContainer) { 0 } else { [int64]$i.Length }",
 	"  $at = [int64](($i.LastWriteTimeUtc - [datetime]'1970-01-01T00:00:00Z').TotalMilliseconds)",
 	"  $o = @{ type = $t; size = $s; mode = $m; mtimeMs = $at; uid = 0; gid = 0 }",
-	"  if ($i.LinkType -and $i.Target) { $o.target = [string]@($i.Target)[0] }",
+	"  if ((IsLink $i) -and $i.Target) { $o.target = [string]@($i.Target)[0] }",
 	"  $o",
 	"}",
-	"function Parent($path) { Split-Path -LiteralPath $path -Parent }",
+	"# What a link at $p.path points to, followed to the end as stat(2) does; one that points nowhere is not_found.",
+	"function Follow($i) {",
+	"  $n = 0",
+	"  while (IsLink $i) {",
+	"    $n++; if ($n -gt 40) { Refuse 'invalid' \"$($p.path) is a chain of more than 40 links\" }",
+	"    $t = [string]@($i.Target)[0]",
+	"    if (-not $t) { Refuse 'invalid' \"$($i.FullName) is a link with no target\" }",
+	"    if (-not [IO.Path]::IsPathRooted($t)) { $t = [IO.Path]::Combine([IO.Path]::GetDirectoryName($i.FullName), $t) }",
+	"    if (-not (Test-Path -LiteralPath $t)) { Refuse 'not_found' \"$($p.path) links to $t, which is not there\" }",
+	"    $i = Get-Item -LiteralPath $t -Force",
+	"  }",
+	"  $i",
+	"}",
+	"# Windows PowerShell 5.1's Split-Path takes -Parent with -Path alone, never a literal path: .NET's own instead.",
+	"function Parent($path) { [IO.Path]::GetDirectoryName($path) }",
 	"try {",
 	"  switch ($p.op) {",
 	"    'read' {",
@@ -312,7 +327,7 @@ const FILES_SCRIPT = [
 	"      if ($p.staged) { Remove-Item -LiteralPath $p.staged -Force }",
 	"      Say @{ size = [int64]$size }",
 	"    }",
-	"    'stat' { Say (StatOf (Get-Item -LiteralPath $p.path -Force)) }",
+	"    'stat' { $i = Get-Item -LiteralPath $p.path -Force; if ($p.follow) { $i = Follow $i }; Say (StatOf $i) }",
 	"    'list' {",
 	"      if (-not (Test-Path -LiteralPath $p.path -PathType Container)) {",
 	"        if (Test-Path -LiteralPath $p.path) { Refuse 'not_dir' \"$($p.path) is not a folder\" } else { Refuse 'not_found' \"no folder $($p.path)\" }",
@@ -342,6 +357,20 @@ const FILES_SCRIPT = [
 	"    }",
 	"    'move' {",
 	"      if (-not (Test-Path -LiteralPath $p.from)) { Refuse 'not_found' \"no $($p.from)\" }",
+	"      # As rename(2), from and to naming one file is no removal: the same path moves nothing, and a name that differs in",
+	"      # case alone, on a folder that reads names without case (so no other entry has to's own name), is renamed by way",
+	"      # of a name of its own, since Windows PowerShell refuses a move onto the same file.",
+	"      $fromFull = [IO.Path]::GetFullPath($p.from); $toFull = [IO.Path]::GetFullPath($p.to)",
+	"      if ($fromFull -ceq $toFull) { Say @{}; break }",
+	"      if ($fromFull -ieq $toFull) {",
+	"        $leaf = [IO.Path]::GetFileName($toFull)",
+	"        if (@(Get-ChildItem -LiteralPath (Parent $toFull) -Force | Where-Object { $_.Name -ceq $leaf }).Count -eq 0) {",
+	"          $via = \"$fromFull.agentrun-move-$([guid]::NewGuid().ToString('N'))\"",
+	"          Move-Item -LiteralPath $p.from -Destination $via",
+	"          Move-Item -LiteralPath $via -Destination $p.to",
+	"          Say @{}; break",
+	"        }",
+	"      }",
 	"      if (Test-Path -LiteralPath $p.to) {",
 	"        if (-not $p.overwrite) { Refuse 'exists' \"$($p.to) is there already\" }",
 	"        # As rename(2): a file replaces a file, a folder an empty folder, at to itself. Move-Item onto a folder would move",
@@ -379,7 +408,7 @@ function labelsWriteCommand(profile: Profile, text: string): string {
 		return [
 			`$t = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}'))`,
 			`$p = ${psQuote(profile.labels)}`,
-			"[void](New-Item -ItemType Directory -Force -Path (Split-Path -LiteralPath $p -Parent))",
+			"[void](New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($p)))",
 			"[IO.File]::WriteAllText(\"$p.part\", $t); Move-Item -LiteralPath \"$p.part\" -Destination $p -Force",
 		].join("\n");
 	}
@@ -878,10 +907,15 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}, not running`);
 		const file = await this.#readLabels(ref, signal);
 		if (!file.ok) return file;
-		const most = Date.parse(file.value.maxDeadline);
+		// The most it may live is read off Orgo's own record, its creation time and this provider's longest lifetime: a
+		// program in a Windows or macOS desktop can write the labels file, so its maxDeadline may lower that, never raise it.
+		const created = typeof found.value.created_at === "string" ? Date.parse(found.value.created_at) : Number.NaN;
+		if (Number.isNaN(created)) return fail("vendor", `Orgo's record of ${ref.name} says no creation time (created_at ${show(found.value.created_at)}), so the most it may live is not known; nothing moved`);
+		const filed = Date.parse(file.value.maxDeadline);
+		const most = Number.isNaN(filed) ? created + this.#maxLifetimeMs : Math.min(created + this.#maxLifetimeMs, filed);
 		const current = Date.parse(file.value.deadline);
 		const target = Date.now() + ttlMs;
-		if (Number.isNaN(most) || target > most) return fail("limit", `${new Date(target).toISOString()} is past ${file.value.maxDeadline}, the most this computer may live`);
+		if (target > most) return fail("limit", `${new Date(target).toISOString()} is past ${new Date(most).toISOString()}, the most this computer may live`);
 		if (target < current) return fail("refused", `${new Date(target).toISOString()} is earlier than ${ref.name}'s deadline ${file.value.deadline}: an extend never moves it earlier; nothing moved`);
 		if (target === current) return ok({ deadline: new Date(current) });
 		const end = typeof found.value.ends_at === "string" ? Date.parse(found.value.ends_at) : Number.NaN;
@@ -1462,7 +1496,7 @@ export class OrgoDesktopClient implements ComputerClient {
 			}
 			case "stat":
 				if (path(params.path) === undefined) return absolute("path");
-				request = { op, path: params.path };
+				request = { op, path: params.path, follow: params.follow === true };
 				break;
 			case "list": {
 				if (path(params.path) === undefined) return absolute("path");

@@ -3,7 +3,9 @@
 // status code 400"), Orgo's bash call reading the provider's own commands (PowerShell on Windows, the shell on macOS),
 // a file system in memory for the Windows files script and the upload's destPath, and the desktop fixture as the
 // Windows one behaves: Start-Process of it logs ready, and a click, a drag or typed text inside its 200x200 window at
-// (0, 0) is logged as it would log them, its four colors in the screenshot while it runs. Nothing reaches the network.
+// (0, 0) is logged as it would log them, its four colors in the screenshot while it runs. Its PowerShell is Windows
+// PowerShell 5.1's, the one a Windows image has: Split-Path refuses -LiteralPath with -Parent, and NTFS reads names
+// without case. Nothing reaches the network.
 import { deflateSync, crc32 } from "node:zlib";
 import { fakeOrgoApi } from "./fake-orgo.mjs";
 
@@ -11,6 +13,9 @@ export const WINDOWS_LABELS = "C:\\ProgramData\\agentrun\\labels.json";
 export const MACOS_LABELS = "/Users/Shared/agentrun/labels.json";
 export const WINDOWS_HOME = "C:\\Users\\agent";
 const FILES_MARK = "# agentrun-computer: orgo-windows-files";
+/** Windows PowerShell 5.1's Split-Path: -LiteralPath and -Parent are two parameter sets, so together they are refused. */
+const SPLIT_PATH_51 = /Split-Path -LiteralPath \S+ -Parent/;
+const SPLIT_PATH_51_WORDS = "Split-Path : Parameter set cannot be resolved using the specified named parameters.";
 const W400 = { error: "Request failed with status code 400", upstream_status: 400 };
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const FIXTURE_COLORS = [
@@ -90,6 +95,8 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			boxes.set(id, {
 				files: new Map(),
 				dirs: new Set(windows ? ["C:", "C:\\Users", WINDOWS_HOME, "C:\\ProgramData"] : ["/Users", "/Users/Shared"]),
+				// Windows links, symbolic or junction: each path's target as written, absolute or relative to its folder.
+				links: new Map(),
 				inputs: [],
 				commands: [],
 				notReady,
@@ -157,6 +164,11 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			if (command.startsWith(FILES_MARK)) return filesOp(box, JSON.parse(Buffer.from(/FromBase64String\('([^']*)'\)/.exec(command)[1], "base64").toString("utf8")), command);
 			const write = /FromBase64String\('([A-Za-z0-9+/=]*)'\)\)\n\$p = '([^']+)'/.exec(command);
 			if (write) {
+				// Its folder is made first: where 5.1 refuses the Split-Path no folder is made, so on a fresh image the write
+				// after it has nowhere to go.
+				const folder = write[2].slice(0, write[2].lastIndexOf("\\"));
+				if (SPLIT_PATH_51.test(command) && !box.dirs.has(folder)) return ran(1, "", `${SPLIT_PATH_51_WORDS}\nCould not find a part of the path '${write[2]}.part'.\n`);
+				box.dirs.add(folder);
 				box.files.set(write[2], Buffer.from(write[1], "base64"));
 				return ran(0);
 			}
@@ -220,6 +232,20 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			for (let at = path; at !== "" && !box.dirs.has(at); at = parent(at)) box.dirs.add(at);
 		};
 		const children = (dir) => [...new Set([...box.dirs, ...box.files.keys()])].filter((path) => parent(path) === dir).sort();
+		/** A file or a folder and all in it, from one path to another. */
+		const relocate = (from, to) => {
+			if (box.files.has(from)) {
+				const bytes = box.files.get(from);
+				box.files.delete(from);
+				box.files.set(to, bytes);
+				return;
+			}
+			for (const dir of [...box.dirs]) if (dir === from || dir.startsWith(`${from}\\`)) (box.dirs.delete(dir), box.dirs.add(to + dir.slice(from.length)));
+			for (const [file, bytes] of [...box.files]) if (file.startsWith(`${from}\\`)) (box.files.delete(file), box.files.set(to + file.slice(from.length), bytes));
+		};
+		// The script's Parent, which write and mkdir each call: 5.1 refuses a Split-Path of -LiteralPath with -Parent, and the
+		// script's catch says it.
+		if ((p.op === "write" || p.op === "mkdir") && SPLIT_PATH_51.test(script)) return no("invalid", SPLIT_PATH_51_WORDS);
 		switch (p.op) {
 			case "read": {
 				const path = norm(p.path);
@@ -252,7 +278,14 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 				return say({ size: next.length });
 			}
 			case "stat": {
-				const path = norm(p.path);
+				let path = norm(p.path);
+				// A link is said as one, its target as written; followed (the request's follow), what it points to, to the end.
+				if (box.links.has(path) && !p.follow) return say({ type: "symlink", size: 0, mode: 420, mtimeMs: 1, uid: 0, gid: 0, target: box.links.get(path) });
+				for (let hops = 0; box.links.has(path); hops++) {
+					if (hops >= 40) return no("invalid", `${norm(p.path)} is a chain of more than 40 links`);
+					const target = norm(box.links.get(path));
+					path = /^[A-Za-z]:/.test(target) ? target : `${parent(path)}\\${target}`;
+				}
 				return box.dirs.has(path) || box.files.has(path) ? say(statOf(path)) : no("not_found", `Cannot find path '${path}' because it does not exist.`);
 			}
 			case "list": {
@@ -281,6 +314,20 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 				const from = norm(p.from);
 				let to = norm(p.to);
 				if (!box.files.has(from) && !box.dirs.has(from)) return no("not_found", `no ${from}`);
+				// NTFS reads names without case: a to that differs from from in case alone is from itself. The script that checks
+				// for that first moves nothing onto itself and renames a case alone; one that does not finds to there, and with
+				// overwrite removes it, which is from, and Move-Item has nothing left to move.
+				if (from.toLowerCase() === to.toLowerCase()) {
+					if (script.includes("$fromFull -ieq $toFull")) {
+						if (from !== to) relocate(from, to);
+						return say({});
+					}
+					if (!p.overwrite) return no("exists", `${to} is there already`);
+					if (box.dirs.has(from) && children(from).length > 0) return no("exists", `${to} is a folder that is not empty`);
+					box.files.delete(from);
+					box.dirs.delete(from);
+					return no("not_found", `Cannot find path '${from}' because it does not exist.`);
+				}
 				if ((box.files.has(to) || box.dirs.has(to)) && !p.overwrite) return no("exists", `${to} is there already`);
 				// What PowerShell does with what is at `to`: the script that checks and removes it first replaces it (rename(2));
 				// one that does not leaves it, and Move-Item onto a folder moves into it.
@@ -293,13 +340,7 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 						box.dirs.delete(to);
 					} else if (box.dirs.has(to)) to = `${to}\\${from.slice(from.lastIndexOf("\\") + 1)}`;
 				}
-				if (box.files.has(from)) {
-					box.files.set(to, box.files.get(from));
-					box.files.delete(from);
-				} else {
-					for (const dir of [...box.dirs]) if (dir === from || dir.startsWith(`${from}\\`)) (box.dirs.delete(dir), box.dirs.add(to + dir.slice(from.length)));
-					for (const [file, bytes] of [...box.files]) if (file.startsWith(`${from}\\`)) (box.files.delete(file), box.files.set(to + file.slice(from.length), bytes));
-				}
+				relocate(from, to);
 				return say({});
 			}
 			case "remove": {

@@ -34,10 +34,10 @@ const bashCalls = (fake, id) => fake.api.requests.filter(({ method, path }) => m
 const decode = (b64) => Buffer.from(b64, "base64").toString("utf8");
 
 /** A computer as create leaves one, seeded into the fake: its record, its labels file. */
-function seeded({ fake }, os = "windows", { labels = LABELS, status = "running", hex = "0123456789ab", file } = {}) {
+function seeded({ fake }, os = "windows", { labels = LABELS, status = "running", hex = "0123456789ab", file, createdAt = new Date().toISOString(), maxDeadline = new Date(Date.now() + 720 * HOUR).toISOString() } = {}) {
 	const deadline = new Date(Date.now() + 30 * 60_000).toISOString();
-	const record = fake.api.add({ name: orgoName(labels, hex, new Date(deadline)), status, os, ends_at: new Date(Date.now() + HOUR).toISOString() });
-	const text = file ?? JSON.stringify({ name: record.name, labels, deadline, maxDeadline: new Date(Date.now() + 720 * HOUR).toISOString(), image: os, cpus: 1, memoryMb: 4096 });
+	const record = fake.api.add({ name: orgoName(labels, hex, new Date(deadline)), status, os, ends_at: new Date(Date.now() + HOUR).toISOString(), created_at: createdAt });
+	const text = file ?? JSON.stringify({ name: record.name, labels, deadline, maxDeadline, image: os, cpus: 1, memoryMb: 4096 });
 	fake.boxOf(record.id).files.set(os === "windows" ? WINDOWS_LABELS : MACOS_LABELS, Buffer.from(text));
 	return { record, ref: { id: record.id, name: record.name } };
 }
@@ -363,6 +363,24 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.equal((await call("files.list", { path: `${dir}\\sub` })).value.entries.length, 1, "PowerShell's one object is a list of one");
 	assert.equal((await call("files.move", { from: `${dir}\\a.txt`, to: `${dir}\\big.bin` })).error.code, "exists");
 	assert.deepEqual((await call("files.move", { from: `${dir}\\a.txt`, to: `${dir}\\b.txt` })).value, {});
+	// A link is stat'ed as one; with follow, what it points to (relative to its folder, or absolute), to the end, and one
+	// that points nowhere is not_found, as stat(2) says.
+	const links = fake.boxOf(ref.id).links;
+	links.set(`${dir}\\to-b`, `${dir}\\b.txt`);
+	links.set(`${dir}\\via`, "to-b");
+	links.set(`${dir}\\gone`, `${dir}\\nothing`);
+	assert.deepEqual((await call("files.stat", { path: `${dir}\\via` })).value, { type: "symlink", size: 0, mode: 420, mtimeMs: 1, uid: 0, gid: 0, target: "to-b" });
+	const followed = (await call("files.stat", { path: `${dir}\\via`, follow: true })).value;
+	assert.deepEqual([followed.type, followed.size], ["file", 6]);
+	assert.equal((await call("files.stat", { path: `${dir}\\gone`, follow: true })).error.code, "not_found");
+	// from and to naming one file, as rename(2): the same path moves nothing, and a name that differs in case alone (NTFS
+	// reads names without case) renames it; neither loses it.
+	await call("files.write", { path: `${dir}\\self.txt`, data: Buffer.from("me").toString("base64") });
+	assert.deepEqual((await call("files.move", { from: `${dir}\\self.txt`, to: `${dir}\\self.txt`, overwrite: true })).value, {});
+	assert.equal(decode((await call("files.read", { path: `${dir}\\self.txt` })).value.data), "me");
+	assert.deepEqual((await call("files.move", { from: `${dir}\\self.txt`, to: `${dir}\\SELF.txt`, overwrite: true })).value, {});
+	assert.deepEqual([fake.boxOf(ref.id).files.has(`${dir}\\self.txt`), fake.boxOf(ref.id).files.get(`${dir}\\SELF.txt`)?.toString()], [false, "me"]);
+	await call("files.remove", { path: `${dir}\\SELF.txt` });
 	// overwrite replaces what is at `to` itself, as rename(2) does: a folder onto an empty folder takes its place (it never
 	// lands inside it); onto a folder with entries, a file onto a folder, or a folder onto a file, it is refused.
 	const box = fake.boxOf(ref.id);
@@ -451,6 +469,30 @@ test("Orgo Windows extend: Orgo's end moved in whole hours, then the name's dead
 	const file = JSON.parse(fake.boxOf(ref.id).files.get(WINDOWS_LABELS).toString("utf8"));
 	assert.equal(file.deadline, extended.value.deadline.toISOString());
 	assert.equal((await provider.extend({ id: ref.id, name: record.name }, 60_000)).error.code, "refused");
+});
+
+test("Orgo desktops' extend is bounded by Orgo's record of the computer's creation, which no program in it can change: a labels file may lower the bound, never raise it", async () => {
+	for (const os of ["windows", "macos"]) {
+		const { provider, fake } = setup(os);
+		// Made 719 hours ago, its labels file rewritten from inside to say it may live a year: 2 more hours is past 720.
+		const createdAt = new Date(Date.now() - 719 * HOUR).toISOString();
+		const { ref } = seeded({ fake }, os, { createdAt, maxDeadline: new Date(Date.now() + 365 * 24 * HOUR).toISOString() });
+		const refused = await provider.extend(ref, 2 * HOUR);
+		assert.equal(refused.error?.code, "limit", `${os}: ${JSON.stringify(refused)}`);
+		assert.ok(refused.error.message.includes(new Date(Date.parse(createdAt) + 720 * HOUR).toISOString()), refused.error.message);
+		assert.equal(fake.api.requests.some(({ path }) => path === `/computers/${ref.id}/extend`), false, `${os}: Orgo's end did not move`);
+		assert.equal(fake.api.computers.get(ref.id).name, ref.name, `${os}: nor the name's deadline`);
+		// A file that says less than the record allows is held to: the lower of the two.
+		const lower = new Date(Date.now() + HOUR).toISOString();
+		const held = seeded({ fake }, os, { hex: "ba9876543210", maxDeadline: lower });
+		const short = await provider.extend(held.ref, 2 * HOUR);
+		assert.equal(short.error?.code, "limit", `${os}: ${JSON.stringify(short)}`);
+		assert.ok(short.error.message.includes(lower), short.error.message);
+		// A record that says no creation time bounds nothing it can prove: nothing moves.
+		const unknown = seeded({ fake }, os, { hex: "aaaaaaaaaaaa" });
+		delete fake.api.computers.get(unknown.ref.id).created_at;
+		assert.equal((await provider.extend(unknown.ref, 2 * HOUR)).error?.code, "vendor", os);
+	}
 });
 
 test("Orgo desktops' live view: screen.watch frames are Orgo's PNGs, scaled by Orgo past maxWidth, in the screen's input space; a pointer move is a new frame with the cursor there", async () => {
