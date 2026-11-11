@@ -2579,8 +2579,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     timelineKind.enum = [...timelineKind.enum, APPROVAL_ROW];
     fields.push(`TimelineKind.${APPROVAL_ROW}`);
   }
-  // A run's learning row (runs.ts) beside the contract's row kinds, and GET /usage's `learning` meter (usage.ts): what a
-  // run's grade spends on this server, outside any run.
+  // A run's learning row beside the contract's row kinds, and GET /usage's `learning` meter: what a run's grade spends
+  // on this server, outside any run.
   for (const [name, value] of [["TimelineKind", "learning"], ["Meter", "learning"]] as const) {
     const schema = schemas[name] as Json & { enum?: string[] };
     if (!Array.isArray(schema.enum) || schema.enum.includes(value)) continue;
