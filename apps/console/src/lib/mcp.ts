@@ -64,10 +64,23 @@ export function staleGrants(tools: readonly string[], servers: readonly McpServe
   });
 }
 
-/** A refused preview, save or sign-in in plain words; `signIn` when the server signs in with OAuth. */
-export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?: boolean } {
+/** The words for a sign-in whose authorization server lets no app register itself: the owner makes an OAuth app with its
+ *  provider (sending the browser back to `callback`) and enters that app's Client ID and Secret. */
+const NEEDS_CLIENT = (callback: string) => `Create an OAuth app with its provider (on GitHub: Settings → Developer settings → OAuth Apps), with ${callback} as its callback URL, then enter its Client ID and Secret in this server's OAuth fields and sign in.`;
+/** Where an authorization server sends the browser back to after a sign-in (serve's mcp-oauth.ts OAUTH_CALLBACK). */
+export const OAUTH_CALLBACK_PATH = "/v2/settings/mcp-servers/oauth/callback";
+
+/** A refused preview, save or sign-in in plain words; `signIn` when the server signs in with OAuth; `needsClient` when
+ *  that sign-in needs a Client ID entered by hand (its authorization server lets no app register itself: a preview's
+ *  `details.oauth.registration: false`, or a start refused on `client_id` with `registration_unavailable`). */
+export function mcpProblem(e: unknown, origin = typeof location === "undefined" ? "" : location.origin): { text: string; detail?: string; signIn?: boolean; needsClient?: boolean } {
   if (!(e instanceof ClientError)) return { text: `The request didn't reach this server: ${e instanceof Error ? e.message : String(e)}` };
   const redirect = e.fields?.find((f) => f.field === "url" && f.reason === "redirect");
+  const unregistrable = e.fields?.find((f) => f.field === "client_id" && f.reason === "registration_unavailable");
+  if (unregistrable) return { text: unregistrable.message, detail: NEEDS_CLIENT(`${origin}${OAUTH_CALLBACK_PATH}`), signIn: true, needsClient: true };
+  if (e.code === "auth_required" && e.details?.auth === "oauth" && (e.details.oauth as { registration?: unknown } | undefined)?.registration === false) {
+    return { text: "This server signs in with OAuth, and its sign-in lets no app register itself.", detail: NEEDS_CLIENT(`${origin}${OAUTH_CALLBACK_PATH}`), signIn: true, needsClient: true };
+  }
   if (e.code === "auth_required") return e.details?.auth === "oauth" ? { text: "This server signs in with OAuth.", detail: "Sign in to it: its tools are saved once you approve.", signIn: true } : { text: "This server asks for a token.", detail: e.message };
   if (e.code === "not_mcp") return { text: "This address doesn't speak MCP.", detail: e.message };
   if (redirect) return { text: "This address redirects; use the final address.", detail: redirect.message };

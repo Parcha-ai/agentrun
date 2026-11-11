@@ -118,7 +118,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
       )}
-      {problem && <div className="mt-3"><Said problem={problem} /></div>}
+      {problem && <div className="mt-3"><Said problem={problem} />{problem.needsClient && writable && <Button className="mt-2" size="sm" variant="primary" onClick={onChange}>Enter a Client ID</Button>}</div>}
     </li>
   );
 }
@@ -206,6 +206,13 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
     return Object.keys(headers).length ? { type, headers } : { type };
   };
   const act = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
+  // A sign-in that needs a Client ID entered (its authorization server lets no app register itself): the form turns to
+  // OAuth, so its Client ID and Secret fields show, and the Client ID takes the cursor. Never a dead end.
+  const needsClient = !!problem?.needsClient;
+  useEffect(() => { if (needsClient) setType("oauth"); }, [needsClient]);
+  useEffect(() => {
+    if (needsClient && type === "oauth") (form.current?.elements.namedItem("mcp-client-id") as HTMLInputElement | null)?.focus();
+  }, [needsClient, type]);
   const startSignIn = () => act(() => {
     const scopes = value("mcp-scopes").split(/\s+/).filter(Boolean);
     const client = value("mcp-client-id");
@@ -266,8 +273,8 @@ function ServerForm({ v2, saved, writable, signIn, onCancel, onSaved }: { v2: Cl
           {saved?.oauth?.client_id && <p className="text-small text-muted-foreground">Signing in again uses the client it signed in with ({saved.oauth.client_id}); a client ID here replaces it.</p>}
           <label className="block"><span className="caps mb-2 block text-small font-semibold">Scopes (optional)</span><Input name="mcp-scopes" placeholder="read write" defaultValue={saved?.oauth?.scopes.join(" ")} spellCheck={false} /></label>
           <div className="flex gap-2">
-            <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">Client ID (optional)</span><Input name="mcp-client-id" spellCheck={false} /></label>
-            {writable && <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">Client secret (optional)</span><Input name="mcp-client-secret" {...secret} /></label>}
+            <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">{needsClient ? "Client ID (this server needs one)" : "Client ID (optional)"}</span><Input name="mcp-client-id" spellCheck={false} /></label>
+            {writable && <label className="block flex-1"><span className="caps mb-2 block text-small font-semibold">{needsClient ? "Client secret (if its app has one)" : "Client secret (optional)"}</span><Input name="mcp-client-secret" {...secret} /></label>}
           </div>
         </div>
       )}
