@@ -73,7 +73,7 @@ describe(
 		it("passes Core as a desktop with computerd as a child, daemon and provider of one version", () => {
 			assert.deepEqual([report.kind, report.daemonMode], ["desktop", "child"]);
 			assert.equal(report.core, "pass", formatReport(report));
-			assert.equal(report.daemon?.version, report.providerVersion);
+			assert.ok(report.daemons.length > 0 && report.daemons.every((daemon) => daemon.version === report.providerVersion), JSON.stringify(report.daemons));
 		});
 
 		it("leaves no computer behind", () => {
