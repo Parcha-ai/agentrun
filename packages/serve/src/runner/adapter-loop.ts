@@ -268,6 +268,17 @@ export interface AdapterLoopOptions {
 
 /** The most of a harness's own turn error a failed run's summary keeps. */
 const TURN_ERROR_MAX = 500;
+
+/** A paid call's refusal an earlier claim kept (KINDS.pausePending) whose pause never landed: the newest one with no
+ *  pause (KINDS.budget) and no end after it. Undefined when there is none. */
+export function pendingPauseOf(entries: readonly { readonly kind?: string; readonly data?: unknown }[]): Refusal | undefined {
+  for (let at = entries.length - 1; at >= 0; at--) {
+    const entry = entries[at]!;
+    if (entry.kind === KINDS.budget || entry.kind === KINDS.end) return undefined;
+    if (entry.kind === KINDS.pausePending) return entry.data as Refusal;
+  }
+  return undefined;
+}
 /** How long a turn's end waits for the runner to hand on the rows it has not yet (LoopDeps.deliverNow). */
 const DELIVER_NOW_MS = 5_000;
 
@@ -1144,9 +1155,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // A paid call's refusal is the call's result first: its pause is journaled at the model's next request (beforeRequest,
         // pendingPause), once the harness has stored that result, so the run never reads waiting on a raise before its
-        // Timeline says why. A claim lost in between resumes the turn, and the cap refuses the call again.
+        // Timeline says why. The refusal is kept on the root at once (KINDS.pausePending, no run patch, nothing a person
+        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run.
         pauseFor = async (refusal) => {
           pendingPause = refusal;
+          if (!harness || !gate || gate.sealed) return;
+          const on = harness;
+          try {
+            const conversation = root ?? (await on.root(context));
+            await on.commit(async (tx) => void (await tx.appendEntry(conversation.id, { kind: KINDS.pausePending, data: refusal as unknown as JsonValue })), context);
+          } catch {
+            // Not kept (the journal sealed: the claim lost or the run parking): this claim's own request still parks it.
+          }
         };
         async function pauseAt(answer: Refusal): Promise<void> {
           {
@@ -1359,6 +1379,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // The cap a raise left the run at, from its root (the newest raise entry), before any request of this claim: a
         // claim that takes over a raised run (a resume, another runner's) holds it to the raise, never the launch's cap.
         if (spec.cap) raisedCapUsd = (await raiseStateOf()).lastRaise?.to ?? raisedCapUsd;
+        // A paid call an earlier claim refused for room whose pause never landed (the claim lost between the call's stored
+        // result and the model's next request): its pending pause, restored, so that request is refused in its words and
+        // the run parks for the raise the call needs.
+        if (spec.cap && pendingPause === undefined) pendingPause = pendingPauseOf(await entriesOf(gate.journal, root.id, context)) ?? pendingPause;
         // A run brought back from a park: the raises its claim has are taken together, once its delivery is done. So is a
         // run whose journal still holds an unanswered budget pause, whatever its row said at the claim: a resumed claim lost
         // before its raise entry landed leaves the run running, its pause unanswered and its raises untaken.

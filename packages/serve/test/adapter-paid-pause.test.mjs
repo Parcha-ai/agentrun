@@ -105,6 +105,43 @@ test("a refused paid call parks the run only once its result is stored: while th
   assert.match(answered[0] ?? "", /could cost up to \$0\.001/);
 });
 
+test("a refused paid call's pending pause is kept on the run's root, and a claim that finds it with no pause after it restores it", async (t) => {
+  const { pendingPauseOf } = await import("../dist/runner/adapter-loop.js");
+  const { KINDS } = await import("../dist/runner/journal-kinds.js");
+  const refusal = { refuse: "Not sent: …", forGood: false };
+  assert.deepEqual(pendingPauseOf([{ kind: "pi.user" }, { kind: KINDS.pausePending, data: refusal }, { kind: "pi.tool-result" }]), refusal, "kept, its pause never landed: restored");
+  assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.budget, data: {} }, { kind: KINDS.raise, data: {} }]), undefined, "its pause landed: nothing to restore");
+  assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.end, data: {} }]), undefined, "the run ended after it");
+  assert.equal(pendingPauseOf([{ kind: "pi.user" }]), undefined, "none kept");
+  // And the refusal is on the root as the call is refused: the run held as above, its root read meanwhile.
+  let answeredNow;
+  const answeredYet = new Promise((resolve) => (answeredNow = resolve));
+  let go;
+  const going = new Promise((resolve) => (go = resolve));
+  const script = [{ call: "pay" }, { say: "done" }];
+  const pay = { name: "pay", replaySafe: false, run: async () => {
+    try {
+      await paidRequest(parallelSearchFee(10), async () => new Response("{}", { status: 200 }));
+      return "searched";
+    } catch (error) {
+      answeredNow();
+      await going;
+      return String(error?.message ?? error);
+    }
+  } };
+  const specOf = (sent) => async (claim, run) => piAdapterSpec({ script, tools: { pay }, hooks: quiet }, { fetch: scriptedOrigin(script, sent) })(claim, run);
+  let kept;
+  await capRun(t, {
+    script, specOf, cap: { capUsd: 0.0005, park: (r) => cap.parkOf(r, 0.0005), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf }, runCap: { capUsd: () => 0.0005, modelOf: () => FREE },
+    during: async (server) => {
+      await answeredYet;
+      kept = pendingPauseOf(await rootEntries(server));
+      go();
+    },
+  });
+  assert.match(kept?.refuse ?? "", /could cost up to \$0\.001/, `the refusal kept on the root before the call's result: ${JSON.stringify(kept)}`);
+});
+
 test("a priced MCP call the run's cap has no room for parks the run at its next request with the cap's figures, nothing sent", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "adapter-paid-pause-"));
   t.after(() => rm(work, { recursive: true, force: true }));
