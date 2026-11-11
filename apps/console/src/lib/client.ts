@@ -181,9 +181,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
     /** A learned workflow (`name`, its folder's) made into a workflow agent of its own, which runs with no agent loop: an
      *  active one alone (409 learned_not_active otherwise), checked again as a restore checks it. The owner's session only.
-     *  The answer is the new agent; the learned workflow stays where it is. */
-    promoteWorkflow: async (id: string, name: string) => {
-      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {} });
+     *  The answer is the new agent; the learned workflow stays where it is. Under `idempotencyKey`, so a retry after a lost
+     *  answer gets the agent the first one made, never a second. */
+    promoteWorkflow: async (id: string, name: string, idempotencyKey: string) => {
+      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {}, headers: { "idempotency-key": idempotencyKey } });
       if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
       return made;
     },

@@ -14,6 +14,7 @@ import {
   APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
   counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile,
 } from "@/lib/learning";
+import { keeper } from "@/lib/idempotency";
 import type { Places } from "@/lib/place";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
@@ -505,7 +506,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={() => v2.retireNote(agentId, statusFile(item), version)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
-      {promoting && <PromoteConfirm name={item.name} promote={() => v2.promoteWorkflow(agentId, item.name)} onDone={(agent) => { setPromoting(false); if (agent) setMade(agent); }} />}
+      {promoting && <PromoteConfirm name={item.name} promote={(key) => v2.promoteWorkflow(agentId, item.name, key)} onDone={(agent) => { setPromoting(false); if (agent) setMade(agent); }} />}
     </article>
   );
 }
@@ -588,29 +589,34 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
 }
 
 /** "Make this an agent", after a confirm in place as a retire's: it says what it makes, "Yes, make the agent" takes the
- *  focus, and Esc or Cancel keeps things as they are. A token is told it takes the password sign-in; a refusal (no longer
+ *  focus, and Esc or Cancel keeps things as they are, except while the agent is being made. Each Yes goes under the
+ *  confirm's one Idempotency-Key, so a retry after a lost answer is the same request. A token is told it takes the password sign-in; a refusal (no longer
  *  active, the checks, what this host can't run) shows the server's words, and nothing was made. */
-function PromoteConfirm({ name, promote, onDone }: { name: string; promote: () => Promise<Agent>; onDone: (made: Agent | null) => void }) {
+function PromoteConfirm({ name, promote, onDone }: { name: string; promote: (idempotencyKey: string) => Promise<Agent>; onDone: (made: Agent | null) => void }) {
   const [busy, setBusy] = useState(false);
+  const keys = useRef(keeper()).current;
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
   useEffect(() => { yes.current?.focus(); }, []);
   const go = async () => {
     setBusy(true); setSaid(null);
     let made: Agent;
-    try { made = await promote(); }
+    try { made = await promote(keys.keyFor("promote", name)); }
     catch (e) {
       setBusy(false);
+      // A refusal is an answer: the next Yes is a new request. Only an answer lost (or the server's own failure) keeps the key.
+      if (e instanceof ClientError && e.status < 500) keys.done();
       if (e instanceof ClientError && e.status === 403) return void setSaid(<p className="text-small text-destructive-text" role="alert">{PROMOTE_SIGN_IN}</p>);
       if (e instanceof ClientError && e.problems?.length) {
         return void setSaid(<div className="text-small text-destructive-text" role="alert"><p>No agent was made: {e.message}</p><ul className="mt-1 list-disc space-y-0.5 pl-5">{e.problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul></div>);
       }
       return void setSaid(<ProblemCard problem={failed(e, "the agent", "No agent was made.")} className="" />);
     }
+    keys.done();
     onDone(made);
   };
   return (
-    <div role="alertdialog" aria-label={`Make ${name} an agent?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(null); } }}
+    <div role="alertdialog" aria-label={`Make ${name} an agent?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); if (!busy) onDone(null); } }}
       className="flex flex-wrap items-center gap-3 border-t px-5 py-3">
       <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Make it an agent?</span> {PROMOTES(name)}</p>
       {said && <div className="w-full">{said}</div>}
