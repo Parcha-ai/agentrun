@@ -18,7 +18,7 @@ import type { Approvals } from "../approvals.js";
 import type { installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
-import type { PinnedModel, Tier } from "../model.js";
+import { type PinnedModel, type Tier, thinkingLevel } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -467,12 +467,16 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
 
+  // The level pi thinks at: the launch's effort (the run's own, else its revision's, else the host's), every level pi's
+  // agent takes; none, pi's default.
+  const thinking = thinkingLevel(launch.effort);
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
     system,
     tools: sessionTools,
     context: "fresh",
+    ...(thinking ? { thinking: thinking as SessionSpec["thinking"] } : {}),
   };
 
   // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read

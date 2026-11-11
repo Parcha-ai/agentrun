@@ -138,6 +138,8 @@ export interface ClaudeAgentAdapterOptions {
   thinking?: ClaudeAgentThinking;
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
+  /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
+  now?: () => Date;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -455,6 +457,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         sdk,
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
+        ...(options.now ? { now: options.now } : {}),
         // The host's gate, asked about each host-tool call before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
