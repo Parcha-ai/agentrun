@@ -6,7 +6,7 @@ Each computer provider is now declared once, in a descriptor (`defineProvider`: 
 
 Who breaks, and what to do:
 
-- The package root no longer loads or exports the provider classes as values. Import `DockerProvider`, `DaytonaProvider`, `ModalProvider`, `BrowserbaseProvider`, `KernelProvider` and their helpers from the provider's subpath (`@parcha/agentrun-computer/docker`, `/daytona`, `/modal`, `/e2b`, `/orgo`, `/phone-harness`, `/browserbase`, `/kernel`), or build a provider by id with `providerFor(id, options)`. Their types are still exported from the root.
+- The package root no longer exports the provider classes or their option types. Import `DockerProvider`, `DaytonaProvider`, `ModalProvider`, `BrowserbaseProvider`, `KernelProvider` and their helpers from the provider's subpath (`@parcha/agentrun-computer/docker`, `/daytona`, `/modal`, `/e2b`, `/orgo`, `/phone-harness`, `/browserbase`, `/kernel`), or build a provider by id with `providerFor(id, options)`. Their option types (`DockerProviderOptions`, `ModalSdk` and the like) come from the same subpaths. Each provider's default image (`DAYTONA_DEFAULT_SNAPSHOT`, `MODAL_DEFAULT_IMAGE`, `E2B_BASE_TEMPLATE`, `ORGO_BASE_IMAGE`, `PHONE_IMAGE`, `BROWSER_IMAGE` and so on) is its descriptor's, exported from the root and no longer from its provider module. `ProviderKey` is gone: use `DescriptorKey`.
 - A vendor's own failure is now code `vendor`, with the provider's id in the error's `vendor` field, where it was code `docker`, `daytona`, `modal`, `e2b`, `orgo` or `phone`. Match on `code === "vendor"` and read `vendor`.
 - `ComputerSpec.lifetimeMs` is optional in the type: a run's computer still needs it (`checkTenure` refuses a spec without it), and an agent's computer has none.
 

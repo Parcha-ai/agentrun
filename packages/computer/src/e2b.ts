@@ -272,8 +272,6 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
 const NAME = /^computer-[0-9a-f]{12}$/;
 const SANDBOX_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const TEMPLATE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
-/** E2B Desktop's template (a screen with an X server) and its plain one (no screen): its descriptor's defaults. */
-export { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE };
 const NAME_LABEL = `${COMPUTER_LABEL}.name`;
 /** The template create was asked for: E2B reports its id, and the alias only sometimes. */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;

@@ -204,8 +204,6 @@ export const conformance = () => import("./conformance/daytona.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const DEFAULT_API_URL = "https://app.daytona.io/api";
-/** The image that asks for Daytona's default snapshot: the create sends no snapshot field. Its descriptor's. */
-export { DAYTONA_DEFAULT_SNAPSHOT };
 /** The label, in the provider's own namespace beside the deadline's, that holds the image create was asked for: Daytona
  *  reports only the snapshot it resolved that image to, a name of its own for "default". */
 const IMAGE_LABEL = `${COMPUTER_LABEL}.image`;

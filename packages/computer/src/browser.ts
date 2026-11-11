@@ -10,9 +10,6 @@ import { checkLifetime } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result } from "./result.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 
-/** The one image a browser computer runs: the vendor's own Chromium (the browser descriptors' default). */
-export { BROWSER_IMAGE };
-
 /** A key's or a value's longest, in characters: what both vendors keep of a metadata entry. */
 const MAX_LABEL = 256;
 

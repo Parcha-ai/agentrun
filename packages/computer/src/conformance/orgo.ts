@@ -6,7 +6,8 @@
 // The daemon is uploaded into each computer (dist/computerd-linux-amd64, `npm run build:daemon`); the drifted provider
 // uploads one built with Go as version <version>-drift. Every computer of a run lives at most 1 h, Orgo's shortest end
 // (ends_in_hours 1): Orgo deletes it then whatever happens to the run.
-import { create, ORGO_BASE_IMAGE, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
+import { ORGO_BASE_IMAGE } from "../descriptors/orgo.js";
+import { create, type OrgoChannel, type OrgoProvider, type OrgoWebSocketFactory } from "../orgo.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 
 /** The environment this module reads, by name: the live switch, the run's template, and the provider's settings. */

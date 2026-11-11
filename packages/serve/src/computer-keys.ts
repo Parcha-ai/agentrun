@@ -131,14 +131,8 @@ function wordsFor(code: string, providerId: string, said: string, table: KeyTabl
       return `${label}'s settings are not valid.${vendor}`;
     case "unsupported":
       return `${label} can't be tested here.${vendor}`;
-    // The computer package's one code for a vendor's own failure; the per-vendor codes below are the ones it had before.
+    // The computer package's one code for a vendor's own failure.
     case "vendor":
-    case "docker":
-    case "daytona":
-    case "modal":
-    case "e2b":
-    case "orgo":
-    case "phone":
       return `${label} answered with an error.${vendor}`;
     default:
       return `The test of ${label} failed.${vendor}`;

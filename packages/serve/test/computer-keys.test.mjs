@@ -88,7 +88,7 @@ test("computer keys: each coded error comes back in plain words naming the provi
     invalid: /^E2B's settings are not valid\. \(/,
     unsupported: /^E2B can't be tested here\. \(/,
     vendor: /^E2B answered with an error\. \(/,
-    e2b: /^E2B answered with an error\. \(/,
+    e2b: /^The test of E2B failed\. \(/,
     gone: /^The test of E2B failed\. \(/,
   };
   for (const [code, pattern] of Object.entries(words)) {

@@ -16,9 +16,9 @@
 // ' or \ is refused too, since list's query quotes it.
 import { readFileSync } from "node:fs";
 import { BROWSERBASE } from "./descriptors/browserbase.js";
+import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import {
 	cdpUrlProblem,
-	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
 	browserHello,

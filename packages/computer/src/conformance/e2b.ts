@@ -15,7 +15,8 @@
 // disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
-import { create, E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE, type E2BOptions, type E2BProvider } from "../e2b.js";
+import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "../descriptors/e2b.js";
+import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";

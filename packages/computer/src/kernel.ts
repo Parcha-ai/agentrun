@@ -13,9 +13,9 @@
 // largest idle timeout (72 h), and list reads no deadline.
 import { readFileSync } from "node:fs";
 import { KERNEL } from "./descriptors/kernel.js";
+import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import {
 	cdpUrlProblem,
-	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
 	browserHello,

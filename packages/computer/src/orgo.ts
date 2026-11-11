@@ -125,7 +125,6 @@ const NAME = /^computer-([0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,
 /** An Orgo template: namespace/name@version. */
 const TEMPLATE = /^[a-z0-9][a-z0-9_.-]{0,63}\/[a-z0-9][a-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 /** Orgo's base desktop, no template: the image a spec names for a plain Linux desktop, and its descriptor's default. */
-export { ORGO_BASE_IMAGE };
 const BASE = ORGO_BASE_IMAGE;
 const COMPUTER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

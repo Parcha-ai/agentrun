@@ -3,7 +3,7 @@
 // COMPUTER_KERNEL_API_KEY. The provider reads no environment: this module reads its own COMPUTER_KERNEL_* names (never
 // KERNEL_API_KEY, which may hold another organization's key) and passes each to create() as its option. The live switch
 // is checked first, before any other setting is read. The run makes one browser, shared by every case, and deletes it.
-import { BROWSER_IMAGE } from "../browser.js";
+import { BROWSER_IMAGE } from "../descriptors/shared.js";
 import { create, type KernelProvider, type KernelProviderOptions } from "../kernel.js";
 
 /** The environment this module reads, by name, each for the option its comment names, and the live switch. */

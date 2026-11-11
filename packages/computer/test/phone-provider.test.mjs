@@ -8,11 +8,11 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { kindRefusals } from "../dist/index.js";
+import { kindRefusals, PHONE_GROUPS } from "../dist/index.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
 const phone = await import("../dist/phone-harness.js");
-const { create, MOUNT, memoryLedger, adbCli, PHONE_GROUPS } = phone;
+const { create, MOUNT, memoryLedger, adbCli } = phone;
 const conformance = await import("../dist/conformance/phone-harness.js");
 
 const dir = mkdtempSync(join(tmpdir(), "computer-phone-"));

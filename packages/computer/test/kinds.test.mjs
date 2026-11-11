@@ -110,11 +110,10 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel"]) assert.deepEqual(mounts[id], [], id);
 });
 
-test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its module's constant", async () => {
-	const [daytona, modal, e2b, orgo, phone, browser] = await Promise.all(
-		["daytona", "modal", "e2b", "orgo", "phone-harness", "browser"].map((name) => import(`../dist/${name}.js`)),
-	);
-	// The values serve uses when a computer setting names no image, each from the module that owns it.
+test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
+	const all = await import("../dist/descriptors/index.js");
+	const [daytona, modal, e2b, orgo, phone, browser] = [all, all, all, all, all, all];
+	// The values serve uses when a computer setting names no image, each its descriptor's.
 	const expected = {
 		docker: undefined,
 		daytona: { sandbox: daytona.DAYTONA_DEFAULT_SNAPSHOT },
