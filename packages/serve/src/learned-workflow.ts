@@ -119,7 +119,7 @@ export type LearnedWorkflowRun = {
  *  host's result bound, which each CLI is told to pass whole (host-bounds.test). */
 export const LEARNED_CLIP = 60_000;
 
-/** `text`, a learned workflow's output as JSON, cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
+/** `text`, a learned workflow's output as its tool hands it back (learnedOutput), cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
  *  so. */
 export function learnedText(text: string): string {
   if (text.length <= LEARNED_CLIP) return text;
@@ -133,13 +133,26 @@ export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without 
 
 /** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
  *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
- *  one; what it answers), then each workflow on a line of its own (workflowLine): its name, its input's fields and the
- *  line its README says what it does with. */
+ *  one; what it answers: a text output as it is, to reply with unchanged, since a model handed it otherwise writes its own
+ *  reply around it and a format the workflow's last node wrote is lost, #2412), then each workflow on a line of its own
+ *  (workflowLine): its name, its input's fields and the line its README says what it does with. */
 export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]): string =>
   [
-    "Runs one of this agent's learned workflows in one call, by name, on a JSON input with the fields below (* required). Answers its output as JSON, or why it did not run.",
+    "Runs a learned workflow in one call, by name, on a JSON input: fields below (* required). Text output: reply with it unchanged. Else JSON, or why it did not run.",
     ...workflows.map(workflowLine),
   ].join("\n");
+
+/** A learned workflow's output as its tool hands it back: its text when it is text, a string or an object of one string
+ *  field (a node's record of one field, as a last node that writes the answer gives it), so the lines its last node wrote
+ *  reach the model as lines; else JSON. */
+export function learnedOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const values = Object.values(output);
+    if (values.length === 1 && typeof values[0] === "string") return values[0];
+  }
+  return JSON.stringify(output ?? null);
+}
 
 /** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
  *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
@@ -191,7 +204,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   });
 }
 
-/** `flow` run on `input` for `run`: its output as JSON, or why it did not run. Never throws, but on an abort. `ledger`:
+/** `flow` run on `input` for `run`: its output as its tool hands it back (learnedOutput), or why it did not run. Never throws, but on an abort. `ledger`:
  *  the tool call's, which each call node's paid requests are booked under, as a call of its own within it. */
 export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger): Promise<{ text: string; isError: boolean }> {
   const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true });
@@ -245,7 +258,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, ...(signal ? { signal } : {}) } as never);
     if (result.status !== "complete") return refuse(`it ended ${result.status}`);
-    return { text: learnedText(JSON.stringify(result.output ?? null)), isError: false };
+    return { text: learnedText(learnedOutput(result.output)), isError: false };
   } catch (error) {
     if (signal?.aborted) throw error;
     return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true };
