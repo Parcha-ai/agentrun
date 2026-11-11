@@ -1,11 +1,61 @@
 // The person's turns with a run's browser, in the run's process and in the server (browser-person.ts), without a run: the
-// ask's record and its answer, and the person's time held under the cap. The cap, the gates and the clock are fakes.
+// ask (its waiting entry in the run's journal, its one record) and its answer, and the person's time held under the cap.
+// The run's journal, the cap, the gates and the clock are fakes.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
-import { answerAsk, askShown, openAsk, personHands } from "../dist/browser-person.js";
+import { personHands } from "../dist/browser-person.js";
+import { browserAsk, handBackTarget, waitingAsk } from "../dist/browser-commands.js";
 import { scratch } from "./support.mjs";
+
+/** A run's journal of hand-over entries (their data, in order): the asks' waiting entries and their answers, as the
+ *  runner keeps them, read the way the run's process reads them (tools.ts) and the server does (browser-commands.ts). */
+function journalOf(list = []) {
+  const firstOf = (id) => list.find((data) => data.id === id && ["done", "cancelled", "expired"].includes(data.state));
+  return {
+    list,
+    asks: async () => list.flatMap((data) => waitingAsk(data) ?? []),
+    answered: async (id) => {
+      const first = firstOf(id);
+      return first && { outcome: first.state, at: first.at, ...(first.reason ? { reason: first.reason } : {}) };
+    },
+  };
+}
+/** Each test's run, by its scratch folder: its journal. */
+const journals = new Map();
+const journalAt = (root, list) => {
+  if (list) journals.set(root, journalOf(list));
+  if (!journals.has(root)) journals.set(root, journalOf());
+  return journals.get(root);
+};
+const entriesAt = (root) => journalAt(root).list.map((data) => ({ kind: "agent.handover", data }));
+/** The run's process for the run at `root`: its asks and answers are its journal's; every hand-over entry its `note`
+ *  commits lands there once the note has. */
+function personAt({ root, note, answered, ...options }) {
+  const journal = journalAt(root);
+  return personHands({
+    ...options,
+    asks: options.asks ?? journal.asks,
+    answered: answered ?? journal.answered,
+    note: async (kind, data) => {
+      await note?.(kind, data);
+      if (kind === "agent.handover") journal.list.push(data);
+    },
+  });
+}
+/** The ask the run shows (the server's reading): the newest one still waiting and unexpired. */
+const openAsk = (root) => browserAsk(entriesAt(root));
+/** As the person's answer lands on the run (the hand-back route's command, which the runner applies): the newest ask
+ *  still waiting answered `outcome` when it is the first answer; with none waiting, the answer the newest has. */
+function answerAsk(root, outcome, now = Date.now()) {
+  const target = handBackTarget(entriesAt(root), [], now);
+  if (!target) return undefined;
+  if (target.answer !== undefined) return { outcome: target.answer, first: false };
+  const asked = journalAt(root).list.find((data) => data.state === "waiting" && data.id === target.id);
+  journalAt(root).list.push({ state: outcome, id: target.id, session: asked.session, at: new Date(now).toISOString() });
+  return { outcome, first: true };
+}
+/** Ask `id`'s waiting entry made to expire at `at` (an ISO time), as one taken up after its expiry would read. */
+const expire = (root, id, at) => void (journalAt(root).list.find((data) => data.state === "waiting" && data.id === id).expires_at = at);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ask = (n, tag) => ({ requestId: `00000000-0000-4000-8000-00000000000${n}`, sessionTag: tag, instruction: `Do thing ${n}`, completionCondition: `thing ${n} is done` });
@@ -13,7 +63,7 @@ const ask = (n, tag) => ({ requestId: `00000000-0000-4000-8000-00000000000${n}`,
 /** The run's process's side on `root`, with a cap that grants every hold (or refuses once `refuse` is set), counting them. */
 function hands(root, { gates = () => ({ give: () => false }), timers, holdMs, now } = {}) {
   const held = { taken: 0, dropped: 0, refuse: null, notes: [] };
-  const person = personHands({
+  const person = personAt({
     root, gates, timers, holdMs, now, pollMs: 60_000,
     personTime: async () => {
       if (held.refuse) return { refused: held.refuse };
@@ -160,53 +210,27 @@ test("a process that resumes polling an ask an earlier process made, without ask
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
   assert.equal(await after.person.handoff.outcome(second.interactionId), "done", "the owner's answer reaches the resumed wait");
   // The other ask, past its expiry when the next process takes it up: that process writes the expiry, and the wait hears it.
-  const file = join(root, "browser-ask", `${first.interactionId}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: new Date(Date.now() - 1000).toISOString() }), { mode: 0o600 });
+  expire(root, first.interactionId, new Date(Date.now() - 1000).toISOString());
   const later = hands(root, { holdMs: 60_000 });
   t.after(() => later.person.close());
   assert.equal(await later.person.handoff.outcome(first.interactionId), "expired");
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: false }, "nothing left waiting");
 });
 
-test("two conversations ask: answering the newer leaves the older shown and answerable, whatever rows came after it; answering it ends both", async (t) => {
+test("two conversations ask: answering the newer leaves the older shown and answerable; answering it ends both", async (t) => {
   const root = await scratch(t);
   const { person } = hands(root);
   t.after(() => person.close());
   const older = await person.handoff.request(ask(9, "ar-run-9-1"));
   await sleep(5);
   const newer = await person.handoff.request(ask(10, "ar-run-10-1"));
-  const waiting = (tag) => ({ kind: "waiting", session: tag });
-  const answered = { kind: "tool_result", tool_name: "browser_request_handoff" };
-  const rows = [waiting("ar-run-9-1"), waiting("ar-run-10-1")];
-  assert.equal(askShown(root, rows)?.id, newer.interactionId, "the newer is shown first");
+  assert.equal(openAsk(root)?.id, newer.interactionId, "the newer is shown first");
   assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
   assert.equal(await person.handoff.outcome(newer.interactionId), "done");
-  // The newer ask's result comes after both waiting rows.
-  rows.push(answered);
-  assert.equal(askShown(root, rows)?.id, older.interactionId, "the older still waits, and is shown");
-  assert.equal(askShown(root, rows, "waiting")?.id, older.interactionId);
+  assert.equal(openAsk(root)?.id, older.interactionId, "the older still waits, and is shown");
   assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "cancelled", first: true }, "and is answerable");
   assert.equal(await person.handoff.outcome(older.interactionId), "cancelled");
-  rows.push(answered);
-  assert.equal(askShown(root, rows), undefined, "both done");
-});
-
-test("an ask whose waiting row has not come yet is not shown, though an earlier ask on the same session has one", async (t) => {
-  const root = await scratch(t);
-  const { person } = hands(root);
-  t.after(() => person.close());
-  const tag = "ar-run-11-1";
-  const first = await person.handoff.request(ask(11, tag));
-  const rows = [{ kind: "waiting", session: tag }];
-  assert.equal(askShown(root, rows)?.id, first.interactionId);
-  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
-  assert.equal(await person.handoff.outcome(first.interactionId), "done");
-  rows.push({ kind: "tool_result", tool_name: "browser_request_handoff" });
-  await sleep(5);
-  const second = await person.handoff.request(ask(12, tag));
-  assert.equal(askShown(root, rows), undefined, "its own row is not in yet");
-  rows.push({ kind: "waiting", session: tag });
-  assert.equal(askShown(root, rows)?.id, second.interactionId);
+  assert.equal(openAsk(root), undefined, "both done");
 });
 
 test("take-over time counts: what the person used stays held until a charge books it, so take-overs given back with no browser call between them meet the cap", async (t) => {
@@ -222,7 +246,7 @@ test("take-over time counts: what the person used stays held until a charge book
   const root = await scratch(t);
   const clock = fakeClock();
   const gates = createDrivingGates({ timers: clock.timers });
-  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, personTime: spend.personTime, carry: spend.carry, note: async () => {}, pollMs: 60_000 });
+  const person = personAt({ root, gates, timers: clock.timers, now: clock.now, personTime: spend.personTime, carry: spend.carry, note: async () => {}, pollMs: 60_000 });
   t.after(() => person.close());
   const tag = "ar-run-12-1";
   gates(tag).setPresent(true);
@@ -248,7 +272,7 @@ test("while the cap refuses more of the person's time on a session, a new ask th
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
   let refuse = false;
   let taken = 0;
-  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what) => (refuse ? { refused: `no room for ${what}` } : (taken += 1, { drop() {} })) });
+  const person = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what) => (refuse ? { refused: `no room for ${what}` } : (taken += 1, { drop() {} })) });
   t.after(() => person.close());
   const tag = "ar-run-13-1";
   gates(tag).setPresent(true);
@@ -264,7 +288,7 @@ test("while the cap refuses more of the person's time on a session, a new ask th
   let release;
   const slow = new Promise((resolve) => { release = resolve; });
   const asked = [];
-  const racing = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what) => { asked.push(what); if (what === "taking over the browser") await slow; return { refused: `no room for ${what}` }; } });
+  const racing = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what) => { asked.push(what); if (what === "taking over the browser") await slow; return { refused: `no room for ${what}` }; } });
   t.after(() => racing.close());
   const other = "ar-run-14-1";
   const taking = racing.take(other);
@@ -307,7 +331,7 @@ test("an ask that arrives while the take-over's re-hold waits on the cap holds n
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
   const held = [];
   let answerRehold;
-  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => {
+  const person = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => {
     // The re-hold's answer from the cap is slow: the ask arrives while it waits.
     if (what === "more of your time in the browser") await new Promise((resolve) => { answerRehold = resolve; });
     held.push([what, Math.round(seconds)]);
@@ -335,7 +359,7 @@ test("a process that lets go while its first hold is still being asked of the ca
   const calls = [];
   let dropped = 0;
   let grant;
-  const person = personHands({ root, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, gates: () => ({ give: () => false }), note: async () => {}, personTime: async (what) => {
+  const person = personAt({ root, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, gates: () => ({ give: () => false }), note: async () => {}, personTime: async (what) => {
     calls.push(what);
     if (calls.length === 1) await new Promise((resolve) => { grant = resolve; });
     return { drop: () => { dropped += 1; } };
@@ -388,7 +412,7 @@ test("a take-over's row is written when its hold goes live, and a take whose hol
 test("the person's time a take-over holds never pauses the agent's run when the cap refuses it; an ask's does", async (t) => {
   const root = await scratch(t);
   const seen = [];
-  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: async (what, _seconds, options) => { seen.push([what, options?.pauses ?? true]); return { refused: "no room" }; } });
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: async (what, _seconds, options) => { seen.push([what, options?.pauses ?? true]); return { refused: "no room" }; } });
   t.after(() => person.close());
   await person.take("ar-run-20-1");
   await person.handoff.request(ask(20, "ar-run-21-1"));
@@ -403,7 +427,7 @@ test("an ask that joins a take-over holds the person's time through its own expi
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
   const held = [];
   let refuse = null;
-  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => (refuse ? { refused: refuse } : (held.push([what, seconds]), { drop() {} })) });
+  const person = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => (refuse ? { refused: refuse } : (held.push([what, seconds]), { drop() {} })) });
   t.after(() => person.close());
   const tag = "ar-run-22-1";
   gates(tag).setPresent(true);
@@ -426,7 +450,7 @@ test("an ask that joins a take-over and cannot hold its extra time is refused in
   const holdMs = 15 * 60_000;
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
   let calls = 0;
-  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async () => (++calls === 1 ? { drop() {} } : { refused: "no room for the ask's extra time" }) });
+  const person = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async () => (++calls === 1 ? { drop() {} } : { refused: "no room for the ask's extra time" }) });
   t.after(() => person.close());
   const tag = "ar-run-23-1";
   gates(tag).setPresent(true);
@@ -448,7 +472,7 @@ test("an ask a restarted process takes up holds through its own expiry: joining 
   const holdMs = 15 * 60_000;
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
   const held = [];
-  const after = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => (held.push([what, Math.round(seconds)]), { drop() {} }) });
+  const after = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => (held.push([what, Math.round(seconds)]), { drop() {} }) });
   t.after(() => after.close());
   gates(tag).setPresent(true);
   const take = await after.take(tag);
@@ -470,7 +494,7 @@ test("a re-hold holds only past what is held already: take at 0, an ask at 10 (h
   // A cap with room for 30 minutes of the person's time, no more.
   let room = 30 * 60;
   const held = [];
-  const person = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => {
+  const person = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async (what, seconds) => {
     if (Math.round(seconds) > room) return { refused: `no room for ${Math.round(seconds)} s` };
     room -= Math.round(seconds);
     held.push([what, Math.round(seconds)]);
@@ -496,7 +520,7 @@ test("an ask the cap ended keeps the cap's words across a restart: the next proc
   const holdMs = 15 * 60_000;
   const gates = createDrivingGates({ timers: clock.timers, holdIdleMs: holdMs });
   let refuse = null;
-  const before = personHands({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async () => (refuse ? { refused: refuse } : { drop() {} }) });
+  const before = personAt({ root, gates, timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000, note: async () => {}, personTime: async () => (refuse ? { refused: refuse } : { drop() {} }) });
   const tag = "ar-run-26-1";
   gates(tag).setPresent(true);
   const asked = await before.handoff.request(ask(26, tag));
@@ -514,10 +538,10 @@ test("an ask's words are redacted before they are cut to their bound: a held val
   const root = await scratch(t);
   const value = ["held", "value", "made", "in", "this", "test"].join("-");
   const instruction = `${"x".repeat(1990)}${value} and more`;
-  const person = personHands({ root, gates: () => ({}), pollMs: 60_000, note: async () => {}, personTime: async () => ({ drop() {} }), redact: (text) => text.replaceAll(value, "[redacted]") });
+  const person = personAt({ root, gates: () => ({}), pollMs: 60_000, note: async () => {}, personTime: async () => ({ drop() {} }), redact: (text) => text.replaceAll(value, "[redacted]") });
   t.after(() => person.close());
   const asked = await person.handoff.request({ requestId: "00000000-0000-4000-8000-000000000099", sessionTag: "ar-run-27-1", instruction, completionCondition: `${"y".repeat(1995)}${value}` });
-  const record = readFileSync(join(root, "browser-ask", `${asked.interactionId}.json`), "utf8");
+  const record = JSON.stringify(journalAt(root).list.find((data) => data.state === "waiting" && data.id === asked.interactionId));
   for (let k = 4; k <= value.length; k += 1) assert.ok(!record.includes(value.slice(0, k)), `no prefix of the held value (${k} chars) in the record`);
 });
 
@@ -542,17 +566,10 @@ test("two conversations that ask with the same request id, each on its own sessi
   assert.deepEqual(ended, [["ar-run-9-2", "answered"], ["ar-run-9-1", "answered"]]);
 });
 
-test("an ask record in the old shape (named by the request id alone) is no ask: it is never shown, answered, or matched to a session", async (t) => {
+test("a wait on an id of no shape this build makes (an earlier build's, named by the request id alone) hears it is gone, never waits on it forever", async (t) => {
   const root = await scratch(t);
-  const { mkdirSync } = await import("node:fs");
   const { createHash } = await import("node:crypto");
-  mkdirSync(join(root, "browser-ask"), { mode: 0o700 });
   const old = createHash("sha256").update("00000000-0000-4000-8000-000000000008").digest("base64url").slice(0, 22);
-  writeFileSync(join(root, "browser-ask", `${old}.json`), `${JSON.stringify({ id: old, tag: "ar-run-8-1", instruction: "Old", completion_condition: "old", asked_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() })}\n`, { mode: 0o600 });
-  assert.equal(openAsk(root), undefined);
-  assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-8-1" }], "waiting"), undefined);
-  assert.equal(answerAsk(root, "done"), undefined, "nothing to answer");
-  // A process that resumes a wait on that old id hears it is gone, never waits on it forever.
   const { person } = hands(root);
   t.after(() => person.close());
   assert.equal(await person.handoff.outcome(old), "expired");
@@ -565,7 +582,7 @@ test("a process that takes up an ask near its expiry holds the person's time onl
   before.person.close();
   // The next process, 13 minutes into the ask's 15: a cap with room for 5 minutes of the person's time.
   const seconds = [];
-  const person = personHands({
+  const person = personAt({
     root, gates: () => ({ give: () => false }), now: () => Date.now() + 13 * 60_000, pollMs: 60_000, note: async () => {},
     personTime: async (_what, s) => (seconds.push(s), s > 300 ? { refused: "spend_cap_reached: 5 minutes of room" } : { drop() {} }),
   });
@@ -583,7 +600,7 @@ test("a process that takes up an ask already past its expiry holds none of the p
   const asked = await before.person.handoff.request(ask(22, "ar-run-22-1"));
   before.person.close();
   const seconds = [];
-  const person = personHands({
+  const person = personAt({
     root, gates: () => ({ give: () => false }), now: () => Date.now() + 16 * 60_000, pollMs: 60_000, note: async () => {},
     personTime: async (_what, s) => (seconds.push(s), { drop() {} }),
   });
@@ -624,6 +641,25 @@ test("a take-over the person hands back (given) answers the open ask on its sess
   assert.deepEqual(answerAsk(root, "cancelled"), { outcome: "done", first: false }, "nothing waiting: the newest's answer, written no more");
 });
 
+test("a hand-back given before the ask expires answers it done, though the journal's read of the asks finishes after the expiry", async (t) => {
+  const root = await scratch(t);
+  const journal = journalAt(root);
+  let slow = false;
+  const person = personAt({
+    root, gates: () => ({ give: () => false }), pollMs: 60_000, holdMs: 200, note: async () => {},
+    personTime: async () => ({ drop() {} }),
+    // The read the hand-back makes takes longer than what is left of the ask.
+    asks: async () => (slow && (await sleep(400)), journal.asks()),
+  });
+  t.after(() => person.close());
+  const asked = await person.handoff.request(ask(91, "ar-run-91-1"));
+  const taken = await person.take("ar-run-91-1");
+  taken.started();
+  slow = true;
+  await taken.end("given");
+  assert.equal(await person.handoff.outcome(asked.interactionId), "done", "answered at the hand-back's own time");
+});
+
 test("one hand-back, one row: a give that answers the session's open ask writes one 'You handed the browser back', as a give with no ask and the console's Done each do", async (t) => {
   const rows = (held) => held.notes.filter((said) => said === "You handed the browser back").length;
   // A give while an ask is open on the session: it answers the ask, and the timeline says so once.
@@ -640,7 +676,8 @@ test("one hand-back, one row: a give that answers the session's open ask writes 
   t.after(() => bare.person.close());
   const alone = await bare.person.take("ar-run-42-1");
   alone.started();
-  alone.end("given");
+  // Settled once the journal says no ask is open on the session, and the hand-back's row is written.
+  await alone.end("given");
   assert.equal(rows(bare.held), 1, JSON.stringify(bare.held.notes));
   // The console's Done, no take-over.
   const root = await scratch(t);
@@ -656,7 +693,7 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   const root = await scratch(t);
   let failRow = true;
   const held = { taken: 0, dropped: 0, notes: [] };
-  const person = personHands({
+  const person = personAt({
     root, gates: () => ({ give: () => false }), pollMs: 60_000,
     personTime: async () => (held.taken += 1, { drop: () => { held.dropped += 1; } }),
     note: async (kind, data) => {
@@ -675,15 +712,15 @@ test("an ask whose waiting row cannot be written fails, and says so: nothing is 
   assert.ok("interactionId" in second, JSON.stringify(second));
   assert.equal(openAsk(root)?.id, second.interactionId, "asked again: it waits");
   assert.deepEqual(held.notes, ["Do thing 51"], "its waiting row written");
-  assert.equal(askShown(root, [{ kind: "waiting", session: "ar-run-51-1" }])?.id, second.interactionId, "the owner sees it");
+  assert.equal(openAsk(root)?.id, second.interactionId, "the owner sees it");
 });
 
-test("an ask's waiting entry carries the whole hand-over, as the server reads it: id, session, instruction, done-when condition, asked and expiry times; and so does one a later process commits for an ask whose row never came", async (t) => {
+test("an ask's waiting entry carries the whole hand-over, as the server reads it: id, session, instruction, done-when condition, asked and expiry times; a later process that takes the ask up commits nothing more", async (t) => {
   const root = await scratch(t);
   const entries = [];
   const note = async (kind, data) => void entries.push({ kind, data });
   const grant = async () => ({ drop() {} });
-  const first = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note });
+  const first = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note });
   t.after(() => first.close());
   const asked = await first.handoff.request(ask(61, "ar-run-61-1"));
   const record = openAsk(root);
@@ -693,31 +730,27 @@ test("an ask's waiting entry carries the whole hand-over, as the server reads it
   const handovers = () => entries.filter((entry) => entry.kind === "agent.handover").map((entry) => entry.data);
   assert.deepEqual(handovers(), [whole], "the ask's entry is the whole record");
   first.close();
-  // A later process takes the ask up and finds no waiting row for it (the earlier one ended between record and row).
-  const later = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note, waiting: async () => 0 });
+  // A later process takes the ask up from that entry (pi-browser reruns its request): the same ask, and no second entry.
+  const later = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, personTime: grant, note });
   t.after(() => later.close());
   assert.deepEqual(await later.handoff.request(ask(61, "ar-run-61-1")), { interactionId: asked.interactionId });
-  assert.deepEqual(handovers(), [whole, whole], "the row committed for it is the whole record too");
+  assert.deepEqual(handovers(), [whole], "its one entry");
 });
 
-/** The run's process on the runner's path: its hand-over answers are entries of the run's journal (`journal`, the
- *  hand-over entries' data in order, shared by every process of the run), read through `answered` (the first answer
- *  for an ask is its answer), never the answer files. Its other rows are `rows`. */
+/** The run's process: its asks and their answers are entries of the run's journal (`journal`, the hand-over entries'
+ *  data in order, shared by every process of the run; the first answer for an ask is its answer). Its other rows are
+ *  `rows`. */
 function journalHands(root, journal, { gates = () => ({ give: () => false }) } = {}) {
+  journalAt(root, journal);
   const rows = [];
   /** Every note, in order, as the run's root entries the timeline reads. */
   const entries = [];
-  const person = personHands({
+  const person = personAt({
     root, gates, pollMs: 60_000,
     personTime: async () => ({ drop() {} }),
     note: async (kind, data) => {
       entries.push({ kind, id: 100 + entries.length, conversationId: 1, data });
-      if (kind === "agent.handover") journal.push(data);
-      else rows.push(data.summary);
-    },
-    answered: async (id) => {
-      const first = journal.find((data) => data.id === id && ["done", "cancelled", "expired"].includes(data.state));
-      return first && { outcome: first.state, at: first.at, ...(first.reason ? { reason: first.reason } : {}) };
+      if (kind !== "agent.handover") rows.push(data.summary);
     },
   });
   return { person, rows, entries };
@@ -725,15 +758,13 @@ function journalHands(root, journal, { gates = () => ({ give: () => false }) } =
 const answers = (journal) => journal.filter((data) => data.state !== "waiting");
 const T0 = "2001-02-03T04:05:06.007Z";
 
-test("on the runner's path a journal answer resolves the agent's wait with that outcome, the first for the ask: an answer file is not read", async (t) => {
+test("on the runner's path a journal answer resolves the agent's wait with that outcome, the first for the ask", async (t) => {
   const root = await scratch(t);
   const journal = [];
   const { person, rows } = journalHands(root, journal);
   t.after(() => person.close());
   const { interactionId: id } = await person.handoff.request(ask(71, "ar-run-71-1"));
-  // An answer on disk (the server's old route): not this path's.
-  assert.deepEqual(answerAsk(root, "done"), { outcome: "done", first: true });
-  assert.equal(await person.handoff.outcome(id), "pending", "the answer file is not read");
+  assert.equal(await person.handoff.outcome(id), "pending");
   journal.push({ state: "cancelled", id, session: "ar-run-71-1", at: T0 }, { state: "done", id, session: "ar-run-71-1", at: "2001-02-03T04:06:00.000Z" });
   assert.equal(await person.handoff.outcome(id), "cancelled", "the journal's first answer");
   assert.equal(await person.handoff.outcome(id), "cancelled");
@@ -748,8 +779,7 @@ test("on the runner's path an ask that lapsed is answered by its expiry in the j
   const { interactionId: id } = await before.person.handoff.request(ask(72, "ar-run-72-1"));
   before.person.close();
   // Past its expiry when the next process takes it up.
-  const file = join(root, "browser-ask", `${id}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  expire(root, id, T0);
   const after = journalHands(root, journal);
   t.after(() => after.person.close());
   assert.equal(await after.person.handoff.outcome(id), "expired");
@@ -785,12 +815,12 @@ test("on the runner's path a person's answer that lands as this process writes t
   let lands = () => {};
   /** The process on `root`, its journal's writes as the run's commits make them: the person's answer (`lands`) is
    *  committed just before this process's own answer, after every read it made. `answer` reads and writes in one commit. */
-  const hands = () => personHands({
+  journalAt(root, journal);
+  const hands = () => personAt({
     root, gates: () => ({ give: () => false }), pollMs: 60_000,
     personTime: async () => ({ drop() {} }),
     note: async (kind, data) => {
       if (kind === "agent.handover" && data.state !== "waiting") lands();
-      if (kind === "agent.handover") journal.push(data);
     },
     answered: async (id) => (firstOf(id) ? toAnswer(firstOf(id)) : undefined),
     answer: async (id, data) => {
@@ -804,8 +834,7 @@ test("on the runner's path a person's answer that lands as this process writes t
   const before = hands();
   const { interactionId: id } = await before.handoff.request(ask(76, "ar-run-76-1"));
   before.close();
-  const file = join(root, "browser-ask", `${id}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  expire(root, id, T0);
   let landed = false;
   lands = () => {
     if (landed) return;
@@ -839,8 +868,7 @@ test("on the runner's path the row an answer writes shows at the answered entry'
   const before = journalHands(lapsedRoot, lapsedJournal);
   const { interactionId: lapsed } = await before.person.handoff.request(ask(75, "ar-run-75-1"));
   before.person.close();
-  const file = join(lapsedRoot, "browser-ask", `${lapsed}.json`);
-  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), expires_at: T0 }), { mode: 0o600 });
+  expire(lapsedRoot, lapsed, T0);
   const after = journalHands(lapsedRoot, lapsedJournal);
   t.after(() => after.person.close());
   assert.equal(await after.person.handoff.outcome(lapsed), "expired");
@@ -859,7 +887,7 @@ test("a take-over in the run's timeline reads as it happened (Manuel's walk of #
   let id = 1;
   const log = [];
   const entry = (kind, model, data) => log.push({ kind, id: id++, conversationId: 1, ...(model ? { model: [model] } : {}), ...(data ? { data } : {}) });
-  const person = personHands({
+  const person = personAt({
     root: await scratch(t), gates, timers: clock.timers, now: clock.now, pollMs: 60_000,
     personTime: async () => ({ drop() {} }),
     note: async (kind, data) => void entry(kind, undefined, data),
@@ -900,7 +928,7 @@ test("the hand-back row of a give that answers the session's open ask is at the 
   const clock = fakeClock(Date.UTC(2026, 10, 3, 9, 0, 0));
   const notes = [];
   const root = await scratch(t);
-  const person = personHands({
+  const person = personAt({
     root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, pollMs: 60_000,
     personTime: async () => ({ drop() {} }),
     note: async (kind, data) => void notes.push({ kind, ...data }),
@@ -931,7 +959,7 @@ test("the hand-back row of a give that answers the session's open ask is at the 
 function recordingHands(root, { timers, now, holdMs }) {
   const calls = [];
   const state = { refuse: null };
-  const person = personHands({
+  const person = personAt({
     root, gates: () => ({ give: () => false }), timers, now, holdMs, pollMs: 60_000,
     personTime: async (what, seconds, options = {}) => {
       calls.push({ what, seconds, from: options.from });
@@ -978,7 +1006,7 @@ test("a person returning long after a refusal is held, not refused, when the cap
   // The cap has room for exactly one window (holdMs of seconds): a hold is granted only when it asks for no more.
   let refuseAll = false;
   const window = holdMs / 1000;
-  const person = personHands({
+  const person = personAt({
     root, gates: () => ({ give: () => false }), timers: clock.timers, now: clock.now, holdMs, pollMs: 60_000,
     personTime: async (what, seconds, options = {}) => {
       calls.push({ what, seconds, from: options.from });
@@ -1051,7 +1079,7 @@ test("a wait in the claim on the person's answer (ask_person with the browser op
   const root = await scratch(t);
   const seen = [];
   const { person, held } = hands(root);
-  const person2 = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: async (what, _seconds, options) => { seen.push([what, options?.pauses ?? true]); return { drop: () => {} }; } });
+  const person2 = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: async (what, _seconds, options) => { seen.push([what, options?.pauses ?? true]); return { drop: () => {} }; } });
   t.after(() => { person.close(); person2.close(); });
   await person2.wait("call-1", ["ar-run-30-1"]);
   assert.deepEqual(seen, [["keeping the browser open while you answer", false]], "held in its own words, and a refusal pauses nothing");
@@ -1088,7 +1116,7 @@ test("a wait in the claim is bounded as a hand-over's ask is: at holdMs it lapse
   const holdMs = 15 * 60_000;
   const carried = [];
   let taken = 0;
-  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, timers: clock.timers, holdMs, now: clock.now, carry: (tag, seconds) => carried.push([tag, seconds]), personTime: async () => { taken += 1; return { drop: () => {} }; } });
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, timers: clock.timers, holdMs, now: clock.now, carry: (tag, seconds) => carried.push([tag, seconds]), personTime: async () => { taken += 1; return { drop: () => {} }; } });
   t.after(() => person.close());
   const waited = await person.wait("call-4", ["ar-run-33-1"]);
   await clock.tick(holdMs - 1);
@@ -1152,7 +1180,7 @@ test("a wait in the claim taken up again (a re-claim) keeps its first start: its
 test("a session let go while a wait's hold is being admitted still ends the wait", async (t) => {
   const root = await scratch(t);
   let admit = () => {};
-  const person = personHands({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: () => new Promise((resolve) => (admit = () => resolve({ drop: () => {} }))) });
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async () => {}, personTime: () => new Promise((resolve) => (admit = () => resolve({ drop: () => {} }))) });
   t.after(() => person.close());
   const waiting = person.wait("call-9", ["ar-run-37-1"]);
   await sleep(5);
