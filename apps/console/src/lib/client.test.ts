@@ -292,7 +292,7 @@ describe("the owner's session", () => {
 });
 
 describe("setup's import status", () => {
-  it("reads a 200 that says there is no offer as none, and still a 404 or 403 from an older server", async () => {
+  it("reads a 200 that says there is no offer as none, and a 404 (no such route without accounts, or to a caller not signed in) or a 403 too", async () => {
     const answers: [number, unknown][] = [
       [200, { offer: false }],
       [404, { error: { code: "not_found", message: "no route /v2/setup/import", retryable: false } }],

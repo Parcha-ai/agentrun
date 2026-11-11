@@ -5,7 +5,7 @@ import { RunHeader } from "./RunHeader";
 import type { Cost, Run } from "@/lib/v2";
 
 // The run page's cost says "est." and carries the estimate disclaimer for the same reason: its basis.
-const runWith = (c: Cost): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const runWith = (c: Cost): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Q",
   created_at: "2026-10-30T06:00:00Z", ended_at: "2026-10-30T06:00:03Z", result: null, error: null, cost: c, archived_at: null,
 });

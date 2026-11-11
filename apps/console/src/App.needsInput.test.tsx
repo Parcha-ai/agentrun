@@ -13,7 +13,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 vi.setConfig({ testTimeout: 20_000 });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const CAPS = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
+const CAPS = { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const run = (id: string, title: string, extra: object) => ({ run_id: id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", title, created_at: "2026-11-05T00:30:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, ...extra });
 const ASKING = run("q1", "Which city do you mean", { status: "input_required", state: "waiting", pending: { kind: "question", question: "Which city do you mean?", asked_at: "2026-11-05T00:31:00Z" } });
 const STOPPED = run("s1", "Write five files", { status: "input_required", state: "idle", pending: null });

@@ -22,7 +22,7 @@ import { launchBody } from "./run-launch.js";
 import { DEFAULT_PORT } from "./server.js";
 import { REDACTED, secretCut, secretsIn } from "./secret-cut.js";
 import { handedSecret, SECRET_NAMES, withSecrets } from "./secrets.js";
-import { SEAL_KEY_ENV } from "./tool-keys.js";
+import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { bootSealKey, SealKeyRefused, withSealKey } from "./seal-key.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -852,14 +852,16 @@ async function revisionFor(
 }
 
 /** The secrets this server made and keeps, by value: its API token and its sign-in sessions' secret (still files beside the
- *  store), its webhook's signing secret (`whsec_...`; webhooks.ts) and every value a trigger source keeps sealed, which the
- *  switch keeps as store rows (server-secrets-store.ts), opened with the seal key of `env`, so left out when that key is not
- *  there; each signing secret's key in every spelling too. One pasted into a session is this server's own, so an import cuts
- *  it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
+ *  store), its webhook's signing secret (`whsec_...`; webhooks.ts) and every value a trigger source keeps sealed, as store
+ *  rows (server-secrets-store.ts), opened with the seal key of `env`, which the caller has (a dry run over a store that
+ *  keeps no secret has none, and does not ask); each signing secret's key in every spelling too. One pasted into a
+ *  session is this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
  *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A webhook secret that does not
  *  open is said to `say`: the import goes on, and does not cut it. */
 export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
-  const webhook = webhookSecretIn(data, env);
+  const key = sealKeyOf(env[SEAL_KEY_ENV]);
+  if (!key) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
+  const webhook = webhookSecretIn(data, key);
   if (webhook && "signing" in webhook) say({ condition: webhook.signing, name: SEAL_KEY_ENV, file: join(data, WEBHOOK_FILE), effect: "this server's webhook secret cannot be read, so the import does not cut it" });
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
 }
@@ -1050,7 +1052,7 @@ export async function importCommand(
     temp?: string;
   } = {},
 ): Promise<number> {
-  // The server's own secrets, which the switch keeps sealed in the store, open only under the server's seal key: it is
+  // The server's own secrets, kept sealed in the store, open only under the server's seal key: it is
   // booted the one way the server and runner boot it (seal-key.ts bootSealKey) once the store is open (keyed below), and
   // checked against it. The key handed over wins (this process's, else a caller's own environment's: a test's), else the
   // one in the data directory, as the server reads it.
@@ -1132,7 +1134,9 @@ export async function importCommand(
     const optionsFrom = async (store: Store | undefined): Promise<ImportOptions> => {
       // The environment as it is now: once the store's key is booted (keyed), it carries it.
       const keyEnv = env!;
-      const keys = store ? toolKeysOverStore(store, keyEnv, say("tool_keys")) : undefined;
+      // With no key (a dry run over a store that keeps no secret: seal-key.ts) there is nothing of the server's to open.
+      const keyed = store !== undefined && keyEnv[SEAL_KEY_ENV] !== undefined;
+      const keys = keyed ? toolKeysOverStore(store, keyEnv, say("tool_keys")) : undefined;
       if (keys) {
         await keys.load();
         keys.view();
@@ -1145,8 +1149,7 @@ export async function importCommand(
         temp,
         env: keyEnv,
         stored: keys ? keys.values() : {},
-        // With no key (a dry run over a store that keeps no secret: seal-key.ts) there is nothing of the server's to open.
-        own: store && keyEnv[SEAL_KEY_ENV] !== undefined ? await ownSecrets(store, dir!, keyEnv, say("webhook_secret")) : [],
+        own: keyed ? await ownSecrets(store, dir!, keyEnv, say("webhook_secret")) : [],
       };
       // What it prints is cut with the saved keys too, and with every key the import (or the dry run) finds, as what it
       // keeps is.

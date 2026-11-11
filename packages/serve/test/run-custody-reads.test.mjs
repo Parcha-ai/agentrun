@@ -20,7 +20,7 @@ test("a run handed its agent's sign-in, on a browser plane, is served cut of the
   const pointer = pointerOf();
   const runId = await runSaying(s, pointer);
   await saved(s, pointer);
-  marked(s, runId, [sha(pointer)]);
+  await marked(s, runId, [sha(pointer)]);
   const { view, lists, timeline } = await reads(s, runId);
   assert.match(view.result.final_answer, /^On \[redacted\] Hold, then echo/, "its answer, cut, not withheld");
   assert.match(view.title, /^\[redacted\] Hold/, "its title, cut");
@@ -35,7 +35,7 @@ test("a run whose hand can't be read back here is withheld: its answer, its titl
   const runId = await runSaying(s, pointer);
   // The agent's sign-in now is another (replaced since): the run's hash opens to nothing kept.
   await saved(s, pointerOf("OTHER"));
-  marked(s, runId, [sha(pointer)]);
+  await marked(s, runId, [sha(pointer)]);
   const { view, lists, timeline } = await reads(s, runId);
   assert.equal(view.result?.final_answer ?? null, null);
   // A withheld run's title is the short fixed line that fits the title's length and holds nothing it said: its stored title
@@ -59,7 +59,7 @@ test("a run marked handed with no vendor browser on its launch is withheld alike
   const pointer = pointerOf();
   const runId = await runSaying(s, pointer);
   await saved(s, pointer);
-  marked(s, runId, [sha(pointer)]);
+  await marked(s, runId, [sha(pointer)]);
   const { view, lists, timeline } = await reads(s, runId);
   assert.equal(view.result?.final_answer ?? null, null);
   assert.equal(view.title, WITHHELD_TITLE);
@@ -75,7 +75,7 @@ test("a mark no server writes (a legacy true, one hash alone, an object, an empt
   const runId = await runSaying(s, pointer);
   await saved(s, pointer);
   for (const mark of [true, sha(pointer), { hash: sha(pointer) }, [], [sha(pointer), 5]]) {
-    marked(s, runId, mark);
+    await marked(s, runId, mark);
     const { view, lists, timeline } = await reads(s, runId);
     const what = JSON.stringify(mark);
     assert.equal(view.result?.final_answer ?? null, null, what);
@@ -86,7 +86,7 @@ test("a mark no server writes (a legacy true, one hash alone, an object, an empt
   }
   // No mark at all (a run handed none) is served as any run's, cut of the server's secrets alone: the pointer, never
   // handed, is its words as said.
-  marked(s, runId, null);
+  await marked(s, runId, null);
   assert.match((await reads(s, runId)).view.result.final_answer, new RegExp(`^On ${pointer}`));
 });
 

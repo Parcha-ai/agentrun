@@ -4,19 +4,16 @@
 import type { Context } from "@earendil-works/chord";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
-import { bookedCostOf, costIsBooked } from "../runner/booked-cost.js";
+import { bookedCapSpend, costIsBooked } from "../runner/metrics.js";
 import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** What a run's model requests cost, as the cap reads it, from the one store's journal: spentFrom over the run's entries. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {
   const entries = await runEntries(store, runId, context);
-  // A run whose record carries no booked cost of its own (a CLI harness's, a workflow's, a learning run's) reads what its
-  // sessions booked, the figure its cap holds it to (booked-cost.ts); its record's answers would read $0.
-  // One that booked nothing yet has spent 0; an unknown booked spend stays unknown (null).
-  if (costIsBooked(entries, isCliRecord(entries))) {
-    const booked = bookedCostOf(entries, { settled: false });
-    return booked === undefined ? 0 : booked.spentUsd;
-  }
+  // A run whose record carries no cost of its own (a CLI harness's, a workflow's) reads what its sessions booked, the
+  // figure its cap holds it to (metrics.ts bookedCapSpend), its record's answers reading $0: 0 before any request, an
+  // unknown booked spend unknown (null).
+  if (costIsBooked(entries, isCliRecord(entries))) return bookedCapSpend(entries);
   return spentFrom(entries);
 }
 

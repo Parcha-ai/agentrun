@@ -292,7 +292,7 @@ export const STORE_DDL: readonly string[] = [
   // sign_ins|<agent>:<provider>|pointer), which the store never opens. The owner sees its name ("default") and saved_at,
   // never the pointer, and no run's tools ever do. Forgetting a sign-in moves its sealed pointer, byte for byte so it
   // still opens, into a tombstone row (sign_in_tombstones), kept only so a server started later can still cut it from
-  // what a run it was handed shows; the newest 32 per agent are kept, the oldest dropped first.
+  // what a run it was handed shows and from what its agent learned; every one is kept, never pruned.
   `CREATE TABLE IF NOT EXISTS sign_ins (
     agent_id TEXT NOT NULL REFERENCES agents (id),
     provider TEXT NOT NULL,

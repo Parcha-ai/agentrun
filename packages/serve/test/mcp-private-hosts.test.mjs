@@ -15,7 +15,7 @@ const { refreshed } = await import("../dist/mcp-oauth.js");
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { sealMcpCredential } = await import("../dist/store/index.js");
-const { UNUSABLE } = await import("../dist/mcp-servers.js");
+const { UNUSABLE } = await import("../dist/mcp-probe.js");
 
 const AS = "as.corp.test";
 const PUBLIC = "192.0.2.10";

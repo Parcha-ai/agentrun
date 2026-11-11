@@ -333,12 +333,12 @@ test("an unknown agent is 404 on every home route; an archived agent's home is r
   assert.deepEqual((await files(server)).body.files.map((f) => f.path), ["after.md"]);
 });
 
-test("GET and PUT /agents/{id}/home stay the contract's 501, the new routes take only their methods, and capabilities.home says what the home is", async (t) => {
+test("GET and PUT /agents/{id}/home, the contract's packed home, are not served here (404), the file routes take only their methods, and capabilities.home says what the home is", async (t) => {
   const server = await served(t);
   const exported = await server.api("GET", "/agents/keeper/home");
-  assert.deepEqual([exported.status, exported.body.error.code, exported.body.error.capability], [501, "unsupported_here", "home.export"]);
+  assert.deepEqual([exported.status, exported.body.error.code], [404, "not_found"]);
   const imported = await server.api("PUT", "/agents/keeper/home", {});
-  assert.deepEqual([imported.status, imported.body.error.code, imported.body.error.capability], [501, "unsupported_here", "home.import"]);
+  assert.deepEqual([imported.status, imported.body.error.code], [404, "not_found"]);
   const post = await raw(server, "POST", "keeper", "a.txt", "x");
   assert.deepEqual([...refused(post), post.headers.allow], [405, "method_not_allowed", "GET, PUT, DELETE"]);
   assert.deepEqual([(await raw(server, "PUT", "keeper", undefined, "x")).headers.allow], ["GET"]);

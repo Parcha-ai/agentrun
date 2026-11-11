@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Composer } from "@/components/Composer";
 import { NeedsYou } from "@/components/NeedsYou";
 import { RunError } from "@/components/RunError";

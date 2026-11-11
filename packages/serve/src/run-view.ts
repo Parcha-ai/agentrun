@@ -16,14 +16,14 @@ import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
-import { pointerHash, type SignIns } from "./sign-ins.js";
+import { pointerHash, type signInReads } from "./sign-ins-store.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 
 /** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
- *  pointer) and `forgotten` (its tombstoned ones). Both the old `new SignIns(...)` and the store-backed bridge
- *  (sign-ins-store.ts signInsOverStore) satisfy it, so a view reads either path with no knowledge of which. */
-export type SignInReader = Pick<SignIns, "peek" | "forgotten">;
+ *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
+export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -631,7 +631,7 @@ export const servedRunErrorWith = <E extends { message: string; details?: unknow
  *  other words are while the run is hidden (`unshown`), as a list row read from disk withholds it. */
 export const servedReviewWith = <R extends { reason: string }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null => (review && { ...review, reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason) });
 
-/** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its `sign_in_handed`: none
+/** The pointers a run was handed, read back to cut them (sign-ins-store.ts peek and forgotten), by its `sign_in_handed`: none
  *  for a run with no mark (it was never handed one); else, for each hash it names, the live or forgotten pointer whose
  *  SHA-256 it is. `unreadable` when what it was handed can't be read back here: a MALFORMED mark, no vendor browser kept
  *  beside the mark, the sign-ins file can't be read, or any of its hashes matches no pointer that opens (one under another
@@ -702,7 +702,7 @@ export function outcomeShows(tool: string, answer: { decision: string; by?: stri
 function callSays(answer: ApprovalAnswer | undefined): string {
   if (!answer) return "Not run yet: it waits for your approval";
   if (answer.decision === "canceled") return "Not run: the run was cancelled while it waited";
-  if (answer.decision === "withdrawn") return answer.ended ? "Not run: the run ended while it waited" : "Not run: the run was stopped while it waited";
+  if (answer.decision === "withdrawn") return answer.ended ? ENDED_WHILE_WAITING : STOPPED_WHILE_WAITING;
   return "Allowed: it runs now";
 }
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */

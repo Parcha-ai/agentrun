@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { kindRefusals } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
 const phone = await import("../dist/phone-harness.js");
@@ -439,7 +440,7 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.deepEqual(fake.serverCalls().slice(0, 4), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:echo ph-ok", "host:transport-id:1 shell:unlock [code]"]);
 	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
 	assert.deepEqual(fake.shells().slice(0, 3), ["echo ph-ok", `unlock ${ADB_CODE}`, "echo ph-ok"]);
-	assert.deepEqual(connected.value.hello, { version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
+	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 	await connected.value.close();

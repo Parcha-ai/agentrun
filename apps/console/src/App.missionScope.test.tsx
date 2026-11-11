@@ -14,7 +14,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 vi.setConfig({ testTimeout: 20_000 });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const CAPS = { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
+const CAPS = { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const run = (id: string, agent: string, title: string) => ({ run_id: id, agent_id: agent, agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title, created_at: "2026-11-04T06:00:00Z", ended_at: "2026-11-04T06:00:05Z", result: null, error: null, cost: null, archived_at: null });
 const NOTES = [run("n1", "notes", "Notes run one"), run("n2", "notes", "Notes run two")];
 const CALC = [run("c1", "calc", "Calc run one")];

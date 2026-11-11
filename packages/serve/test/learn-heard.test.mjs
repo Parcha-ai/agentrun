@@ -2,13 +2,9 @@
 // words whole, and a trigger's input kept apart by its source unless the trigger's owner wrote it (a schedule), each
 // origin read as the timeline reads it (a MESSAGE_ORIGIN marker before the entry, or the entry's own data.origin).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { MESSAGE_ORIGIN } from "@parcha/pi-durable-agent/timeline";
 import { Hearing } from "../dist/heard.js";
-import { keepTurn, readTurn } from "../dist/learning.js";
 
 const fired = (source, owner) => ({ kind: "trigger", trigger_id: `tr-${source}`, source, owner });
 const user = (id, text, data) => ({ id, kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text }, { type: "image", data: "aGk=", mimeType: "image/png" }] }], ...(data ? { data } : {}) });
@@ -53,12 +49,4 @@ test("a marker sent again by a snapshot before its message arrived names that me
   // The connection drops after the marker: the next snapshot sends it again, then its message, then the person writes the same words.
   const entries = [marker(1, text, fired("webhook", false)), marker(1, text, fired("webhook", false)), user(2, text), user(3, text)];
   assert.deepEqual(heard(entries), [{ text, source: "webhook" }, { text }]);
-});
-
-test("the run's kept turn holds a trigger's input apart from what the user said, and reads back the same", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "heard-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const turn = { answer: "No notes.", asked: ["Write today's report."], triggered: [{ source: "webhook", text: ALWAYS }] };
-  await keepTurn(dir, turn);
-  assert.deepEqual(await readTurn(dir), turn);
 });

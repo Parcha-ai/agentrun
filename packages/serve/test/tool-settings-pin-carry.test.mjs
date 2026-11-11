@@ -5,8 +5,8 @@
 // and lets one as pinned through. `pin_broken` is the server's mark of a pin its own settings file holds that does not
 // read; in an agent's settings it is refused.
 //
-// This is the cutover's acceptance for the agent-level pin (#1990's rules): agents in the one store, which keeps a
-// revision's body as given (store-tool-pin.test.mjs), keep the pin whole.
+// The acceptance for the agent-level pin (#1990's rules), over the one store, which keeps a revision's body as given
+// (store-tool-pin.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -74,7 +74,7 @@ test("the gate of a run on that revision is handed the pin whole: a call not as 
   const { api, data } = await pinned(t);
   const read = (await api("GET", "/agents/pinned")).body;
   const root = join(data, "runs", "run-pin");
-  const gate = runGate({ root, work: join(root, "work") }, "run-pin", { kind: "agentic", body: { toolSettings: read.definition.tool_settings } });
+  const gate = runGate({ root, work: join(root, "work") }, "run-pin", { kind: "agentic", body: { toolSettings: read.definition.tool_settings } }, () => ({ settings: {}, problems: [] }), undefined, true);
   assert.deepEqual(gate["overrides"], { [SEND]: KEPT });
   const refused = gate["pinned"](SEND, { channel_id: "C0EVIL", message: "the digest" });
   assert.equal(refused?.text, `${SEND} may only be called with channel_id in (C0A | C0B), thread_ts absent: its destination is fixed by the agent's settings. It was not run: nothing was sent and nothing was charged.`);
