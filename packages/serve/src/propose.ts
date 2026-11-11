@@ -1,8 +1,8 @@
 // Learning, after a run: the notes its end-of-run turn answered with, and a skill or a workflow draft beside them, are read
 // by the host (learn/reflect.ts parseReflection), checked against the commit the run started from (learn/check.ts
-// checkProposal), and kept in the run's own directory as its proposal (`learning-proposal.json`), or dropped. The answer
-// is read from what the run's directory kept as the run settled (learning.ts keepTurn), never from the run's work or its
-// rows, which a follow-up may change; and no file the run wrote is read at all, in `.learning/` or anywhere. The seed is
+// checkProposal), and kept as its proposal (`learning-proposal.json`, in the directory the caller gives), or dropped. The
+// answer is what the runner's end-of-run turn read from the run's store (runner/learning-end.ts), never the run's work;
+// and no file the run wrote is read at all, in `.learning/` or anywhere. The seed is
 // read from the agent's learning folder through its Workspace, as the reflect hook's check reads it (learn/seed-check.ts):
 // the snapshot and its bodies when main is the seed (no exec), else one read-only exec of the learning script at that
 // commit. Nothing is written to git here, and nothing is written at all before the checks pass: what they refuse (a

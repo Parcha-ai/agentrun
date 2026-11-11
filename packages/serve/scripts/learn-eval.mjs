@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The learning eval, live (test/fixtures/learn-eval.json; its deterministic form is test/learn-eval.test.mjs). Two
 // modes, each on each model named:
-//   grade    each case's proposal checked (learn/check.ts checkProposal) and graded as the server grades it (judgeProposal,
-//            with what the user said in the run);
+//   grade    each case's proposal checked (learn/check.ts checkProposal) and graded as the runner's learning run grades
+//            it (runner/learning-loop.ts: gradePrompt, with what the user said in the run, then parseVerdict, asked once
+//            more when it can't be read);
 //   reflect  each case's conversation replayed on the model, then the end-of-run turn asked (reflectPrompt); its answer
 //            parsed (parseReflection), checked and graded the same way.
 // It prints keep-precision, keep-recall and the injection-drop rate per model and grader, and writes one JSON line per
@@ -45,13 +46,21 @@ const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENT_MODEL"
 const ENV = { PATH: process.env.PATH, ...Object.fromEntries(MODEL_VARS.flatMap((name) => (process.env[name] ? [[name, process.env[name]]] : []))) };
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const mod = (path) => import(pathToFileURL(join(root, path)).href);
-const [{ judgeProposal }, { runModels, thinkingOf }, { modelOn, providerFor }, { authContextOf }, learn, { builtinModels }] = await Promise.all([
-  mod("packages/serve/dist/grade.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/provider.js"), mod("packages/serve/dist/secrets.js"),
+const [{ GRADE_MAX_TOKENS, GRADE_TIMEOUT_MS }, { runModels, thinkingOf }, { modelOn, providerFor }, { authContextOf }, learn, { builtinModels }] = await Promise.all([
+  mod("packages/serve/dist/runner/learning-loop.js"), mod("packages/serve/dist/model.js"), mod("packages/serve/dist/provider.js"), mod("packages/serve/dist/secrets.js"),
   mod("packages/serve/dist/learn/index.js"), mod("node_modules/@earendil-works/pi-ai/dist/providers/all.js"),
 ]);
 const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harness: "claude-agent", model: opts["claude-model"] } };
 
-/** A profile's model, picked as the server picks an agent's own (grade.ts), for a completion with tools. */
+/** The named grade model, resolved as the runner grades on it (runner/harness-loops.ts: learning-dispatch.ts gradeModelFor,
+ *  then the runner's route asked for that model by name, model-route.ts routeOf at the default tier): the model the name
+ *  says, priced as the runner prices it. */
+async function namedOf(named) {
+  const chosen = await runModels(ENV, named);
+  return { models: chosen.models, model: chosen.models.getModel(chosen.model.provider, chosen.model.modelId) };
+}
+
+/** A profile's model, picked as the server picks an agent's own, for a completion with tools. */
 async function modelOf(profile) {
   if (profile.harness === "claude-agent") {
     const choice = await modelOn("anthropic-messages", ENV, profile.model, "claude-agent");
@@ -130,14 +139,33 @@ function checked(c, notes) {
   return learn.checkProposal({ base: { files: ["MEMORY.md", ...seed.keys()], active: notesOf(c.active) }, changes, refuseValues: [] });
 }
 
+/** Case `c`'s notes graded as the runner's learning run grades a proposal (runner/learning-loop.ts): the prompt
+ *  (gradePrompt) over the case's instructions, its active notes, those the notes replace and what the user said, asked on
+ *  `gradeModel` (one of --grade-models, or --grade-model; else the case's own model) under run id `runId`; the answer
+ *  read (parseVerdict), and asked once more when it can't be. */
 async function grade(c, notes, profile, runId, gradeModel) {
   const replaced = new Set(notesOf(notes).flatMap((n) => n.supersedes));
-  const judged = await judgeProposal({
-    runId, agent: { instructions: c.instructions, harness: profile.harness, model: profile.model }, env: ENV, signal: AbortSignal.timeout(240_000),
-    main: { active: notesOf(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => replaced.has(n.file)) },
-    proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text), ...(gradeModel ? { gradeModel } : {}),
+  const prompt = learn.gradePrompt({
+    run: runId, instructions: c.instructions,
+    active: notesOf(c.active).map(({ file, name, description }) => ({ file, name, description })), superseded: c.active.filter((n) => replaced.has(n.file)),
+    proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text),
   });
-  return "verdict" in judged ? { merged: judged.verdict.merge, stage: "grader", verdict: judged.verdict, usd: judged.cost.usd ?? 0 } : { merged: false, stage: judged.reason, why: judged.error?.message, usd: judged.cost.usd ?? 0 };
+  const items = learn.gradedItems(notes);
+  const { models, model } = gradeModel ? await namedOf(gradeModel) : await modelOf(profile);
+  let usd = 0;
+  let verdict;
+  try {
+    for (let ask = 0; ask < 2; ask++) {
+      const message = await models.completeSimple(model, { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { maxTokens: GRADE_MAX_TOKENS, signal: AbortSignal.timeout(GRADE_TIMEOUT_MS) });
+      usd += message.usage?.cost?.total ?? 0;
+      if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? message.stopReason);
+      verdict = learn.parseVerdict(message.content.filter((p) => p.type === "text").map((p) => p.text).join(""), items);
+      if (verdict.reason !== learn.UNREADABLE_REASON || verdict.items.length) break;
+    }
+  } catch (error) {
+    return { merged: false, stage: "grade_failed", why: String(error?.message ?? error), usd };
+  }
+  return { merged: verdict.merge, stage: "grader", verdict, usd };
 }
 
 const setFile = opts.cases ?? join(root, `packages/serve/test/fixtures/${opts.set === "heldout" ? "learn-eval-heldout" : "learn-eval"}.json`);

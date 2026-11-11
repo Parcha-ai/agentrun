@@ -14,7 +14,7 @@ import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQU
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { ended, LEARN, learner, made, SWITCH_TODO, started } from "./learn-support.mjs";
+import { ended, LEARN, learner, made, started } from "./learn-support.mjs";
 import { agent, FAUX, flowAgent, follow, serve } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
 
@@ -459,8 +459,7 @@ test("a timeline row's usage says where it shows here: a browser call's row carr
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
 const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed"];
 
-// SKIP (follow-up #2080): a learner run's timeline has no learning row on the runner.
-test.skip("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
+test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schemas = doc.components.schemas;
@@ -521,7 +520,7 @@ test.skip("learning is this server's own addition, learning/1: the definition's 
   assert.notDeepEqual(schemaProblems(doc, stats, { ...counted, dropped: { conflict: 1 } }), []);
 });
 
-test("what a run read and learned and what learning changed for its agent are learning/2, each described: a run's used and learned, in its view and its list, absent when empty, and the agent's impact, null until both sides count 2 runs; real answers meet the document", { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+test("what a run read and learned and what learning changed for its agent are learning/2, each described: a run's used and learned, in its view and its list, absent when empty, and the agent's impact, null until both sides count 2 runs; real answers meet the document", { timeout: 180_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schemas = doc.components.schemas;

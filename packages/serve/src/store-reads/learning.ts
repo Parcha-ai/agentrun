@@ -7,10 +7,11 @@
 // notes, its answer's time and costs) is the run's, not this.
 import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { currentLearning, holdsForOk, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
+import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead, type Reflect, reflects } from "../learning-run.js";
+import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
+import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
 import type { RunRow } from "@parcha/pi-durable-agent";
@@ -120,6 +121,14 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
     else out.in_progress += 1;
   }
   return out;
+}
+
+/** What learning spent outside any run (GET /usage's `learning` meter) in [from, to) (ms), one entry per run whose
+ *  learning ended then, as the learning ledger's lines gave it: its agent, when its learning ended, and what its grade
+ *  cost: 0 for a run never graded, null when the grade's spend is unknown (a grade that failed), never $0 then. One read
+ *  of the store (Learning.spend), whatever the number of runs. */
+export async function learningSpendOverStore(store: Store, window: { from: number; to: number }): Promise<{ agent: string; at: string; cost: number | null }[]> {
+  return (await store.learning.spend(window)).map((one) => ({ agent: one.agentId, at: timeOf(one.at), cost: one.costUsd }));
 }
 
 /** An agent's learning counts as its learning view gives them (GET /agents/{id}/learning, learning-run.ts ofAgent's
@@ -273,9 +282,10 @@ async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunc
 
 /** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
  *  run's learning end (runLearningEnd), the notes it was given and the seed it started from as its launch records them,
- *  what it held for its owner's OK as the store's run view reads it (no statuses: never the learning folder), settled
- *  once the run is final. Null when the run kept no learning. */
-export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[]) {
+ *  what it held for its owner's OK as it stands on its agent's folder's main (`statuses`, learning-routes.ts statusesOf,
+ *  read only when it held something; none: as the merge wrote it), settled once the run is final. Null when the run kept
+ *  no learning. */
+export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[], statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>) {
   const end = await runLearningEnd(store, runId);
   if (!end) return null;
   const started = await learningStartOfRun(store, runId);
@@ -285,6 +295,6 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
   const learning = withNotes(end, started, read) as Learning;
-  const current = holdsForOk(learning) ? currentLearning(learning, undefined) : learning;
+  const current = holdsForOk(learning) && row && statuses ? currentLearning(learning, await statuses(row.agentId)) : learning;
   return runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(started, reflect, rows, callArgsOf(entries)) }, shown, secrets);
 }
