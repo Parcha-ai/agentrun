@@ -132,14 +132,14 @@ describe("Triggers: schedules and webhooks", () => {
   });
 
   it("says a refused create in the server's words", async () => {
-    const s = server({ create: () => json(409, { error: { code: "no_sealing_key", message: "This server was handed no seal key to keep a webhook trigger's secret under.", retryable: false } }) });
+    const s = server({ create: () => json(409, { error: { code: "agent_archived", message: "The agent triage is archived: unarchive it to make a trigger of it.", retryable: false } }) });
     const t = await open(s.v2, { trigger: null, kind: "webhook" });
     await t.set("name", "on deploy");
     await t.set("agent", "triage");
     await t.set("content", "Check the deploy.");
     await t.set("maxCost", "1");
     await t.click(/^Create webhook$/);
-    expect(t.text()).toContain("This server was handed no seal key to keep a webhook trigger's secret under.");
+    expect(t.text()).toContain("The agent triage is archived: unarchive it to make a trigger of it.");
   });
 
   it("a webhook's page shows its URL and firings; Rotate secret shows the new one once; Pause and Delete act on it", async () => {

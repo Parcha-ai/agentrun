@@ -11,7 +11,7 @@ const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "sc
 
 test("the vendored facade is byte for byte the upstream commit its manifest names", () => {
   const out = execFileSync(process.execPath, [SCRIPT, "--check"], { encoding: "utf8" });
-  assert.match(out, /4 files match [0-9a-f]{40} \(@browserbasehq\/stagehand@4\.1\.0\)/);
+  assert.match(out, /3 files match [0-9a-f]{40} \(@browserbasehq\/stagehand@4\.1\.0\)/);
 });
 
 test("one changed byte, a stray file or a missing file is drift; a new commit needs its release named", (t) => {
@@ -64,6 +64,6 @@ test("run through a symlink to it, the script still runs: a check reports, and a
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const link = path.join(dir, "vendor-facade.mjs");
   fs.symlinkSync(SCRIPT, link);
-  assert.match(execFileSync(process.execPath, [link, "--check"], { encoding: "utf8" }), /4 files match [0-9a-f]{40}/);
+  assert.match(execFileSync(process.execPath, [link, "--check"], { encoding: "utf8" }), /3 files match [0-9a-f]{40}/);
   assert.throws(() => execFileSync(process.execPath, [link], { encoding: "utf8", stdio: "pipe" }), (error) => error.status === 2 && /usage: vendor-facade\.mjs/.test(String(error.stderr)));
 });

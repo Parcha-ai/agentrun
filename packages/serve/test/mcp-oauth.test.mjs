@@ -87,7 +87,7 @@ function runnerStoreOf(t, data) {
   return store;
 }
 
-/** A run's launch on the runner (it replaces the file registry's headersForRun): a fresh run of an agent granted
+/** A run's launch on the runner: a fresh run of an agent granted
  *  mcp:<server>/add, started through the API on a server whose runner is off, claimed on the server's own store and run
  *  through the runner's MCP claim step (runner/mcp-claim.ts mcpClaim) under seal key `key`. Answers the step and its
  *  entry for `server`: `{ url, headers }`, or `{ url, unopened }` with why it does not open. `store`: the handle the
@@ -336,8 +336,8 @@ test("CIMD only on a public https address: the client id is this server's metada
 test("a run's launch refreshes a token near its expiry, once for launches at the same time; a refused refresh reads expired", { timeout: 60_000 }, async (t) => {
   const key = sealKey();
   withEnv(t, { AGENTRUN_SEAL_KEY: key });
-  // Ported from the file registry's headersForRun to the runner's claim step over the server's own store (the switch):
-  // the same behaviour, read where a run's launch reads it now. No runner of the server's: the test's launches are it.
+  // The runner's claim step over the server's own store, where a run's launch reads its credential. No runner of the
+  // server's: the test's launches are it.
   const server = await serve(t, { runner: false });
   const { api, data } = server;
   const { as, mcp } = await fakes(t, { expiresIn: 60 });
@@ -835,7 +835,7 @@ for (const down of ["503", "timeout"]) {
   });
 }
 
-// moved: covered by test/store-mcp-claim.test.mjs#M11: with no seal key, a server's calls are refused in noSealKey's words, and no refresh is sent
+// moved: a runner never starts without its seal key (seal-key.test.mjs "no seal key and nowhere to keep one: refused in words, never a start without one"), so no claim runs keyless
 
 
 test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
