@@ -661,7 +661,7 @@ const ARCHIL_VIEW = closedWith({
   diskId: { type: "string" },
   region: { type: "string" },
   s3Url: { type: "string", format: "uri" },
-  image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, Archil's default." },
+  image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };

@@ -766,8 +766,10 @@ computer is made with the GPUs asked.
   it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
 - **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
-  (and an exec image pinned by digest, if you want one other than Archil's default), and the account key,
-  `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
+  (and an exec image pinned by digest, if you want one other than serve's default), and the account key,
+  `ARCHIL_API_KEY`; `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by
+  digest (git 2.47), because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An
+  image you name needs git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
   mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
