@@ -22,9 +22,8 @@ export const BASELINE = {
 	// S7, DEL-03: the old box stack (pi-transport's Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
 	"boxes.ts": { ids: { docker: 9, daytona: 7, modal: 1 }, why: "DEL-03 (S7): the old box stack" },
 	"place.ts": { ids: { docker: 4, daytona: 2 }, why: "DEL-03 (S7): the old box stack's places" },
-	"run-box.ts": { ids: { docker: 1, kernel: 1 }, why: "DEL-03 (S7): the old box stack's run box; its `kernel` is the OS's (vmDocker's option)" },
-	"runs.ts": { ids: { daytona: 2 }, why: "DEL-03 (S7): the old box stack's wiring" },
 	"box-egress-vm.ts": { ids: { kernel: 2 }, why: "a false positive: the OS's kernel (vmDocker's `kernel` option), not the provider" },
+	"box-settings.ts": { ids: { kernel: 1 }, why: "a false positive: the OS's kernel (vmDocker's `kernel` option, passed on), not the provider" },
 	"openapi.ts": { ids: { kernel: 2 }, why: "CP-4 (S6): the browser plane's provider enum in the API" },
 	"server.ts": { ids: { docker: 9, daytona: 3, browserbase: 4, kernel: 4 }, why: "DEL-03 (S7) and CP-4 (S6): the box stack's wiring, and the browser tool's default provider" },
 	// S6, CP-4: the browser tool and sign-in profiles on pi-browser, beside the computer package's browser kind.

@@ -96,9 +96,9 @@ describe("run and epoch labels on Docker", { skip: LIVE ? false : "set AGENTRUN_
 	});
 
 	it("releaseOlder of the other run at its own epoch releases nothing; at epoch 4 it takes the run over", async () => {
-		assert.deepEqual(await releaseOlder(provider, other, 1), { ok: true, value: { released: [], kept: [refs.other], unproven: [] } });
+		assert.deepEqual(await releaseOlder(provider, other, 1), { ok: true, value: { released: [], detached: [], kept: [refs.other], unproven: [] } });
 		const taken = await releaseOlder(provider, run, 4);
-		assert.deepEqual(taken, { ok: true, value: { released: [refs.e3], kept: [], unproven: [] } });
+		assert.deepEqual(taken, { ok: true, value: { released: [refs.e3], detached: [], kept: [], unproven: [] } });
 		assert.deepEqual(ours(), [refs.other.name]);
 	});
 });

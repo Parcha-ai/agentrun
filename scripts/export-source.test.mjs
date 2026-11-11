@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
+const machinePathRule = await readFile(new URL('./machine-path.mjs', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-source-export-'));
@@ -18,6 +19,7 @@ async function fixture(t) {
     await writeFile(join(root, path), content);
   };
   await write('scripts/export-source.mjs', exporter);
+  await write('scripts/machine-path.mjs', machinePathRule);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
