@@ -11,14 +11,10 @@
 // written from one not shown.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { StoreConstraint } from "../dist/store/store.js";
-import { openSqliteStore } from "../dist/store/index.js";
 import { queued, storeOn } from "./store-helpers.mjs";
-import { raw, sqliteOnly } from "./store-target.mjs";
+import { raw } from "./store-target.mjs";
 
 const { sealedAt, sealColumn, unsealColumn } = await import("../dist/store/seal.js");
 const { readRun } = await import("../dist/store-reads/runs.js");
@@ -230,22 +226,4 @@ test("a viewer's host goes with its row: of() returns the host a runner on anoth
   assert.equal(await store.liveViewers.put(claim, viewer("run-1", "local")), true);
   const hosts = Object.fromEntries((await store.liveViewers.of("run-1")).map((row) => [row.tag, row.host]));
   assert.deepEqual(hosts, { remote: "runner-1", local: undefined });
-});
-
-test("a store an earlier build of this version made, its viewer table with no host, gets the column at the server's open", sqliteOnly("the open's own repair of a SQLite file"), async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "store-host-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, "store.sqlite");
-  await (await openSqliteStore({ file, role: "server" })).close();
-  const db = await raw(file);
-  try {
-    await db.run("ALTER TABLE computer_viewers DROP COLUMN host");
-  } finally {
-    await db.close();
-  }
-  const { store } = await storeOn(t, { file });
-  await queued(store, "run-1");
-  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  assert.equal(await store.liveViewers.put(claim, { ...viewer("run-1", "main", { kind: "desktop" }), host: "runner-1" }), true);
-  assert.equal((await store.liveViewers.of("run-1"))[0].host, "runner-1");
 });

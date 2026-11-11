@@ -14,7 +14,8 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 5;
+// 8: computer_viewers.host (a runner's live host, live-reach.ts). 6 and 7 are taken by changes landing beside it.
+export const SCHEMA_VERSION = 8;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it

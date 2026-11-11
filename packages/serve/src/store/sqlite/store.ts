@@ -271,11 +271,6 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // counted refused answers: the server rebuilds it, so a second answer to one approval is refused on every store. A
     // store such a build left may hold two unrefused answers to one approval: the earliest stands (the one the runner
     // acted on) and each later one is refused in the same write, before the index, so the store opens. None is deleted.
-    // An earlier build of this version made the viewer table with no host (a runner on another host than its server,
-    // live-reach.ts): the server adds the column, nullable, so its rows read as the server's own machine's.
-    if (role === "server" && !(await connection.get<{ name: string }>("SELECT name FROM pragma_table_info('computer_viewers') WHERE name = 'host'"))) {
-      await connection.write([{ sql: "ALTER TABLE computer_viewers ADD COLUMN host TEXT" }], { full: true });
-    }
     if (role === "server") {
       await connection.write([
         { sql: "DROP TABLE IF EXISTS browser_viewers" },
