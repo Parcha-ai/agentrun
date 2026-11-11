@@ -58,9 +58,13 @@ export type RunNotice = { run_id: string; agent_id: string; status: string; titl
 /** `secret_at`: when the secret was made, its own time (a URL change keeps it). */
 type Config = { url: string; secret_at: string; updated_at: string; disabled?: { at: string; reason: string } };
 type Message = { id: string; type: MessageType; body: string; created_at: string; status: "pending" | "delivered" | "failed"; attempts: number; next_at: number | null };
-/** What the outbox queued of one run: its end (its time), and the wait it stands at (its mark), kept until the run moves
- *  past it: a new wait replaces it, and it goes with the end that came after it, once that end is no longer due. */
-type Noticed = { ended?: string; wait?: string };
+/** What the outbox queued of one run: its end (its time), and the waits it was told of (each its ask's mark, waitMarkerOf;
+ *  the one it stands at last), kept until the run moves past them: they go with the end that came after them, once that
+ *  end is no longer due. */
+type Noticed = { ended?: string; waits?: string[] };
+/** How many of a run's waits the ledger keeps: a run asks again with a new mark, so only an old ask read again (a stale
+ *  read of the run) needs its mark, and that is one of its last few. */
+const WAITS_KEPT = 20;
 export type Attempt = { webhook_id: string; type: MessageType; at: string; status_code: number | null; latency_ms: number; error: string | null; retry_at: string | null; redelivery: boolean };
 /** Whether the secret signs here: sealed, or not, for a seal key it does not open under (or damaged). */
 type Signing = "sealed" | "unreadable";
@@ -75,6 +79,27 @@ export { signatureOf } from "./standard-webhooks.js";
 /** The webhook as the store keeps it, if it holds one. */
 function configOf(value: unknown): Config | undefined {
   return isObject(value) && value.v === 1 && typeof value.url === "string" && typeof value.secret_at === "string" && typeof value.updated_at === "string" ? (value as unknown as Config) : undefined;
+}
+
+/** The mark of the wait a run stands at, its webhook-id's marker: one per ask, however often or whenever the run is read,
+ *  so every read of the same ask makes the same webhook-id. A question's is its waiting row (run-view.ts withAsks: the
+ *  asked call's result, `:waiting`); an approval's, the call it holds; a budget pause's, its time; a hand-over's, when it
+ *  was asked; a stop, which waits on no ask, the last row that shows (not usage, a phase or learning's). Never the last
+ *  row for an ask: a run read between the person's answer and its runner's take of it shows the answer last, and a
+ *  marker from that row would tell the same ask twice, under two ids. Undefined when there is none. */
+export function waitMarkerOf(
+  rows: readonly { id: string; kind: string; agent_label?: string | null }[],
+  pending: { kind?: unknown; id?: unknown; at?: unknown; asked_at?: unknown } | null | undefined,
+  waiting: boolean,
+  learningLabel: string,
+): string | undefined {
+  const last = () => rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && r.agent_label !== learningLabel)?.id;
+  if (!waiting) return last();
+  const kind = pending?.kind;
+  if (kind === "approval" && typeof pending?.id === "string") return `approval:${pending.id}`;
+  if (kind === "budget" && typeof pending?.at === "string") return `budget:${pending.at}`;
+  if ((kind === "browser" || kind === "computer") && typeof pending?.asked_at === "string") return `${kind}:${pending.asked_at}`;
+  return rows.findLast((r) => r.kind === "waiting")?.id ?? last();
 }
 
 export class Webhooks {
@@ -189,17 +214,21 @@ export class Webhooks {
     this.told.add(run.run_id);
     const ends = type === "run.ended";
     const seen = this.notices[run.run_id];
-    if ((ends ? seen?.ended : seen?.wait) === marker) return this.landed();
+    // One message per (run, wait): a wait the run was told of already, last or earlier, is never queued again.
+    if (ends ? seen?.ended === marker : seen?.waits?.includes(marker)) return this.landed();
+    // The waits told, this one newest; the oldest go past WAITS_KEPT.
+    const waits = [...(seen?.waits ?? []), marker].slice(-WAITS_KEPT);
     const config = this.config();
     if (!config || config.disabled) {
       // A wait seen while nothing is to be sent is noted here, never written for it: told again, it writes nothing.
-      if (!ends) this.notices[run.run_id] = { wait: marker };
+      if (!ends) this.notices[run.run_id] = { waits };
       return "off";
     }
     if (ends && !this.due(marker, config)) return "queued";
     const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
-    // A new wait replaces the last; one after an end is a continued run's, past that end, which the store no longer holds.
-    this.notices[run.run_id] = ends ? { ...seen, ended: marker } : { wait: marker };
+    // A new wait is the one the run stands at; one after an end is a continued run's, past that end, which the store no
+    // longer holds.
+    this.notices[run.run_id] = ends ? { ...seen, ended: marker } : { waits };
     this.prune(config);
     const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
     const { message, saved } = this.enqueue(id, type, data);
@@ -235,7 +264,7 @@ export class Webhooks {
     let dropped = false;
     for (const [id, noticed] of Object.entries(this.notices)) {
       const row = store.get(id);
-      if (this.told.has(id) || (row && (row.state === "running" || noticed.wait === undefined))) continue;
+      if (this.told.has(id) || (row && (row.state === "running" || !noticed.waits?.length))) continue;
       if (row && noticed.ended) this.notices[id] = { ended: noticed.ended };
       else delete this.notices[id];
       dropped = true;
@@ -329,8 +358,8 @@ export class Webhooks {
     return !Number.isFinite(at) || at >= Math.max(Date.parse(config.updated_at), Date.now() - END_NOTICE_WINDOW_MS);
   }
 
-  /** The ledger without what no start looks for: a run whose end is no longer due goes, with the wait it ended past. A
-   *  wait with no end after it stays while the run stands at it, however long: never pruned by age, so the same question
+  /** The ledger without what no start looks for: a run whose end is no longer due goes, with the waits it ended past.
+   *  Waits with no end after them stay while the run stands at it, however long: never pruned by age, so the same question
    *  is never asked again. */
   private prune(config: Config): void {
     for (const [id, noticed] of Object.entries(this.notices)) if (noticed.ended && !this.due(noticed.ended, config)) delete this.notices[id];

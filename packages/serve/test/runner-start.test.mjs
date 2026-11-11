@@ -196,7 +196,8 @@ test("two runners on one store claim under their own names; SIGTERM hands the he
       await store.close();
     }
   };
-  const a = runnerChild(t, ["--data", dir, "--loops", "1"], { ...model, AGENTRUN_RUNNER_NAME: "runner-a" });
+  // No drain: its turn never ends, so a drain would only wait out its bound before the same hand-back.
+  const a = runnerChild(t, ["--data", dir, "--loops", "1", "--drain-timeout", "0s"], { ...model, AGENTRUN_RUNNER_NAME: "runner-a" });
   await a.line(READY);
   await until(async () => Object.values(await read()).includes("runner-a"), "runner-a holds a run", 30_000);
   const b = runnerChild(t, ["--data", dir, "--loops", "1"], { ...model, AGENTRUN_RUNNER_NAME: "runner-b" });
