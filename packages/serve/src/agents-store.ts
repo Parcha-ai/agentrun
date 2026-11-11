@@ -158,6 +158,13 @@ function checkVersion(definition: Json, version: number): void {
   }
 }
 
+/** The contract's `definition.version` on an edit: past `current`, the number of the agent's current revision. */
+function checkPast(definition: Json, current: number): void {
+  if (typeof definition.version === "number" && definition.version <= current) {
+    throw invalid([{ field: "definition.version", reason: "not_an_option", message: `definition.version is past ${current} here: the current revision's number` }]);
+  }
+}
+
 /** Whether committing `next` would leave the agent's current revision unchanged: the same kind and body (skills are in the
  *  body as their SHA-256, so equal files are an equal body — and equal pins an equal body, keys sorted by the validator). */
 function sameRevision(current: RevisionRow, next: NewRevision): boolean {
@@ -283,7 +290,10 @@ export async function commitAgent(
         checkVersion(definition, now.version);
         return now;
       }
-      checkVersion(definition, now.revisions + 1);
+      // The contract's form takes any version past the current one (the revision is numbered the next all the same); the
+      // server's own form names the next revision's number, or none.
+      if (contract) checkPast(definition, now.version);
+      else checkVersion(definition, now.revisions + 1);
       try {
         await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision });
         return (await getAgent(store, agent.id))!;

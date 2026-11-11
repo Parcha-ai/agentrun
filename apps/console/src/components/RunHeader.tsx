@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { goBack } from "@/lib/back";
-import { cost, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
+import { costOfCap, isEstimate, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { runPlaceWords } from "@/lib/place";
@@ -64,9 +64,10 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             <span className="font-mono">{when(run.created_at)}</span>
-            {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. */}
-            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costText}</span>
-              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{cost(run.cost, { ended: runEnded(run.status) })}</span>}
+            {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
+                spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
+            {costText !== undefined ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>

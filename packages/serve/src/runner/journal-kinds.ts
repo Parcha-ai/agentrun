@@ -9,6 +9,9 @@
 import type { MessageOrigin } from "../timeline/index.js";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 
+/** The session (sessions.ts journalSessions) a workflow run's call nodes log their effects on (KINDS.nodeEffect). */
+export const NODE_LOG_SESSION = "node-log";
+
 /** The phase row before a message a CLI run sends again (adapter-loop.ts CliRecord.sending): its runner was lost after
  *  sending it, before the message was recorded, so the model may read it twice, and the turn it starts is paid like any
  *  other. */
@@ -58,11 +61,19 @@ export const KINDS = {
   /** The resume of a paused workflow run (a `resume` row), taken: the workflow goes on from its journal. Neither a call nor
    *  a message, so the reader passes over it. */
   resume: "agentrun.resume",
+  /** A workflow call node's effect, as it starts and as it ends (pause.ts NodeLine: its path, item, tool, label, input,
+   *  then its status and output or error), on the run's node-log session (NODE_LOG_SESSION): the run's graph lists its
+   *  effects from these. Written as the effect runs, never for one the driver answers from its receipt. */
+  nodeEffect: "agentrun.node.effect",
   /** A CLI run's end-of-run turn (the loop's record): its prompt (`role: "person"`) and its answer (`role: "model"`, the
    *  text in `model` as pi's answer carries it), the entry and the answer of the submission its request id names, the
    *  same submission pi's adapter writes, so the step reads both alike. Neither a call nor a message: the reader passes
    *  over it, and the turn is never on the run's visible record. */
   endOfRunTurn: "agentrun.end-of-run.turn",
+  /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
+   *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
+   *  what the run was given. Neither a call nor a message. */
+  learningLaid: "agentrun.learning.laid",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
@@ -277,6 +288,16 @@ export interface EndData {
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it
    *  has none), kept at its end as main's server kept it on the run (runs.ts workflowEnd), and served as result.output. */
   readonly output?: unknown;
+  /** An escalated workflow run's review (outcome escalated): why it waits for a person, as its escalate node said it. */
+  readonly review?: EndReview;
+}
+
+/** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node
+ *  it escalated at), and its summary (else the run's). Served as the run's `review`, `at` its end. */
+export interface EndReview {
+  readonly kind: string | null;
+  readonly node: string | null;
+  readonly reason: string;
 }
 
 export interface SessionKeyData {

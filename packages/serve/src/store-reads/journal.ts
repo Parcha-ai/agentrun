@@ -11,6 +11,7 @@ import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
+import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
@@ -188,7 +189,27 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
+}
+
+/** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
+ *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
+ *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
+function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
+  const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
+  const said = (text: string) => (redact ? redact(text) : text);
+  for (const entry of entries) {
+    if (entry.kind !== LEARNED_NODES) continue;
+    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
+    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
+    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown };
+      if (typeof one.label !== "string" || typeof one.status !== "string") return [];
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0 }];
+    }));
+  }
+  if (!traces.size) return rows;
+  return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every

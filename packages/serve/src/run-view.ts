@@ -629,7 +629,15 @@ export const shownOf = (values: string[]) => (text: string) => withoutLoopback(r
 export const servedRunErrorWith = <E extends { message: string; details?: unknown }>(shown: (text: string) => string, error: E): E => ({ ...error, message: shown(error.message), ...(error.details !== undefined ? { details: cutStrings(error.details, shown) } : {}) });
 /** A run's review as its view serves it: its reason (an escalation's own words) in `shown`'s terms, or withheld as its
  *  other words are while the run is hidden (`unshown`), as a list row read from disk withholds it. */
-export const servedReviewWith = <R extends { reason: string }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null => (review && { ...review, reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason) });
+export const servedReviewWith = <R extends { reason: string; kind?: string | null; node?: string | null }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null =>
+  review && {
+    ...review,
+    // Every word of it is the run's (its escalate node's kind and label, as the workflow wrote them): cut as the reason is,
+    // and withheld with it.
+    ...("kind" in review ? { kind: unshown || review.kind == null ? null : shown(review.kind) } : {}),
+    ...("node" in review ? { node: unshown || review.node == null ? null : shown(review.node) } : {}),
+    reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason),
+  } as R;
 
 /** The pointers a run was handed, read back to cut them (sign-ins-store.ts peek and forgotten), by its `sign_in_handed`: none
  *  for a run with no mark (it was never handed one); else, for each hash it names, the live or forgotten pointer whose
