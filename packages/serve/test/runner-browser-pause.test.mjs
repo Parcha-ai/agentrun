@@ -49,7 +49,7 @@ async function browse(t, ledger, script) {
   const registry = createRegistry();
   const handed = [];
   const liveViewers = { put: async (handover) => (handed.push(handover), true), drop: async () => {} };
-  const host = { where: { root, work: join(root, "work"), ref: { id: "run-1" } }, env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) }, install: (extension) => registry.install(extension), ...lifecycle.register, handoverInJournal: true, liveViewers, ledger };
+  const host = { where: { root, work: join(root, "work"), ref: { id: "run-1" } }, env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) }, install: (extension) => registry.install(extension), ...lifecycle.register, liveViewers, ledger };
   const binding = await TOOLS.browser.bind(host);
   const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
   const results = [];
