@@ -57,7 +57,7 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, runMetrics } from "./metrics.js";
+import { bookedSpend, cliRunMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -499,15 +499,18 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.
     cwd: scratch,
-    // The end's metrics from the run's record; a CLI run's carry its model. Its cost is its booking's: the harness's own
-    // record carries no per-request cost, so its model requests are counted at what the run's model proxy booked them at
-    // (metrics.ts bookedSpend over every session of its journal), as a pi run's are at its answers' costs.
+    // The end's metrics: its tools from the run's record, its tokens and model requests its booking's, at its model
+    // (metrics.ts cliRunMetrics). Its cost is its booking's too: the harness's own record carries no per-request cost or
+    // usage, so its model requests are counted at what the run's model proxy booked them at (bookedSpend over every
+    // session of its journal), as a pi run's are at its answers' costs and tokens.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics } = runMetrics(entries as never, { ...(thinking ? { effort: thinking } : {}), model:`${chosen.model.provider}/${chosen.model.modelId}` });
-      // Its model requests and its decisions (a learned workflow's) at what they were booked at (bookedSpend).
+      // Its tokens and model requests, and its model requests' cost, from one read of its booking (cliRunMetrics); its
+      // decisions (a learned workflow's) at what they were booked at too.
       const all = (await journalEntries(deps.journal(claim), context)) as never;
-      const model = bookedSpend(all, "model").usd;
+      const booked = bookedSpend(all, "model");
+      const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const model = booked.usd;
       const decisions = bookedSpend(all, "decisions").usd;
       const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
