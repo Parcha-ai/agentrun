@@ -100,6 +100,9 @@ export class Webhooks {
   private saving?: NodeJS.Timeout;
   /** The outbox's writes, one after another: each writes the outbox as it stands when its turn comes. */
   private writing: Promise<boolean> = Promise.resolve(true);
+  /** What reads the webhook and then writes it (a PUT, a DELETE, a try's 410 that turns it off), one after another: each
+   *  reads it as the last one left it, so a 410 never turns off a webhook a PUT set again meanwhile. */
+  private changing: Promise<unknown> = Promise.resolve();
   /** The messages with a try in flight, by id, and how many: kept in the outbox until each lands, so one whose earlier
    *  attempts left the log meanwhile can still be redelivered. */
   private readonly sending = new Map<string, number>();
@@ -142,23 +145,34 @@ export class Webhooks {
     else if (!url || !["http:", "https:"].includes(url.protocol)) issues.push({ field: "url", reason: "invalid", message: `url is an http or https address of at most ${MAX_URL} characters` });
     else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds no user or password: the receiver checks the signature" });
     if (issues.length) throw invalid(issues);
-    const was = this.config();
-    const now = new Date().toISOString();
-    const kept = was !== undefined && this.signingSecret() !== undefined;
-    const secret = kept ? undefined : await this.secret.mint(SERVER_SCOPE, SECRET_FIELD);
-    await this.write({ url: url!.href, secret_at: kept ? was!.secret_at : now, updated_at: now });
-    return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
+    return this.change(async () => {
+      const was = this.config();
+      const now = new Date().toISOString();
+      const kept = was !== undefined && this.signingSecret() !== undefined;
+      const secret = kept ? undefined : await this.secret.mint(SERVER_SCOPE, SECRET_FIELD);
+      try {
+        await this.write({ url: url!.href, secret_at: kept ? was!.secret_at : now, updated_at: now });
+      } catch (error) {
+        // A secret made here and never shown signs nothing: removed (retired, still cut), so the next PUT makes and shows
+        // one, never keeping one nobody was given.
+        if (secret) await this.secret.remove(SERVER_SCOPE).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
+        throw error;
+      }
+      return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
+    });
   }
 
   /** DELETE: the webhook gone, its secret with it (retired: still cut from what a run says), and its pending messages; the
    *  log of attempts stays. */
-  async remove(): Promise<void> {
-    if (!this.config()) return;
-    await this.store.settings.remove(WEBHOOK_SETTING);
-    await this.store.flush();
-    this.current = undefined;
-    await this.secret.remove(SERVER_SCOPE);
-    await this.drop("the webhook was removed");
+  remove(): Promise<void> {
+    return this.change(async () => {
+      if (!this.config()) return;
+      await this.store.settings.remove(WEBHOOK_SETTING);
+      await this.store.flush();
+      this.current = undefined;
+      await this.secret.remove(SERVER_SCOPE);
+      await this.drop("the webhook was removed");
+    });
   }
 
   /** GET .../deliveries: the last attempts, newest first. */
@@ -175,7 +189,7 @@ export class Webhooks {
     this.told.add(run.run_id);
     const ends = type === "run.ended";
     const seen = this.notices[run.run_id];
-    if ((ends ? seen?.ended : seen?.wait) === marker) return this.unsaved ? "unsaved" : "queued";
+    if ((ends ? seen?.ended : seen?.wait) === marker) return this.landed();
     const config = this.config();
     if (!config || config.disabled) {
       // A wait seen while nothing is to be sent is noted here, never written for it: told again, it writes nothing.
@@ -200,7 +214,7 @@ export class Webhooks {
     const config = this.config();
     if (!config || config.disabled) return "off";
     const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
-    if (this.messages.some((m) => m.id === id)) return this.unsaved ? "unsaved" : "queued";
+    if (this.messages.some((m) => m.id === id)) return this.landed();
     const { message, saved } = this.enqueue(id, "trigger.failed", failed);
     this.schedule(message, 0);
     return (await saved) ? "queued" : "unsaved";
@@ -270,6 +284,21 @@ export class Webhooks {
 
   private config(): Config | undefined {
     return this.current;
+  }
+
+  /** Whether what is held here is in the store: once every outbox write asked for so far has settled (each writes it
+   *  whole), `queued` when the last one landed, else `unsaved`. A moment told again while its first write is still in
+   *  flight waits for it, never answering `queued` before it lands. */
+  private async landed(): Promise<"queued" | "unsaved"> {
+    await this.writing;
+    return this.unsaved ? "unsaved" : "queued";
+  }
+
+  /** `work`, once every change of the webhook asked for before it has settled, failed or not. */
+  private change<T>(work: () => Promise<T>): Promise<T> {
+    const done = this.changing.then(work, work);
+    this.changing = done.then(() => undefined, () => undefined);
+    return done;
   }
 
   /** The signing secret, opened here; undefined when there is none, or it does not open under this server's seal key. */
@@ -409,46 +438,50 @@ export class Webhooks {
       }
     }
     if (this.closed) return attempt;
-    attempt.error = failure ?? null;
-    this.attempts.push(attempt);
-    // The schedule counts the message's own tries: a redelivery is a try of its own, and leaves it as it was.
-    if (!how.redelivery) message.attempts += 1;
-    // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
-    // off, and the 410 is then a failure like any other.
-    const standing = this.config();
-    const gone = attempt.status_code === 410 && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
-    const wait = how.retry && failure && config && !gone ? this.retryMs[message.attempts - 1] : undefined;
-    if (!failure) Object.assign(message, { status: "delivered", next_at: null });
-    // A redelivery that failed leaves the message as it is, and so does a try that ends after one delivered it.
-    else if (!how.redelivery && message.status === "pending") {
-      if (wait !== undefined) {
-        // Jitter, so messages that failed together do not all come back together.
-        const delay = Math.round(wait * (0.8 + 0.4 * Math.random()));
-        message.next_at = Date.now() + delay;
-        attempt.retry_at = iso(message.next_at);
-        this.schedule(message, delay);
-      } else {
-        Object.assign(message, { status: "failed", next_at: null });
-        this.say({ condition: "delivery_failed", type: message.type, webhook_id: message.id, attempts: message.attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure });
+    // What the try found is settled against the webhook as it stands once every change before it has landed.
+    return this.change(async () => {
+      if (this.closed) return attempt;
+      attempt.error = failure ?? null;
+      this.attempts.push(attempt);
+      // The schedule counts the message's own tries: a redelivery is a try of its own, and leaves it as it was.
+      if (!how.redelivery) message.attempts += 1;
+      // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
+      // off, and the 410 is then a failure like any other.
+      const standing = this.config();
+      const gone = attempt.status_code === 410 && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
+      const wait = how.retry && failure && config && !gone ? this.retryMs[message.attempts - 1] : undefined;
+      if (!failure) Object.assign(message, { status: "delivered", next_at: null });
+      // A redelivery that failed leaves the message as it is, and so does a try that ends after one delivered it.
+      else if (!how.redelivery && message.status === "pending") {
+        if (wait !== undefined) {
+          // Jitter, so messages that failed together do not all come back together.
+          const delay = Math.round(wait * (0.8 + 0.4 * Math.random()));
+          message.next_at = Date.now() + delay;
+          attempt.retry_at = iso(message.next_at);
+          this.schedule(message, delay);
+        } else {
+          Object.assign(message, { status: "failed", next_at: null });
+          this.say({ condition: "delivery_failed", type: message.type, webhook_id: message.id, attempts: message.attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure });
+        }
       }
-    }
-    if (gone) {
-      // Gone: the receiver says this endpoint is no more. Off, its pending messages dropped, until a PUT sets it again.
-      const disabled = { at: attempt.at, reason: "the receiver answered 410 Gone" };
-      const off = { ...standing!, disabled };
-      try {
-        await this.write(off);
-      } catch (error) {
-        // Off here all the same: held, and the next PUT writes the webhook whole.
-        this.current = off;
-        this.say({ condition: "webhook_unwritable", setting: WEBHOOK_SETTING, error: (error as Error).message });
+      if (gone) {
+        // Gone: the receiver says this endpoint is no more. Off, its pending messages dropped, until a PUT sets it again.
+        const disabled = { at: attempt.at, reason: "the receiver answered 410 Gone" };
+        const off = { ...standing!, disabled };
+        try {
+          await this.write(off);
+        } catch (error) {
+          // Off here all the same: held, and the next PUT writes the webhook whole.
+          this.current = off;
+          this.say({ condition: "webhook_unwritable", setting: WEBHOOK_SETTING, error: (error as Error).message });
+        }
+        this.say({ condition: "webhook_disabled", url: standing!.url, reason: disabled.reason });
+        await this.drop("the webhook is off: its receiver answered 410");
+        return attempt;
       }
-      this.say({ condition: "webhook_disabled", url: standing!.url, reason: disabled.reason });
-      await this.drop("the webhook is off: its receiver answered 410");
+      await this.writeOutbox();
       return attempt;
-    }
-    await this.writeOutbox();
-    return attempt;
+    });
   }
 
   /** Every pending message failed, with `why` in the log. */

@@ -633,6 +633,100 @@ test("a 410 that comes back after the webhook was set to another URL turns nothi
   assert.deepEqual([view.url, view.disabled], [fresh.url, null], "the new setting stands, on");
 });
 
+test("a 410 that comes back while a PUT to another URL is still being written waits for it, and turns nothing off: the new setting stands", async (t) => {
+  let answerGone;
+  const gone = new Promise((resolve) => (answerGone = resolve));
+  const old = await receiver(t, () => gone.then(() => 410));
+  t.after(() => answerGone());
+  const fresh = await receiver(t);
+  const dir = await scratch(t);
+  const store = await storeIn(t, dir);
+  // The store as the webhook sees it, its second write of the webhook held until the test lets it through: the PUT is
+  // mid-write when the 410 comes back.
+  let letWrite;
+  const written = new Promise((resolve) => (letWrite = resolve));
+  let writes = 0;
+  const held = { flush: () => store.flush(), settings: { get: (key) => store.settings.get(key), remove: (key) => store.settings.remove(key), put: async (key, value) => {
+    if (key === WEBHOOK_SETTING && ++writes === 2) await written;
+    return store.settings.put(key, value);
+  } } };
+  const secret = sealedSettingsOverStore(store, OUTBOUND_WEBHOOK.id, OUTBOUND_WEBHOOK.settings, randomBytes(32), () => undefined);
+  await secret.load();
+  const webhooks = new Webhooks(held, secret, () => undefined, [0]);
+  await webhooks.load();
+  t.after(() => webhooks.close());
+  await webhooks.save({ url: old.url });
+  await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, "m1");
+  await old.when(1);
+  const moving = webhooks.save({ url: fresh.url });
+  answerGone();
+  // The 410's answer comes back while the PUT's write is held (turns of the event loop, each with its I/O, for the answer
+  // to be read): the try settles only once the PUT has landed, whichever comes first.
+  for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+  letWrite();
+  await moving;
+  await fresh.when(1);
+  const view = webhooks.view();
+  assert.deepEqual([view.url, view.disabled], [fresh.url, null], "the PUT stands, on: the 410 was the old URL's");
+  assert.deepEqual([webhookIn(dir).url, webhookIn(dir).disabled], [fresh.url, undefined], "and the store holds it");
+  assert.equal(fresh.got[0].headers["webhook-id"], old.got[0].headers["webhook-id"], "the message goes on to the new URL");
+});
+
+/** `store` as a Webhooks sees it, each settings write first passed to `before(key, value)`: it may wait, or throw (the
+ *  write refused). */
+const writesThrough = (store, before) => ({ flush: () => store.flush(), settings: { get: (key) => store.settings.get(key), remove: (key) => store.settings.remove(key), put: async (key, value) => (await before(key, value), store.settings.put(key, value)) } });
+/** A Webhooks over `view` (the store as it sees it, writesThrough) with its secret among `store`'s sealed settings under `key`. */
+async function webhooksSeeing(t, store, view, key, retryMs = []) {
+  const secret = sealedSettingsOverStore(store, OUTBOUND_WEBHOOK.id, OUTBOUND_WEBHOOK.settings, key, () => undefined);
+  await secret.load();
+  const webhooks = new Webhooks(view, secret, () => undefined, retryMs);
+  await webhooks.load();
+  t.after(() => webhooks.close());
+  return webhooks;
+}
+
+test("a trigger's failure told again while its first outbox write is still in flight waits for that write: a write that fails answers unsaved to both, never queued", async (t) => {
+  const hook = await receiver(t);
+  const store = await storeIn(t, await scratch(t));
+  let refuse;
+  const refused = new Promise((resolve) => (refuse = resolve));
+  let outboxWrites = 0;
+  const webhooks = await webhooksSeeing(t, store, writesThrough(store, async (key) => {
+    if (key === OUTBOX_SETTING && ++outboxWrites === 1) {
+      await refused;
+      throw new Error("the store refused the write");
+    }
+  }), randomBytes(32), [60_000]);
+  await webhooks.save({ url: hook.url });
+  const failed = { trigger_id: "trg_1", name: "nightly", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
+  const first = webhooks.emitTrigger(failed, "k1");
+  const again = webhooks.emitTrigger(failed, "k1");
+  refuse();
+  assert.deepEqual(await Promise.all([first, again]), ["unsaved", "unsaved"], "neither is counted as queued: the write that held it failed");
+});
+
+test("a PUT that makes a new secret for a webhook whose secret no longer opens, and fails to write the webhook, shows none and keeps none: the next PUT makes one and shows it", async (t) => {
+  const hook = await receiver(t);
+  const store = await storeIn(t, await scratch(t));
+  // Saved under one key; read under another (its secret sealed under a key this server does not hold).
+  const before = await webhooksOver(store, randomBytes(32));
+  await before.save({ url: hook.url });
+  await before.close();
+  let refuseWebhook = true;
+  const webhooks = await webhooksSeeing(t, store, writesThrough(store, async (key) => {
+    if (key === WEBHOOK_SETTING && refuseWebhook) throw new Error("the store refused the write");
+  }), randomBytes(32));
+  assert.equal(webhooks.view().signing, "unreadable");
+  await assert.rejects(webhooks.save({ url: hook.url }), /refused the write/);
+  refuseWebhook = false;
+  const again = await webhooks.save({ url: hook.url });
+  assert.match(again.secret ?? "", /^whsec_/, "the next PUT makes a secret and shows it");
+  assert.equal(again.view.signing, "sealed");
+  const ping = await webhooks.test();
+  assert.equal(ping.status_code, 200);
+  assert.ok(verifies(again.secret, hook.got.at(-1)), "and signs with the secret it showed");
+});
+
 test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t, () => 500);
