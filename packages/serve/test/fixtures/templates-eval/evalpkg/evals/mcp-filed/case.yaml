@@ -1,0 +1,6 @@
+parameters:
+  team: blue
+mcp:
+  crm: fixtures/crm.json
+grants:
+  - mcp:crm/get_contact

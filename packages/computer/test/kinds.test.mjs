@@ -131,13 +131,14 @@ test("each entry's kinds are derived by serves() from its static capabilities, n
 	}
 });
 
-test("every registry provider has an entry, and its module's static capabilities and mounts are the entry's", async () => {
+test("every registry provider has an entry, and its module's static capabilities, mounts and network are the entry's", async () => {
 	for (const id of providerIds) {
 		const entry = PROVIDERS.find((one) => one.id === id);
 		assert.ok(entry, `${id} has a PROVIDERS entry`);
 		const module = await providerModule(id);
 		assert.deepEqual(module.CAPABILITIES, entry.capabilities, `${id}: its module's CAPABILITIES are its entry's`);
 		assert.deepEqual(module.MOUNT, entry.mounts, `${id}: its module's MOUNT is its entry's mounts`);
+		assert.deepEqual(module.NETWORK, entry.network, `${id}: its module's NETWORK is its entry's network`);
 	}
 });
 
@@ -168,9 +169,9 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 	for (const [id, builds] of Object.entries(BUILT)) {
 		const entry = PROVIDERS.find((one) => one.id === id);
 		const seen = builds.map((build) => {
-			const { kind, groups } = build().capabilities();
-			return { kind, groups };
+			const { kind, groups, gpu } = build().capabilities();
+			return { kind, groups, ...(gpu === undefined ? {} : { gpu }) };
 		});
-		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind and groups`);
+		assert.deepEqual(seen, entry.capabilities, `${id}: each configuration's kind, groups and GPUs`);
 	}
 });

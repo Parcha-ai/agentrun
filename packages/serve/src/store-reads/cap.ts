@@ -4,11 +4,17 @@
 import type { Context } from "@earendil-works/chord";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
-import { runEntries, withPaidCosts } from "./journal.js";
+import { bookedCapSpend, costIsBooked } from "../runner/metrics.js";
+import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** What a run's model requests cost, as the cap reads it, from the one store's journal: spentFrom over the run's entries. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {
-  return spentFrom(await runEntries(store, runId, context));
+  const entries = await runEntries(store, runId, context);
+  // A run whose record carries no cost of its own (a CLI harness's, a workflow's) reads what its sessions booked, the
+  // figure its cap holds it to (metrics.ts bookedCapSpend), its record's answers reading $0: 0 before any request, an
+  // unknown booked spend unknown (null).
+  if (costIsBooked(entries, isCliRecord(entries))) return bookedCapSpend(entries);
+  return spentFrom(entries);
 }
 
 /** /usage's meters for a run that ended, over the one store's journal (design 2.1): cap.ts meterFiguresFrom over A's
