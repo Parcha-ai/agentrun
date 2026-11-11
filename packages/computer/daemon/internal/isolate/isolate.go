@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/netstate"
 )
@@ -26,12 +25,7 @@ import (
 // CAP_SYS_ADMIN): its words say so, and init makes the namespace inside a user namespace instead.
 var ErrNoNetworkNamespace = errors.New("cannot make a network namespace of its own for init and its programs: root here holds no CAP_SYS_ADMIN")
 
-const (
-	threadNetwork = "/proc/thread-self/ns/net"
-	siocgifflags  = 0x8913
-	siocsifflags  = 0x8914
-	ifNameSize    = 16
-)
+const threadNetwork = "/proc/thread-self/ns/net"
 
 // OwnNetwork moves every thread of this process into a new network namespace and brings its loopback up, so this
 // process and every program it starts reach their own loopback and nothing else: no address of the computer's, no
@@ -90,24 +84,10 @@ func KeepOwnNetwork(first string) error {
 	return checkOwnNetwork(first)
 }
 
-// loopbackUp brings up the loopback of the network namespace this thread is in: a new one starts with it down.
+// loopbackUp brings up the loopback of the network namespace this process is in, over rtnetlink, and reads it back:
+// a new one starts with it down (netstate.LoopbackUp).
 func loopbackUp() error {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("cannot open a socket to bring the new network namespace's loopback up: %w", err)
-	}
-	defer syscall.Close(fd)
-	// struct ifreq: the name, then a union whose first member here is the flags, a short.
-	var req [40]byte
-	copy(req[:ifNameSize-1], "lo")
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocgifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return fmt.Errorf("cannot read the flags of the new network namespace's loopback: %w", errno)
-	}
-	*(*uint16)(unsafe.Pointer(&req[ifNameSize])) |= syscall.IFF_UP
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocsifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return fmt.Errorf("cannot bring the new network namespace's loopback up: %w; init needs CAP_NET_ADMIN here", errno)
-	}
-	return nil
+	return netstate.LoopbackUp()
 }
 
 // checkOwnNetwork reads back what OwnNetwork set: every thread in one network namespace, not first, and in that

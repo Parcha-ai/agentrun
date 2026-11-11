@@ -94,7 +94,10 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   refuses uid 0 for its programs (root shares its uid with every root process of the vendor's); refuses to start while
   any other process holds that uid (one could be signalled, traced or written to by them, and a vendor's agent among
   them would be theirs to command), naming each; moves every one of its threads into a new network namespace and
-  brings its loopback up, reading back that no thread stayed behind and that the loopback alone is up or addressed
+  brings its loopback up over rtnetlink (RTM_NEWLINK with IFF_UP on lo's index, as `ip link set lo up` does; and
+  RTM_NEWADDR for 127.0.0.1/8 where the kernel gave lo none), never by the SIOCSIFFLAGS ioctl, which gVisor's netstack
+  refuses in a new namespace (ENOTTY, live on Modal's gVisor, 11-11). It reads back lo up and running, 127.0.0.1 on it
+  and a listener there reached, and that no thread stayed behind and that the loopback alone is up or addressed
   (a kernel with the tunnel modules loaded gives every new namespace its fallback tunnels, tunl0, gre0, sit0 and the
   rest, down with no address: they stay so, since no program holds CAP_NET_ADMIN, and computerd's probe reports any
   it could bring up, which every read-back refuses); then drops as below, and installs a seccomp filter on every thread that refuses (EPERM) a socket of family
@@ -118,8 +121,9 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
     needs CAP_SETUID and CAP_SETGID. The map keeps every id as it is, so the files the programs make, HOME, and the run's
     folder belong to the same uid inside and out.
   - The child does all of the above but make the namespace. Before touching anything, it reads back
-    (`isolate.KeepOwnNetwork`) that no thread is in the namespace it was started from. Then it brings the loopback up and
-    reads it back.
+    (`isolate.KeepOwnNetwork`) that no thread is in the namespace it was started from. Then it brings the loopback up
+    over rtnetlink and reads it back, as above. The live T4 run at the fallback's first head (11-11) made the user and
+    network namespace, then failed at lo on the ioctl.
   - The first init keeps no capability (no_new_privs, every set empty). It passes SIGTERM and SIGINT on, reaps, and exits
     with the child's code.
   - If neither way works, init refuses to start in words that name both, and the computer fails closed.

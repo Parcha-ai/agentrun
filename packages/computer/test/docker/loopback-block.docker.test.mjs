@@ -158,6 +158,8 @@ describe("the loopback block: a program of the computer's user reaches no port o
 	// As on gVisor (Modal's GPU runtime): root holds no CAP_SYS_ADMIN, but may make a user namespace (Docker's default
 	// capabilities, and no seccomp profile, whose default refuses it). The same --own-network: init makes the namespace
 	// inside a user namespace, and the stand-in agent, on the loopback and the container's address, is as far out of reach.
+	// Not gVisor's netstack: this stand-in passed while init brought lo up by an ioctl gVisor refuses (ENOTTY); init's
+	// rtnetlink path is proven on gVisor only live.
 	it("as on gVisor: init --own-network, where root may not make a network namespace, makes it inside a user namespace and cuts the computer's programs off from the stand-in agent just the same", async () => {
 		const name = named();
 		const { bytes, sha } = daemonBytes();

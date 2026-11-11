@@ -37,7 +37,9 @@ const NAMESPACE_CAPS = ["--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN"];
  * Root as Modal's gVisor gives it (live probe, gVisor sandboxes with a T4 and without, 11-11): no CAP_SYS_ADMIN or
  * CAP_NET_ADMIN, so no network namespace of its own, but a user namespace with one is allowed. Docker's default
  * capabilities, and no seccomp profile (Docker's default refuses a user namespace to a root without CAP_SYS_ADMIN;
- * gVisor's does not).
+ * gVisor's does not). Faithful to gVisor in what root may make, not in its netstack. This stand-in passed while
+ * init still brought lo up with the SIOCSIFFLAGS ioctl, which gVisor refuses in a new namespace (ENOTTY, live on a T4,
+ * 11-11). Init now uses rtnetlink alone, and only a live gVisor run proves that part.
  */
 const GVISOR_LIKE = ["--security-opt", "seccomp=unconfined"];
 const modalCommands = (options) => modal.modalCommands(options);
