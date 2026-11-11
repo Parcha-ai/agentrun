@@ -47,6 +47,8 @@ function fakeProvider(root, record, groups, machine = "linux") {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
     check: () => [],
+    // Docker's descriptor says it prepares its image: the stand-in's is ready at once, under its own tag.
+    prepareImage: async () => ({ ok: true, value: "agentrun/computer:prepared" }),
     // The run's computers it holds already: an earlier claim's, by its labels.
     async list(labels) {
       const held = (record.existing ?? []).filter((one) => Object.entries(labels).every(([name, value]) => one.labels[name] === value));
@@ -92,13 +94,13 @@ function views(refusal) {
   return { open, opened, closed, holds };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, kinds = KINDS } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), fakeProvider(root, record, groups, machine))]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode, kinds, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount, ...(view ? { openComputerView: view.open } : {}) });
@@ -120,7 +122,7 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   assert.equal(record.created.length, 1);
   assert.deepEqual(record.created[0].labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
   assert.equal(record.created[0].mount?.kind, "bind", "the run's folder, as the provider binds it");
-  assert.equal(record.created[0].image, "agentrun/computer:test");
+  assert.equal(record.created[0].image, "agentrun/computer:prepared", "the tag Docker's prepareImage() answered, over the spec's");
   assert.equal(record.options[0][2], "function", "the provider is handed the store's ledger");
   await answer.release();
   await answer.release();
@@ -208,6 +210,10 @@ async function refusal(setting, options) {
   return error.message;
 }
 
+test("a provider whose descriptor says it prepares its image and that has no prepareImage() breaks the contract: refused in words, nothing made", async () => {
+  assert.match(await refusal({ kind: "sandbox", provider: "docker" }, { unprepared: true }), /Docker's descriptor says it prepares its image, but its provider has no prepareImage\(\)/);
+});
+
 test("a provider whose key is not saved is refused in words that name the key and the setting", async () => {
   assert.match(await refusal({ kind: "desktop", provider: "e2b" }), /E2B needs its key E2B_API_KEY saved: add it in Settings → Computers/);
 });
@@ -215,6 +221,33 @@ test("a provider whose key is not saved is refused in words that name the key an
 test("Mode 1 refuses a sandbox that is not Docker's; Mode 2 refuses Docker's", async () => {
   assert.match(await refusal({ kind: "sandbox", provider: "daytona" }, { keys: { DAYTONA_API_KEY: "dk" } }), /Mode 1 runs a sandbox only on Docker/);
   assert.match(await refusal({ kind: "sandbox", provider: "docker" }, { mode: 2 }), /Mode 2 keeps workspaces on Archil/);
+});
+
+test("a desktop whose setting names an image is made with that configuration's options beside its keys, and starts from that image", async () => {
+  const root = scratch();
+  const store = memoryStore();
+  const sealKey = randomBytes(32);
+  await putSealedKey(store, sealKey, "ACME_TOKEN", "at-test");
+  // A provider no serve file names: its keys and its configurations are its descriptor's, in its registry entry.
+  const acme = { id: "acme-desk", label: "Acme Desk", kinds: ["desktop"], keys: [{ name: "ACME_TOKEN", option: "token", required: true }], mounts: [], metered: true, defaultImage: { desktop: "linux" }, capabilities: [
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "linux", options: {} },
+    { kind: "desktop", groups: ["screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+  ] };
+  const kinds = { ...KINDS, PROVIDERS: [...KINDS.PROVIDERS, acme] };
+  const keyTable = { keys: { "acme-desk": acme.keys }, labels: { "acme-desk": "Acme Desk" }, settings: {} };
+  for (const [image, options, started] of [["windows", { token: "at-test", os: "windows" }, "windows"], [undefined, { token: "at-test" }, "linux"]]) {
+    const record = { created: [], released: [], options: [] };
+    const specs = [];
+    const providers = { "acme-desk": (given) => (record.options.push(given), fakeProvider(root, record, ["screen", "input.pointer", "input.keys"])) };
+    const spec = (entry, kind, run, named) => (specs.push(named), { ...SPEC(), ...(named ? { image: named } : {}) });
+    const setting = { kind: "desktop", provider: "acme-desk", ...(image ? { image } : {}) };
+    const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: setting }, store, { mode: 1, kinds, keyTable, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch: 3 }, revokeMount: async () => {} });
+    assert.equal(answer.computer.kind, "desktop", String(image));
+    assert.deepEqual(record.options, [options], "the configuration's options beside the keys'");
+    assert.deepEqual(specs, [started], "the spec is asked for the configuration's image");
+    assert.equal(record.created[0].image, started);
+    await answer.release();
+  }
 });
 
 test("a sandbox's GPUs go into the spec its provider makes the computer with; GPUs its provider does not give are refused before anything is made", async () => {

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { PROVIDER_KEYS } from "../dist/computer-keys.js";
+import { KEY_TABLE } from "../dist/computer-keys.js";
 import { createComputerRoutes } from "../dist/computers.js";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { storeOn } from "./store-helpers.mjs";
@@ -70,6 +70,6 @@ test("faux-sandbox and faux-broken start no computer, in words", async () => {
 });
 
 test("the faux providers are not in the real key table: only --faux's own table names them", () => {
-  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => id.startsWith("faux-")), []);
+  assert.deepEqual(Object.keys(KEY_TABLE.keys).filter((id) => id.startsWith("faux-")), []);
   assert.deepEqual(Object.keys(FAUX.keyTable.keys).sort(), ["faux-broken", "faux-desktop", "faux-sandbox"]);
 });
