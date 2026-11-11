@@ -1409,9 +1409,10 @@ export class OrgoDesktopClient implements ComputerClient {
 					if (!released.ok) return signal.aborted ? cancelled(index) : failed(index, (DAEMON_KINDS.has(released.error.code) ? released.error.code : "invalid") as DaemonErrorKind, released.error.message);
 				} else {
 					if (this.#pointer === undefined) return failed(index, "invalid", "a down needs the pointer's place, and this connection has not moved it yet");
+					// A press still held is released first, as the up's: one cancelled on the way says so, never bad input.
 					if (this.#pressed !== undefined) {
 						const released = await this.#release(signal);
-						if (!released.ok) return failed(index, "invalid", released.error.message);
+						if (!released.ok) return signal.aborted ? cancelled(index) : failed(index, (DAEMON_KINDS.has(released.error.code) ? released.error.code : "invalid") as DaemonErrorKind, released.error.message);
 					}
 					this.#pressed = { button: action.button ?? "left", at: [...this.#pointer] };
 				}

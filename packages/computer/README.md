@@ -2029,14 +2029,17 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
-## Orgo: Windows and macOS desktops
+## Orgo: Windows and macOS desktops (parked)
 
-Orgo's Linux desktop runs computerd (`src/orgo.ts`). Its Windows and macOS desktops do not: computerd for Windows and
-macOS is CP-8, deferred. For those two, `create({ os: "windows" | "macos", apiKey, workspaceId })` builds an
-`OrgoDesktopProvider` (`src/orgo-desktop.ts`) with daemon `none`. It answers the protocol's methods in process over
-Orgo's REST API, as the phone harness and Browserbase do. `PROVIDERS` lists both as configurations of the `orgo` entry
-(`CAPABILITIES`). A spec's image is `"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"`
-(`ORGO_MACOS_IMAGE`): the one the provider was built for.
+Orgo offers its Linux desktop alone, which runs computerd (`src/orgo.ts`). Its Windows and macOS desktops are parked:
+the descriptor lists them in `parked` (`ORGO_PARKED`), so `PROVIDERS` offers no configuration of either, Settings →
+Computers lists no Windows or macOS image, and an agent whose computer names `windows` or `macos` is refused at its
+run's start in words naming the image Orgo offers, `linux`. They do not run computerd either: computerd for Windows and
+macOS is CP-8, deferred. `create({ os: "windows" | "macos", apiKey, workspaceId })` still builds an
+`OrgoDesktopProvider` (`src/orgo-desktop.ts`) with daemon `none`, for the conformance suite and the tests. It answers
+the protocol's methods in process over Orgo's REST API, as the phone harness and Browserbase do. Its spec's image is
+`"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
+built for.
 
 - **What each offers.** The protocol groups, by Orgo's calls:
   - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
