@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { runMetricsOf, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { startServe } from "../dist/index.js";
 import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";

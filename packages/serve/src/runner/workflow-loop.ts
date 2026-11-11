@@ -1,6 +1,6 @@
 // The workflow loop on the runner (design: "Runners carry many loops"; the lead's ruling, workflow agents keep running
 // after the cutover). A run of a workflow revision, which the runner claims like any run: this loop is its driver, so the
-// claim, the fence, a cancel and the end commit are its. The DSL's durable runner (pi-durable-agent/workflow
+// claim, the fence, a cancel and the end commit are its. The DSL's durable runner (workflow-run.ts
 // startWorkflowRevision over agentrun-pi's workflow task) runs the revision's workflow UNCHANGED — the same nodes,
 // decisions, call tools and cap it ran with in the per-run process — on the run's journal in the one store (A,
 // deps.journal(claim)) in place of a per-run store file. The interpreter's host (model nodes on the run's models, call
@@ -23,7 +23,7 @@ import { createRegistry, type EntryRecord, type Extension, Harness, ROOT_CONVERS
 import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
-import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "@parcha/pi-durable-agent/workflow";
+import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
 import { type BudgetData, type EndData, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, endedBy, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
