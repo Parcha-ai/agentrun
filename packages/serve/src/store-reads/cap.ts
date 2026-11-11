@@ -4,7 +4,7 @@
 import type { Context } from "@earendil-works/chord";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
-import { bookedCapSpend, costIsBooked } from "../runner/metrics.js";
+import { bookedCapSpend, bookedSpend, costIsBooked } from "../runner/metrics.js";
 import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** What a run has spent, as the cap reads it, from the one store's journal: its model requests and its paid tool calls. */
@@ -28,5 +28,11 @@ export async function spentOverStore(store: Store, runId: string, context: Conte
 export async function metersOverStore(store: Store, runId: string, context: Context): Promise<Meters & { known: { tokens: number; browser: number; others: number } }> {
   const raw = await runEntries(store, runId, context);
   if (!raw.length) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
-  return meterFiguresFrom(withPaidCosts(raw).map((entry) => ({ conversation: Number(entry.conversationId ?? 0), entry })));
+  const figures = meterFiguresFrom(withPaidCosts(raw).map((entry) => ({ conversation: Number(entry.conversationId ?? 0), entry })));
+  // A run whose record carries no cost of its own (a CLI harness's, a workflow's): its tokens meter is its model requests
+  // at what they were booked at (metrics.ts bookedSpend, the one reader), never the $0 its record reads.
+  if (!costIsBooked(raw, isCliRecord(raw))) return figures;
+  const model = bookedSpend(raw, "model");
+  if (!model.requests) return figures;
+  return { ...figures, tokens: model.usd, known: { ...figures.known, tokens: model.known } };
 }

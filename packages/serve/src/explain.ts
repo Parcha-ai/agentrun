@@ -164,7 +164,9 @@ const clause = (message: string) => message.trimEnd().replace(/[.;:,]+$/, "");
 export function explain(issues: readonly InputIssue[], root: Json, schema: Json | undefined, told: Told = {}): InputIssue[] {
   return issues.map((issue) => {
     if (issue.example !== undefined || typeof issue.field !== "string" || !schema) return issue;
-    const path = issue.field.split(".");
+    // A field named with the schema path its problem is at (a workflow's input: `input at #/properties/question`, the
+    // DSL's schema path, never the data's) is told from the field it names: a whole value it takes.
+    const path = (/^(\S+) at #\//.exec(issue.field)?.[1] ?? issue.field).split(".");
     const key = path.at(-1)!;
     const parent = schemaAt(root, schema, path.slice(0, -1));
     if (issue.reason === "not_allowed") {

@@ -13,7 +13,7 @@
 // Shared with the pi spec: the run's Workspace and its uploaded files, a sandbox run's computer, the kernel registry's
 // hands on them (runTools), the gate from the store's tool settings, the system prompt (environment line, instructions
 // with what the agent learned and its skills, effort guidance), the first message, the end's metrics and the release.
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -28,7 +28,7 @@ import { effortGuidance } from "../effort-guidance.js";
 import { environmentLine } from "../environment.js";
 import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
-import { layLearningSeed } from "./learning-seed.js";
+import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels } from "../model.js";
@@ -36,7 +36,7 @@ import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
-import { INPUTS_DIR, UPLOADS_DIR, Uploads } from "../uploads.js";
+import { copyRunFiles } from "../uploads.js";
 import { isObject } from "../validate.js";
 import { runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
@@ -44,7 +44,6 @@ import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
-import type { Workspace } from "../workspace/workspace.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -62,6 +61,7 @@ import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
+import { bashPolicyOf } from "../bash-read-only.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -130,6 +130,21 @@ function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: No
   return out;
 }
 
+/** A claim's private folder removed, then each of `parents` in order while it is empty: one another claim of the run has
+ *  laid things in since (a follow-up's) stays, with what is in it. */
+export async function sweepScratch(dir: string, parents: readonly string[]): Promise<void> {
+  await rm(dir, { recursive: true, force: true });
+  for (const parent of parents) {
+    try {
+      await rmdir(parent);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
 /**
  * One claimed CLI run's AdapterRunSpec, built from its launch record and its revision.
  *
@@ -179,6 +194,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const runner = name === undefined ? undefined : resolveHarness(name);
   if (!name || !entry?.facts || !entry.adapter || !runner) throw new Error(`run ${claim.runId}: ${JSON.stringify(name)} is not a CLI harness this runner runs`);
   const facts = entry.facts;
+  // The level the harness thinks at: the run's effort, else above its highest (codex stops at xhigh) its highest. The
+  // run's metrics name this level, the one it ran at, never a level the harness has not.
+  const thinking = launch.effort ? thinkingFor(facts, launch.effort) : undefined;
 
   // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
   // on the claim's Archil disk (archil-claim.ts: its keys from the store's sealed rows, under the runner's seal key, in
@@ -200,13 +218,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
   holds.hold({ ws });
-  if (launch.files?.length) {
-    const copied = await ws.workspace.list(INPUTS_DIR).then(() => true, () => false);
-    if (!copied) {
-      const uploads = new Uploads(join(deps.data, UPLOADS_DIR));
-      await uploads.copyInto(ws.workspace, await uploads.readyFiles(launch.files));
-    }
-  }
+  if (launch.files?.length) await copyRunFiles(deps.data, claim.runId, ws.workspace, launch.files);
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
@@ -220,16 +232,28 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   );
   holds.hold({ computer });
 
-  // The CLI works in the run's scratch folder on this machine (its working directory, swept at the run's end), its own
-  // files (home, state) in a private folder inside it, never on the run's disk. The scratch is an alias of the run's
-  // folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and any
-  // other absolute path is refused (workspace/paths.ts portPath).
+  // The CLI works in the run's scratch folder on this machine (its working directory), its own files (home, state, the
+  // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
+  // run's folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and
+  // any other absolute path is refused (workspace/paths.ts portPath).
+  // The private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is in it:
+  // the next claim, here or on another runner, lays its own, its harness's session coming back from the run's journal.
+  // Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its release follows the
+  // run's end commit) never has the next claim's folder swept from under it.
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
-  const dir = join(scratch, "harness");
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const harnesses = join(scratch, "harness");
+  const dir = join(harnesses, String(claim.epoch));
+  holds.hold({ scratch: { sweep: () => sweepScratch(dir, [harnesses, scratch]) } });
+  // Made again once if a parent went as it was made (the last claim's sweep removing the then empty scratch folder).
+  await mkdir(dir, { recursive: true, mode: 0o700 }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+  });
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}) });
+  // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
+  const bashPolicy = bashPolicyOf(body.toolSettings);
+  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }) });
   holds.hold({ tools });
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
@@ -324,7 +348,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The gate before a call's intent, the same as the pi spec: the revision's tool settings over the store's, read from the
   // store at each decide — adapterRunGate (RunGate.decide: deny with its words, a pin, allow, ask). The end-of-run turn's
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell);
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -369,7 +393,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
       webTools = await webHostTools(host, granted, ctx);
     }
-    if (learns) learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx });
+    if (learns) {
+      // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
+      // own MCP as the loop wraps it.
+      gate.learn(workflows);
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, ...(mcp ? { mcp } : {}) });
+    }
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
@@ -379,7 +408,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // redactor, as pi's do.
     tools: [...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))],
     context: "fresh",
-    ...(launch.effort ? { thinking: thinkingFor(facts, launch.effort) } : {}),
+    ...(thinking ? { thinking } : {}),
   };
 
   const content = isObject(launch.input) && typeof (launch.input as { content?: unknown }).content === "string" ? (launch.input as { content: string }).content : "";
@@ -417,16 +446,20 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(mcp ? { mcp } : {}),
     // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
+    ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
     workRoot: root,
+    // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
+    // against on the run's rows.
+    cwd: scratch,
     // The end's metrics from the run's record; a CLI run's carry its model. Its cost is its booking's: the harness's own
     // record carries no per-request cost, so its model requests are counted at what the run's model proxy booked them at
     // (metrics.ts bookedSpend over every session of its journal), as a pi run's are at its answers' costs.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const { metrics } = runMetrics(entries as never, { ...(thinking ? { effort: thinking } : {}), model:`${chosen.model.provider}/${chosen.model.modelId}` });
       // Its model requests and its decisions (a learned workflow's) at what they were booked at (bookedSpend).
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const model = bookedSpend(all, "model").usd;

@@ -8,7 +8,6 @@
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
 import { ApiError, invalid, type InputIssue } from "./errors.js";
-import { metaToolOf } from "./mcp-meta.js";
 import {
   type Auth, authOf, canonical, credentialMissing, type HeaderMap, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
@@ -23,7 +22,7 @@ import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
 import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
-import { isObject, unknownFields } from "./validate.js";
+import { unknownFields } from "./validate.js";
 
 /** How many writes an owner's save or tools refresh makes over a row whose credential a run's refresh keeps changing,
  *  each re-applied onto the row read again, before it is refused in words. */
