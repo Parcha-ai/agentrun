@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
 import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
@@ -259,11 +259,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
             let usd: number | null = 0;
             let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
-            const ask = async () => {
+            // `again`: what the grade is told after its last answer, below the same prompt.
+            const ask = async (again?: string) => {
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
                 usd = null;
                 tokens = null;
@@ -279,6 +280,13 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               verdict = parseVerdict(await ask(), items);
               // An answer the host cannot read is asked once more, as the server's grade did.
               if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
+              // One that kept every item and said no merge contradicts itself: asked once more, the contradiction named. A
+              // second contradiction stands as no merge, said in the host's words as twice (learning-words.ts notKept); a
+              // contradiction after an unreadable answer is one, and is said so.
+              else if (verdict.reason === CONTRADICTED_REASON) {
+                const again = parseVerdict(await ask(CONTRADICTION_ASK), items);
+                verdict = again.reason === CONTRADICTED_REASON ? { ...again, reason: CONTRADICTED_TWICE_REASON } : again;
+              }
             } catch (error) {
               // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
               spend = usd;

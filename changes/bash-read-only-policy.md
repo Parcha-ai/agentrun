@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+An agent can make its bash read-only: `definition.tool_settings.bash.policy: "read-only"`, or `tool_policy: {bash: read-only}` in a template's agent.md, which apply writes there. The tool gate reads each shell call's command before it runs or anyone is asked, and refuses, in words the model reads, one that could write, run code or read outside the run's folder: a program outside the read list (git's read subcommands, grep, sed -n 'N,Mp', cat, head, tail, wc, ls, find without -exec and the like), redirection other than `2>/dev/null` and `2>&1`, `$` and backticks, a pipe into anything but a filter, an unquoted glob, or a path outside the folder or on the never-open list. `bash_background` and `bash_input` are refused under it. Like a pin, the policy adds to bash's permission and is never one: approvals `never` lifts none of it, and an approved call is decided again before it runs. `GET /v2/templates` shows each package's `tool_policy`.
