@@ -830,3 +830,26 @@ test("a Postgres transaction open while other work holds the process's event loo
   assert.equal(value, "done");
   assert.deepEqual((await sql(schema, `SELECT key FROM ${schema}.held ORDER BY key`)).map((row) => row.key), ["first", "second"], "both statements are kept");
 });
+
+// PRRT_kwDOUmdVMs62FaCj: a pause past the database's idle-in-transaction timeout (the deadline plus its slack) ends the
+// session at the database's end, and its transaction with it. Nothing of it was written, so its next statement answers
+// StoreDeadline, which the server says as 409 home_busy (retryable), never an internal error.
+test("a pause past the database's idle-in-transaction timeout loses the session: the transaction answers StoreDeadline (home_busy), never an internal error, and nothing of it is kept", ONLY, { timeout: 60_000 }, async (t) => {
+  const schema = await schemaFor(t);
+  await sql(schema, `CREATE SCHEMA ${schema}`);
+  await sql(schema, `CREATE TABLE ${schema}.held (key text PRIMARY KEY)`);
+  const connection = await PgConnection.open({ url: PG_URL, schema });
+  t.after(() => connection.close());
+  // A 200 ms deadline: the database ends the session once it sits idle in its transaction for 5.2 s.
+  const done = connection.transaction(async (tx) => {
+    await tx.run("INSERT INTO held (key) VALUES ($1)", "first");
+    const until = Date.now() + 6_500;
+    while (Date.now() < until);
+    // The database has ended the session meanwhile: let its word arrive before the next statement.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await tx.run("INSERT INTO held (key) VALUES ($1)", "second");
+    return "done";
+  }, { deadlineMs: 200 });
+  await assert.rejects(done, (error) => error instanceof StoreDeadline, "the lost session is a deadline, retryable");
+  assert.deepEqual(await sql(schema, `SELECT key FROM ${schema}.held`), [], "nothing of it is kept");
+});

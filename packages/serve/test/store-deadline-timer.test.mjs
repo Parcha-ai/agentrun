@@ -41,3 +41,16 @@ test("a deadline whose process was never held up fires on time and gives nothing
   assert.ok(quick.at >= 119, `never early: ${quick.at} ms`);
   assert.ok(quick.at < 120 + quick.held + 200, `on time, past what it gave back: ${quick.at} ms, ${quick.held} held`);
 });
+
+test("held() counts a hold that ended just before it is read: no look ran since, and the commit's bound still gives it back (PRRT_kwDOUmdVMs62FaCp)", () => {
+  const deadline = runnableDeadline(10_000, () => {});
+  try {
+    // The event loop held for 400 ms, then held() read at once, in the same turn: no tick and no check has run since.
+    hold(400);
+    const held = deadline.held();
+    assert.ok(held >= 400 - TICK_MS - STALL_MS, `the hold is counted as it is read: ${held} ms`);
+    assert.equal(deadline.held(), held, "and once: a second read adds nothing");
+  } finally {
+    deadline.clear();
+  }
+});
