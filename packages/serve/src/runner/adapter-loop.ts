@@ -1660,9 +1660,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       // The tool-call budget, before the gate's settings: a call past it is refused in its fixed words, never parked or
-      // asked about, and the refusal is marked so its own count leaves it out.
+      // asked about.
       const budget = spec.gate?.toolCalls;
-      if (budget !== undefined && call.callsBefore && (await call.callsBefore()) >= budget) return { deny: TOOL_BUDGET_TEXT, spent: true };
+      if (budget !== undefined && call.callsBefore && (await call.callsBefore(budget)) >= budget) return { deny: TOOL_BUDGET_TEXT };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const decision = (await spec.gate?.(kernelCall, replayed ? { replayed } : {})) ?? "allow";

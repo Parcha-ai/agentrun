@@ -190,7 +190,7 @@ test("the API: a definition keeps max_tool_calls, an edit that leaves it out kee
   assert.equal((await api("GET", "/agents/budgeted")).body.definition.max_tool_calls, 30, "an edit that leaves it out keeps it");
   assert.equal((await api("PUT", "/agents/budgeted/definition", agent("budgeted", { version: 3, max_tool_calls: 0 }))).status, 200);
   assert.equal((await api("GET", "/agents/budgeted")).body.definition.max_tool_calls, undefined, "0 clears it");
-  for (const bad of [-1, 1.5, "30", 100_001]) {
+  for (const bad of [-1, 1.5, "30", 1_001]) {
     const refused = await api("POST", "/agents", agent("bad", { max_tool_calls: bad }));
     assert.equal(refused.status, 422, JSON.stringify(bad));
     assert.ok(JSON.stringify(refused.body).includes("definition.max_tool_calls"), JSON.stringify(refused.body));

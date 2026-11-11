@@ -29,7 +29,7 @@ export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
 };
 /** The most tool calls an agent's budget (max_tool_calls, tool-budget.ts) may name. */
-export const MAX_TOOL_CALLS = 100_000;
+export const MAX_TOOL_CALLS = 1_000;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 /** `provider/model-id`. */
