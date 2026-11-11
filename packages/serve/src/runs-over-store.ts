@@ -239,7 +239,8 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
  *  between this read and the answer's write is caught once the answer is written (approve). Untaken rows only, unless
  *  `taken` (a run already final: the end its runner applied). */
 async function endBefore(store: RunsStore, runId: string, { before = Number.POSITIVE_INFINITY, taken = false }: { before?: number; taken?: boolean } = {}): Promise<{ decision: "withdrawn" | "canceled" } | undefined> {
-  const row = (await store.commands(runId, 0)).filter((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before && command.refused === null && (taken || command.takenAt === null)).at(-1);
+  // The first: the runner applies the first stop or cancel it reads and stops reading there.
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before && command.refused === null && (taken || command.takenAt === null));
   return row && { decision: row.kind === "cancel" ? "canceled" : "withdrawn" };
 }
 

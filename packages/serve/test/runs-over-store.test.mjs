@@ -318,6 +318,17 @@ test("a stop or cancel written between approve's read and its answer's write sti
   }
 });
 
+test("an answer behind a cancel then a stop reads canceled: the first end the runner reads is the one it applies", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  await store.command(id, { kind: "cancel", body: {} });
+  await store.command(id, { kind: "stop", body: {} });
+  await assert.rejects(
+    () => approve(store, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.extra.details.decision === "canceled",
+  );
+});
+
 test("an answer to a run gone final since it was read (its runner took a stop) is 409 with how its end answered the call, never a 500", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
