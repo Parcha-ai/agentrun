@@ -61,7 +61,7 @@ test("a workflow run's graph shows its llm call's output and a failed call's err
   assert.match(graph.effects[1].error, /\[redacted\]/, graph.effects[1].error);
 });
 
-test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000, skip: "a second read of the same graph with the same keys still makes redaction passes (answerPasses rises), though its parts are cached (#2464)" }, async (t) => {
+test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
   await api("GET", `/runs/${runId}/graph`);
   const read = refusal.answerPasses.count;

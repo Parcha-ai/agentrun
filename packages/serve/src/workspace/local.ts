@@ -231,6 +231,11 @@ class LocalWorkspace implements Workspace {
     this.#options = options;
   }
 
+  /** The folder `work` is over, by its path, when it is a LocalWorkspace; undefined for any other Workspace. */
+  static folderOf(work: Workspace): string | undefined {
+    return work instanceof LocalWorkspace ? work.#root : undefined;
+  }
+
   /** The root, its links resolved once (the root itself is trusted; nothing below it is), held open. */
   async #openRoot(): Promise<Held> {
     try {
@@ -687,6 +692,10 @@ class LocalWorkspace implements Workspace {
 /** A Workspace on folder `root` of this machine. The folder must be there when it is first used (else UNAVAILABLE).
  *  `options` are a test's: the path-resolving branch forced, and a hook where a swap would land. */
 export const localWorkspace = (root: string, options: LocalWorkspaceOptions = {}): Workspace => new LocalWorkspace(root, options);
+
+/** The folder of this machine that `work` is, by its path: a LocalWorkspace's root; undefined for any other Workspace (a
+ *  Mode 2 run's folder on its disk, one attached to a computer), whose files no local path reaches. */
+export const localFolderOf = (work: Workspace): string | undefined => LocalWorkspace.folderOf(work);
 
 /** `work` as a Workspace: a folder of this machine, by its path, becomes its LocalWorkspace. For the callers that still
  *  hand a run's folder by its path (the run's start and its process), until they hand the run's Workspace. */

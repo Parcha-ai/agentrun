@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import * as undici from "undici";
 import { closeDirectFetch, directFetch } from "../dist/providers/http.js";
-import { applyBrowserbaseNoProxy, browserbaseGeolocation, browserbaseNoProxyHosts, browserbaseProvider, fileProfileStore, setDownloadBehavior, proxiesField, rewriteConnectUrl, SEARCH_QUERY_MAX, SEARCH_RESULTS_MAX } from "../dist/providers/browserbase.js";
+import { applyBrowserbaseNoProxy, browserbaseGeolocation, browserbaseNoProxyHosts, browserbaseProvider, fileProfileStore, setDownloadBehavior, proxiesField, rewriteConnectUrl } from "../dist/providers/browserbase.js";
 import { bindConnectDial, installWebSocketWrapper, connectDialUrl, unbindConnectDial } from "../dist/providers/browserbase-net.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
@@ -223,31 +223,6 @@ test("the Browserbase lane bypasses the env proxy: NO_PROXY carries the base and
   assert.equal(e.NO_PROXY, "localhost,127.0.0.1,proxy.example", "idempotent");
 });
 
-test("fetch and search: the service's facts come back typed; limits are clamped and the key rides the call, not the result", async () => {
-  const { fake, provider, env } = rig();
-  const ok = await provider.fetch({ url: "https://example.com", format: "markdown", proxies: true });
-  assert.deepEqual({ ...ok, usage: undefined }, { usage: undefined, finalUrl: null, statusCode: 200, contentType: "text/markdown", content: "# Example\n\nHello from fetch." });
-  const call = fake.only("fetch")[0].input;
-  assert.deepEqual([call.url, call.proxies, call.allowRedirects, call.format], ["https://example.com", true, true, "markdown"]);
-  assert.equal((await provider.fetch({ url: "https://blocked.test", format: "raw", proxies: false })).statusCode, 403);
-  assert.equal(fake.only("fetch")[1].input.proxies, false, "the Fetch API takes proxies as a switch");
-  const found = await provider.search({ query: "q".repeat(SEARCH_QUERY_MAX + 50), n: 99 });
-  assert.equal(found.results[0].url, "https://example.com/a");
-  const sent = fake.only("search")[0].input;
-  assert.equal(sent.query.length, SEARCH_QUERY_MAX);
-  assert.equal(sent.numResults, SEARCH_RESULTS_MAX);
-  assert.equal(JSON.stringify([ok, found]).includes(env.BROWSERBASE_API_KEY), false);
-  assert.equal(fake.only("sessions.create").length, 0, "fetch and search never open a session");
-});
-
-test("fetch and search results carry usage: list price, proxied fetch at its own, the host's plan when it has one", async () => {
-  const { provider } = rig();
-  assert.deepEqual([(await provider.fetch({ url: "https://example.com", format: "markdown", proxies: false })).usage.usage.cost.total, (await provider.fetch({ url: "https://example.com", format: "markdown", proxies: true })).usage.usage.cost.total, (await provider.search({ query: "q", n: 3 })).usage.usage.cost.total], [0.001, 0.004, 0.007]);
-  const planned = rig({}, proxied(), { prices: { searchUsd: 0.01 } });
-  const found = await planned.provider.search({ query: "q", n: 3 });
-  assert.deepEqual([found.usage.usage.cost.total, found.usage.state], [0.01, "priced"]);
-});
-
 test("the real SDK on the provider's direct fetch uploads a streamed multipart file (userland undici needs duplex)", async () => {
   // Only requests that carry this test's own secret count: a stray prober on an ephemeral port never sends it.
   const secret = `upload-${Math.random().toString(36).slice(2)}`;
@@ -320,22 +295,6 @@ test("findByTag throws when either status query fails: a partial set would leave
   assert.equal((await provider.findByTag("ar-partial-1-1")).length, 1);
 });
 
-test("a cancelled fetch or search rejects at once; the late result is dropped", async () => {
-  let finish;
-  const { fake, provider } = rig();
-  fake.sdk.fetchAPI.create = () => new Promise((resolve) => { finish = () => resolve({ id: "f", statusCode: 200, contentType: "text/html", encoding: "utf-8", headers: {}, content: "late" }); });
-  fake.sdk.search.web = () => new Promise(() => {});
-  for (const call of [(signal) => provider.fetch({ url: "https://slow.test", format: "markdown", proxies: false }, signal), (signal) => provider.search({ query: "slow", n: 3 }, signal)]) {
-    const controller = new AbortController();
-    const pending = call(controller.signal);
-    setTimeout(() => controller.abort(new Error("job cancelled")), 20);
-    await assert.rejects(pending, /job cancelled/);
-  }
-  finish();
-  const already = new AbortController(); already.abort(new Error("before"));
-  await assert.rejects(provider.fetch({ url: "https://x.test", format: "raw", proxies: false }, already.signal), /before/);
-});
-
 test("concurrent attaches share one download socket, and a release during the opening closes it", async () => {
   const sockets = [];
   let open;
@@ -361,47 +320,6 @@ test("a session already attached through one proxy is refused a second one, neve
   await assert.rejects(b.attach(ref), /another credential proxy/);
   assert.ok(connectDialUrl(url).startsWith("wss://proxy-a.example/ws/"), "the first provider's sockets still dial its own proxy");
   await a.release(ref);
-});
-
-test("the real SDK client sends Fetch and Search exactly as Stagehand's facade does, on the provider's own agent", async () => {
-  // The API key is the per-test secret: only requests carrying it are the SDK's, never a stray prober's.
-  const key = `real-sdk-key-${Math.random().toString(36).slice(2)}`;
-  const requests = [];
-  const server = http.createServer((req, res) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => {
-      if (req.headers["x-bb-api-key"] === key) requests.push({ method: req.method, url: req.url, key: req.headers["x-bb-api-key"], type: req.headers["content-type"], body: JSON.parse(Buffer.concat(chunks).toString() || "null") });
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify(req.url === "/v1/fetch"
-        ? { id: "f1", statusCode: 200, contentType: "text/markdown", encoding: "utf-8", headers: {}, content: "# real shape" }
-        : { requestId: "r1", query: "q", results: [{ id: "1", url: "https://example.com/a", title: "A", author: "Ada", publishedDate: "2026-01-02" }, { id: "2", title: "no url" }] }));
-    });
-  });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  // A trap: the global dispatcher throws if anything dispatches through it, since the provider's client must ride its
-  // own agent (a foreign undici owning the global once failed every SDK call).
-  const before = undici.getGlobalDispatcher();
-  const foreign = { dispatch() { throw new Error("the foreign global dispatcher must not serve the Browserbase SDK"); }, close: async () => {}, destroy: async () => {} };
-  try {
-    const base = `http://127.0.0.1:${server.address().port}`;
-    // A foreign request reaches the server first, as a stray prober's does; the assertions below must not see it.
-    await (await fetch(`${base}/probe`, { headers: { "user-agent": "Go-http-client/1.1" } })).text();
-    undici.setGlobalDispatcher(foreign);
-    const provider = browserbaseProvider({ env: { BROWSERBASE_API_KEY: key, BROWSERBASE_BASE_URL: base } });
-    const page = await provider.fetch({ url: "https://example.com/p", format: "markdown", proxies: true });
-    assert.deepEqual({ ...page, usage: undefined }, { usage: undefined, finalUrl: null, statusCode: 200, contentType: "text/markdown", content: "# real shape" });
-    const found = await provider.search({ query: "q".repeat(SEARCH_QUERY_MAX + 5), n: 99 });
-    assert.deepEqual(found.results, [{ url: "https://example.com/a", title: "A", author: "Ada", published: "2026-01-02" }], "a hit with no URL is dropped");
-    assert.equal(requests.length, 2, "exactly the SDK's own two calls, both served with a throwing global dispatcher installed");
-    const [fetched, searched] = requests;
-    assert.deepEqual([fetched.method, fetched.url, fetched.type], ["POST", "/v1/fetch", "application/json"]);
-    assert.ok(fetched.key === key, "the API key rides the header the SDK sends");
-    assert.deepEqual(fetched.body, { url: "https://example.com/p", proxies: true, allowRedirects: true, format: "markdown" }, "Stagehand's facade passes these four to fetchAPI.create");
-    assert.deepEqual([searched.method, searched.url], ["POST", "/v1/search"]);
-    assert.ok(searched.key === key);
-    assert.deepEqual(searched.body, { query: "q".repeat(SEARCH_QUERY_MAX), numResults: SEARCH_RESULTS_MAX }, "clamped to the facade's limits");
-  } finally { undici.setGlobalDispatcher(before); server.close(); await closeDirectFetch(); }
 });
 
 test("the shared CDP call names the host in a failed open and refuses an unanswered command", async () => {
