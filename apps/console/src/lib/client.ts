@@ -4,7 +4,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NotePro
 import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -179,9 +179,21 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
      *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
     restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** A learned workflow (`name`, its folder's) made into a workflow agent of its own, which runs with no agent loop: an
+     *  active one alone (409 learned_not_active otherwise), checked again as a restore checks it. The owner's session only.
+     *  The answer is the new agent; the learned workflow stays where it is. Under `idempotencyKey`, so a retry after a lost
+     *  answer gets the agent the first one made, never a second. */
+    promoteWorkflow: async (id: string, name: string, idempotencyKey: string) => {
+      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {}, headers: { "idempotency-key": idempotencyKey } });
+      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
+      return made;
+    },
     getRun: (id: string) => call<Run>("GET", run(id)),
     /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
+    /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned skills it was offered and read, and the
+     *  learned workflows it called. Null for a run that does not learn. */
+    runLearning: (id: string) => call<RunLearningRead>("GET", `${run(id)}/learning`),
     /** The run's computer, every kind with a screen: off, none or live with its viewer, and who drives (GET /v2/runs/{id}/computer). */
     runComputer: (id: string) => call<RunComputer>("GET", `${run(id)}/computer`),
     /** The owner takes the run's desktop or phone (a browser is taken in its own viewer): `pending` until the agent's step

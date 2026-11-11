@@ -273,14 +273,18 @@ export const isHeld = (text: string): boolean => learnedStatus(text) === "pendin
  *  retiredLearned), which take the `status:` line out whole, can edit. One set any other way reads unclear (learnedStatus:
  *  retired), never held or active, and no writer edits it, so a write never leaves part of it behind. The host writes
  *  only one-line statuses (held, retiredLearned). */
-export function statusOnOneLine(text: string): boolean {
+export const statusOnOneLine = (text: string): boolean => onOneLine(text, "status");
+
+/** Whether `key`, when the front matter sets it, is one plain line (`key: <value>`, nothing of it on the lines after):
+ *  statusOnOneLine's rule, for each key the host's writers take out whole (`status`, `retired_from`). */
+function onOneLine(text: string, key: string): boolean {
   const front = frontMatter(text);
-  if (!front?.has("status")) return true;
+  if (!front?.has(key)) return true;
   const lf = text.replace(/\r\n/g, "\n");
-  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith("status:"))?.slice("status:".length).trim() ?? "";
+  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith(`${key}:`))?.slice(key.length + 1).trim() ?? "";
   if (!own || /^[>|]/.test(own) || (/^["']/.test(own) && !closedQuote(own))) return false;
   // A plain value that wraps onto the next lines reads longer than its own line.
-  return unquote(own) === front.get("status");
+  return unquote(own) === front.get(key);
 }
 
 /** `text`, a SKILL.md or a draft's README.md, as the host merges one the grader held for its owner's OK: `status:
@@ -293,17 +297,36 @@ export function held(text: string): string {
 }
 
 /** `text`, a held SKILL.md or draft README.md, as the host leaves it when its owner approves it: its front matter with
- *  no `status` line, so it is given to every later run. Throws on a text with no front matter. */
+ *  no `status` or `retired_from` line, so it is given to every later run. Throws on a text with no front matter. */
 export function released(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
-  if (!statusOnOneLine(text)) throw new Error("it cannot be approved: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
+  // Its status and retired_from are taken out whole, so each must be one plain line; what is left reads back active, or
+  // the write fails: never an OK over a skill no run is given.
+  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be approved: its status is not one plain line");
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
   const out = `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
-  // What it leaves reads back active, or the approve fails: never an OK over a skill no run is given.
   if (learnedStatus(out) !== "active") throw new Error(`it cannot be approved: its status would read ${learnedStatus(out)}`);
   return out;
 }
+
+/** The status a retired SKILL.md or draft README.md goes back to when a person restores it (`retired_from`, which its
+ *  retire recorded), read by the one reader (frontMatter: its quoting, its one-line rule): `active` only when it reads
+ *  `active` one way, on one plain line; `pending` otherwise, a retire that recorded none or one that reads unclear among
+ *  them (fail closed: only an approval makes a skill or a draft active). */
+export function retiredFrom(text: string): "active" | "pending" {
+  return onOneLine(text, "retired_from") && frontMatter(text)?.get("retired_from") === "active" ? "active" : "pending";
+}
+
+/** Whether a retired SKILL.md or draft README.md can be restored by the host's writer: its front matter reads one way
+ *  (frontMatter), and its `status` and `retired_from` are each one plain line, the only ones the writer takes out whole.
+ *  One that is not is refused until it is written so (a restore never edits half a value). */
+export const restorable = (text: string): boolean => frontMatter(text) !== undefined && statusOnOneLine(text) && onOneLine(text, "retired_from");
+
+/** `text`, a retired SKILL.md or draft README.md, as the host leaves it when a person restores it: back in the status its
+ *  retire recorded (retiredFrom), active, or waiting for its owner's OK. Throws on a text whose front matter does not read
+ *  one way, or whose status is not one plain line (released). */
+export const restoredLearned = (text: string): string => (retiredFrom(text) === "active" ? released(text) : held(released(text)));
 
 /** What a SKILL.md or a draft's README.md says of itself, the one reader of it (frontMatter), the server's and, through
  *  the folder's snapshot, the console's: `pending` while it waits for its owner's OK, `retired` once a person retired
@@ -318,15 +341,20 @@ export function learnedStatus(text: string): "active" | "pending" | "retired" {
   return status === "active" || status === "pending" ? status : "retired";
 }
 
-/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter
- *  (any status line before it dropped), so no later run is given it. Throws on a text with no front matter. */
+/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` and `retired_from`, the
+ *  status it had (active, or pending while it waited for its owner's OK), last in its front matter (any such lines before
+ *  them dropped), so no later run is given it and its restore gives that status back. Throws on a text with no front
+ *  matter. */
 export function retiredLearned(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be retired: ${front}`);
-  if (!statusOnOneLine(text)) throw new Error("it cannot be retired: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
-  const out = `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
-  if (!frontMatter(out) || learnedStatus(out) !== "retired") throw new Error("it cannot be retired: its front matter would not read retired");
+  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be retired: its status is not one plain line");
+  // What it goes back to on a restore: active only when it reads active now; anything else (held, or a text read as
+  // retired already) is held again (fail closed).
+  const from = learnedStatus(text) === "active" ? "active" : "pending";
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
+  const out = `---\n${[...kept, "status: retired", `retired_from: ${from}`].join("\n")}${front.lf.slice(front.end)}`;
+  if (!frontMatter(out) || learnedStatus(out) !== "retired" || retiredFrom(out) !== from) throw new Error("it cannot be retired: its front matter would not read retired");
   return out;
 }
 
@@ -661,6 +689,96 @@ const gatedNodes = (dsl: DraftReader, doc: unknown, gated: Readonly<Record<strin
     return [{ rule: "workflow" as const, detail: `${words} (the call node at ${node.path})` }];
   });
 
+/** An MCP tool a learned workflow's call node may run, by its address (`via: "tool"`, `tool: "mcp:<server>/<tool>"`,
+ *  LS-07): its server's name as a server is named (mcp-probe.ts MCP_SERVER_NAME) and one tool's name in MCP's own
+ *  charset, never a wildcard. The one rule for it: the tools a draft may name (tools.ts learnedWorkflowTools), the
+ *  end-of-run prompt that prints them (reflect.ts), and what the grader is told of a draft (grade.ts). */
+export const LEARNED_MCP_TOOL = /^mcp:[a-z][a-z0-9-]{0,31}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+
+/** The MCP tools a draft's call nodes run, each once, in the order they come (LS-07): every call node in `doc`, nested
+ *  ones too, whose tool is an MCP tool's address. Read from the JSON as it is, for the grader's words; never a check. */
+export function draftMcpTools(doc: unknown): string[] {
+  const found = new Set<string>();
+  for (const node of callNodes(doc)) if (node.via === "tool" && typeof node.tool === "string" && LEARNED_MCP_TOOL.test(node.tool)) found.add(node.tool);
+  return [...found];
+}
+
+/** Every call node of `doc` (a parsed workflow.json), in document order: only the workflow's node positions, as the
+ *  DSL's inspection visits them (its root, a chain's steps, a parallel's branches, a map's and a loop's body, a route's
+ *  branches' bodies, a nested workflow's root), never an object in a call's args, a schema or any other data, however
+ *  it is shaped. Walked with a stack of its own, never the call stack, so no draft's nesting can throw here. */
+function callNodes(doc: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const asNode = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
+  const stack: unknown[] = [asNode(doc)?.root];
+  while (stack.length) {
+    const node = asNode(stack.pop());
+    if (!node) continue;
+    if (node.node === "call") out.push(node);
+    const children: unknown[] =
+      node.node === "chain" && Array.isArray(node.steps) ? node.steps
+        : node.node === "parallel" && Array.isArray(node.branches) ? node.branches
+          : (node.node === "map" || node.node === "loop") ? [node.body]
+            : node.node === "route" && asNode(node.branches) ? Object.values(node.branches as Record<string, unknown>).map((branch) => asNode(branch)?.body)
+              : node.node === "workflow" ? [asNode(node.workflow)?.root]
+                : [];
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+  }
+  return out;
+}
+
+/** One step of a learned workflow that runs an MCP tool with no declared per-call price: its label, the tool and its
+ *  server. */
+export type UnpricedCall = { readonly label: string; readonly tool: string; readonly server: string };
+
+/** The call nodes of a learned workflow (`doc`, its parsed workflow.json, nested ones too) whose tool is an MCP tool
+ *  (LEARNED_MCP_TOOL) that `priceOf` gives no price for (mcp-probe.ts McpPrices: none declared). Such a tool runs "not
+ *  metered", outside the run's cost and cap (mcp-gateway.ts), so a learned workflow that calls one unattended waits for
+ *  its owner's OK whatever the grade (LS-07): a structural fact, held in code. Each step once, in order. */
+export function unpricedCalls(doc: unknown, priceOf: (tool: string) => number | undefined): UnpricedCall[] {
+  return callNodes(doc).flatMap((node): UnpricedCall[] => {
+    if (node.via !== "tool" || typeof node.tool !== "string" || !LEARNED_MCP_TOOL.test(node.tool) || priceOf(node.tool) !== undefined) return [];
+    const [server, tool] = node.tool.slice("mcp:".length).split("/") as [string, string];
+    return [{ label: typeof node.label === "string" ? node.label : "(unnamed)", tool, server }];
+  });
+}
+
+/** Why a learned workflow that calls `call` waits for its owner's OK, in a person's words. */
+export const unpricedLine = (call: UnpricedCall): string => `its step ${call.label} calls ${call.tool} on ${call.server}, which has no price here, so it runs outside the run's cost and cap`;
+
+/** Every string a learned workflow's workflow.json decodes to, each object's keys too, as JSON.parse reads them (its
+ *  escapes decoded: what draftProblems and a learned call's run read, and a model node is given). Text a scan of the
+ *  stored JSON misses, spelled in \u escapes, is there as it will be read. None for a text that does not parse (the
+ *  checks refuse it as no workflow). */
+export function decodedStrings(json: string): string[] | "too_deep" {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  // Walked with a stack of its own, never the call stack, and no deeper than DECODED_DEPTH: a draft nested past any
+  // workflow (thousands of arrays in a few KB) is refused on its own (check.ts), never a throw that takes its siblings.
+  const out: string[] = [];
+  const stack: [unknown, number][] = [[doc, 0]];
+  while (stack.length) {
+    const [value, depth] = stack.pop()!;
+    if (typeof value === "string") {
+      out.push(value);
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    if (depth >= DECODED_DEPTH) return "too_deep";
+    if (Array.isArray(value)) for (let i = value.length - 1; i >= 0; i--) stack.push([value[i], depth + 1]);
+    else for (const [key, child] of Object.entries(value).reverse()) stack.push([child, depth + 1], [key, depth + 1]);
+  }
+  return out;
+}
+
+/** How deep a learned workflow's JSON may nest (decodedStrings): far past any workflow the DSL writes, a node's schemas
+ *  included, and short of what a walk of it could not bound. */
+export const DECODED_DEPTH = 100;
+
 /** The most turns a learned workflow's model node runs (learned-workflow.ts hands its runner this cap): an agent node
  *  that asks for more is refused at learn time and before a call, never when it comes up after earlier nodes spent. */
 export const LEARNED_MAX_TURNS = 8;
@@ -701,7 +819,11 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
  *  apply_patch) is never on the list. A model node that names any tool is refused (MODEL_NODE_TOOLS), and a node the
  *  learned runner cannot run (LEARNED_NODES: a judge's). With no list it
  *  fails closed: a draft the DSL refuses only once given an empty list names a tool. */
-export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}): DraftProblem[] {
+/** The MCP tools set to ask a learned call would ask its approver about (`asked`, learnedDraftTools), and whether a card
+ *  names them all (`fits`: learned-workflow.ts learnedAskFits, the gate's own rule, handed in so it is never copied). */
+export type DraftAsk = { readonly asked: readonly string[]; readonly fits: (asks: readonly string[]) => boolean };
+
+export function draftProblems(dsl: DraftReader, text: string, tools?: readonly string[], gated: Readonly<Record<string, string>> = {}, deniedBy: Readonly<Record<string, SettingFrom>> = {}, ask?: DraftAsk): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -720,6 +842,10 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
     // fails its output schema when the call ends, after every node spent.
     const path = (doc as { output?: { path?: unknown } } | null)?.output?.path;
     if (typeof path !== "string" || !path) out.push({ rule: "workflow", detail: LEARNED_OUTPUT_PATH });
+    // Its MCP tools set to ask, on one approval card per learned call (#2424): a card that can't name them all is refused
+    // at the gate at every call, so the draft is refused here, in the gate's words.
+    const asks = ask ? draftMcpTools(doc).filter((tool) => ask.asked.includes(tool)) : [];
+    if (ask && asks.length && !ask.fits(asks)) out.push({ rule: "workflow", detail: `its approval card can't name all ${asks.length} MCP tools it would call that are set to ask: set some of them to allow or deny for this agent.` });
     // A composed workflow node's child too: its output is the value at its own output.path, or it fails the same way.
     for (const node of dsl.inspectWorkflow(doc).nodes) {
       if (node.kind !== "workflow") continue;

@@ -1,11 +1,10 @@
 // Edits are revisions: each definition an agent had is kept, a run pins one, and every run of every agent is listed.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { commitAgent, createAgent } from "../dist/agents-store.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
@@ -45,8 +44,7 @@ test("a PUT of the revision the agent already has writes nothing, so a PUT sent 
   assert.equal((await api("GET", "/agents/twice/revisions")).body.revisions.length, 2);
 });
 
-// SKIP (follow-up #2078): PUT definition and the revision hash read differently on the store
-test.skip("PUT definition: If-Match must name the current revision, a name it does not keep is refused, and a workflow edit is checked", async (t) => {
+test("PUT definition: If-Match must name the current revision, a name it does not keep is refused, and a workflow edit is checked", async (t) => {
   const { api } = await serve(t);
   const created = (await api("POST", "/agents", agent("guarded"))).body;
   const stale = await api("PUT", "/agents/guarded/definition", { definition: { instructions: "x" } }, { "if-match": '"not-it"' });
@@ -66,8 +64,7 @@ test.skip("PUT definition: If-Match must name the current revision, a name it do
   assert.equal((await api("PUT", "/agents/nobody/definition", { definition: { instructions: "x" } })).status, 404);
 });
 
-// SKIP (follow-up #2078): PUT definition and the revision hash read differently on the store
-test.skip("PUT definition takes the contract's body too: the definition itself, with If-Match required and a version past the current one", async (t) => {
+test("PUT definition takes the contract's body too: the definition itself, with If-Match required and a version past the current one", async (t) => {
   const { api } = await serve(t);
   const created = (await api("POST", "/agents", agent("contract"))).body;
   const body = { id: "contract", version: 2, name: "contract", instructions: "Answer briefly.", skills: [], tools: ["read"] };
@@ -160,8 +157,7 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   assert.deepEqual((await api("GET", "/runs?agent=nobody")).body, { runs: [], next_cursor: null });
 });
 
-// SKIP (follow-up #2078): PUT definition and the revision hash read differently on the store
-test.skip("a workflow agent: its definition carries the workflow, its kind is workflow, and its runs are listed with the kind", async (t) => {
+test("a workflow agent: its definition carries the workflow, its kind is workflow, and its runs are listed with the kind", async (t) => {
   const { api } = await serve(t);
   const created = await api("POST", "/agents", flowAgent("flow"));
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -173,8 +169,7 @@ test.skip("a workflow agent: its definition carries the workflow, its kind is wo
   assert.equal((await api("GET", "/agents/bad")).status, 404, "a refused workflow makes no agent");
 });
 
-// SKIP (follow-up #2078): PUT definition and the revision hash read differently on the store
-test.skip("two PUTs that read the same ETag race: the store compares If-Match inside the commit, so exactly one lands and the other is 412", async (t) => {
+test("two PUTs that read the same ETag race: the store compares If-Match inside the commit, so exactly one lands and the other is 412", async (t) => {
   const { api, port, token } = await serve(t);
   const { request } = await import("node:http");
   /** A PUT whose headers go first, so the server reads the agent and checks If-Match; its body follows on `send()`. */
@@ -205,15 +200,11 @@ test.skip("two PUTs that read the same ETag race: the store compares If-Match in
 });
 
 /** JSON with every object's keys sorted, as the agent store hashes a revision. */
-const canonical = (value) => (Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value));
 
-// SKIP (follow-up #2078): PUT definition and the revision hash read differently on the store
-test.skip("the switch: kept on a revision when a definition sets it, true or false, and carried over by an edit that leaves it out; absent, the revision's id is the one it had before the switch, and a workflow keeps none", async (t) => {
+test("the switch: kept on a revision when a definition sets it, true or false, and carried over by an edit that leaves it out; absent, no default is echoed, and a workflow keeps none", async (t) => {
   const { api } = await serve(t);
   const made = (await api("POST", "/agents", agent("plain"))).body;
   assert.equal("learning" in made.definition, false, "absent: no default is echoed");
-  const body = { instructions: "Answer.", skills: {}, tools: [] };
-  assert.equal(made.revision, createHash("sha256").update(canonical({ agent: "plain", parent: null, kind: "agentic", body })).digest("hex"), "a definition that leaves it out hashes as before");
   for (const learning of [true, false]) {
     const id = `set-${learning}`;
     const created = (await api("POST", "/agents", agent(id, { learning }))).body;

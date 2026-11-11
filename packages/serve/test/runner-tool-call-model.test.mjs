@@ -10,7 +10,7 @@
 // store, the run's Workspace its Mode 1 folder; the model is the shared scripted origin, its route carrying the catalog's
 // facts for the model (`like`).
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";

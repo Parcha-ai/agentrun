@@ -9,6 +9,7 @@ import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -179,6 +180,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   {kind === "agentic" && (
                     <Label name="max_cost_usd" note={NOTES.max_cost_usd} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
                       <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" />
+                      <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                     </Label>
                   )}
                 </>

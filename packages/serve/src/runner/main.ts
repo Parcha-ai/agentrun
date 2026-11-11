@@ -67,6 +67,9 @@ export interface RunnerProcess {
   readonly runner: Runner;
   /** What the store is, for the ready line: its kind and schema version. */
   readonly store: { readonly kind: string; readonly schema: number };
+  /** What its runs may hold, in MiB (RunnerMemory.budgetMib): its host's memory, or its container's limit, less the
+   *  server's own. Said once at its start, after the ready line. */
+  readonly memoryMib: number;
   /** Closes the runner (its loops stopped, its runs released), then its store connection. */
   close(): Promise<void>;
 }
@@ -196,6 +199,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
   const env = options.env ?? process.env;
   const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
+  const memory = options.memory ?? runnerMemory(store);
   let runner: Runner;
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   let janitor: ReturnType<typeof startJanitor> | undefined;
@@ -219,7 +223,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       name,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
-      memory: options.memory ?? runnerMemory(store),
+      memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
@@ -234,6 +238,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   return {
     runner,
     store: { kind, schema },
+    memoryMib: memory.budgetMib,
     close: () =>
       (closing ??= (async () => {
         // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
@@ -358,7 +363,7 @@ function said(name: string, event: RunnerEvent): string | undefined {
 /** `agentrun-serve runner ...`: the exit code. 2: bad arguments; 3: a store schema this runner does not know (or none
  *  set up yet); 1: anything else; 0: closed on a signal, or --check found a fresh heartbeat. AGENTRUN_RUNNER_NAME names
  *  it when --name does not. */
-export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv = process.env, hooks: RunnerMainHooks = {}): Promise<number> {
   let args: ReturnType<typeof runnerArgs>;
   try {
     args = runnerArgs(argv);
@@ -396,6 +401,16 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
   const fatal = lastResort(runnerOf);
   process.on("unhandledRejection", fatal);
   process.on("uncaughtException", fatal);
+  // The stop is listened for before the start, as the server's CLI listens (cli.ts): startRunnerProcess starts claiming
+  // runs before it returns, so a SIGTERM or SIGINT during it (a platform's redeploy) would otherwise end the process by the
+  // signal itself, its claims held and a paid request in flight cut. A stop asked then is kept, and the runner closes as
+  // soon as its start is done, through the same close as a stop after it: its runs handed back, its store closed.
+  let asked = false;
+  const early = () => void (asked = true);
+  for (const signal of RUNNER_SIGNALS) process.on(signal, early);
+  const unlisten = () => {
+    for (const signal of RUNNER_SIGNALS) process.off(signal, early);
+  };
   try {
     started = await startRunnerProcess({
       dataDir: args.dataDir,
@@ -413,10 +428,31 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
       },
     });
   } catch (error) {
+    unlisten();
     console.error(`agentrun-serve runner: ${(error as Error)?.message ?? String(error)}`);
     return error instanceof RunnerRefused && error.cause instanceof SchemaVersionUnknown ? 3 : 1;
   }
+  await hooks.started?.(started);
+  // From here the handlers below take the stop, with nothing awaited between: no signal falls in a gap.
+  unlisten();
+  if (asked) {
+    console.log(`Runner ${started.runner.name} stopping: a stop came during its start`);
+    await started.close();
+    return 0;
+  }
   // Ready is said once SIGTERM and SIGINT are handled, so a stop sent on reading it always closes the runner.
-  await runUntilSignalled(started, ["SIGTERM", "SIGINT"], () => console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`));
+  // Then its memory budget, a line of its own (the ready line's shape is read by deploy checks): what a container's limit
+  // gave it is seen where it runs.
+  await runUntilSignalled(started, RUNNER_SIGNALS, () => {
+    console.log(`Runner ${started.runner.name} ready: store ${started.store.kind} schema v${started.store.schema}, ${holds.loops} loops`);
+    console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
+  });
   return 0;
 }
+
+/** The signals that stop a runner process. */
+const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
+
+/** A test's hooks into runnerMain: `started`, awaited once the runner has started claiming and before its stop handlers
+ *  take over from the ones its start listened on (the window a stop must not fall through). */
+export type RunnerMainHooks = { readonly started?: (process: RunnerProcess) => void | Promise<void> };
