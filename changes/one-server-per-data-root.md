@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A data root serves one server again, whatever its store, and a server that replaces another waits for it instead of exiting. Since the switch to the one store, a server took only its store's owner lock, so two servers on one data root, each on a store of its own (two Postgres schemas, or SQLite and Postgres), both started and shared what the server writes beside its store (its token, its seal key, uploads, harness installs). A server now also takes `<data>/server.lock` once it holds its store, and reads or writes its token only after. A start that finds either held by the server it replaces (a redeploy, a restart that starts the new server before the old one has exited) says `another server holds this data root: waiting up to N s for the previous server to stop` and waits up to its `--drain-timeout` and 30 s, then exits 1. A server that died holds neither: both are kernel locks. `serveWithRunner(options)` is exported: a server and a runner beside it in one process, as the CLI's start composes them, for a launcher that starts serve in-process (a server alone leaves every run queued).

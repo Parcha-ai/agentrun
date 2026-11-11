@@ -94,10 +94,11 @@ export interface ProviderPolicy {
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
-  /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
-   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Undefined: the body has
-   *  no input bound the policy can state (a hosted tool that reads pages into the input), so `inputTokensMax` is
-   *  undefined, never 0 or the body's bytes alone. Absent: none. */
+  /** The input tokens the provider bills for the body `apply` returned beyond its bytes: a prompt it adds itself, such as
+   *  a tool-use system prompt, and each image at what it is billed as in place of the bytes its data takes in the body
+   *  (`providerInputOverhead`), which can make it less than 0. Added to the body's bytes for `inputTokensMax`; the sum
+   *  below 0 is no bound (unmeasured). Undefined: the body has no input bound the policy can state (a hosted tool that
+   *  reads pages into the input), so `inputTokensMax` is undefined, never 0 or the body's bytes alone. Absent: none. */
   serverInputOverhead?(body: Record<string, unknown>): number | undefined;
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
@@ -758,8 +759,11 @@ export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, un
     // never 0, and no failure to report. Anything else that is not a count (null, a throw) is reported, and unmeasured too.
     const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
     if (overhead === undefined) return undefined;
-    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
-    return Buffer.byteLength(sent, "utf8") + overhead;
+    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead)) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
+    // Below 0 only by images' data the body carries (counted at what they are billed as instead): never past the bytes.
+    const bound = Buffer.byteLength(sent, "utf8") + overhead;
+    if (bound < 0) throw new Error(`the policy counted ${-overhead} more bytes as billed apart than the body's ${Buffer.byteLength(sent, "utf8")}`);
+    return bound;
   } catch (error) {
     say(`model proxy (${policy.id}): the policy could not say what the provider adds to the body's input; its input is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     return undefined;

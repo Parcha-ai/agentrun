@@ -1843,7 +1843,7 @@ GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integra
 the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
 `manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
 callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
-(`pull_request`, `issue_comment`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
+(`pull_request`, `issue_comment`, `release`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
 "GitHub can't reach this server: set its public URL first"), a seal key (`409 github_no_seal_key`, naming
 `AGENTRUN_SEAL_KEY`), and no App connected already (`409 github_already_connected`, "This server already has a GitHub
 App. Disconnect it first."), and a request at the public URL itself, where GitHub sends the browser back
@@ -1950,7 +1950,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), `max_tool_calls` (agentic only, on pi): the tool calls each conversation of a run may make ([tool-call budget](#tool-call-budget)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -2512,6 +2512,10 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   keys as it opens the run's own, from the server's environment first and then its saved keys, for the run's tools alone:
   never for its model or a CLI harness's own environment. A provider the run's tool gate denies gets no key. Learned
   workflows can use them once decision nodes land (see Coming).
+  A learned workflow's call node can run an MCP tool the agent grants (`mcp:<server>/<tool>`) through the run's own MCP,
+  under the run's tool gate: allowed, it runs at the run's tool cost; denied, the workflow is refused before any node
+  runs; set to ask, the `learned_workflow` call asks once, naming every such tool, and the run parks. A run's own draft
+  can't call one yet: the checks admitting it are coming.
 
 The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
 1 MiB or less, or a note out of shape, is not read, and the server's stderr names it. A learning fault never blocks a
@@ -2575,11 +2579,14 @@ many notes the folder holds. No injection screen runs before it: a page classifi
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the
 user states in their own words is theirs, even beside a form or a pasted email in the same message, and a rule found only
 inside text the run read is planted and dropped, never held for the owner's OK. An item that holds an account number is
-dropped too, even where the user gave it as where money goes. The Risky question reads one way on every grade model: a
+dropped too, even where the user gave it as where money goes; one with a bank account, IBAN, routing or sort-code number
+beside its word never reaches the grader, since the checks refuse it as they refuse a secret. The Risky question reads one way on every grade model: a
 limit or threshold that decides whether an approval or a check happens is risky in either direction, as is an exemption
 from a check, trusting or paying a named site or seller, or naming where money or data goes, whoever asked. What the
 grade spends is in no run's totals, and is read once its request is booked: it is kept on the run's learning, and counted once on `GET /usage` under the meter
 `learning`, by agent and by day; a call cut off at its bound spent what nobody knows, so its cost is unknown, never $0.
+A grade that contradicts itself (it keeps every item yet says not to merge) is asked once more, the contradiction named;
+a second contradiction drops the proposal, saying the review contradicted itself.
 
 A kept verdict merges as one commit on `main`, made with plumbing: the new notes added, each with its `origin` (`you`
 for what the user asked in their own words, `run` for what the run worked out), each note they supersede marked
@@ -2655,9 +2662,8 @@ proposed and reused, staleness after a rule changes, and wrong keeps after a pla
 - A learned workflow may hold decision nodes (judge, pick, sift), answered by the run's decision provider under the run's cap (#2363).
 - Consolidation: related notes merged into one, and a skill and its workflow brought back in step (#2335).
 - A learned workflow's node of a tier runs on the server's model of that tier, at its own price (#2408).
-- A learned workflow's call node runs an MCP tool through the run's own MCP, under its gate, and the grader holds one that writes for the owner's OK (#2424).
+- A run's workflow draft may call a granted MCP tool: the checks admit it, and the grader holds one that writes for the owner's OK.
 - A learned workflow keeps the output format its skill asks for (#2412).
-- A grade that contradicts itself is asked once more (#2425).
 
 ### What a person sees and controls
 
@@ -2974,6 +2980,15 @@ agentic run's is, when a model one of its nodes or `llm` calls runs on has no pr
 OpenRouter Decisions model the catalog lists no price for: `409 agent_not_runnable`, each in `error.fields` with the
 node's label and its fix. A step no cap fixes all the same (a spend no one knows) ends the run `failed`,
 `spend_cap_reached`, in the cap's words, after the node's label.
+
+## Tool-call budget
+
+An agentic definition's `max_tool_calls: N` gives each conversation of its runs on pi N tool calls: the run's own, and
+each conversation a tool opens, counted apart. Past N the run's tool gate refuses every call before it runs, before
+any setting or approval is read, with one fixed text: the budget is spent, don't call another tool, answer now from
+what you have. That refusal is not counted and never ends the run, so the model's next answer is the turn's. The count
+is read from the conversation's committed journal, so a restart or a claim moved to another runner keeps it. Above 0
+sets the budget, 0 clears it, an edit that leaves it out keeps it; a workflow's, or one on another harness, is `422`.
 
 ## The faux model
 
