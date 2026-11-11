@@ -896,6 +896,145 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     new Webhook(again.secret).verify(hook.got.at(-1).body, hook.got.at(-1).headers);
   });
 
+  test("a DELETE whose drop of the queued messages the store refuses leaves the webhook set and its messages tried on their schedule", async (t) => {
+    const hook = await receiver(t, (n) => (n === 1 ? 503 : 200));
+    const dir = await scratch(t);
+    let refuseDrop = false;
+    const on = await webhookOn(t, dir, { retryMs: [300], wrap: seeing("channels", (channels) => ({ dropAll: async (...args) => {
+      if (refuseDrop) throw ((refuseDrop = false), new Error("the store refused the write"));
+      return channels.dropAll(...args);
+    } })) });
+    await on.runs("run_1");
+    const webhooks = await on.open();
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    // Its first try answered 503: queued, its next try armed.
+    await onDisk(dir, () => outboxOf(dir).attempts.length === 1);
+    refuseDrop = true;
+    await assert.rejects(webhooks.remove(), /refused the write/);
+    assert.equal(webhooks.view().configured, true, "the DELETE failed: the webhook stands");
+    await hook.when(2, "the message's next try, after the DELETE that failed");
+    assert.equal(hook.got[1].headers["webhook-id"], hook.got[0].headers["webhook-id"]);
+  });
+
+  test("a message answered queued, and its ledger row, are made durable first: the store's flush follows each queued notice and each PUT's setting", async (t) => {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const on = await webhookOn(t, dir);
+    await on.runs("run_1");
+    const webhooks = await on.open();
+    // The store's count of its durable commits (store/sqlite/store.ts flush).
+    const flushes = () => {
+      const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+      try {
+        return Number(db.prepare("SELECT flushes FROM store_meta WHERE singleton = 1").get().flushes);
+      } finally {
+        db.close();
+      }
+    };
+    await webhooks.save({ url: hook.url });
+    let before = flushes();
+    await webhooks.save({ url: hook.url });
+    assert.ok(flushes() > before, "a PUT that keeps the URL made its setting durable before it answered");
+    before = flushes();
+    assert.equal(await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString()), "queued");
+    assert.ok(flushes() > before, "a run.ended answered queued is durable, with its ledger row");
+    before = flushes();
+    const failed = { trigger_id: "trg_1", name: "nightly", firing_key: "k1", nominal_at: new Date().toISOString(), error: { code: "internal", message: "" }, auto_paused: false };
+    assert.equal(await webhooks.emitTrigger(failed, "k1"), "queued");
+    assert.ok(flushes() > before, "a trigger.failed answered queued is durable");
+  });
+
+  test("a notice whose write passed the DELETE's check but lands after it is dropped by the DELETE: its message never reaches the next receiver", async (t) => {
+    const hook = await receiver(t);
+    const fresh = await receiver(t);
+    const dir = await scratch(t);
+    // The run's post held after it passed the check (as on Postgres, where it is another connection's), and its try's claim
+    // held until the next webhook is set.
+    let holdPost = false;
+    let postHeld;
+    const atPost = new Promise((resolve) => (postHeld = resolve));
+    let letPost;
+    const posting = new Promise((resolve) => (letPost = resolve));
+    let holdClaim = false;
+    let letClaim;
+    const claiming = new Promise((resolve) => (letClaim = resolve));
+    const on = await webhookOn(t, dir, { wrap: seeing("channels", (channels) => ({
+      post: async (...args) => (holdPost && (postHeld(), await posting), channels.post(...args)),
+      claim: async (...args) => (holdClaim && (await claiming), channels.claim(...args)),
+    })) });
+    t.after(() => (letPost(), letClaim()));
+    await on.runs("run_late");
+    const webhooks = await on.open();
+    await webhooks.save({ url: hook.url });
+    holdPost = true;
+    const told = webhooks.emit("run.ended", { run_id: "run_late", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    await atPost;
+    holdPost = false;
+    const removed = webhooks.remove();
+    // The DELETE has done what it does without the held post, or waits for it: either way, the post lands now.
+    await Promise.race([removed, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+    holdClaim = true;
+    letPost();
+    await removed;
+    await told;
+    await webhooks.save({ url: fresh.url });
+    letClaim();
+    assert.equal((await webhooks.test()).status_code, 200);
+    await settled(dir);
+    assert.deepEqual(fresh.got.map((r) => JSON.parse(r.body).type), ["webhook.test"], "nothing of the removed webhook reached the next receiver");
+  });
+
+  test("a delivered try whose write the store refuses for a moment is written again soon: the message is sent once, never again when its claim runs out", async (t) => {
+    const hook = await receiver(t);
+    const dir = await scratch(t);
+    const log = logged();
+    let refuse = 1;
+    // The store busy at the try's write, as a loaded machine's ("database is locked"), once.
+    const on = await webhookOn(t, dir, { storeRetryMs: 50, wrap: seeing("channels", (channels) => ({ settle: async (...args) => {
+      if (refuse > 0) throw ((refuse -= 1), new Error("the store stayed locked past its busy wait: database is locked"));
+      return channels.settle(...args);
+    } })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: hook.url });
+    await webhooks.emit("run.needs_input", { run_id: "run_1", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } }, "row_2:waiting");
+    await log.when("condition=attempt_unsaved");
+    await onDisk(dir, () => outboxOf(dir).messages.every((m) => m.status === "delivered"), "the delivered try written");
+    assert.equal(hook.got.length, 1, "sent once");
+    assert.deepEqual(outboxOf(dir).attempts.map((a) => a.status_code), [200]);
+  });
+
+  test("a failed try whose write the store refuses for a moment keeps its schedule: every try comes, then the failure is said, without waiting out its claim", async (t) => {
+    const down = await receiver(t, () => 200, true);
+    const log = logged();
+    let refuse = 1;
+    const on = await webhookOn(t, await scratch(t), { retryMs: [100, 100], storeRetryMs: 50, wrap: seeing("channels", (channels) => ({ settle: async (...args) => {
+      if (refuse > 0) throw ((refuse -= 1), new Error("the store stayed locked past its busy wait: database is locked"));
+      return channels.settle(...args);
+    } })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: down.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    const failed = await log.when("condition=delivery_failed");
+    assert.ok(failed.includes("attempts=3"), failed);
+  });
+
+  test("a try whose timer fires a little before its message is due is armed again for its time: every try comes, then the failure is said", async (t) => {
+    const down = await receiver(t, () => 200, true);
+    const log = logged();
+    let claims = 0;
+    // The second try's claim made a little early, as a timer that fires before the message's next_at.
+    const on = await webhookOn(t, await scratch(t), { retryMs: [100, 100], wrap: seeing("channels", (channels) => ({ claim: async (id, at, lease) => channels.claim(id, ++claims === 2 ? at - 80 : at, lease) })) });
+    await on.runs("run_1");
+    const webhooks = await on.open(log.push);
+    await webhooks.save({ url: down.url });
+    await webhooks.emit("run.ended", { run_id: "run_1", agent_id: "a", status: "completed", title: "t" }, new Date().toISOString());
+    const failed = await log.when("condition=delivery_failed");
+    assert.ok(failed.includes("attempts=3"), failed);
+  });
+
   test("one server writes the webhook: a second server on the same data is refused before it reads or sends anything, and the first goes on sending", async (t) => {
     const hook = await receiver(t);
     const data = join(await scratch(t), "agents");

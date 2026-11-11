@@ -74,6 +74,8 @@ export function shownUrl(url: string): string {
 export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]>; storeRetryMs?: number };
 /** How soon a try the store failed (its read or its claim threw) is tried again. */
 const STORE_RETRY_MS = 5_000;
+/** The least wait before a queued message whose claim was refused is tried again. */
+const RE_ARM_MS = 20;
 
 /** A told row's marker, by what it marks: an end (its time) or a wait (its ask's mark, waitMarkerOf). */
 const ENDED = "ended:";
@@ -156,6 +158,8 @@ export class Webhooks {
   private changing: Promise<unknown> = Promise.resolve();
   /** A DELETE under way: no notice is queued meanwhile, so none slips past its drop of the queued messages. */
   private removing = false;
+  /** The message writes in flight (posted), each settled or not: a DELETE waits for them before its drop. */
+  private readonly posting = new Set<Promise<void>>();
 
   private readonly retryMs: readonly number[];
   private readonly privateTargets: boolean;
@@ -268,12 +272,13 @@ export class Webhooks {
       if (this.config) {
         this.removing = true;
         try {
+          // Every message whose write passed the check before the DELETE began lands first (on Postgres another pooled
+          // connection may commit it later): then the drop takes it too, and none outlives the DELETE.
+          await Promise.all([...this.posting]);
           await this.drop("the webhook was removed", true);
           await this.store.settings.remove(WEBHOOK_SETTING);
           await this.store.flush();
           this.config = undefined;
-          // A notice told just before the DELETE began, its write landing after the first drop: dropped too.
-          await this.drop("the webhook was removed", true);
         } finally {
           this.removing = false;
         }
@@ -323,7 +328,7 @@ export class Webhooks {
     const told = ends ? { runId: run.run_id, marker: `${ENDED}${marker}`, replacing: ENDED } : { runId: run.run_id, marker: `${WAIT}${marker}`, replacing: ENDED };
     let added: boolean;
     try {
-      added = await this.store.channels.post({ id, channel: WEBHOOK_CHANNEL, runId: run.run_id, moment: type, body: this.body(type, data), nextAt: Date.now() }, told);
+      added = await this.posted({ id, channel: WEBHOOK_CHANNEL, runId: run.run_id, moment: type, body: this.body(type, data), nextAt: Date.now() }, told);
     } catch (error) {
       this.say({ condition: "outbox_unwritable", webhook_id: id, error: (error as Error).message });
       return "unsaved";
@@ -332,7 +337,8 @@ export class Webhooks {
     // The waits past WAITS_KEPT leave the store's ledger too; one not forgotten now is forgotten with the next.
     if (!ends && waits.length > kept.length) await this.store.channels.forget(WEBHOOK_CHANNEL, waits.slice(0, waits.length - kept.length).map((gone) => ({ runId: run.run_id, marker: `${WAIT}${gone}` }))).catch(() => undefined);
     await this.prune(config);
-    if (added) this.schedule(id, 0);
+    // A message already there (an earlier telling whose durable commit failed after its write) is armed too, unless it is.
+    if (added || !this.timers.has(id)) this.schedule(id, 0);
     return "queued";
   }
 
@@ -343,7 +349,7 @@ export class Webhooks {
     if (!this.config || this.config.disabled || this.removing) return "off";
     const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
     try {
-      if (await this.store.channels.post({ id, channel: WEBHOOK_CHANNEL, moment: "trigger.failed", body: this.body("trigger.failed", failed), nextAt: Date.now() })) this.schedule(id, 0);
+      if ((await this.posted({ id, channel: WEBHOOK_CHANNEL, moment: "trigger.failed", body: this.body("trigger.failed", failed), nextAt: Date.now() })) || !this.timers.has(id)) this.schedule(id, 0);
     } catch (error) {
       this.say({ condition: "outbox_unwritable", webhook_id: id, error: (error as Error).message });
       return "unsaved";
@@ -395,8 +401,23 @@ export class Webhooks {
   async test(): Promise<Attempt> {
     this.need();
     const id = `msg_${randomBytes(16).toString("hex")}`;
-    await this.store.channels.post({ id, channel: WEBHOOK_CHANNEL, moment: "webhook.test", body: this.body("webhook.test", {}), nextAt: Date.now() });
+    await this.posted({ id, channel: WEBHOOK_CHANNEL, moment: "webhook.test", body: this.body("webhook.test", {}), nextAt: Date.now() });
     return this.attempt(id, { retry: false, redelivery: false });
+  }
+
+  /** A message (and its ledger row, `told`) queued in one transaction, then made durable (the store's flush, as every write
+   *  the server confirms is) before it is answered or tried: a crash of the machine never loses a message answered
+   *  `queued`, nor the row that keeps it from being told twice. Tracked while in flight, so a DELETE waits for it. */
+  private posted(post: Parameters<WebhooksStore["channels"]["post"]>[0], told?: Parameters<WebhooksStore["channels"]["post"]>[1]): Promise<boolean> {
+    const writing = (async () => {
+      const added = await this.store.channels.post(post, told);
+      await this.store.flush();
+      return added;
+    })();
+    const held = writing.then(() => undefined, () => undefined);
+    this.posting.add(held);
+    void held.then(() => this.posting.delete(held));
+    return writing;
   }
 
   /** POST .../deliveries/{webhook_id}/redeliver: the message sent again once now, under its own webhook-id and body. */
@@ -463,6 +484,8 @@ export class Webhooks {
   /** The setting written, then held here: a write the store refuses throws, and what was held stays held. */
   private async write(config: Config): Promise<void> {
     await this.store.settings.put(WEBHOOK_SETTING, config);
+    // Durable before the PUT (or the 410 that turns it off) answers, as the store's other confirmed writes are.
+    await this.store.flush();
     this.config = config;
   }
 
@@ -530,7 +553,14 @@ export class Webhooks {
     const attempt: Attempt = { webhook_id: id, type: (post?.moment ?? "webhook.test") as MessageType, at: iso(now), status_code: null, latency_ms: 0, error: null, retry_at: null, redelivery: how.redelivery };
     if (this.closed || !post) return attempt;
     // A message's own try claims it first (compare-and-set): a try already out, or one that settled it, holds it.
-    if (!how.redelivery && !(await this.store.channels.claim(id, now, CLAIM_MS))) return attempt;
+    if (!how.redelivery && !(await this.store.channels.claim(id, now, CLAIM_MS))) {
+      // Not taken. One still queued was not due yet (its timer fired a little before its time) or lost a race with a
+      // try that has settled it again since: armed again for its time, never left without a timer. One sent, dropped
+      // or held by another try is not this try's.
+      const standing = await this.store.channels.get(id);
+      if (standing?.state === "queued") this.schedule(id, Math.max(standing.nextAt - Date.now(), RE_ARM_MS));
+      return attempt;
+    }
     const config = this.config;
     // Signed with the secret this setting names: the URL and its secret, as the store holds them together.
     const secret = this.signingSecret(config);
@@ -599,17 +629,24 @@ export class Webhooks {
       postId: id, moment: attempt.type, at: now, statusCode: attempt.status_code, latencyMs: attempt.latency_ms, error: attempt.error,
       retryAt: attempt.retry_at === null ? null : Date.parse(attempt.retry_at), redelivery: how.redelivery,
     };
+    const write = () => this.store.channels.settle(id, to ?? { state: standingPost.state, reason: standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
     try {
-      await this.store.channels.settle(id, to ?? { state: standingPost.state, reason: standingPost.reason }, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()] });
+      await write();
     } catch (error) {
-      // Not written: the message stays as the store held it, and a queued one is tried again after the next wait (its
-      // receiver may get it twice, under the same webhook-id).
       this.say({ condition: "attempt_unsaved", webhook_id: id, error: (error as Error).message });
-      // Its claim runs out first, so the next try can take it.
-      if (standingPost.state === "sending" && !how.redelivery) this.schedule(id, Math.max(delay ?? 0, CLAIM_MS));
+      // Not written. This try's own outcome is known, so only its write is tried again, soon and until it lands, never
+      // the send: a message its receiver has is not sent again when its claim runs out, and a failed one keeps its
+      // schedule. A redelivery's outcome (the message's own state left as it was) is let go.
+      if (to !== undefined) this.resettle(id, write, () => this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing));
       return attempt;
     }
-    if (delay !== undefined) this.schedule(id, delay);
+    await this.afterSettle(id, to, delay, attempt, attempts, failure, gone, standing);
+    return attempt;
+  }
+
+  /** What follows a try's write: its next try armed, its failure said, and a 410's turn-off of the webhook as it stands. */
+  private async afterSettle(id: string, to: { state: ChannelPostRow["state"]; nextAt?: number } | undefined, delay: number | undefined, attempt: Attempt, attempts: number, failure: string | undefined, gone: boolean, standing: Config | undefined): Promise<void> {
+    if (delay !== undefined) this.schedule(id, Math.max(0, (to?.nextAt ?? Date.now()) - Date.now()));
     if (to?.state === "dropped") this.say({ condition: "delivery_failed", type: attempt.type, webhook_id: id, attempts, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
     if (gone) {
       // Gone: the receiver says this endpoint is no more. Off, its queued messages dropped, until a PUT sets it again.
@@ -624,16 +661,45 @@ export class Webhooks {
       this.say({ condition: "webhook_disabled", url: shownUrl(standing!.url), reason: off.disabled.reason });
       await this.drop("the webhook is off: its receiver answered 410");
     }
-    return attempt;
+  }
+
+  /** A try's write the store refused (`write`), written again after the store's wait until it lands, then what follows it
+   *  (`after`), among the webhook's changes. Under the message's timer, so a DELETE's drop ends it; a message another try or
+   *  a redelivery has settled since is not this try's to write. Closed, it is left as the store holds it, for the next
+   *  server. */
+  private resettle(id: string, write: () => Promise<void>, after: () => Promise<void>): void {
+    if (this.closed) return;
+    clearTimeout(this.timers.get(id));
+    const timer = setTimeout(() => {
+      this.timers.delete(id);
+      void this.change(async () => {
+        if (this.closed) return;
+        try {
+          if ((await this.store.channels.get(id))?.state !== "sending") return;
+          await write();
+        } catch {
+          return this.resettle(id, write, after);
+        }
+        await after();
+      }).catch((error: Error) => this.say({ condition: "attempt_unsaved", webhook_id: id, error: error.message }));
+    }, this.storeRetryMs);
+    timer.unref();
+    this.timers.set(id, timer);
   }
 
   /** Every queued message dropped, with `why` in the log. `strict`: a drop the store refuses throws (a DELETE then fails
    *  before anything else of it is done); else it is let be, and a queued message's try finds the webhook off. */
   private async drop(why: string, strict = false): Promise<void> {
+    let count = 0;
+    try {
+      count = await this.store.channels.dropAll(WEBHOOK_CHANNEL, why);
+    } catch (error) {
+      // Refused: a DELETE fails with the webhook still set, its messages still queued and their timers kept, so each is
+      // tried on its schedule as before.
+      if (strict) throw error;
+    }
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
-    const dropping = this.store.channels.dropAll(WEBHOOK_CHANNEL, why);
-    const count = strict ? await dropping : await dropping.catch(() => 0);
     if (count) this.say({ condition: "messages_dropped", count, reason: why });
   }
 
