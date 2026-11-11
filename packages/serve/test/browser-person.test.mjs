@@ -819,7 +819,7 @@ test("on the runner's path a person's answer that lands as this process writes t
 });
 
 test("on the runner's path the row an answer writes shows at the answered entry's time on the timeline: the person's, or the expiry's when the ask lapsed", async (t) => {
-  const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+  const { timelineOf } = await import("../dist/timeline/index.js");
   /** The timeline row that says `summary`, over a run's entries: its kind and time. */
   const rowSaying = (entries, summary) => {
     const row = timelineOf(entries).find((each) => each.summary === summary);
@@ -849,7 +849,7 @@ test("on the runner's path the row an answer writes shows at the answered entry'
 
 test("a take-over in the run's timeline reads as it happened (Manuel's walk of #1703): the take and the hand-back at their own times, the agent's call parked behind the hold between them, saying it waited for the person and how long", async (t) => {
   const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
-  const { HOST_PHASE, timelineOf } = await import("@parcha/pi-durable-agent/timeline");
+  const { HOST_PHASE, timelineOf } = await import("../dist/timeline/index.js");
   const T0 = Date.UTC(2026, 10, 3, 9, 0, 0);
   const clock = fakeClock(T0);
   const tag = "ar-run-61-1";

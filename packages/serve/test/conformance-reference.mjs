@@ -9,7 +9,7 @@ const { callsOf, journalEntries, messagesOf } = await import("../dist/runner/jou
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { cutAtLimit, deniedText, noteOf, stopEnd } = await import("../dist/runner/loop-contract.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const { RUN_RESUMED } = await import("@parcha/pi-durable-agent/timeline");
+const { RUN_RESUMED } = await import("../dist/timeline/index.js");
 
 /** A task that kept faulting: the run fails, saying so. */
 class RestartsRanOut extends Error {}
