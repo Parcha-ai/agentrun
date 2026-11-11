@@ -1,5 +1,5 @@
 import type { MessageFeatures } from "@/lib/runState";
-// Typed access to the recorded responses in this folder (see README.md). Recorded by the dev kit; never hand-edited.
+// Typed access to the recorded responses in this folder (see README.md: kept in step with the contract by editing).
 import type { Recorded, Run, RunFile, RunFiles, TimelinePage } from "@/lib/v2";
 
 const files = import.meta.glob<Recorded<unknown>>("./*.json", { eager: true, import: "default" });

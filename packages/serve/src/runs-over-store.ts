@@ -345,7 +345,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names (givenOf, the one decision the runner puts in the prompt), the # Learned text (learnedOf), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; seedFailed?: SeedFailed } | undefined> {
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
   if (!learns || !deps.seedFor) return undefined;
   const seeded = await deps.seedFor(entry.agent.id);
@@ -357,7 +357,11 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     // The notes and the # Learned text are the old start's one decision (learnedParts): givenOf and learnedOf over the same
     // seed and options, so the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes
     // is the whole seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-    return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length };
+    // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is
+    // held by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them;
+    // the end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+    const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
+    return { given: givenOf(seeded.seed, options), seed: seeded.seed.sha, section: learnedOf(seeded.seed, options) ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}) };
   } catch {
     return { given: [], seed: null, section: "", seedFailed: "not_copied" };
   }

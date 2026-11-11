@@ -1160,14 +1160,11 @@ test("while a person holds the browser a relaunch is refused and launches nothin
   assert.deepEqual([sessions.sessions[0].state, sessions.sessions[0].releaseReason], ["released", "tool"]);
 });
 
-test("a held session the host assigned answers a relaunch with the hold, not the fixed-session refusal", async (t) => {
-  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
-  const made = await backend.provider.create({ tag: "host-made", maxLifetimeS: 600, idleTimeoutS: 0, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
-  const { assignedSessionProvider } = await import("@parcha/pi-browser/providers/assigned");
-  const provider = assignedSessionProvider({ name: "host-site", session: { id: made.id, attach: () => backend.provider.attach(made), status: async () => "running", release: async () => {}, failure: () => null } });
-  const { texts } = await session(t, [["snapshot"], ["browser_relaunch"]], { backend, provider, tools: { snapshot: holding("handoff-fixed") } });
+test("a held session on a provider of one fixed session answers a relaunch with the hold, not the fixed-session refusal", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { fixedSession: true } });
+  const { texts } = await session(t, [["snapshot"], ["browser_relaunch"]], { backend, tools: { snapshot: holding("handoff-fixed") } });
   assert.equal(failure(texts[1]).code, "waiting_for_human", texts[1]);
-  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 0], "nothing launched or released");
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 0], "nothing launched or released past the one session");
 });
 
 test("browser_release through the composed release path (#1001's releasable guard, #1057's already_released body): an open session and a held one are released; an already-released one says so; a lost one does not", { timeout: 90_000 }, async (t) => {

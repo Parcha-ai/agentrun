@@ -56,7 +56,8 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { runMetrics } from "./metrics.js";
+import { bookedSpend, runMetrics } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
@@ -240,7 +241,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       seed: start.seed,
       folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
       own: Object.keys(revisionRow.skills ?? {}),
-      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data))),
+      shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
     })
     : undefined;
@@ -402,10 +403,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
     workRoot: root,
-    // The end's metrics and cost from the run's journal; a CLI run's carry its model.
+    // The end's metrics from the run's record; a CLI run's carry its model. Its cost is its booking's: the harness's own
+    // record carries no per-request cost, so its model requests are counted at what the run's model proxy booked them at
+    // (metrics.ts bookedSpend over every session of its journal), as a pi run's are at its answers' costs.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
+      const costUsd = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model").usd;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;

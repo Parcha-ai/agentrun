@@ -152,3 +152,19 @@ test("the tools the end-of-run prompt offers a workflow draft follow the server'
   assert.match(prompt, /It has no call node on a tool\./, `the store's deny leaves web_search out of the draft's tools: ${prompt.slice(prompt.indexOf("call node") - 80, prompt.indexOf("call node") + 120)}`);
   assert.ok(!prompt.includes("web_search"), "the file's allow is never read");
 });
+
+test("a learned skill that served 3 earlier runs of the agent, with no learned workflow of its name, gets its job asked for as a workflow draft in the next run's end-of-run prompt", async (t) => {
+  // Three earlier runs of the agent were offered the skill (their launches say so); run-1 is offered it too.
+  const offered = (seed) => ({ given: [], seed, section: "", seedNotes: 0, skills: ["weekly-report"] });
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, async (dir) => {
+    const seed = await seedOf(dir, "agent-1");
+    return runner(() => offered(seed.sha))(dir);
+  }, async (server) => {
+    for (const id of ["run-0a", "run-0b", "run-0c"]) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: runner(() => offered(null))() });
+  });
+  await w.start((deps) => learningEndOfRun(w.launch, deps));
+  const row = await w.ended();
+  const prompt = (await w.turnOf(row)).users[1] ?? "";
+  assert.ok(prompt.includes("Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes"), prompt.slice(prompt.indexOf("## Skills"), prompt.indexOf("A skill is how")));
+  assert.equal(prompt.split("has now served").length - 1, 1, "one line, once");
+});

@@ -3,8 +3,8 @@
 // once at the run's start. A spec builder gives the adapter loop `endOfRun: learningEndOfRun(launch, deps)`. Each of the
 // hook's reads is the server's own rule, over the store in place of the run's directory:
 //   - whether it looks back (learning-run.ts reflectSkip): its cap and its spend so far, read as its view reads them;
-//   - its prompt's facts: how many notes its seed held (launch seedNotes) and the tools a workflow draft may name
-//     (learning-run.ts draftTools);
+//   - its prompt's facts: how many notes its seed held (launch seedNotes), the tools a workflow draft may name
+//     (learning-run.ts draftTools), and the learned skill whose job it asks for as a workflow draft (draftForOf);
 //   - what the person said in the run and a trigger's input (heard.ts Hearing over its entries, the end-of-run turn's
 //     own left out), as learning-run.ts turnOf reads them;
 //   - the checks: propose.ts proposeRun against the seed it started from, the server's one rule, which keeps the
@@ -22,14 +22,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Hearing } from "../heard.js";
-import type { LearningFolder } from "../learn/folder.js";
+import { type LearningFolder, readSnapshot } from "../learn/folder.js";
+import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";
+import { SKILL_NAME } from "../learn/skills.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET } from "../learn/secrets.js";
 import { gradeModelOf, PROPOSAL } from "../learning.js";
 import { reflects, type Reflect } from "../learning-run.js";
 import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
-import { learningStartOf, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { Store } from "../store/store.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
@@ -76,7 +78,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
       return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
     },
-    promptFacts: async (runId) => ({ active: start.seedNotes ?? start.given.length, tools: (await draftTools(deps, runId)).tools }),
+    // A draft asked for or not never stops the turn: a count that can't be read asks for none.
+    promptFacts: async (runId, agentId) => ({ active: start.seedNotes ?? start.given.length, tools: (await draftTools(deps, runId)).tools, draftFor: await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []) }),
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -118,6 +121,52 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     }
     return hookFor(input.runId)(input);
   };
+}
+
+/** How many of an agent's latest runs draftForOf reads at most: a skill offered to fewer than DRAFT_AFTER_RUNS of them is
+ *  no repeated job. */
+export const DRAFT_SCAN_RUNS = 200;
+
+/** The learned skill whose job the end-of-run turn asks for as a workflow draft: of the skills run `runId` was offered
+ *  (its launch's learning start), the first in the seed's order (the one changed last first) offered to DRAFT_AFTER_RUNS
+ *  or more runs of agent `agentId` started before it (each run's launch says what it was offered; its latest
+ *  DRAFT_SCAN_RUNS runs are read newest first, those after `runId` in that order counted, only until every skill has its
+ *  count), with no learned workflow of its name on the agent's main, active or waiting for
+ *  its owner's OK (the folder's snapshot). One at most: a turn keeps one workflow draft. None when no skill qualifies, or
+ *  when the folder can't be read: a read that fails asks for nothing, never a draft that may be there already. */
+export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learningFolder">, agentId: string, runId: string, offered: readonly string[]): Promise<string[]> {
+  // Only a skill's name reaches the prompt (reflectPrompt refuses anything else).
+  const served = new Map(offered.filter((name) => SKILL_NAME.test(name)).map((name) => [name, 0]));
+  if (!served.size) return [];
+  // The list is newest first: only the runs after the ending one in it started before it, and count. A run started
+  // later (a long job's newer runs) never does, and an ending run past the latest DRAFT_SCAN_RUNS + 1 counts none.
+  let earlier = false;
+  for (const run of await deps.store.runs.list({ agentId, limit: DRAFT_SCAN_RUNS + 1 })) {
+    if (run.id === runId) {
+      earlier = true;
+      continue;
+    }
+    if (!earlier || run.agentId !== agentId) continue;
+    const row = await deps.store.runs.launch(run.id).catch(() => undefined);
+    const launch = row ? readLaunchBody(row.body) : undefined;
+    for (const name of (launch && learningStartOf(launch)?.skills) ?? []) if (served.has(name)) served.set(name, served.get(name)! + 1);
+    // Enough runs read once every skill has served its count.
+    if ([...served.values()].every((count) => count >= DRAFT_AFTER_RUNS)) break;
+  }
+  const due = [...served].filter(([, count]) => count >= DRAFT_AFTER_RUNS);
+  if (!due.length) return [];
+  let drafted: Set<string>;
+  const folder = deps.learningFolder(agentId);
+  try {
+    const snapshot = await readSnapshot(folder.workspace);
+    drafted = new Set((snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending").map(({ name }) => name));
+  } catch {
+    return [];
+  } finally {
+    await folder.end().catch(() => undefined);
+  }
+  const open = due.find(([name]) => !drafted.has(name));
+  return open ? [open[0]] : [];
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them

@@ -191,3 +191,16 @@ test("an ask stops at its signal's abort, and at the hold's close; a parked call
   await assert.rejects(left, /let go before the person answered/);
   assert.equal(hold.state(), "agent", "closed: the take ended released");
 });
+
+test("once the run is ending (finish), nothing new is taken, and a take in force goes on until it ends (#2134)", () => {
+  const time = fakeTime();
+  const hold = computerHold({ timers: time.timers, now: time.now });
+  assert.equal(hold.take(), true);
+  hold.finish();
+  assert.equal(hold.finishing(), true);
+  assert.equal(hold.state(), "person", "the take in force is not ended by the run's end");
+  assert.equal(hold.give(), true, "it is handed back as before");
+  assert.equal(hold.take(), false, "a take after the hand-back is refused: the release would cut it");
+  assert.equal(hold.state(), "agent");
+  assert.equal(computerHold().finishing(), false, "a hold is not ending until finish");
+});
