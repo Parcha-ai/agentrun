@@ -459,14 +459,18 @@ function tokensPerPass(steps) {
  *  steps after it, those that called learned_workflow and how many of them passed, and tokens per passing step on those
  *  steps against the skill-only steps (a learned skill active, no workflow called: every step after the one that first
  *  learned a skill, the calling ones aside). Null with learning off, or when no workflow was kept. */
+/** The first step after which a `kind` (skills, workflows) was ACTIVE, by its recorded `active_after`: one kept
+ *  waiting for the owner's OK (pending, as --no-approve leaves it) is listed as learned but given to no run. -1 for none. */
+const firstActive = (steps, kind) => steps.findIndex((s) => Object.keys(s.active_after?.[kind] ?? {}).length > 0);
+
 function reuseMetrics(steps, learns) {
   if (!learns) return null;
-  const kept = steps.findIndex((s) => s.learned?.workflows?.length);
+  const kept = firstActive(steps, "workflows");
   if (kept < 0) return null;
   const after = steps.slice(kept + 1);
   const calling = after.filter((s) => s.learned_workflow_calls > 0);
-  const skill = steps.findIndex((s) => s.learned?.skills?.length);
-  const skillOnly = skill < 0 ? [] : steps.slice(skill + 1).filter((s) => !(s.learned_workflow_calls > 0));
+  // A step had the skill when the step before it left one active.
+  const skillOnly = steps.filter((s, i) => i > 0 && Object.keys(steps[i - 1].active_after?.skills ?? {}).length > 0 && !(s.learned_workflow_calls > 0));
   const withFlow = tokensPerPass(calling);
   const without = tokensPerPass(skillOnly);
   return {
@@ -480,7 +484,7 @@ export function metricsOf(steps, learns) {
   const at = (pred) => steps.filter(pred);
   const graderRates = {};
   for (const name of [...new Set(steps.flatMap((s) => s.graders.map((g) => g.grader)))].sort()) graderRates[name] = rate(steps.flatMap((s) => s.graders.filter((g) => g.grader === name).map((g) => g.pass)));
-  const firstFlow = steps.findIndex((s) => s.learned?.workflows?.length);
+  const firstFlow = firstActive(steps, "workflows");
   const staleness = [];
   if (learns) for (const [i, s] of steps.entries()) {
     if (s.kind !== "change") continue;
