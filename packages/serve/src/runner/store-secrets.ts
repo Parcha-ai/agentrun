@@ -5,10 +5,9 @@
 // echoes it back. One read of the store across all its planes (store.sealedSecrets): tool, model, computer and Archil keys
 // (sealed_keys); MCP credentials, their headers' values and OAuth tokens and client secret (mcp_servers), and a sign-in in
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
-// and webhook secret among them (trigger_settings), but a field its source marks public; browser sign-in pointers, live
+// and webhook secret among them, and the outbound webhook's signing secret (trigger_settings), but a field its source marks public; browser sign-in pointers, live
 // and forgotten; live viewer tokens; a launch's sealed part. Beside the store, what the data directory keeps where the
-// runner shares it (server-secrets.ts besideTheStore: the owner's API token, the sign-in session secret and the outbound
-// webhook's signing secret). Each value in every spelling the server's list has
+// runner shares it (server-secrets.ts besideTheStore: the owner's API token and the sign-in session secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
 import { unseal } from "@parcha/pi-durable-agent";
@@ -95,7 +94,7 @@ export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer, da
   const list = new ServerSecrets();
   list.add("store", () => listed);
   list.add("store-whole", () => whole, { whole: true });
-  const beside = data ? besideTheStore(data, sealKey).values() : [];
+  const beside = data ? besideTheStore(data).values() : [];
   return [...list.values(), ...beside];
 }
 
