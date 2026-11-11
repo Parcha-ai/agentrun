@@ -130,8 +130,29 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), options);
-  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
+  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
   return labelled((await runReflect(store, runId, context)) as Reflect | undefined, await datedRows(store, runId, rows));
+}
+
+/** A pi run's `rows` with its side calls in its usage row: the requests its session booked that no answer of pi's carries
+ *  (a learned workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), at what they were
+ *  booked at, unknown when one's price is, beside the answers the renderer counted. Their requests join its count; its
+ *  words are the renderer's, figures changed. A run with none is as rendered. */
+function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const side = bookedSpend(entries, "side");
+  const at = rows.findLastIndex((row) => row.kind === "usage");
+  if (!side.requests || at < 0) return [...rows];
+  const row = rows[at]!;
+  const own = row.usage ?? { usd: 0, requests: 0 };
+  const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
+  const unpriced = (own.usd === null ? (own.unpriced ?? 0) : 0) + side.unpriced;
+  const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
+  const requests = own.requests + side.requests;
+  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
+  const spent = usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
+  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}`);
+  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}) };
+  return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every

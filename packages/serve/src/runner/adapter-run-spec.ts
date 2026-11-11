@@ -53,7 +53,8 @@ import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig 
 import { piAdapter } from "./adapters/pi.js";
 import { entriesOf } from "./loop.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { runMetrics } from "./metrics.js";
+import { bookedSpend, runMetrics } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -521,7 +522,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
-      const total = costUsd === null || paid === null ? null : costUsd + paid;
+      // So are its side calls (a learned workflow's nodes): booked in its session, carried by none of pi's answers.
+      const side = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "side");
+      const total = costUsd === null || paid === null || side.usd === null ? null : costUsd + paid + side.usd;
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
