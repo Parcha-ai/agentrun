@@ -207,6 +207,11 @@ export class LocalBrowserProvider implements ComputerProvider {
 			await rm(dir, { recursive: true, force: true }).catch(() => undefined);
 			return fail("invalid", `the local browser's directory could not be made under ${this.root} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`);
 		}
+		// A stop that came while the directory was made: nothing is started, and the directory goes.
+		if (signal?.aborted) {
+			await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+			return fail("aborted", "create was aborted before Chrome was started");
+		}
 		let child: ReturnType<typeof spawn>;
 		try {
 			child = spawn(process.execPath, [SUPERVISOR, dir], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
@@ -225,6 +230,8 @@ export class LocalBrowserProvider implements ComputerProvider {
 				done(value);
 			};
 			signal?.addEventListener("abort", abort, { once: true });
+			// An abort that fired before the listener was added fires no event: it is read here, and the supervisor is ended below.
+			if (signal?.aborted) abort();
 			child.once("error", () => finish("exited"));
 			child.once("exit", () => finish("exited"));
 			child.stdout?.on("data", (chunk: Buffer) => {

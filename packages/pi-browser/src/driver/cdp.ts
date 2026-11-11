@@ -44,12 +44,17 @@ const LOCATE_JS = `function(selector){
   return { viewport, matches: 1, box: { x: r.x, y: r.y, width: r.width, height: r.height } };
 }`;
 
-/** The browser's first page, or a blank one opened for the driver when it has none. */
-async function firstPage(cdp: CDP): Promise<Page> {
-  const { targetInfos } = await cdp.send<{ targetInfos: Array<{ type: string; targetId: string; url: string }> }>("Target.getTargets");
-  const page = targetInfos.find((t) => t.type === "page" && !t.url.startsWith("devtools://"));
-  const targetId = page?.targetId ?? (await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" })).targetId;
-  return Page.attach(cdp, targetId);
+type Tab = { targetId: string; url: string; openerId?: string };
+
+/** The browser's tabs, in the browser's order (DevTools' own pages left out). */
+async function tabsOf(cdp: CDP): Promise<Tab[]> {
+  const { targetInfos } = await cdp.send<{ targetInfos: Array<Tab & { type: string }> }>("Target.getTargets");
+  return targetInfos.filter((t) => t.type === "page" && !t.url.startsWith("devtools://"));
+}
+
+/** A blank tab opened for the driver, when the browser has none. */
+async function blankTab(cdp: CDP): Promise<string> {
+  return (await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" })).targetId;
 }
 
 /** The raw-CDP page driver: snapshot ids and actions only. */
@@ -58,13 +63,49 @@ export function cdpDriver(): DriverFactory<PageDriver> {
     signal?.throwIfAborted();
     const cdp = await CDP.open(openDial(target), COMMAND_MS);
     let page: Page;
+    /** Every tab the driver has seen, so one that appears later is known as new. */
+    const seen = new Set<string>();
+    /** The tab that opened each tab the driver followed, to go back to when that one closes. */
+    const openers = new Map<string, string>();
     try {
-      page = await firstPage(cdp);
+      const tabs = await tabsOf(cdp);
+      for (const t of tabs) seen.add(t.targetId);
+      // The browser's first tab, or a blank one opened for the driver when it has none.
+      page = await Page.attach(cdp, tabs[0]?.targetId ?? (await blankTab(cdp)));
+      seen.add(page.targetId);
     } catch (error) {
       cdp.close();
       throw error;
     }
     const ax = new AxHelpers(() => page, () => cdp);
+
+    /**
+     * Drives the tab the driven tab opened (a popup, or a link that opens a new tab), or, when the driven tab has closed,
+     * the tab that opened it (else the browser's last, else a blank one). The old tab's snapshot ids are dropped, so an
+     * action by id fails as a stale snapshot until the next snapshot. Answers the line that says so, or nothing when
+     * the driven tab stays.
+     */
+    const follow = async (): Promise<string | undefined> => {
+      const tabs = await tabsOf(cdp);
+      const opened = tabs.filter((t) => !seen.has(t.targetId) && t.openerId === page.targetId).at(-1);
+      for (const t of tabs) seen.add(t.targetId);
+      let next = opened?.targetId;
+      if (!next && !tabs.some((t) => t.targetId === page.targetId)) {
+        const back = openers.get(page.targetId);
+        next = tabs.find((t) => t.targetId === back)?.targetId ?? tabs.at(-1)?.targetId ?? (await blankTab(cdp));
+        seen.add(next);
+      }
+      if (!next) return undefined;
+      const old = page;
+      page = await Page.attach(cdp, next);
+      if (opened) openers.set(next, old.targetId);
+      ax.forget();
+      await cdp.send("Target.detachFromTarget", { sessionId: old.sessionId }).catch(() => undefined);
+      await ax.settle({ capMs: 3000 }).catch(() => undefined);
+      const { targetInfo } = await cdp.send<{ targetInfo: { url: string } }>("Target.getTargetInfo", { targetId: next });
+      const now = opened ? "the page opened a new tab; now driving it" : "the tab closed; now driving another";
+      return `[tab] ${now}: ${targetInfo.url}.`;
+    };
 
     /** The latest snapshot's ids hold: there is one, the page still shows its document, and every id is in it. */
     const check = async (actions: RunAction[], checked = false) => {
@@ -112,14 +153,19 @@ export function cdpDriver(): DriverFactory<PageDriver> {
     };
 
     return {
-      snapshot: (options = {}) => ax.snapshot(options.includeIframes === undefined ? {} : { includeIframes: options.includeIframes }),
+      // A snapshot is of the tab the agent is on now: a tab the page opened since, or the one left when it closed.
+      snapshot: async (options = {}) => {
+        const moved = await follow();
+        const shot = await ax.snapshot(options.includeIframes === undefined ? {} : { includeIframes: options.includeIframes });
+        return moved ? `${moved}\n${shot}` : shot;
+      },
 
       run: async ({ code, actions, checked }) => {
         if (code !== undefined) throw refusedError(CDP_CODE_REFUSED);
         if (!actions?.length) throw refusedError("run requires exactly one of code or actions");
         await check(actions, checked === true);
         const lines: string[] = [];
-        for (const action of actions) {
+        for (const [i, action] of actions.entries()) {
           try {
             lines.push(await runOne(action));
           } catch (error) {
@@ -128,6 +174,15 @@ export function cdpDriver(): DriverFactory<PageDriver> {
             if (!lines.length) throw error;
             // What ran is said with what failed: the actions before it took effect.
             throw new Error(`${lines.join("\n")}\n${error instanceof Error ? error.message : String(error)}`, { cause: error });
+          }
+          // An action that opened a tab (or closed this one) moves the driver there; the rest name the old tab's ids.
+          // The action already took effect, so a failure to look is not its failure.
+          const moved = await follow().catch(() => undefined);
+          if (moved) {
+            lines.push(`${moved} Take a snapshot before acting by id.`);
+            const rest = actions.length - i - 1;
+            if (rest) lines.push(`[stopped] ${rest} more action${rest === 1 ? "" : "s"} not run: they name the old tab's snapshot ids.`);
+            break;
           }
         }
         return lines.join("\n");

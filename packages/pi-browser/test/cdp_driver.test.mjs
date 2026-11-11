@@ -93,6 +93,32 @@ test("goto opens a web page and drops the old ids; a scheme other than http, htt
   assert.equal(page.calls.filter((c) => c.method === "Page.navigate").length, 1, "the file: URL never reached the browser");
 });
 
+test("a tab the page opens is followed (the old ids dropped, the rest of the batch not run), and a closed tab goes back to its opener", async (t) => {
+  const { page, driver } = await open(t);
+  page.state.tabs.push({ targetId: "OTHER", url: "https://example.test/before" }); // there before: never followed
+  await driver.snapshot();
+  // The Add button opens a popup, as a link with target=_blank would.
+  page.state.tabs.push({ targetId: "POPUP", url: "https://example.test/popup", openerId: "PAGE" });
+  const lines = (await driver.run({ actions: [{ op: "click", id: "0-11" }, { op: "click", id: "0-13" }] })).split("\n");
+  assert.deepEqual(lines, [
+    '[ok] click [0-11] button "Add" -> page changed',
+    "[tab] the page opened a new tab; now driving it: https://example.test/popup. Take a snapshot before acting by id.",
+    "[stopped] 1 more action not run: they name the old tab's snapshot ids.",
+  ]);
+  assert.ok(page.calls.some((c) => c.method === "Target.attachToTarget" && c.params.targetId === "POPUP"), "attached to the popup");
+  assert.ok(page.calls.some((c) => c.method === "Target.detachFromTarget" && c.params.sessionId === "S-PAGE"), "the old tab's session released");
+  assert.ok(!page.calls.some((c) => c.method === "Target.attachToTarget" && c.params.targetId === "OTHER"), "a tab the page did not open is left alone");
+  assert.equal(await driver.url(), "https://example.test/popup");
+  await assert.rejects(driver.run({ actions: [{ op: "click", id: "0-11" }] }), /No hydrated snapshot exists/);
+  // The popup closes: the next snapshot is of the tab that opened it, and says so.
+  page.state.tabs = page.state.tabs.filter((tab) => tab.targetId !== "POPUP");
+  const shot = await driver.snapshot();
+  assert.match(shot, /^\[tab\] the tab closed; now driving another: https:\/\/example\.test\/form\.\n\[page\] /);
+  assert.equal(page.calls.filter((c) => c.method === "Target.attachToTarget" && c.params.targetId === "PAGE").length, 2, "back on the opener");
+  // Nothing changed since: the next snapshot is the page's alone.
+  assert.match(await driver.snapshot(), /^\[page\] /);
+});
+
 test("an id the latest snapshot does not show, and a page that navigated since it, fail as a stale snapshot before anything is sent", async (t) => {
   const { page, driver } = await open(t);
   await assert.rejects(driver.run({ actions: [{ op: "click", id: "0-11" }] }), /No hydrated snapshot exists/);

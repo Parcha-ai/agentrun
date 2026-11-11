@@ -45,7 +45,9 @@ const form = () => ({
 
 export async function fakeAxPage({ url = "https://example.test/form", title = "The form" } = {}) {
   const calls = [];
-  const state = { url, title, doc: 1, n: 0, nodes: form(), added: [], focused: null, selectAll: false, scrolled: new Set() };
+  // `tabs` are more tabs ({ targetId, url, openerId }), listed after the page; `pageOpen` false lists the page as closed.
+  // Every session is answered from the one model, whichever tab it is attached to.
+  const state = { url, title, doc: 1, n: 0, nodes: form(), added: [], focused: null, selectAll: false, scrolled: new Set(), tabs: [], pageOpen: true };
   const sockets = new Set();
 
   const axTree = () => {
@@ -80,9 +82,9 @@ export async function fakeAxPage({ url = "https://example.test/form", title = "T
     const target = Number(String(params.objectId ?? "").replace("obj-", ""));
     const node = state.nodes[target];
     switch (method) {
-      case "Target.getTargets": return reply({ targetInfos: [{ targetId: "PAGE", type: "page", url: state.url }, { targetId: "XFRAME", type: "iframe", url: "https://ads.other.test/frame", parentFrameId: "MAIN" }] });
-      case "Target.attachToTarget": return reply({ sessionId: "S1" });
-      case "Target.getTargetInfo": return reply({ targetInfo: { targetId: "PAGE", type: "page", url: state.url } });
+      case "Target.getTargets": return reply({ targetInfos: [...(state.pageOpen ? [{ targetId: "PAGE", type: "page", url: state.url }] : []), ...state.tabs.map((t) => ({ ...t, type: "page" })), { targetId: "XFRAME", type: "iframe", url: "https://ads.other.test/frame", parentFrameId: "MAIN" }] });
+      case "Target.attachToTarget": return reply({ sessionId: `S-${params.targetId}` });
+      case "Target.getTargetInfo": return reply({ targetInfo: { targetId: params.targetId, type: "page", url: state.tabs.find((t) => t.targetId === params.targetId)?.url ?? state.url } });
       case "Page.getFrameTree": return reply({ frameTree: { frame: { id: "MAIN", url: state.url }, childFrames: [{ frame: { id: "XFRAME", url: "https://ads.other.test/frame" } }] } });
       case "Accessibility.getFullAXTree": return params.frameId ? error("Frame with the given frameId is not found.") : reply({ nodes: axTree() });
       case "Page.navigate": navigate(params.url); return reply({ frameId: "MAIN", loaderId: `L${state.doc}` });

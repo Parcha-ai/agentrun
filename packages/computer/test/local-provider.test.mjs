@@ -214,6 +214,29 @@ test("a Chrome that cannot start its sandbox is refused in words that never offe
 	assert.ok((await provider({ uid: 0 }).testConnection()).error.message.includes("root"));
 });
 
+test("a create stopped while it works starts no Chrome, or ends the one it started, and leaves nothing", async () => {
+	/** A signal that reads as aborted from its nth read on, and fires no event: a stop that came between two checks. */
+	const abortedFrom = (n) => {
+		let reads = 0;
+		return { get aborted() { return ++reads >= n; }, addEventListener() {}, removeEventListener() {} };
+	};
+	// Stopped while the directory was made: the supervisor is never started.
+	const early = provider();
+	const before = await early.create(SPEC, { signal: abortedFrom(2) });
+	assert.equal(before.ok, false);
+	assert.equal(before.error.code, "aborted");
+	assert.match(before.error.message, /aborted before Chrome was started/);
+	assert.deepEqual(readdirSync(early.root), [], "no directory left");
+	// Stopped before the listener was added: the abort is read there, and the supervisor it started is ended.
+	const late = provider();
+	const during = await late.create(SPEC, { signal: abortedFrom(3) });
+	assert.equal(during.ok, false);
+	assert.equal(during.error.code, "aborted");
+	assert.match(during.error.message, /aborted while Chrome started; it was ended/);
+	assert.deepEqual((await late.list({})).value, [], "no browser left");
+	assert.deepEqual(readdirSync(late.root), [], "no directory left");
+});
+
 test("testConnection starts the Chrome once with its sandbox on and keeps nothing", async () => {
 	const p = provider();
 	const tested = await p.testConnection();
