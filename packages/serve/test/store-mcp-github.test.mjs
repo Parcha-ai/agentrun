@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, storeOn, T0 } from "./store-helpers.mjs";
+import { queued, storeOn } from "./store-helpers.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });

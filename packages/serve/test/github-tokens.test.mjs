@@ -4,18 +4,15 @@
 // (runner/github-app.ts, store-github-app.test.mjs; runner/mcp-github.ts, store-mcp-github.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { connect, connectable, deliver, firstInput, INSTALLED, PUBLIC, storeOf } from "./github-support.mjs";
-import { agent, follow, runDir, serve } from "./support.mjs";
+import { connect, connectable, deliver, firstInput, PUBLIC, storeOf } from "./github-support.mjs";
+import { agent, follow, serve } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
-const ALLOW = { "mcp:gh/*": { permission: "allow" } };
-const pr = { action: "opened", number: 12, pull_request: { draft: false }, repository: { full_name: "acme/widgets" }, installation: { id: 777 } };
 
 /** A connected server with an MCP server `gh` on the App's tokens: the fake takes only a token GitHub minted, and keeps
  *  what each request's Authorization and X-MCP-Tools said. */
@@ -35,14 +32,9 @@ async function withGitHubMcp(t) {
   assert.equal(saved.body.auth.type, "github_app");
   return { server, fake, seen };
 }
-/** The tokens minted for runs, each narrowed to its repository: the save's own, to list the tools, covers the installation. */
-const runTokens = (server) => server.github.tokens.filter((entry) => entry.repositories && !entry.permissions);
 /** The tokens a save minted to list a server's tools: a metadata-read one GitHub alone saw (revoked), then one narrowed to a
  *  single repository, the one sent. */
 const listingTokens = (server) => server.github.tokens.filter((entry) => entry.permissions);
-
-
-const files = async (dir) => Promise.all((await readdir(dir, { recursive: true, withFileTypes: true })).filter((e) => e.isFile()).map(async (e) => ({ path: join(e.parentPath, e.name), text: await readFile(join(e.parentPath, e.name), "utf8").catch(() => "") })));
 
 test("mintInstallationToken: the repository's installation looked up with the App's JWT, a token narrowed to that one repository; not installed, no repository, and GitHub out of reach each said", { timeout: 60_000 }, async (t) => {
   const { mintInstallationToken } = await import("../dist/github.js");
@@ -257,6 +249,16 @@ test("the listing token tries each installation that covers a repository until o
   failures.repositories = 503;
   const refused = await server.api("POST", "/settings/mcp-servers/preview", entry);
   assert.deepEqual([refused.status, refused.body.error?.code], [502, "github_failed"], JSON.stringify(refused.body));
+  delete failures.repositories;
+  // The first covers a repository but its narrowed token is refused, and the second covers none: the refusal is the
+  // answer, never "none covers a repository", which would send the owner to add one already selected.
+  installations.get(778).repositories = [];
+  failures.mint = (installation, asked) => (installation === 777 && asked.repositories ? { status: 403, message: "This installation has been suspended" } : undefined);
+  const mintRefused = await server.api("POST", "/settings/mcp-servers/preview", entry);
+  const words = JSON.stringify(mintRefused.body);
+  assert.notEqual(mintRefused.status, 200, words);
+  assert.match(words, /GitHub gave no token for the App's installation on acme/, "the narrowed mint's refusal");
+  assert.doesNotMatch(words, /covers a repository|covers no repository/, words);
 });
 
 test("GitHub not answering the listing's read of an installation's repositories (a 503, a 429) is 502 github_failed, \"GitHub didn't answer: try again\", never github_not_connected: a preview, a save and a refresh each, and nothing stored changes", { timeout: 60_000 }, async (t) => {

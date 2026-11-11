@@ -8,9 +8,9 @@
 //
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "../timeline/index.js";
 import {
-  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdWords, takeEndedWords,
+  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
 } from "../computer-commands.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
@@ -98,8 +98,19 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
     void write(entries).then(() => change && signal(runId, change), () => undefined);
   });
   return {
-    /** The run's computer is up for this pass: the server shows it live, the agent driving. */
-    up: (): Promise<void> => {
+    /** The run's computer is up for this pass: the server shows it live, the agent driving. `prior`, the run's root
+     *  entries before this pass: a take they still hold in force was on the computer of an earlier claim, whose runner
+     *  lost the run (a crash, a lapsed lease: its own end of the take, if it wrote one, was refused by the fence) and
+     *  whose computer this claim's start let go (releaseOlder deletes a lower epoch's computers). That take ends here,
+     *  `released`, once, with its row when it had reached the person, so they read why the desktop is the agent's again.
+     *  Only a hold that has had no take yet (a new claim's computer) ends one so: a restart within the claim keeps its own. */
+    up: async (prior: readonly { readonly kind: string; readonly data?: unknown }[] = []): Promise<void> => {
+      const before = holdIn(prior.map((entry) => ({ kind: entry.kind, data: entry.data })));
+      if (before.up && before.state !== "agent" && before.take !== undefined && hold.epoch() === 0) {
+        const at = now();
+        const ended: RootEntry = { kind: COMPUTER_HOLD_KIND, data: { state: "agent", take: before.take, computer: kind, at, ended: "released" } };
+        await write(before.state === "person" ? [ended, phase(words.ended.released, at)] : [ended]);
+      }
       const at = now();
       const take = hold.current();
       // A pass that starts while a take is in force (a restart within the claim) says so after the up entry.

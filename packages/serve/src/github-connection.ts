@@ -519,6 +519,8 @@ export class GitHubConnect {
       // Each installation in turn, until one gives a token: one that refuses, covers no repository or that GitHub did not
       // answer for leaves the next to try.
       const refusals: { unusable: string }[] = [];
+      // A refused narrowed mint: its installation covers a repository, so its refusal is the answer, never "none covers one".
+      let covered: { unusable: string } | undefined;
       let unanswered: Unanswered | undefined;
       for (const installation of installations) {
         const refused = { unusable: `GitHub gave no token for the App's installation on ${installation.account}.` };
@@ -530,11 +532,12 @@ export class GitHubConnect {
           const minted = await this.mint(installation.id, jwt, [found.repo], refused, signal, { metadata: "read" });
           if ("token" in minted) return minted;
           if ("failed" in minted) unanswered = minted;
-          else refusals.push(minted);
+          else covered ??= minted;
         }
       }
       // GitHub that did not answer for one says nothing of it: tried again, never read as refused or as "no repository".
       if (unanswered) return unanswered;
+      if (covered) return covered;
       if (refusals.length === installations.length) return refusals[0]!;
       return installations.length === 1
         ? { unusable: `The GitHub App's installation on ${installations[0]!.account} covers no repository yet: add one to it, then save the server.` }

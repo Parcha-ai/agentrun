@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { seal } from "@parcha/pi-durable-agent";
+import { seal } from "../dist/sealing.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,7 +194,8 @@ test("each installation token minted for a run joins the run's redactor: the fir
 test("an App disconnected or replaced while a run holds its token stops it at the next mint: the token held is dropped and revoked, the server's calls refused in words; a claim's release revokes the token it holds", async (t) => {
   const github = await fakeGitHub(t);
   /** Settles once `done` holds: the refresh a timer fires runs on its own, its promise not handed back. */
-  const until = async (done) => { for (let i = 0; i < 1000 && !done(); i++) await new Promise((resolve) => setImmediate(resolve)); assert.ok(done(), "settled"); };
+  // Bounded by time, not turns: on Postgres the App's read goes out over a socket.
+  const until = async (done) => { for (const end = Date.now() + 10_000; !done() && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10)); assert.ok(done(), "settled"); };
   for (const [words, change] of [["disconnected", (store) => store.triggerSettings.removeScope("github", "server")], ["replaced", (store) => connected(store, { appId: "4343", pem: generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey })]]) {
     const { store } = await storeOn(t);
     await connected(store);
@@ -322,6 +323,31 @@ test("an App gone while a refresh replaces the token during the per-call check: 
   await checking;
   assert.deepEqual(put.at(-1), { unopened: GITHUB_UNUSABLE.disconnected }, "the server's calls refused in words");
   assert.deepEqual(revoked.sort(), ["token-1", "token-2"], "the replacement and the token it replaced, both revoked");
+});
+
+test("a refresh still out when the per-call check finds the App gone installs nothing: its token is revoked when it comes back, and the server's calls stay refused", async () => {
+  const clock = { now: 1_000_000 };
+  const { access, revoked, check, mints } = countedAccess(clock);
+  const refreshes = [];
+  const tokens = githubTokens(access, { now: () => clock.now, arm: (fire) => (refreshes.push(fire), { clear() {} }) });
+  const put = [];
+  await tokens.open("gh", (entry) => put.push(entry));
+  // The refresh's mint is out at GitHub...
+  mints.held = Promise.withResolvers();
+  refreshes[0]();
+  // ...while the owner disconnects and the next call's check finds it.
+  check.pending = Promise.withResolvers();
+  const checking = tokens.check("gh");
+  check.pending.resolve(false);
+  await checking;
+  assert.deepEqual(put.at(-1), { unopened: GITHUB_UNUSABLE.disconnected });
+  assert.deepEqual(revoked, ["token-1"], "the token held, revoked at the check");
+  // The mint comes back with a token: never installed, revoked.
+  mints.held.resolve();
+  for (let i = 0; i < 20 && revoked.length < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(revoked.sort(), ["token-1", "token-2"], "the late refresh's token revoked too");
+  assert.deepEqual(put.at(-1), { unopened: GITHUB_UNUSABLE.disconnected }, "the refusal stands: no headers put after it");
+  assert.equal(put.filter((entry) => entry.headers).length, 1, "only the first token was ever handed out");
 });
 
 test("a run's release revokes every token still good: the one held, one a refresh replaced, and one a mint gives back after the release", async () => {

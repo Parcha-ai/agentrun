@@ -55,6 +55,10 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
    *  revoked at the refresh, only when its server's access ends (drop) or the run's does (release). */
   const replaced = new Map<string, { token: string; expiresAt: number }[]>();
   let released = false;
+  /** Each server's access epoch: a drop ends it, so a mint that was out across the drop (a refresh while check() found
+   *  the App gone) installs nothing; its token is revoked. */
+  const epochs = new Map<string, number>();
+  const epochOf = (name: string) => epochs.get(name) ?? 0;
 
   const clear = (name: string) => {
     for (const timer of held.get(name)?.timers ?? []) timer.clear();
@@ -64,6 +68,7 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
   /** `name`'s tokens, the one held and every one a refresh replaced that has not expired, revoked at GitHub as they are
    *  dropped: never left live past its run or its App. */
   const drop = (name: string) => {
+    epochs.set(name, epochOf(name) + 1);
     const token = held.get(name)?.token;
     clear(name);
     if (token) revoke(token);
@@ -76,14 +81,16 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
   const mint = async (name: string, put: (entry: Entry) => void, refreshing: boolean): Promise<void> => {
     if (!access) return put({ unopened: GITHUB_UNUSABLE.noAccess });
     if (!access.target) return put({ unopened: GITHUB_UNUSABLE.noRepo });
+    const epoch = epochOf(name);
     let got: Awaited<ReturnType<GithubAppMint>>;
     try {
       got = await access.mint(access.target);
     } catch (error) {
       got = { ok: false, reason: "github_failed", message: String((error as Error)?.message ?? error) };
     }
-    // A mint that came back after the run's access ended: its token is revoked at once, never held.
-    if (released) {
+    // A mint that came back after the run's access ended, or the server's (its token dropped meanwhile, its calls
+    // refused): its token is revoked at once, never held, and the refusal stands.
+    if (released || epochOf(name) !== epoch) {
       if (got.ok) revoke(got.token);
       return;
     }

@@ -5,13 +5,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, cpSync, existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, readCases, startFake, verdictOf } from "../dist/template-eval.js";
-import { PackageError, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
+import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, lastJsonBlock, markdownReport, metricsOf, readCases, searched, startFake, verdictOf } from "../dist/template-eval.js";
+import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve } from "./support.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -171,6 +171,17 @@ test("a fake MCP server answers from its fixture and records each call; tool_use
   assert.match(graderOf(mismatch.runs[0], "updated.md").reason, /^0 calls of mcp:crm\/update_contact with \{"id":"8"\}; the grader expects exactly 1$/);
 });
 
+test("an MCP answer too long to read whole is filed where read pages through it to its end, in a run with no shell", { timeout: 600_000 }, async () => {
+  // The hosted shape (support.mjs: no box), so the run has read and its MCP tools and no shell: the answer's start names
+  // the file and the offset to go on from, and read's pages each name the next, through pi's bound on a tool's output.
+  const one = await caseOf("mcp-filed");
+  assert.equal(one.pass, true, JSON.stringify(one, null, 1));
+  const [run] = one.runs;
+  assert.equal(run.status, "completed");
+  assert.match(graderOf(run, "end.md").reason, /matches/, "the record's last line was read");
+  assert.match(graderOf(run, "read.md").reason, /^\d+ calls? of read/);
+});
+
 test("a background shell call keeps its own name in the grading record, as the gate's request does: never counted as bash", () => {
   const rows = [
     { kind: "tool_use", tool_use_id: "1", tool_name: "bash_background", tool_input_preview: "sleep 1" },
@@ -212,8 +223,8 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.notEqual(one.runs[0].agent_id, one.runs[1].agent_id, "each run its own agent");
   const report = await eval_();
   assert.equal(report.pass, false);
-  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["asks", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-match", true], ["mcp-mismatch", false]]);
-  assert.equal(report.passed, 5);
+  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["asks", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-filed", true], ["mcp-match", true], ["mcp-mismatch", false]]);
+  assert.equal(report.passed, 6);
   assert.equal(report.cost_usd.total, Math.round((report.cost_usd.runs + report.cost_usd.graders) * 1e6) / 1e6);
   assert.equal(report.cost_usd.unknown, 0);
 });
@@ -405,6 +416,10 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(passed.err, /case learned run 1: completed, pass/);
   const report = JSON.parse(readFileSync(join(dir, "pass.json"), "utf8"));
   assert.deepEqual([report.pass, report.cases.map((c) => c.name), report.server], [true, ["learned"], { kind: "in_process" }]);
+  // Each run keeps its metrics as its end wrote them (GET /stats over its own agent): its requests, tokens and tool calls.
+  const { metrics } = report.cases[0].runs[0];
+  assert.ok(metrics && metrics.requests > 0 && metrics.input + metrics.cache_read + metrics.cache_write > 0 && metrics.output > 0, JSON.stringify(metrics));
+  assert.equal(metrics.tool_calls, Object.values(metrics.tools).reduce((sum, t) => sum + t.calls, 0));
 
   // One failing case proves exit 1 and the report; a passing one beside it adds a real run and nothing more.
   const failed = await run([PKG, "--case", "mcp-mismatch", "--runs", "1", "--faux", FAUX, "--report", join(dir, "fail.json")]);
@@ -447,5 +462,109 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
     assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
     assert.match(refused.err, said);
     assert.equal(refused.out, "");
+  }
+});
+
+test("a fake's answer keyed by a list of whens is taken when any one matches; one no answer matches falls to its search, then its default", () => {
+  const file = { content: [{ type: "text", text: "the file at abc" }] };
+  const fixture = { server: "github", description: "", tools: {
+    get_file_contents: { description: "", input: { type: "object" }, answers: [{ when: [{ path: "a.ts", sha: "abc" }, { path: "a.ts", ref: "abc" }, { path: "a.ts", ref: "refs/pull/7/head" }], result: file }], default: { content: [{ type: "text", text: "not here" }], isError: true } },
+    search_code: { description: "", input: { type: "object" }, answers: [{ when: { query: "pinned" }, result: { content: [{ type: "text", text: "pinned answer" }] } }],
+      search: { query: "query", note: "a subset", limit: 2, files: [{ path: "src/a.ts", text: "export function load(id) {\n  return cache.get(id);\n}\nload(1);\nload(2);" }, { path: "src/b.py", text: "def load(x):\n    return x" }] } },
+  } };
+  for (const args of [{ path: "a.ts", sha: "abc" }, { path: "a.ts", ref: "abc", owner: "o" }, { path: "a.ts", ref: "refs/pull/7/head" }]) assert.equal(fakeAnswer(fixture, "get_file_contents", args).content[0].text, "the file at abc", JSON.stringify(args));
+  assert.equal(fakeAnswer(fixture, "get_file_contents", { path: "a.ts", sha: "def" }).isError, true, "no entry of the list matches");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: "pinned" }).content[0].text, "pinned answer", "an answer wins over the search");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: "load language:typescript" }).content[0].text, "a subset\n3 matching lines in 1 file (the first 2 shown)\nsrc/a.ts:1: export function load(id) {\nsrc/a.ts:4: load(1);");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: '"return x" path:src/' }).content[0].text, "a subset\n1 matching line in 1 file\nsrc/b.py:2: return x");
+  assert.equal(fakeAnswer(fixture, "search_code", { query: "/cache\\.get\\(/ NOT nothing-here" }).content[0].text, "a subset\n1 matching line in 1 file\nsrc/a.ts:2: return cache.get(id);");
+  assert.match(fakeAnswer(fixture, "search_code", { query: "load NOT cache" }).content[0].text, /^a subset\n1 matching line in 1 file\nsrc\/b\.py:1: def load\(x\):$/);
+  assert.match(searched({ query: "q", files: [] }, "anything"), /^0 matching lines in 0 files$/);
+});
+
+test("a package's evals/ files are bounded apart from the agent's files: a fixture past 256 KiB loads, one past the eval bound does not", async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const fixture = JSON.parse(readFileSync(join(dir, "evals/mcp-match/fixtures/crm.json"), "utf8"));
+  fixture.description = "x".repeat(MAX_FILE_BYTES + 1024);
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/crm.json"), JSON.stringify(fixture));
+  assert.doesNotThrow(() => readPackage(dir), "an eval fixture over the agent's file limit");
+  assert.equal(readCases(dir, ["mcp-match"]).cases[0].mcp.crm.description.length, MAX_FILE_BYTES + 1024);
+  writeFileSync(join(dir, "big.md"), "y".repeat(MAX_FILE_BYTES + 1));
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /big\.md: is over \d+ bytes, a package file's limit/.test(e.message), "the agent's own files keep their limit");
+  rmSync(join(dir, "big.md"));
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/huge.json"), Buffer.alloc(MAX_EVAL_FILE_BYTES + 1, 32));
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/huge\.json: is over \d+ bytes, an eval file's limit/.test(e.message));
+});
+
+test("a fake search reads /.../ as literal text, so a pattern like /(a+)+$/ answers at once; NOT before a qualifier excludes its files and is spent there", () => {
+  const long = "a".repeat(50_000) + "b";
+  const search = { query: "query", files: [{ path: "src/load.ts", text: `load(1);\n${long}` }, { path: "tests/load.test.ts", text: "load(2);" }, { path: "docs/x.md", text: "(a+)+$ is a pattern" }] };
+  const started = Date.now();
+  assert.equal(searched(search, "/(a+)+$/"), "1 matching line in 1 file\ndocs/x.md:1: (a+)+$ is a pattern", "the pattern's text, matched as written");
+  assert.ok(Date.now() - started < 1_000, "answered at once");
+  assert.equal(searched(search, "/load\\(1\\)/"), "1 matching line in 1 file\nsrc/load.ts:1: load(1);", "an escaped mark is that mark");
+  assert.equal(searched(search, "load NOT path:tests"), "1 matching line in 1 file\nsrc/load.ts:1: load(1);", "NOT path: excludes the tests");
+  assert.equal(searched(search, "load -path:tests"), searched(search, "load NOT path:tests"), "as -path: does");
+  assert.equal(searched(search, "NOT path:docs load"), "2 matching lines in 2 files\nsrc/load.ts:1: load(1);\ntests/load.test.ts:1: load(2);", "the NOT is spent on the qualifier: load is still wanted");
+});
+
+test("the answer's schema keeps the agent's file limits when it lives under evals/: it ships beside each SKILL.md", async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  mkdirSync(join(dir, "skills/answer"), { recursive: true });
+  writeFileSync(join(dir, "skills/answer/SKILL.md"), "---\nname: answer\ndescription: Answers.\n---\nAnswer.\n");
+  const schema = readFileSync(join(dir, "answer.schema.json"), "utf8");
+  const manifest = readFileSync(join(dir, "agent.md"), "utf8").replace("output: { schema: answer.schema.json }", "output: { schema: evals/mcp-match/fixtures/answer.schema.json }");
+  writeFileSync(join(dir, "agent.md"), manifest);
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), schema);
+  assert.equal(readPackage(dir).skills["answer/answer.schema.json"], schema, "a small schema under evals/ ships beside the SKILL.md");
+  const big = JSON.stringify({ ...JSON.parse(schema), description: "x".repeat(MAX_FILE_BYTES + 1024) });
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), big);
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/mcp-match\/fixtures\/answer\.schema\.json: is over \d+ bytes, a package file's limit: the answer's schema ships beside each SKILL\.md/.test(e.message), "past the agent's file limit, under evals/ too");
+  writeFileSync(join(dir, "evals/mcp-match/fixtures/answer.schema.json"), schema);
+  // The agent's own files one byte short of the schema's room: each within its limit, and together within POST /v2/agents'.
+  let room = MAX_PACKAGE_BYTES - Buffer.byteLength(schema) + 1 - ["agent.md", "answer.schema.json", "skills/answer/SKILL.md"].reduce((sum, path) => sum + statSync(join(dir, path)).size, 0);
+  for (let n = 1; room > 0; n++) {
+    const size = Math.min(room, MAX_FILE_BYTES);
+    writeFileSync(join(dir, `skills/answer/filler${n}.md`), "y".repeat(size));
+    room -= size;
+  }
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /answer\.schema\.json: takes the agent's files over \d+ bytes together/.test(e.message), "and it counts toward the agent's bytes together");
+});
+
+test("template eval metricsOf: a run's metrics from GET /stats?agent=, null whenever the read gives none, never a throw", async () => {
+  const stats = (totals, tools = []) => async () => ({ status: 200, body: { analytics: { totals, tools } } });
+  const totals = { runs_with_metrics: 1, input: 120, cache_read: 900, cache_write: 40, output: 75, requests: 3, unmetered: 0 };
+  // The read asks for the run's own agent, with a signal that bounds it.
+  let asked;
+  const ok = await metricsOf(async (method, path, body, headers, options) => {
+    asked = { method, path, signal: options?.signal instanceof AbortSignal };
+    return stats(totals, [{ tool: "read", calls: 4, errors: 1 }, { tool: "bash", calls: 2, errors: 0 }])();
+  }, "agt_1");
+  assert.deepEqual(asked, { method: "GET", path: "/stats?agent=agt_1", signal: true });
+  assert.deepEqual(ok, { input: 120, cache_read: 900, cache_write: 40, output: 75, requests: 3, unmetered: 0, tool_calls: 6, tools: { read: { calls: 4, errors: 1 }, bash: { calls: 2, errors: 0 } } });
+
+  // None kept, a failed answer, a read that throws: null.
+  assert.equal(await metricsOf(stats({ ...totals, runs_with_metrics: 0 }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => ({ status: 500, body: { error: { message: "boom" } } }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => ({ status: 200, body: "not json" }), "agt_1"), null);
+  assert.equal(await metricsOf(async () => { throw new Error("the server did not answer"); }, "agt_1"), null);
+
+  // A read that stalls: null once the timeout passes, or as soon as the eval stops. A stalled fake holds no socket and
+  // AbortSignal.timeout's timer is unref'd, so a referenced timer keeps the loop alive until both waits end.
+  const stalls = async (method, path, body, headers, options) => new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+  const alive = setInterval(() => {}, 1_000);
+  try {
+    let started = Date.now();
+    assert.equal(await metricsOf(stalls, "agt_1", undefined, 50), null);
+    assert.ok(Date.now() - started < 5_000);
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(new Error("stopped")), 20);
+    started = Date.now();
+    assert.equal(await metricsOf(stalls, "agt_1", stop.signal, 60_000), null);
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    clearInterval(alive);
   }
 });

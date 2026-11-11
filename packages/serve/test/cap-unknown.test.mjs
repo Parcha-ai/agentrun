@@ -6,20 +6,18 @@
 // ceiling: nothing bounds a request's worst case. A model whose output costs nothing has a known worst case with or
 // without a ceiling, and passes.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
 import { agent, follow, letGo, runDir, serve } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
 const NO_CEILING = /^spend_cap_reached: .*no output ceiling.*out of budget/;
-/** monid's run allowed: a catalog tool asks by default (tool-gate.ts), and these runs are about their cost, not the gate. */
-const ALLOWED = { "monid.run": { permission: "allow" } };
 
 /** A run store holding `entries`, in order, as pi-durable keeps them; removed after the test. */
 function storeOf(t, entries) {
@@ -241,16 +239,6 @@ test("read in order, the spend after a crash is never less than any reading of t
     assert.ok(Math.abs(spentIn(storeOf(t, entries)) - most) < 1e-9, `exact with no overlap: ${JSON.stringify(events)}`);
   }
 });
-
-/** pi's entry for `message`, as it writes a request's answer or error. */
-const entryOf = (message) => ({ kind: "pi.assistant", model: [message] });
-/** A run whose store keeps the marks it is given, or refuses every write (`refusing`). */
-const markStore = (refusing = false) => {
-  const marks = [];
-  const commit = async (change) => (refusing ? Promise.reject(new Error("the store refused the write")) : change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }));
-  return { marks, run: { harness: { commit } } };
-};
-const FAUX_MODEL = { api: "faux", provider: "faux", id: "m" };
 
 test("the run's shown cost is the timeline's, unchanged: a stopped request is unknown there, and a refusal after it never makes it $0", () => {
   const shown = (entries) => timelineOf(entries.map((entry) => ({ conversationId: 1, ...entry })), { settled: true }).find((row) => row.kind === "usage")?.usage?.usd;
@@ -763,8 +751,6 @@ async function stopped(api, id, cap) {
   await follow(api, runId, ["input_required"]);
   return runId;
 }
-/** One request's worst case on the faux model: 16,384 output tokens at $100 a million. */
-const FAUX_WORST = 16_384 * 100 / 1e6;
 
 // SKIP (follow-up #2080): a capped pi run stopped mid-answer ends cancelled on the runner, never goes on while its cap allows.
 test.skip("a capped pi run stopped mid-answer goes on while its cap allows: in its process, and in the process a later message opens, the stopped request counts what it streamed and the 1,024-token allowance", async (t) => {
@@ -851,15 +837,3 @@ test.skip("a capped pi run refused for room with no stop pauses at its cap: its 
   const asWritten = meterOf(entries);
   assert.deepEqual([asWritten.usage.usd, asWritten.usage.requests, asWritten.requests], [first, 1, 1], "the ask alone: the refused request was never sent");
 });
-
-/** Waits until faux monid has filed `count` run calls in `log` (one line per call), up to a loaded runner's minute; past it,
- *  fails saying where the run stood and what monid saw, never on a fixed count of polls. */
-async function monidRunsSent(api, runId, log, count) {
-  const sent = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"path":"/v1/run"')).length : 0);
-  for (const deadline = Date.now() + 60_000; sent() < count; await new Promise((resolve) => setTimeout(resolve, 100))) {
-    if (Date.now() > deadline) {
-      const run = (await api("GET", `/runs/${runId}`)).body;
-      assert.fail(`monid's run call ${count} was not sent in 60 s: the run is ${run.status}/${run.state} (${JSON.stringify(run.error)}), and monid saw ${existsSync(log) ? readFileSync(log, "utf8").trim() : "nothing"}`);
-    }
-  }
-}

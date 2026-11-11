@@ -44,7 +44,6 @@ export type SecretWriterFacts = {
  *  off on a loopback-bound server, open the console from the launch link); no_accounts, accounts are off and the server is
  *  reachable off loopback, where no one writes one until accounts are on. */
 export type SecretsReason = "token" | "sign_in" | "no_accounts";
-export const SECRETS_REASONS: readonly SecretsReason[] = ["token", "sign_in", "no_accounts"];
 
 /** The one decision: whether a caller with these facts may write a secret, and if not, why. The owner's password session
  *  always may; the accounts-off console on a loopback-bound server may where `loopbackConsoleIsOwner`
