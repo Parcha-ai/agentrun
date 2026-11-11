@@ -25,6 +25,9 @@
     "status": "queued",
     "state": "working",
     "title": "Where is my invoice?",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T22:41:40.794Z",
     "updated_at": "2026-10-28T22:41:40.806Z",
     "ended_at": null,
