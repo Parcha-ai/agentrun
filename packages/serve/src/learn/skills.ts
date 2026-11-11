@@ -262,6 +262,21 @@ export const setsStatus = (text: string): boolean => frontMatter(text)?.has("sta
  *  pending` (learnedStatus). No run is given a held skill or workflow until a person approves it. */
 export const isHeld = (text: string): boolean => learnedStatus(text) === "pending";
 
+/** Whether `text`'s status, when it sets one, is one plain line, `status: <value>` with nothing of it on the lines after
+ *  (no quoted value that runs on, no block, no wrapped line): the only status the host's writers (released,
+ *  retiredLearned), which take the `status:` line out whole, can edit. One set any other way reads unclear (learnedStatus:
+ *  retired), never held or active, and no writer edits it, so a write never leaves part of it behind. The host writes
+ *  only one-line statuses (held, retiredLearned). */
+export function statusOnOneLine(text: string): boolean {
+  const front = frontMatter(text);
+  if (!front?.has("status")) return true;
+  const lf = text.replace(/\r\n/g, "\n");
+  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith("status:"))?.slice("status:".length).trim() ?? "";
+  if (!own || /^[>|]/.test(own) || (/^["']/.test(own) && !closedQuote(own))) return false;
+  // A plain value that wraps onto the next lines reads longer than its own line.
+  return unquote(own) === front.get("status");
+}
+
 /** `text`, a SKILL.md or a draft's README.md, as the host merges one the grader held for its owner's OK: `status:
  *  pending` last in its front matter, with LF line ends. Throws on a text with no front matter, which the checker never
  *  passes. */
@@ -276,8 +291,12 @@ export function held(text: string): string {
 export function released(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
+  if (!statusOnOneLine(text)) throw new Error("it cannot be approved: its status is not one plain line");
   const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
-  return `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
+  const out = `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
+  // What it leaves reads back active, or the approve fails: never an OK over a skill no run is given.
+  if (learnedStatus(out) !== "active") throw new Error(`it cannot be approved: its status would read ${learnedStatus(out)}`);
+  return out;
 }
 
 /** What a SKILL.md or a draft's README.md says of itself, the one reader of it (frontMatter), the server's and, through
@@ -288,6 +307,7 @@ export function released(text: string): string {
 export function learnedStatus(text: string): "active" | "pending" | "retired" {
   const front = frontMatter(text);
   if (!front) return "retired";
+  if (!statusOnOneLine(text)) return "retired";
   const status = front.get("status") ?? "active";
   return status === "active" || status === "pending" ? status : "retired";
 }
@@ -297,8 +317,11 @@ export function learnedStatus(text: string): "active" | "pending" | "retired" {
 export function retiredLearned(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be retired: ${front}`);
+  if (!statusOnOneLine(text)) throw new Error("it cannot be retired: its status is not one plain line");
   const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
-  return `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
+  const out = `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
+  if (!frontMatter(out) || learnedStatus(out) !== "retired") throw new Error("it cannot be retired: its front matter would not read retired");
+  return out;
 }
 
 /** A draft's `README.md` as the host writes it, from the workflow's name and the one-line description its block gives. */
