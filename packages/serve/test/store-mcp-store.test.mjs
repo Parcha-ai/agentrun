@@ -1,7 +1,7 @@
 // The MCP registry and OAuth pending sign-ins as store rows (mcp-store.ts over store.mcp / store.mcpOauth), sealed with the
 // store's one rule (§7): the registry credential bound to the url's origin inside the sealed plaintext, the pending
-// sign-in's secret parts (its verifier and OAuth client) sealed by its state. These are the store-backed primitives the cut
-// wires into McpServers / McpSignIns.
+// sign-in's secret parts (its verifier and OAuth client) sealed by its state. These are the store primitives
+// McpServersOverStore and McpSignIns run over.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";

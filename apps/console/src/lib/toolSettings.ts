@@ -68,16 +68,10 @@ export const serverDenies = (name: string, gates: readonly ToolGate[], read?: re
   return gates.some((g) => g.name === name && g.permission === "deny");
 };
 
-const PERMISSIONS: readonly string[] = ["allow", "ask", "deny"];
-const isPermission = (v: unknown): v is Permission => typeof v === "string" && PERMISSIONS.includes(v);
-
-/** Each tool's permission, in the server's order: `capabilities.tools` entries that carry one. None from an older server. */
+/** Each tool's permission, in the server's order: every `capabilities.tools` entry carries one, the owner's default and
+ *  those offered. None until the capabilities read answers. */
 export function toolGates(raw: unknown): ToolGate[] {
-  return (Array.isArray(raw) ? raw : []).flatMap((t): ToolGate[] => {
-    const e = t as { name?: unknown; permission?: unknown; default_permission?: unknown; permissions?: unknown; ask_needs?: unknown } | null;
-    if (!e || typeof e.name !== "string" || !Array.isArray(e.permissions) || !e.permissions.length || !e.permissions.every(isPermission) || !isPermission(e.default_permission)) return [];
-    return [{ name: e.name, permission: isPermission(e.permission) ? e.permission : e.default_permission, default_permission: e.default_permission, permissions: e.permissions, ...(e.ask_needs === "password" ? { ask_needs: "password" as const } : {}) }];
-  });
+  return ((raw ?? []) as ToolGate[]).map(({ name, permission, default_permission, permissions, ask_needs }) => ({ name, permission, default_permission, permissions, ...(ask_needs === "password" ? { ask_needs } : {}) }));
 }
 
 const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "exa-keyless": "Exa keyless", parallel: "Parallel" };

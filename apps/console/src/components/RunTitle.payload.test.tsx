@@ -18,7 +18,7 @@ const WRAPPED = 'Say hello. <trigger-payload source="webhook" scheme="standard" 
 // A long payload: the served title is cut before the wrapper closes.
 const CUT = 'Say hello. <trigger-payload source="webhook" scheme="standard" untrusted> {"eve';
 const run = (title: string, over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-09T00:00:00Z", poll_after_ms: 0,
-  run_id: "01a1a869-ce4e-7cf5-abf8-c5407893934a", agent_id: "greeter", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
+  run_id: "01a1a869-ce4e-7cf5-abf8-c5407893934a", place: { mode: "runner" }, agent_id: "greeter", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
   created_at: "2026-11-09T00:14:00Z", ended_at: "2026-11-09T00:14:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
   trigger: { id: "trg_w", firing_key: "fir_1" }, ...over,
 } as Run);
@@ -73,9 +73,9 @@ describe("a triggered run's title", () => {
   });
 
   it("the needs-you strip's waiting, failed and working runs, and an agent's latest run, say the input alone", () => {
-    const waiting = run(WRAPPED, { run_id: "q1", status: "input_required", state: "waiting", pending: { kind: "question", question: "Which lead?", asked_at: "2026-11-09T00:14:01Z" } } as Partial<Run>);
-    const failed = run(WRAPPED, { run_id: "f1", status: "failed", error: { code: "run_failed", message: "it failed", retryable: false } });
-    const working = run(WRAPPED, { run_id: "w1", status: "working", state: "working", ended_at: null });
+    const waiting = run(WRAPPED, { run_id: "q1", place: { mode: "runner" }, status: "input_required", state: "waiting", pending: { kind: "question", question: "Which lead?", asked_at: "2026-11-09T00:14:01Z" } } as Partial<Run>);
+    const failed = run(WRAPPED, { run_id: "f1", place: { mode: "runner" }, status: "failed", error: { code: "run_failed", message: "it failed", retryable: false } });
+    const working = run(WRAPPED, { run_id: "w1", place: { mode: "runner" }, status: "working", state: "working", ended_at: null });
     const strip = mount(createElement(NeedsYouStrip, { asking: [waiting], failed: [failed], live: [working], agentName: (id: string) => id, now: () => Date.parse("2026-11-09T00:15:00Z"), onAnswer: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null }));
     expect(strip.textContent).toContain("Say hello.");
     expect(strip.textContent).not.toContain("trigger-payload");

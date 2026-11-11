@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 const CALL = "toolu_01:Ab/c+d=e f";
 const PENDING = { kind: "approval" as const, id: CALL, tool: "web_fetch", call_id: CALL, args_preview: "{\"url\":\"http://public.example/\"}", requested_at: "2026-11-09T10:00:02.000Z" };
 const base: Run = { sha: null, updated_at: "2026-11-09T00:00:00Z", poll_after_ms: 0,
-  run_id: "run_1", agent_id: "fetcher", agent_version: 1, revision: "r1", kind: "agentic", status: "input_required", state: "waiting", title: "Read the page",
+  run_id: "run_1", place: { mode: "runner" }, agent_id: "fetcher", agent_version: 1, revision: "r1", kind: "agentic", status: "input_required", state: "waiting", title: "Read the page",
   created_at: "2026-11-09T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
   claim: { runner: "runner-7", epoch: 3, until: "2026-11-09T10:05:00.000Z" }, approvals: "ask", pending: PENDING,
 } as Run;

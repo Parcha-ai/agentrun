@@ -81,13 +81,6 @@ const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TAB
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
 export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
-/** Whether an agent's own settings (definition.tool_settings) keep a pin. Not yet: the agent store this server writes
- *  today keeps a setting's values as names only, and refuses a pin; the store of the rewrite (store/, module A) keeps it
- *  as given, and this is true from its cutover on. Until then a pin is set on the server (PUT /v2/settings/tools), which
- *  the gate holds every run to; the gate reads an agent's pin wherever a revision carries one. */
-export const AGENT_LAYER_PINS: boolean = true;
-/** Why an agent's own pin is refused while AGENT_LAYER_PINS is false. */
-export const AGENT_PIN_LATER = "An agent's own pin is kept once this server's agent store takes it (the store cutover). Until then set the pin on this server, PUT /v2/settings/tools (Settings → Tools), which the tool gate holds every run to.";
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */

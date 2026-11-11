@@ -207,7 +207,7 @@ describe("App, setup's import of this machine's sessions", () => {
 
   it.each([
     [200, "a server that offers no import", { offer: false }],
-    [404, "an older server that offers no import", undefined],
+    [404, "a server without accounts, which has no such route", undefined],
     [403, "a read the server refuses", undefined],
   ] as [number, string, unknown][])("shows no box for %i, %s, and asks no more", async (status, _, body) => {
     const { importRead } = server({ offer: [status, body ?? missing("/v2/setup/import")] });

@@ -1178,9 +1178,8 @@ picks which one a run gets, never the model.
   (`agentrun-` and 24 hex digits: Kernel's names are its account's, so a name derived from the agent would be any
   server's that shares the key). This
   server keeps only a pointer per agent and vendor, sealed under the seal key (`AGENTRUN_SEAL_KEY`) and bound to its
-  agent, in `<data>/homes/<key>/sign-ins/sign-ins.json`. With no seal key nothing is kept and runs start signed out;
-  capabilities say `sign_ins: true` only with a seal key and a browser vendor here. A local Chrome keeps none: its
-  cookies would sit on this server's disk.
+  agent and vendor, in its store. Capabilities say `sign_ins: true` with a browser vendor here. A local Chrome keeps
+  none: its cookies would sit on this server's disk.
 - **How a run gets it.** Before a run with the `browser` tool is launched, the server makes the agent's context at
   Browserbase (`POST /v1/contexts`, which opens no session; Browserbase bills sessions, not contexts) or its profile at
   Kernel (`POST /profiles`, which starts no browser) if it has none,
@@ -1319,8 +1318,8 @@ another server's by then. Under `--faux` a key is checked only against the fake 
 with is checked under `--faux` only against a check's own fake (`fauxBrowserbase`, `fauxMonidCheck`, `fauxKernel`), so the fakes the runs use see the
 runs' calls alone; with none, its `check` stays null.
 
-A saved key is kept only as ciphertext: AES-256-GCM in `DIR/tool-keys.json` (0600), each value bound to its field's
-name, under the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
+A saved key is kept only as ciphertext: AES-256-GCM in the server's store, each value bound to its field's name, under
+the seal key `AGENTRUN_SEAL_KEY`, which only the server opens it with. A run's process never gets the seal
 key. With `AGENTRUN_SEAL_KEY` not set, the server keeps it in `seal/seal.key` in its data directory, beside the store,
 making it at the first start: 32 random bytes in base64, 0600 in a 0700 directory, and one another user can read is
 refused, not changed. It lives and dies with the data (a disk, a volume): back it up with the data directory, and keep
@@ -1385,22 +1384,20 @@ naming the limit and how many tools were read.
 
 `PUT /v2/settings/mcp-servers/{name}` previews the same way, then keeps the server: its URL, the tools it listed (the
 snapshot an agent will be shown) and its credential. A name is lowercase letters, digits and dashes, starting with a
-letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. Each credential header's value is
-sealed like a [tool key](#tool-keys): AES-256-GCM under `AGENTRUN_SEAL_KEY`, bound to the server's name and the header,
-in `DIR/mcp-servers.json` (0600, written whole, synced and renamed), which holds no value in the clear. With no seal key,
-a server that takes a credential is `409 no_sealing_key`, before anything is contacted; one with `auth.type` none is
-kept. A `PUT` that sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's
-origin stay the same: a saved credential never goes to another origin unless you send it again.
+letter, at most 32, with no underscores, so `mcp__<server>__<tool>` splits one way. The credential is sealed like a
+[tool key](#tool-keys): AES-256-GCM under `AGENTRUN_SEAL_KEY`, bound to the server's name and its URL's origin, in the
+data directory's store, which holds no value in the clear. The server does not start without its seal key. A `PUT` that
+sends no `token` (or no `headers`) keeps the sealed credential, as long as the auth type and the URL's origin stay the
+same: a saved credential never goes to another origin unless you send it again.
 
-`GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `seal_key_missing`
-(no seal key now) or `unreadable` (sealed under another key, or damaged: a `PUT` with the credential seals it again),
-null for `auth.type` none. No read, log line or error shows a credential; a server's error text is cut of the values
-sent before it is shown. `POST .../{name}/refresh` lists the tools again with the saved URL and credential, keeps them,
-and answers `{added, removed, changed, server}`: `changed` names a tool whose title, description, schemas or
-annotations differ. `DELETE .../{name}` forgets the server and its credential. A saved-servers file that does not read (damaged, or
-another format) is never written over: the list answers `servers: []` with `file_unreadable: true`, and every other
-route is `409 store_unreadable` until the file is restored or removed. Capabilities' `features.mcp_client`
-says `transports: ["streamable-http"]`, the `auth` types and `at_rest` (`sealed`, or `unavailable` with no seal key).
+`GET /v2/settings/mcp-servers` and `GET .../{name}` show each server with `credential`: `sealed`, `unreadable` (sealed
+under another key, or damaged: a `PUT` with the credential seals it again) or `expired` (an OAuth sign-in whose refresh
+its authorization server refused: sign in again), null for `auth.type` none. No read, log line or error shows a
+credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
+tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
+names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
+credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
+"sealed"`.
 
 ### Signing in with OAuth
 
@@ -1587,8 +1584,7 @@ with any of its libraries: `webhook-id` (the same on every try of a message, so 
 the secret's bytes. A receiver checks the signature against the raw body and refuses a timestamp more than 5 minutes
 from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
 and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
-sealed under `AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600), so with no seal key no webhook is set
-(`409 no_sealing_key`). A new secret is a `DELETE` and a `PUT`.
+sealed under `AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600). A new secret is a `DELETE` and a `PUT`.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
 spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
@@ -1663,8 +1659,7 @@ anything else. A bad signature, a stale timestamp, an unknown trigger, one that 
 answer the same `401`, so no trigger id can be found by asking; a body past 256 KiB is `413`.
 
 The secret, `whsec_` and 32 random bytes in base64, is made with the trigger and shown in the `201` once; no `GET`
-shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in `DIR/trigger-settings-webhook.json` (each trigger source's
-sealed settings have a file of their own), so with no seal key no webhook trigger is made (`409 no_sealing_key`).
+shows it. It is kept sealed under `AGENTRUN_SEAL_KEY` in the server's store, with each trigger source's other sealed settings.
 `POST /v2/triggers/{id}/secret` makes a new one, shown once, and the old one signs nothing from then on. Like every
 secret this server keeps (its tokens, its outbound webhook's secret), it is cut from what a run shows, from what an
 import keeps and from every learning text. A secret replaced by a rotation, or whose trigger is deleted, is kept too,
@@ -1672,8 +1667,7 @@ sealed in a retired row of its own (scope `retired:<trigger>:<n>`), never a sett
 before is still cut on every later server. Retired rows are kept for good for now; dropping one once no run older than
 it is left is still to come. A secret that does not open under the seal key the server starts with is
 said in its log (`condition=trigger_setting_unopened`, naming the trigger), and its trigger is refused until a new
-secret is made. A `trigger-settings-webhook.json` that does not read is never written over: until it is fixed or moved
-away, no webhook trigger is made or rotated (`409 store_unreadable`) and none fires.
+secret is made.
 
 The request's `webhook-id`, which its signature covers, is its firing's key: the first answers `202` once the firing is
 recorded, and its run starts after; the same `webhook-id` again, for a day after, answers `200` with that firing and
@@ -1913,8 +1907,9 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. |
 
-Home export and import, quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the feature, and
-capabilities declare each one false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
+Quotes answer `501 unsupported_here` naming the feature. Home export and import (`GET` and `PUT /agents/{id}/home`) and
+`POST /runs/{id}/kill` are not served here: they answer `404`, and the served document leaves them out (its
+`info.x-agentrun-serve.not_served` lists them). Capabilities declare each of the four false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
 ### API only
@@ -2007,7 +2002,7 @@ device and inode), so a disk that takes another spelling for one name is refused
 segments: each its own NFC form, with no default-ignorable code point, or it is `400 invalid_file_path`. An archived agent's home is read and written as
 its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),
 `capabilities.home.writes` is `false` and `PUT` and `DELETE` are `501 unsupported_here`, as Node has no `openat` to
-write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, stay `501`.
+write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, are not served (`404`).
 
 ## For coding agents
 
@@ -2069,9 +2064,7 @@ into place and made read-only. `node scripts/harness-locks.mjs` makes the locks 
 checks them). Every run that needs one waits for that one install, its ready time counted from the install's end, and
 shows a `phase` row, `Installing Claude Code (first use)…` or `Installing Codex (first use)…`, while it does. Each run
 then loads the harness from its own packages inside its install and nowhere else, never from a `node_modules` above it;
-a tree that is not whole is installed again. Claude Code as an earlier build installed it, at the top of `<data>/harnesses`
-itself, is removed before the first install (the server logs `harness_install_removed`), and it installs again; a
-`harnesses` directory that holds anything else is left as it is. Until it is installed, capabilities list the harness with `installs:
+a tree that is not whole is installed again. Until it is installed, capabilities list the harness with `installs:
 "on_first_use"`. When npm fails, the run fails and its error names the command that installs it by hand, the same locked
 install: the shipped `package.json` and `package-lock.json` copied into a fresh `<data>/harnesses/<harness>.new`, `npm ci
 --ignore-scripts --include=optional` there, then that directory put in place of `<data>/harnesses/<harness>` (made
