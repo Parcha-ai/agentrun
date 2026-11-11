@@ -848,6 +848,9 @@ export function startRunner(options: RunnerOptions): Runner {
       const late = new Promise<void>((resolve) => (timeout = setTimeout(resolve, Math.max(0, stopBy - Date.now()))));
       await Promise.race([Promise.all([...live.map((held) => held.done), ...endings]), late]);
       clearTimeout(timeout);
+      // A loop still going at the window's end (one a stop row stops, whose signal was kept whole for its end) has its
+      // signal aborted before its claim is given up: no request of it outlives the close.
+      for (const held of live) if (!held.ending && !held.abort.signal.aborted) held.abort.abort(new Error("the runner is closing"));
       for (const held of runs.values()) held.fence.lost = true;
       stopTimers();
       // The live view's last tick, once every loop has ended or been given up: a draining run kept its live view to the

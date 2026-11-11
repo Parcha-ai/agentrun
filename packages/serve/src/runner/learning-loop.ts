@@ -176,6 +176,9 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
   return (deps) => {
     let stopped: StopReason | null = null;
     const now = learning.now ?? Date.now;
+    /** Aborted by a person's stop (a stop row): the grade's request is cut at once, never left running past it, while the
+     *  claim's signal stays whole so the stopped end is still written. */
+    const stopAsk = new AbortController();
 
     return {
       async command(_command: Command): Promise<CommandOutcome> {
@@ -183,6 +186,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
       },
       async stop(reason: StopReason): Promise<void> {
         stopped = reason;
+        if (reason.kind === "command") stopAsk.abort(new Error("the run was stopped"));
       },
       async start(claim: Claim): Promise<LoopEnd> {
         const context: Context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
@@ -261,10 +265,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             let tokens: Tokens | null = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
             // `again`: what the grade is told after its last answer, below the same prompt.
             const ask = async (again?: string) => {
+              // Stopped before this ask: nothing is sent, so nothing of it is spent (what it spent stays as it was).
+              if (stopAsk.signal.aborted) throw stopAsk.signal.reason;
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
               } catch (error) {
                 usd = null;
                 tokens = null;

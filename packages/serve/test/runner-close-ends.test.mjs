@@ -57,6 +57,26 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   assert.ok(took >= 4_900 && took < 7_000, `the close took the one window: ${took} ms`);
 });
 
+test("a loop a stop row stops, still going at the end of the close's window, has its signal aborted before the close gives up its claim: nothing of it outlives the close", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  // A loop whose stop() only notes the row (as the learning loop's did), and whose work ends only on its signal.
+  const seen = { stops: [], aborted: null };
+  const createLoop = (deps) => ({
+    start: () => new Promise((resolve) => deps.signal.addEventListener("abort", () => ((seen.aborted = Date.now()), resolve({ state: "interrupted" })), { once: true })),
+    command: async () => ({ taken: true }),
+    stop: async (reason) => void seen.stops.push(reason.kind),
+  });
+  const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING, leaseMs: 8_000, stopMarginMs: 3_000 });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(async () => (await server.runs.get("run-1")).runner === "runner-a", "the run claimed");
+  await sendCommand(server, "run-1", { kind: "stop" });
+  const startedAt = Date.now();
+  await runner.close();
+  assert.deepEqual(seen.stops, ["command"], "stopped by its row, never for a shutdown");
+  assert.ok(seen.aborted !== null && seen.aborted - startedAt >= 4_900, `its signal was kept whole for its end, then aborted at the window's end: ${seen.aborted === null ? "never" : seen.aborted - startedAt} ms`);
+});
+
 test("a close whose read of the stop rows never answers is bounded by the stop margin: the run is stopped for a shutdown and released, its cancel left for the next claim", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
