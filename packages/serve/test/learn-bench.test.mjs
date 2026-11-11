@@ -243,6 +243,18 @@ test("the bench's spend: every run's cost and learning's grades, which no run's 
   assert.ok(asked.some((path) => /^\/usage\?.*from=1970/.test(path)), "learning's meter since the server began");
 });
 
+test("a cost the server could not price stops the bench: a grade that failed after a paid request is no $0", async () => {
+  const bench = await import("../scripts/learn-bench.mjs");
+  const api = (unpriced) => async (method, path) => {
+    if (path === "/stats") return { status: 200, body: { analytics: { totals: { cost_usd: 0.5 } } } };
+    if (path.startsWith("/usage?")) return { status: 200, body: { unpriced_runs: unpriced, lines: [{ meter: "learning", usd: 0.1, unpriced_runs: unpriced }] } };
+    return { status: 404, body: {} };
+  };
+  assert.equal(await bench.spentOf(api(0)), 0.6, "every cost known");
+  assert.equal(await bench.spentOf(api(1)), null, "one unknown: the spend is not known");
+  assert.match(bench.capStop(null, 0.1, 10, "05"), /could not be priced .*--max-usd 10 could not be held before step 05/);
+});
+
 test("a bench stopped at its cap exits 3, as learn-eval does", async () => {
   const bench = await import("../scripts/learn-bench.mjs");
   assert.equal(bench.exitCodeOf({ hard_stop: "the server's spend 3.1 passed --max-usd 3 before step 04", series: [] }), 3);
