@@ -543,8 +543,7 @@ test("a workflow's call node calling web_fetch set to deny: its run is refused b
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-for (const switched of ["deny", "ask"]) test.skip(`a workflow's call node reads its tool's permission as it runs: set to ${switched} while the first of two call nodes runs, the second is refused in the gate's words and never dials`, { timeout: 90_000 }, async (t) => {
+for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its tool's permission as it runs: set to ${switched} while the first of two call nodes runs, the second is refused in the gate's words and never dials`, { timeout: 90_000 }, async (t) => {
   const dialled = await network(t);
   const hold = join(await scratch(t), "go");
   withEnv(t, { FAUX_WEB_HOLD: hold });
@@ -574,8 +573,12 @@ for (const switched of ["deny", "ask"]) test.skip(`a workflow's call node reads 
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(run.status, "failed", "the second call node is refused");
   assert.match(run.error?.message ?? "", /failed at Second read/, "at its second call node");
-  const ended = (await readFile(join(runDir(server.data, started.body.run_id), "nodes.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.t === "effect.end");
-  assert.deepEqual(ended.map((line) => [line.label, line.status]), [["First read", "done"], ["Second read", "failed"]]);
+  // Each call node's call as the run's graph shows it (its effects, from the node log on the run's journal).
+  const graph = await api("GET", `/runs/${started.body.run_id}/graph`);
+  assert.equal(graph.status, 200, JSON.stringify(graph.body));
+  // Each effect names its node by its path in the graph: the chain's steps, First read then Second read.
+  const ended = graph.body.effects.filter((effect) => effect.status !== "working").map((effect) => ({ node: effect.node, status: effect.status, error: effect.error }));
+  assert.deepEqual(ended.map((line) => [line.node, line.status]), [["/root/steps/0", "done"], ["/root/steps/1", "failed"]]);
   assert.equal(ended[1].error, switched === "deny" ? deniedText("web_fetch") : "This web_fetch call needs a person's approval, which a workflow's call node cannot wait for; it was not run.", "in the gate's words");
   assert.deepEqual((await dialled()).filter((dial) => dial.endsWith("notes.txt")), [], "and never dials");
 });
@@ -792,7 +795,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-// SKIP (follow-up #2078): a follow-up after a stop never runs: the run stays cancelled on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);

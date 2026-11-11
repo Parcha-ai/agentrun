@@ -94,8 +94,9 @@ export type FauxAction =
 export const FAUX_RECORDS = { request: "faux.request", answered: "faux.answered", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
-  /** The session's model replies, in order, by its spec: one action per paid request. */
-  script: (spec: SessionSpec) => FauxAction[];
+  /** The session's model replies, in order, by its spec: one action per paid request. `cwd`: the session's working
+   *  directory when its host gives one (SessionIO.cwd), which a real CLI builds its absolute paths from. */
+  script: (spec: SessionSpec, session: { readonly cwd?: string }) => FauxAction[];
   /** Problems `check` reports for a spec. */
   refuse?: (spec: SessionSpec) => string[];
   /** How long `open` takes, ignoring the session's signal, as a slow harness start does (default 0). */
@@ -139,7 +140,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
     ],
     async open(spec, io) {
       if (options.openDelayMs) await new Promise((resolve) => setTimeout(resolve, options.openDelayMs));
-      const script = options.script(spec);
+      const script = options.script(spec, io.cwd === undefined ? {} : { cwd: io.cwd });
       const records = await io.writer.read();
       // The session's model proxy, when the faux harness is given one: up for the session's life, its key never used here.
       const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;

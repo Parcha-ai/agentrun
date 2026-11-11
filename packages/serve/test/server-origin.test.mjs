@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { agent, follow, serve } from "./support.mjs";
 
 const RAISED = "The cap was raised to $5; continue the task.";
-// SKIP (follow-up #2078): a follow-up to a completed run is refused not_continuable instead of reopening the run
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a follow-up the server writes down the messages route (counted as sent, as a raised cap's is) arrives: the run answers it and completes, never left working", { timeout: 120_000 }, async (t) => {
   const origin = { kind: "server", reason: "cap_raised" };
   const { api } = await serve(t, { messageOrigin: (_runId, content) => (content === RAISED ? origin : undefined) });
