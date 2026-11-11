@@ -1,10 +1,10 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 /** A description longer than this many characters is more than the card's three lines hold: More shows the rest. */
 const CLAMPED = 140;
 /** The characters a collapsed card's one-line name, tag and alert hold at the grid's narrowest column (18rem); past
- *  them, the line is cut. */
+ *  them, the line is cut. The name's is a fallback only: the card measures whether its name is cut. */
 const NAME_CUT = 32, TAG_CUT = 40, ALERT_CUT = 60;
 
 /** One tool in the agent editor's Tools step, the same card for every source (a built-in tool, an MCP server's, one a
@@ -23,9 +23,23 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
   on: boolean; disabled: boolean; warn?: boolean; onToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Whether the collapsed name is cut, as the browser draws it (the checkbox and a note take their room, so no count of
+  // characters says it); the character count only where nothing is laid out (a test's DOM). Read while collapsed: open,
+  // the name wraps whole, and the card keeps what it read so Less stays.
+  const nameRef = useRef<HTMLSpanElement>(null);
+  const [nameCut, setNameCut] = useState<boolean | null>(null);
+  useLayoutEffect(() => {
+    const el = nameRef.current;
+    if (open || !el) return;
+    const read = () => { if (el.clientWidth > 0) setNameCut(el.scrollWidth > el.clientWidth + 1); };
+    read();
+    const watch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
+    watch?.observe(el);
+    return () => watch?.disconnect();
+  }, [name, open]);
   // More is offered only when the card hides something: a description under a blurb or past three lines, a reason the
-  // short tag stands for, an alert longer than its one line, or a name longer than its.
-  const longName = name.length > NAME_CUT, longAlert = !!alert && alert.length > ALERT_CUT;
+  // short tag stands for, an alert longer than its one line, or a name cut on its.
+  const longName = nameCut ?? name.length > NAME_CUT, longAlert = !!alert && alert.length > ALERT_CUT;
   const more = (!!description && (!!blurb || description.length > CLAMPED)) || (!!why && why !== tag) || longAlert || longName;
   // A hover title only says what the card cuts or hides, never what it already shows (Manuel's #20): the whole name when
   // it's cut, the whole description past its three lines, the reason a short tag stands for (or a reason too long for
@@ -38,7 +52,7 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
         <input type="checkbox" value={value} checked={on} disabled={disabled} onChange={onToggle} className="shrink-0 accent-primary" />
         {/* Cut to one line on the card, whole in its title when cut; whole, wrapping, once More opens (an MCP tool's id has
             no spaces, and tools from one server share a long prefix). */}
-        <span title={hover(name, longName)} className={cn("min-w-0", open ? "[overflow-wrap:anywhere]" : "truncate")}>{name}</span>
+        <span ref={nameRef} title={hover(name, longName)} className={cn("min-w-0", open ? "[overflow-wrap:anywhere]" : "truncate")}>{name}</span>
         {note && <span className="shrink-0 font-sans text-label text-muted-foreground">{note}</span>}
       </span>
       {blurb ? <span data-line className="mt-1 truncate font-sans text-small text-muted-foreground">{blurb}</span>

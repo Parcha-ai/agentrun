@@ -7,12 +7,15 @@ import { check } from "../harness.mjs";
 const LONG = "Create attachment (deprecated): Deprecated fallback for tiny files only. Accepts base64 file content, verifies SHA-256 checksum, and uploads it through the MCP worker. Prefer `prepare_attachment_upload` plus direct PUT plus `create_attachment_from_upload`. ".repeat(6);
 const UNBROKEN = "QUJD".repeat(500);
 const SERVER = {
-  name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, not_metered: ["create_attachment", "get_team", "upload_blob", "list_comments"],
+  name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, not_metered: ["create_attachment", "get_team", "upload_blob", "list_comments", "list_repository_collaborator_ids"],
   tools: [
     { name: "create_attachment", description: LONG },
     { name: "get_team", description: "Get a team by id." },
     { name: "upload_blob", description: `Example: ${UNBROKEN}` },
     { name: "list_comments", description: LONG },
+    // 32 characters, no more than a count of characters would let pass, but cut beside the checkbox and "not metered" in
+    // the e2e browser's columns: the card must still say it whole.
+    { name: "list_repository_collaborator_ids", description: "List collaborators." },
   ],
 };
 
@@ -45,6 +48,16 @@ export default {
     check(Math.abs(blob.width - short.width) < 1, `the unbroken string widened its card: ${blob.width} against ${short.width}`);
     const sideways = await page.evaluate(() => [...document.querySelectorAll("main, main *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== "hidden" && getComputedStyle(e).overflowX !== "clip" && e.closest("[data-tool-card]")).length);
     check(sideways === 0, `${sideways} elements in the tool cards are wider than their box`);
+
+    // A name cut on its line, whatever its length, is whole in its title and offers More; one not cut has no title.
+    const names = await cards.evaluateAll((all) => all.map((c) => {
+      const name = c.querySelector("input[type=checkbox] + span");
+      return { card: c.getAttribute("data-tool-card"), cut: name.scrollWidth > name.clientWidth + 1, widths: [name.clientWidth, name.scrollWidth, c.clientWidth], title: name.getAttribute("title"), text: name.textContent, more: [...c.querySelectorAll("button")].some((b) => b.textContent === "More") };
+    }));
+    const wrong = names.filter((n) => (n.cut ? n.title !== n.text || !n.more : n.title !== null));
+    check(wrong.length === 0, `names whose title or More doesn't match whether they're cut: ${JSON.stringify(wrong)}`);
+    const collaborators = names.find((n) => n.card === "mcp:linear/list_repository_collaborator_ids");
+    check(collaborators?.cut, `list_repository_collaborator_ids isn't cut here (${JSON.stringify(collaborators)}): the case this checks didn't happen`);
 
     // More opens that card alone: it grows, the others keep their height; still no wider. Less closes it.
     const listBefore = await box(mcp("list_comments"));
