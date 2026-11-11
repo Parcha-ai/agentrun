@@ -741,10 +741,13 @@ computer is made with the GPUs asked.
 
 - **Daytona** gives `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090` and `MI355X`, up to 8. A GPU sandbox runs
   in region `earth`. Stopping it deletes it: it has no pause and no snapshot, so nothing on it outlives the run. Each GPU
-  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. The Daytona org needs GPU credits. A Daytona GPU sandbox
-  with the run's folder mounted from Archil, and its network allowlist, are not yet proven live.
+  comes with 16 vCPU, 192 GiB of memory and 512 GiB of disk. A Daytona GPU may be preempted, so a run on one can be
+  cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
+  its network allowlist, are not yet proven live.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
-  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
+  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible. Besides,
+  a Modal GPU computer can't start today: its daemon can't make its own network namespace under gVisor, so it refuses to
+  start (pending a decision; see the computer package's README).
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 

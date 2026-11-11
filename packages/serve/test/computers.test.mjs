@@ -178,7 +178,7 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
   const daytona = providerOf(view, "sandbox", "daytona").gpu;
-  assert.deepEqual([daytona.types, daytona.max, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.why], [["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], 8, true, "earth", { cpus: 16, memoryMb: 196608, diskMb: 524288 }, undefined]);
+  assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.why], [["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], 8, true, true, "earth", { cpus: 16, memoryMb: 196608, diskMb: 524288 }, undefined]);
   const modal = providerOf(view, "sandbox", "modal").gpu;
   assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, []]);
   assert.match(modal.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which Modal's GPU computers have not proven");

@@ -190,12 +190,14 @@ export const DAYTONA_GPU_MAX = 8;
 export const DAYTONA_GPU_REGION = "earth";
 /**
  * The GPUs Daytona offers, as capabilities().gpu and CAPABILITIES declare them, with its limits on a GPU sandbox: its stop
- * deletes it (no pause, no snapshot: nothing is kept), it runs in region earth, and each GPU comes with 16 vCPUs, 192 GiB
- * of memory and 512 GiB of disk (Daytona's defaults).
+ * deletes it (no pause, no snapshot: nothing is kept), it runs in region earth, each GPU comes with 16 vCPUs, 192 GiB
+ * of memory and 512 GiB of disk (Daytona's defaults), and it may be preempted (daytona.io/pricing lists its GPUs as
+ * "Preemptible GPU prices", 11-10).
  */
 export const DAYTONA_GPU: Readonly<GpuCapability> = Object.freeze({
 	types: [...DAYTONA_GPU_TYPES],
 	max: DAYTONA_GPU_MAX,
+	preemptible: true,
 	stopDeletes: true,
 	region: DAYTONA_GPU_REGION,
 	perGpu: { cpus: 16, memoryMb: 192 * 1024, diskMb: 512 * 1024 },

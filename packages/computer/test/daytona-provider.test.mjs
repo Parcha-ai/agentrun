@@ -87,7 +87,7 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		mount: ["archil"],
 		vendorAgentPorts: [2280],
 		// A GPU sandbox's limits: its stop deletes it, it runs in region earth, and its size is Daytona's per GPU.
-		gpu: { types: ["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], max: 8, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 196608, diskMb: 524288 } },
+		gpu: { types: ["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], max: 8, preemptible: true, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 196608, diskMb: 524288 } },
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
