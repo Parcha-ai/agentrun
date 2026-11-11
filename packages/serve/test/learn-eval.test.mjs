@@ -151,7 +151,7 @@ test("the live eval leaves a call that never judged out of every rate: a timeout
 
 test("the live eval's --max-usd is a hard stop: once its spend reaches the cap, no further model request is sent, the summary says so, and it exits 3; a request whose cost it cannot read stops it too", { timeout: 120_000 }, async (t) => {
   const { startFauxGateway } = await import("./fixtures/faux-gateway.mjs");
-  const { spawnSync } = await import("node:child_process");
+  const { spawn } = await import("node:child_process");
   const { existsSync } = await import("node:fs");
   const script = new URL("../scripts/learn-eval.mjs", import.meta.url).pathname;
   const run = async (price, maxUsd) => {
@@ -159,7 +159,14 @@ test("the live eval's --max-usd is a hard stop: once its spend reaches the cap, 
     t.after(() => gateway.close());
     const out = join(await scratch(t), "out");
     const env = { PATH: process.env.PATH, AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: ["fake", "test", "key"].join("-"), AGENT_MODEL: "gpt-test", ...(price ? { AGENT_MODEL_PRICE: price } : {}) };
-    const done = spawnSync(process.execPath, [script, "--out", out, "--set", "heldout", "--modes", "grade", "--models", "default", "--concurrency", "1", "--max-usd", maxUsd, "--label", "capped"], { env, encoding: "utf8", timeout: 100_000 });
+    // Not spawnSync: the gateway answers on this process's own event loop.
+    const done = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [script, "--out", out, "--set", "heldout", "--modes", "grade", "--models", "default", "--concurrency", "1", "--max-usd", maxUsd, "--label", "capped"], { env });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      child.stdout.resume();
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
     const summary = existsSync(join(out, "capped.md")) ? readFileSync(join(out, "capped.md"), "utf8") : "";
     return { done, summary, requests: gateway.requests.filter((r) => r.method === "POST").length };
   };

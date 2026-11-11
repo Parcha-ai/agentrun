@@ -13,7 +13,12 @@
 //
 //   node packages/serve/scripts/learn-eval.mjs --out DIR [--models default,claude] [--modes grade,reflect]
 //     [--grade-model MODEL | --grade-models A,B,C] [--set eval|heldout] [--repeat N] [--only id,id] [--concurrency 4]
-//     [--cases FILE] [--claude-model anthropic/<id>] [--dry]
+//     [--cases FILE] [--claude-model anthropic/<id>] [--max-usd N] [--dry]
+//
+// `--max-usd` is a hard stop: before each model request the run's spend so far is read, and once it reaches the cap no
+// further request is sent (the requests already in flight, at most --concurrency, finish). A request whose cost the run
+// cannot read (a model with no price here, which books $0 as unknown) stops it as well, since the cap could not be held
+// past it. A stopped run writes what it has, says why in its summary, and exits 3.
 //
 // `--grade-model` is the server's: the model the grader runs on, as `agentrun-serve --grade-model` takes it; without
 // it each case is graded on its own model. `--grade-models` grades every case on each model named (LS-09: run on demand
@@ -34,11 +39,34 @@ const { values: opts } = parseArgs({ options: {
   "grade-model": { type: "string" }, "grade-models": { type: "string" }, set: { type: "string" }, dry: { type: "boolean", default: false },
   "claude-model": { type: "string", default: "anthropic/claude-sonnet-5-5" }, repeat: { type: "string", default: "1" },
   only: { type: "string" }, concurrency: { type: "string", default: "4" }, label: { type: "string", default: "eval" },
+  "max-usd": { type: "string" },
 } });
 if (!opts.out && !opts.dry) throw new Error("--out DIR is where the rows go");
 if (opts["grade-model"] && opts["grade-models"]) throw new Error("--grade-model names one grade model and --grade-models several: give one of them");
 if (opts.set && opts.cases) throw new Error("--set names a case file and --cases another: give one of them");
 if (opts.set && !["eval", "heldout"].includes(opts.set)) throw new Error("--set is eval or heldout");
+/** --max-usd: the most the run spends, in dollars; undefined, no cap. */
+const CAP = opts["max-usd"] === undefined ? undefined : Number(opts["max-usd"]);
+if (CAP !== undefined && !(Number.isFinite(CAP) && CAP > 0)) throw new Error("--max-usd is a number of dollars above 0");
+/** What the run has spent, and why it stopped asking (undefined while it goes on). */
+const spend = { usd: 0, stopped: undefined };
+/** Thrown in place of a request once the run stopped: the job is left out, never counted as a drop. */
+class Stopped extends Error {}
+/** Called before each model request: past the cap (or a cost it could not read), no request is sent. */
+const mayAsk = () => {
+  if (spend.stopped) throw new Stopped(spend.stopped);
+};
+/** What `message` cost, added to the run's spend: `unpriced`, a model with no price here, whose $0 is no known cost. */
+function spent(message, unpriced) {
+  const total = message?.usage?.cost?.total;
+  if (unpriced || !Number.isFinite(total)) {
+    if (CAP !== undefined) spend.stopped ??= `stopped: the cost of a request could not be read, so --max-usd ${CAP} could not be held`;
+    return Number.isFinite(total) ? total : 0;
+  }
+  spend.usd += total;
+  if (CAP !== undefined && spend.usd >= CAP) spend.stopped ??= `stopped at --max-usd ${CAP}: spent $${spend.usd.toFixed(4)}`;
+  return total;
+}
 /** The grade models: each of --grade-models, else --grade-model, else each case's own model (undefined). */
 const GRADERS = opts["grade-models"] ? opts["grade-models"].split(",").map((m) => m.trim()).filter(Boolean) : [opts["grade-model"]];
 // Read before serve's modules load: its secrets module takes the keys out of this process's environment as it loads.
@@ -57,7 +85,7 @@ const PROFILES = { default: { harness: "pi", model: undefined }, claude: { harne
  *  says, priced as the runner prices it. */
 async function namedOf(named) {
   const chosen = await runModels(ENV, named);
-  return { models: chosen.models, model: chosen.models.getModel(chosen.model.provider, chosen.model.modelId) };
+  return { models: chosen.models, model: chosen.models.getModel(chosen.model.provider, chosen.model.modelId), unpriced: chosen.unpriced.has(chosen.model.modelId) };
 }
 
 /** A profile's model, picked as the server picks an agent's own, for a completion with tools. */
@@ -69,7 +97,7 @@ async function modelOf(profile) {
     return { models: catalog, model: { ...catalog.getModel(choice.model.provider, choice.model.modelId), baseUrl: providerFor("anthropic-messages", ENV, choice.model, "claude-agent").origin } };
   }
   const chosen = await runModels(ENV, profile.model);
-  return { models: chosen.models, model: chosen.models.getModel(chosen.model.provider, chosen.model.modelId) };
+  return { models: chosen.models, model: chosen.models.getModel(chosen.model.provider, chosen.model.modelId), unpriced: chosen.unpriced.has(chosen.model.modelId) };
 }
 
 /** The tools the replayed conversation calls; in the end-of-run turn, only `read` of the run's copy answers. */
@@ -109,14 +137,15 @@ function systemOf(c) {
 /** The end-of-run turn on `profile`: the conversation, then the prompt. A `read` of the run's copy answers its notes; any
  *  other tool answers that it is not there. The answer is every message's text, as the server reads it. */
 async function reflect(c, profile) {
-  const { models, model } = await modelOf(profile);
+  const { models, model, unpriced } = await modelOf(profile);
   const copy = new Map([["MEMORY.md", learn.buildIndex(notesOf(c.active))], ...c.active.map((n) => [n.file, n.text])]);
   const messages = [...messagesOf(c.transcript), { role: "user", content: learn.reflectPrompt({ dir: ".learning", active: c.active.length }), timestamp: Date.now() }];
   const texts = [];
   let usd = 0;
   for (let step = 0; step < 6; step++) {
+    mayAsk();
     const message = await models.completeSimple(model, { systemPrompt: systemOf(c), messages, tools: TOOLS }, { reasoning: thinkingOf(ENV, undefined), maxTokens: 8000, signal: AbortSignal.timeout(180_000) });
-    usd += message.usage?.cost?.total ?? 0;
+    usd += spent(message, unpriced);
     if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(`the turn: ${message.errorMessage ?? message.stopReason}`);
     messages.push(message);
     const text = message.content.filter((p) => p.type === "text").map((p) => p.text).join("");
@@ -151,13 +180,14 @@ async function grade(c, notes, profile, runId, gradeModel) {
     proposed: notes, asked: c.transcript.filter((t) => t.role === "user").map((t) => t.text),
   });
   const items = learn.gradedItems(notes);
-  const { models, model } = gradeModel ? await namedOf(gradeModel) : await modelOf(profile);
+  const { models, model, unpriced } = gradeModel ? await namedOf(gradeModel) : await modelOf(profile);
   let usd = 0;
   let verdict;
   try {
     for (let ask = 0; ask < 2; ask++) {
+      mayAsk();
       const message = await models.completeSimple(model, { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] }, { maxTokens: GRADE_MAX_TOKENS, signal: AbortSignal.timeout(GRADE_TIMEOUT_MS) });
-      usd += message.usage?.cost?.total ?? 0;
+      usd += spent(message, unpriced);
       if (message.stopReason === "error" || message.stopReason === "aborted") throw new Error(message.errorMessage ?? message.stopReason);
       verdict = learn.parseVerdict(message.content.filter((p) => p.type === "text").map((p) => p.text).join(""), items);
       if (verdict.reason !== learn.UNREADABLE_REASON || verdict.items.length) break;
@@ -183,7 +213,7 @@ mkdirSync(opts.out, { recursive: true });
 const log = join(opts.out, `${opts.label}.jsonl`);
 const rows = [];
 await Promise.all(Array.from({ length: Number(opts.concurrency) }, async () => {
-  for (let job; (job = jobs.shift()); ) {
+  for (let job; !spend.stopped && (job = jobs.shift()); ) {
     const { rep, m, c, mode, grader } = job;
     const profile = PROFILES[m];
     const row = { rep, model: m, grader: grader ?? m, case: c.id, kind: c.kind, label: c.label, mode, usd: 0 };
@@ -217,7 +247,7 @@ await Promise.all(Array.from({ length: Number(opts.concurrency) }, async () => {
 }));
 
 const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}% (${a}/${b})` : "n/a");
-const out = [`# ${opts.label}`, "", `${rows.length} rows; spent $${rows.reduce((s, r) => s + (r.usd ?? 0), 0).toFixed(4)}`, ""];
+const out = [`# ${opts.label}`, "", `${rows.length} rows; spent $${rows.reduce((s, r) => s + (r.usd ?? 0), 0).toFixed(4)}`, ...(spend.stopped ? [`**${spend.stopped}**; ${jobs.length} job${jobs.length === 1 ? "" : "s"} not run, and a job cut short is listed as not graded.`] : []), ""];
 for (const mode of modes) {
   out.push(`## ${mode}`, "", "| model (grader) | keep-precision | keep-recall | injection-drop | drop-accuracy | risky held to wait | not graded |", "|---|---|---|---|---|---|---|");
   for (const grader of GRADERS) for (const m of models) {
@@ -238,3 +268,4 @@ if (GRADERS.length > 1 && modes.includes("grade")) {
 }
 writeFileSync(join(opts.out, `${opts.label}.md`), `${out.join("\n")}\n`);
 process.stdout.write(`${out.join("\n")}\n`);
+if (spend.stopped) process.exitCode = 3;
