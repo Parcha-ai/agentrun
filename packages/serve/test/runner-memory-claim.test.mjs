@@ -121,3 +121,26 @@ test("a run heavier than the whole budget is claimed when the runner holds nothi
   turns.loops.get("run-1-heavy").finishTurn();
   await until(() => turns.loops.has("run-2"), "the next claimed once it ended");
 });
+
+test("the weights and the budget a runner claims by (memory-claim.ts): each run by the harness its launch names, of the host's memory less the server's", async () => {
+  const { runnerMemory, claimMibOf } = await import("../dist/runner/memory-claim.js");
+  const { server } = await stores();
+  const launched = (id, harness) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: harness === undefined ? {} : { harness } });
+  await launched("run-claude", "claude-agent");
+  await launched("run-codex", "codex");
+  await launched("run-opencode", "opencode");
+  await launched("run-pi", "pi");
+  await launched("run-default", undefined);
+  await launched("run-learning", "learning");
+  await queue(server, "run-no-launch");
+  const MiB = 2 ** 20;
+  const memory = runnerMemory(server, 2048 * MiB);
+  assert.equal(memory.budgetMib, 2048 - 128, "a 2 GB host less the server's 128 MiB");
+  const weights = await memory.weigh(["run-claude", "run-codex", "run-opencode", "run-pi", "run-default", "run-learning", "run-no-launch"]);
+  assert.deepEqual(Object.fromEntries(weights), { "run-claude": 288, "run-codex": 192, "run-opencode": 704, "run-pi": 128, "run-default": 128, "run-learning": 128, "run-no-launch": 128 });
+  assert.equal(claimMibOf("claude-agent"), 288);
+  // The bug this fixes, in numbers: the default count on a 2 GB host is 15 (pi's), and 15 claude-agent runs weigh 4320 MiB;
+  // by weight the budget holds 6.
+  assert.equal(Math.floor(memory.budgetMib / 128), 15);
+  assert.equal(Math.floor(memory.budgetMib / 288), 6);
+});
