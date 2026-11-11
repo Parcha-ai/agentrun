@@ -17,7 +17,7 @@ import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { BeforeRequest, HostTool, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import { decisionProvidersIn } from "../decisions.js";
 import type { Approvals } from "../approvals.js";
-import type { installSettled } from "../harness-install.js";
+import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
@@ -25,7 +25,7 @@ import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isObject } from "../validate.js";
-import { deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
+import { deniedText, mcpServersOf, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type ToolHost, toolOf } from "../tools.js";
@@ -147,6 +147,13 @@ export interface AdapterSpecDeps {
   /** How a CLI run's claim waits for its harness's first-use install (harness-install.ts installSettled); a test wraps it
    *  to see the claim reach the wait. Absent, installSettled itself. */
   readonly installSettled?: typeof installSettled;
+  /** How a CLI run's claim installs its harness when nothing installs it (harness-install.ts installForClaim); a test gives
+   *  its own, so none reaches npm. Absent, installForClaim itself. */
+  readonly installForClaim?: typeof installForClaim;
+  /** For tests only: the lock a claim's first-use install of each harness installs by (harness-install.ts installForClaim),
+   *  by harness, as the server's own option of that name gives its installs. The CLI's runner never sets it, and no
+   *  environment variable, flag or setting maps onto it; absent, the lock AgentRun ships. */
+  readonly harnessLocks?: Readonly<Record<string, string>>;
   /** A test runner's fake GitHub API, where the GitHub App's installation tokens are minted (runner/github-app.ts). Absent,
    *  https://api.github.com: the CLI's runner never sets it, and no environment variable, flag or setting maps onto it. */
   readonly githubApi?: string;
@@ -227,14 +234,16 @@ export type RunPermissions = {
   readonly decide: (tool: string, args: unknown) => Promise<"allow" | "ask" | { deny: string }>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; maxToolCalls?: number } }, root: RunFiles, shell?: ShellPlace): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; maxToolCalls?: number } }, root: RunFiles, shell?: ShellPlace, mcpServers: readonly string[] = []): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
   const folder = typeof root === "string" ? root : COMPUTER_ROOT;
   // Where the run's shell is (run-tools.ts shell): with no computer, a tool no setting names takes the kernel's ruled
-  // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused.
-  const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
+  // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused. The run's MCP servers
+  // (mcpServersOf its grants), so a harness naming an MCP tool its own way (OpenCode's `<server>_<tool>`) is held to that
+  // tool's settings, never to a table tool's of the same shape.
+  const gate = runGate({ root: folder, work: folder, ...(shell === undefined ? {} : { computer: shell === "computer" }), mcpServers }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
@@ -417,7 +426,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted));
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
