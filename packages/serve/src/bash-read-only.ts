@@ -28,13 +28,17 @@
 //   another repository are refused, their abbreviations too (git takes those).
 // - sed: `-n` with one `N,Mp` range script (`$` for the last line), nothing else. find: no -exec, -execdir, -ok,
 //   -okdir, -delete, -fprint*, -fls, -L, -follow or -H. sort: no -o or -T. tail: no -f. diff: no -r. grep and rg: no
-//   -R, --pre, --follow; rg no -L, -z or --hostname-bin. `--files0-from` is refused for every program.
+//   -R, --pre, --follow; rg no -L, -z or --hostname-bin. `--files0-from` is refused for every program. Each refused
+//   long option is refused with every prefix too (`sort --out=f`), as GNU getopt takes an unambiguous prefix.
 // - The shell tools: bash's command is read as above. bash_background and bash_input are refused (a read-only shell
 //   runs one command in the foreground); bash_output, bash_list and bash_signal, which reach only processes this run
 //   started, pass. A CLI harness's own shell call (codex's `shell`, an argv) is read as the command it runs.
 //
 // What it does not hold: the policy reads bash alone. An agent that may also write or edit can change what a read
 // program obeys (a repository's .git/config names programs git runs), so a read-only agent's tools are read and bash.
+// The never-open list refuses a command that names such a file; it is no fence around the folder's contents: a recursive
+// search (grep -r, rg, git grep, git log -p) reads every file the folder holds. The folder holds the run's own files
+// (its checkout, its inputs), never a key of the server's, and the agent may read all of it.
 import { posix } from "node:path";
 
 /** The policies an agent may set on bash (tool_settings.bash.policy). */
@@ -257,7 +261,7 @@ function gitOptionBad(sub: string, a: string): boolean {
   if (a.startsWith("--")) {
     const name = a.split("=")[0]!;
     if (name === "--") return false;
-    return GIT_BAD_LONG.some((bad) => bad === name || (name.length >= 4 && bad.startsWith(name)));
+    return GIT_BAD_LONG.some((bad) => abbreviates(name, bad));
   }
   if (a.startsWith("-")) return GIT_BAD_SHORT.some((re) => re.test(a)) || (GIT_BAD_SUB[sub] ?? []).some((re) => re.test(a));
   return false;
@@ -309,6 +313,20 @@ function endOfOptions(program: string, rest: string[]): number {
   return -1;
 }
 
+/** Whether long option `name` (`--out`, without its `=value`) is `bad` or a prefix of it: GNU getopt and git take any
+ *  unambiguous prefix (`sort --out=f` is `--output=f`), so each prefix of a refused option is refused too. */
+const abbreviates = (name: string, bad: string): boolean => name === bad || (name.length >= 3 && name !== "--" && bad.startsWith(name));
+// Long options that write a file, read a list of files, follow, or run a program, per program, refused with every
+// prefix (abbreviates).
+const LONG_BAN: Readonly<Record<string, readonly string[]>> = {
+  sort: ["--output", "--compress-program", "--temporary-directory", "--files0-from"],
+  wc: ["--files0-from"],
+  tail: ["--follow", "--retry"],
+  diff: ["--to-file", "--from-file", "--recursive"],
+  grep: ["--dereference-recursive"], egrep: ["--dereference-recursive"], fgrep: ["--dereference-recursive"],
+  rg: ["--pre", "--pre-glob", "--follow", "--search-zip", "--hostname-bin"],
+};
+
 // A short-option cluster (`-rf`, `-iz`) may carry a refused letter that an exact match would miss.
 const CLUSTER_BAN: Readonly<Record<string, RegExp>> = { rg: /[zL]/, sort: /[oT]/, tail: /[fF]/, diff: /r/ };
 const GIT_CLUSTER_BAN: Readonly<Record<string, RegExp>> = { grep: /[Of]/, blame: /S/, "ls-files": /X/, diff: /O/, log: /O/, show: /O/, "diff-tree": /O/ };
@@ -332,8 +350,8 @@ function checkSegment(folder: Folder, start: string, words: string[]) {
   if (dd >= 0) exempt.add(dd);
   for (let idx = 0; idx < rest.length; idx++) {
     const name = rest[idx]!.split("=")[0]!;
-    const abbreviated = (program === "sort" || program === "wc") && name.length >= 5 && "--files0-from".startsWith(name);
-    if (isOption(idx) && (name === "-files0-from" || name === "--files0-from" || abbreviated)) throw new Error(`${program} ${rest[idx]} is not allowed (it reads a list of files to open)`);
+    if (isOption(idx) && (name === "-files0-from" || name === "--files0-from")) throw new Error(`${program} ${rest[idx]} is not allowed (it reads a list of files to open)`);
+    if (isOption(idx) && name.startsWith("--") && (LONG_BAN[program] ?? []).some((bad) => abbreviates(name, bad))) throw new Error(`${program} ${rest[idx]} is not allowed (it writes or names a file to read, follows, or runs a program; a prefix of such an option is refused too)`);
     const ban = CLUSTER_BAN[program];
     if (ban && isOption(idx) && shortCluster(rest[idx]!) && ban.test(rest[idx]!.slice(1))) throw new Error(`${program} option ${rest[idx]} is not allowed`);
   }
@@ -514,7 +532,8 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "/bin/bash", "/bin/sh", "/u
 
 /** The command line a shell call runs, and the folder-relative directory it starts in, or the reason it can't be read.
  *  `command` a string (bash, claude-agent's Bash), or an argv (codex's shell: `[bash, -lc, <line>]`, else the argv as
- *  is); `workdir` or `cwd`, where given, inside the folder. */
+ *  is); `workdir` or `cwd`, where given, inside the folder (readOnlyReason checks the command from there and from the
+ *  folder, as a tool that does not take one runs it in the folder). */
 function commandOf(args: unknown, folder: Folder): { line: string; start: string } | { reason: string } {
   const given = (typeof args === "object" && args !== null ? args : {}) as Record<string, unknown>;
   if (given.run_in_background === true) return { reason: "a command run in the background is not allowed: run it in the foreground" };
@@ -545,7 +564,10 @@ export function readOnlyReason(tool: string, args: unknown, folder: Folder): str
   const read = commandOf(args, folder);
   if ("reason" in read) return read.reason;
   try {
-    checkReadOnly(read.line, folder, read.start);
+    // Checked from the folder and from the call's workdir: a tool that does not honor the workdir runs the command in the
+    // folder, so it must hold from both.
+    checkReadOnly(read.line, folder);
+    if (read.start !== "") checkReadOnly(read.line, folder, read.start);
     return undefined;
   } catch (error) {
     return (error as Error).message;

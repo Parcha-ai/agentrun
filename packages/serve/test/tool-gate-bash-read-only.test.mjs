@@ -348,6 +348,18 @@ test("command substitution, redirection, unquoted globs and code runners are ref
   refuses("find . -name x -exec rm {} ;", /not allowed/);
 });
 
+test("a refused long option is refused with every prefix GNU getopt takes: sort --out=f is sort --output=f", () => {
+  for (const command of ["sort --out=README.md README.md", "sort --o=README.md README.md", "sort --outp README.md README.md", "sort --comp=sh README.md", "sort --temp=x README.md", "wc --files0=x", "tail --fol README.md", "tail --ret README.md", "diff --to=README.md README.md", "diff --recur packages packages", "grep --deref x .", "rg --pre-g x .", "git log --out=x", "git log --ou=x"]) {
+    refuses(command, /not allowed/);
+  }
+  // An option that is no prefix of a refused one still reads.
+  allows("sort --reverse README.md");
+  allows("sort --numeric-sort README.md");
+  allows("tail --lines=5 README.md");
+  allows("diff --unified README.md README.md");
+  allows("git log --oneline -3");
+});
+
 test("git -C: allowed to a directory inside the folder, its later paths read from there; refused anywhere else", () => {
   allows("git -C packages log --oneline -3");
   allows("git -C packages diff HEAD~1 -- ../README.md");
@@ -423,7 +435,10 @@ test("the gate: every harness's name for the shell is held to the policy, and an
   assert.match((await codex.decide("shell", { command: ["bash", "-lc", "npm test"] })).deny, /"npm" is not a read command/);
   assert.match((await codex.decide("shell", { command: ["cat", "*.ts"] })).deny, /the glob \*\.ts is not allowed/);
   assert.match((await codex.decide("shell", { command: ["ls"], workdir: "/etc" })).deny, /its workdir \/etc is outside the run's folder/);
-  assert.equal(await codex.decide("shell", { command: ["cat", "../README.md"], workdir: "/workspace/packages" }), "allow");
+  assert.equal(await codex.decide("shell", { command: ["cat", "README.md"], workdir: "/workspace/packages" }), "allow");
+  // A workdir the tool may not honor: the command must hold from the folder too, so ../x from packages is refused.
+  assert.match((await codex.decide("shell", { command: ["cat", "../README.md"], workdir: "/workspace/packages" })).deny, /outside the run's folder/);
+  assert.match((await gateWith().decide("bash", { command: "cat ../x", cwd: "packages" })).deny, /outside the run's folder/);
   assert.match((await gateWith().decide("bash", {})).deny, /it carries no command this policy can read/);
 });
 
