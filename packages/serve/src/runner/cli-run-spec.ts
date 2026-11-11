@@ -56,7 +56,7 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, runMetrics } from "./metrics.js";
+import { bookedSpend, cliModelWorked, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -434,7 +434,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const { metrics } = runMetrics(entries as never, { ...(thinking ? { effort: thinking } : {}), model:`${chosen.model.provider}/${chosen.model.modelId}` });
       // Its model requests and its decisions (a learned workflow's) at what they were booked at (bookedSpend).
       const all = (await journalEntries(deps.journal(claim), context)) as never;
-      const model = bookedSpend(all, "model").usd;
+      // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
+      // what no booking read: unknown, never the $0 an empty booking sums to.
+      const booked = bookedSpend(all, "model");
+      const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;
       const decisions = bookedSpend(all, "decisions").usd;
       const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own

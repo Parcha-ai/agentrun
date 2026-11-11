@@ -83,7 +83,10 @@ export type FauxAction =
   | ({ cut: true } & FauxRequest)
   /** A paid request leaves and holds unanswered until the turn is stopped: the stop cuts it, and its cost (what had
    *  streamed) is still booked, as a provider bills a response cut short. */
-  | { cutBooked: true; usd?: number | null };
+  | { cutBooked: true; usd?: number | null }
+  /** The model answers with this text through a route that never reaches the session's port (a CLI sending past its
+   *  model proxy): its text shows, and nothing is admitted or booked. */
+  | { unbooked: string };
 
 /** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
  *  would add it to the body: filed with its text, for a test to see. */
@@ -189,6 +192,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if (!action) return await end("completed");
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
+            if ("unbooked" in action) {
+              cursor += 1;
+              io.onEvent({ type: "text", delta: action.unbooked });
+              continue;
+            }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
             // On the session's model: the proxy's, when it has one (the host's own requests go there on that model too).

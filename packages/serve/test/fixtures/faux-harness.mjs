@@ -95,6 +95,8 @@ export function script(spec) {
   }
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   // One answer that asks for two tools, as a model writing two files in one turn does, then the closing answer.
+  // A CLI whose model requests go past the session's model proxy (a route the booking never sees): it answers, booking none.
+  if (/Answer past the proxy\./.test(text)) return [{ unbooked: "Answered past the proxy." }];
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   // Codex's shape: a request that only says something (its tool call is the harness's own, which the host never
   // sees), then the host's tool, then the answer.
