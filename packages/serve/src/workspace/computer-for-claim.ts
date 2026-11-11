@@ -10,8 +10,8 @@
 // map of key names to options (computer-keys.ts providerOptions); a provider that keeps sessions with no labels of their
 // own (the phone's) is given the store's computer ledger. Nothing here knows a vendor: the registry, the providers' create
 // and a test's stand-ins are passed in.
-import type { ComputerProvider, ComputerSpec, MountReadBack, Result, Swept } from "@parcha/agentrun-computer";
-import { releaseOlder, runLabels, sweep } from "@parcha/agentrun-computer";
+import type { ComputerProvider, ComputerSpec, MountReadBack, Result } from "@parcha/agentrun-computer";
+import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -19,7 +19,7 @@ import type { Store } from "../store/index.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
@@ -36,13 +36,16 @@ export interface ClaimLaunch {
   /** What the run's computer may reach, as its launch resolved it (run-launch.ts boxAllow): "none" or absent is no
    *  network, a list an allow-list. The computer's spec takes it. */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set that (run-launch.ts boxAllowSet), not the default. */
+  readonly boxAllowSet?: true;
 }
 
-/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach; and what the
- *  provider declares it makes (its capabilities()): its networks and its longest lifetime. Absent, the spec asks as the
- *  run allows. */
+/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach, and whether the
+ *  operator set that; and what the provider declares it makes (its capabilities()): its networks and its longest
+ *  lifetime. Absent, the spec asks as the run allows. */
 export interface ComputerRun {
   readonly boxAllow?: readonly string[] | "none";
+  readonly boxAllowSet?: true;
   readonly networks?: readonly ("none" | "open" | "allow")[];
   readonly maxLifetimeMs?: number;
 }
@@ -90,6 +93,8 @@ export interface ComputerForClaimDeps {
   readonly settings?: ProviderSettings;
   /** Whether a provider that binds a folder of this machine answers here now (Docker): the Mode 1 default asks it. */
   readonly answers?: (provider: string) => Promise<boolean>;
+  /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails (ClaimSide.daemon). */
+  readonly daemon?: ClaimSide["daemon"];
   /** A launch of the server's own in place of the providers' (--faux's desktop). */
   readonly launch?: ClaimSide["launch"];
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
@@ -104,6 +109,9 @@ export interface ComputerForClaimDeps {
    *  a host that lacks it, or a named image pulled); never when the host has it. The run's caller says it on the run's
    *  timeline. Absent: nothing is said. */
   readonly onImageWait?: ImageWait;
+  /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
+   *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
+  readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
   readonly signal?: AbortSignal;
 }
 
@@ -158,6 +166,59 @@ type Watching = { watch(ref: { readonly id: string; readonly name: string }, con
 const watching = (provider: ComputerProvider): Watching | undefined =>
   typeof (provider as Partial<Watching>).watch === "function" ? (provider as unknown as Watching) : undefined;
 
+/** The browser computer `ref`'s CDP URL now: the provider's connect (its signed URL), its words and code when the session
+ *  has ended. The connection itself is let go once read. */
+async function cdpUrlOf(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }): Promise<string> {
+  const connected = await provider.connect(ref);
+  if (!connected.ok) throw Object.assign(new Error(connected.error.message), { code: connected.error.code });
+  const url = connected.value.cdp?.url;
+  await connected.value.close().catch(() => undefined);
+  if (!url) throw new Error(`the ${provider.id} computer ${ref.id} gave no CDP connection`);
+  return url;
+}
+
+/** The label a browser session's computer carries its browser tool's tag in. */
+const SESSION_TAG = "agentrun.session";
+/** A label value of letters, digits and `_.:-` alone, as every provider takes one. */
+const labelValue = (value: string) => value.replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 63);
+/** A provider failure as an error with the provider's words and code. */
+const failed = (error: { readonly code: string; readonly message: string }) => Object.assign(new Error(error.message), { code: error.code });
+
+/** A browser computer's provider as the run's browser tool opens its sessions through it (ClaimBrowser): nothing is made
+ *  at the claim. A session's computer is made at the tool's call, under the run's labels (`spec`'s) and the tool's tag;
+ *  its release lets go of every one the tool left open. */
+function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { readonly browser: ClaimBrowser; release(): Promise<void> } {
+  const open = new Set<string>();
+  const release = async (id: string) => {
+    const released = await provider.release({ id, name: id }, "delete");
+    if (!released.ok) throw failed(released.error);
+    open.delete(id);
+  };
+  return {
+    browser: {
+      provider: provider.id,
+      maxLifetimeS: Math.floor(spec.lifetimeMs / 1000),
+      async open(tag, lifetimeS, signal) {
+        const lifetimeMs = Math.min(spec.lifetimeMs, Math.max(1, Math.round(lifetimeS)) * 1000);
+        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) } }, signal ? { signal } : {});
+        if (!created.ok) throw failed(created.error);
+        open.add(created.value.id);
+        return created.value.id;
+      },
+      async find(tag) {
+        const listed = await provider.list({ ...spec.labels, [SESSION_TAG]: labelValue(tag) });
+        if (!listed.ok) throw failed(listed.error);
+        return listed.value.map((one) => one.ref.id);
+      },
+      url: (id) => cdpUrlOf(provider, { id, name: id }),
+      close: release,
+    },
+    async release() {
+      for (const id of [...open]) await release(id).catch(() => undefined);
+    },
+  };
+}
+
 /** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first (the
  *  janitor's releaseOlder: one claim's computer at a time), then made with the run's labels (and the run's folder, when
  *  it mounts), connected, its groups from its hello; its read-back is the provider's own; its release deletes it. */
@@ -202,18 +263,6 @@ async function providerLaunch(
   };
 }
 
-/** The runner's start: every computer of `providers` with all of `labels` whose deadline (its agentrun.computer.deadline
- *  label) has passed is ended, once (the janitor's sweep), each provider apart. A provider whose vendor ends its own
- *  computers answers its refusal in words; nothing throws. */
-export async function sweepComputers(providers: readonly ComputerProvider[], labels: Readonly<Record<string, string>>, now: Date = new Date()): Promise<{ readonly provider: string; readonly swept: Result<Swept> }[]> {
-  const out: { provider: string; swept: Result<Swept> }[] = [];
-  for (const provider of providers) {
-    const swept = await sweep(provider, { labels: { ...labels }, now }).catch((error: unknown): Result<Swept> => ({ ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } }));
-    out.push({ provider: provider.id, swept });
-  }
-  return out;
-}
-
 /** The run's computer for this claim, started and registered; `{ computer: undefined }` for none. Throws with code
  *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
 export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "agents" | "sealedKeys" | "computerLedger">, deps: ComputerForClaimDeps): Promise<ClaimComputer> {
@@ -225,6 +274,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const side: ClaimSide = {
     keysOf: providerKeys(deps.kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
     answers: deps.answers ?? (async () => false),
+    ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, mount, gpu, signal }) {
       if (deps.launch) {
         const own = await deps.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
@@ -243,6 +293,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const { network: networks, maxLifetimeMs } = provider.capabilities();
       const run: ComputerRun = {
         ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
+        ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
         ...(networks ? { networks } : {}),
         ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
       };
@@ -251,6 +302,16 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       // run of it unbuilt would be refused.
       const ready = await readyImage(provider, signal, deps.onImageWait);
       const spec: ComputerSpec = { ...deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run), ...(ready ? { image: ready } : {}), labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}) };
+      // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
+      // booked) only while the tool holds it.
+      if (kind === "browser") {
+        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
+        const older = await releaseOlder(provider, launch.runId, launch.epoch, signal ? { signal } : {});
+        if (!older.ok) throw new Error(older.error.message);
+        const opened = claimBrowser(provider, spec);
+        madeBy = entry;
+        return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
+      }
       const launched = await providerLaunch(provider, launch, spec, signal);
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
@@ -261,6 +322,8 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
   const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, deps.kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
+  const refusedKind = deps.refuseKind?.(resolved.kind);
+  if (refusedKind) throw unavailable(refusedKind);
 
   // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
   // start fails after it was minted.

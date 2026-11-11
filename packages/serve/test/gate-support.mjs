@@ -19,10 +19,10 @@ export function liveSettings(value) {
 }
 
 /** A run's gate: the server's stored `settings` (a value, or a reader), the revision's own `overrides`, `harness`, the MCP
- *  servers it pins, `approvers` and `approvals`, and where its own files are read (`files`, its folder `root`). */
-export function runnerGate({ settings, overrides = {}, harness = "pi", mcpServers, approvers = true, approvals = "ask", root = "/nonexistent/run", work, files } = {}) {
+ *  servers it pins, `approvers` and `approvals`, and its folder `root`. */
+export function runnerGate({ settings, overrides = {}, harness = "pi", mcpServers, approvers = true, approvals = "ask", root = "/nonexistent/run", work } = {}) {
   const read = typeof settings === "function" ? settings : () => storedSettings(settings);
-  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(mcpServers ? { mcpServers } : {}) }, read, overrides, approvers, approvals, files ?? root);
+  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(mcpServers ? { mcpServers } : {}) }, read, overrides, approvers, approvals);
 }
 
 /** The words a call the gate refuses is answered with, or its verdict ("allow" or "ask"). */

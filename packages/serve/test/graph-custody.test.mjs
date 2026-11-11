@@ -11,7 +11,6 @@ import { holdsNone, marked, overStore, pointerOf, server, sha, written } from ".
 import { flowAgent, follow } from "./support.mjs";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
-const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 
 /** A workflow mapping over its input's items, each a model call: each item is a node item whose label is the item. */
 const mapped = {

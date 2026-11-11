@@ -262,7 +262,7 @@ Its whole tree ends when the program ends or is signalled to its end. Ids are `p
 | `process.signal` | `id, signal` | `{}`: `TERM`, `INT`, `KILL` or `HUP`, to the program's process group, except `INT` with a pty (below); to a process that has ended it does nothing |
 | `process.resize` | `id, cols, rows` | `{}`: the terminal's new size; the program gets SIGWINCH |
 | `process.list` | `from?` | `{processes, truncated, next}`: `processes` are `{id, pid, argv, argvClipped, pty, running, exitCode, signal, startedAt, endedAt}` in start order, times in milliseconds since the epoch; at most 768 KiB a reply: when `truncated`, list again with `from` set to `next`. Pages follow start order, not places in the table, so a process dropped between two pages makes the next skip none |
-| `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end; `running` is true on timeout |
+| `process.wait` | `id, timeoutMs` | `{running, exitCode, signal}`: waits up to `timeoutMs` (0 to a day) for the end, which comes once all the program wrote before it exited is in its log and streams; `running` is true on timeout |
 
 - Each stream keeps its last 8 MiB in a ring. Offsets count bytes since the process started; `nextOffset` is where the
   next read starts. A read below the ring's start begins at its start, and `dropped` says how many bytes were lost; an
@@ -419,7 +419,7 @@ in the kernel's tool registry, keyed by these groups.
   | e2b | sandbox: `E2B_BASE_TEMPLATE` ("base"); desktop: `E2B_DESKTOP_TEMPLATE` ("desktop") |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
-  | browserbase, kernel | browser: `BROWSER_IMAGE` ("chromium") |
+  | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
 
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
@@ -431,6 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
   | kernel | Kernel | browser | `KERNEL_API_KEY` | none | yes |
+  | local | Local Chrome | browser | none | none | no |
 
 - Each provider module exports `CAPABILITIES` beside `MOUNT` (the registry's contract, `ProviderModule`). A unit test
   holds every registry provider's `CAPABILITIES` and `MOUNT` to its entry, and each provider built from the test fakes,
@@ -1568,7 +1569,7 @@ the TTL.
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
-| `gpu` | `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`; at most 8 | Daytona's `GpuType` names (its API's enum, `daytona_api_client` 0.214.0) and its 8 VFIO GPUs to a sandbox ([dotfiles/gpu-sandboxes](https://www.daytona.io/dotfiles/gpu-sandboxes)); `spec.gpu` becomes `gpu` (how many) and `gpuType` (the one type, as its preference list), and the read-back's `gpu` and `gpuType` must match. The types come from the API's `GpuType` enum alone: Daytona's docs and pricing page also list `L40S`, `B200` and `B300`, which the enum doesn't name, so they aren't offered. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says: a GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 192 GiB memory and 512 GiB disk, Daytona's defaults for each GPU. The org needs GPU credits, or the create is refused in Daytona's words. A GPU computer whose image is `"default"` (`DAYTONA_DEFAULT_SNAPSHOT`: the create sends no snapshot) gets Daytona's `daytona-gpu` snapshot. Whether a GPU sandbox takes a snapshot of box/Dockerfile, its class, the root init needs for its own network, and the network allowlist are not yet proven live |
+| `gpu` | `H100`; at most 1 | daytona-gpu's own GPU (`DAYTONA_GPU_SNAPSHOT_GPU`, from GET /snapshots/daytona-gpu). A GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`: its default sandbox image, user `daytona` with passwordless sudo, plus the CUDA toolkit), sent as `snapshot`: its spec's image is `"daytona-gpu"` or `"default"`, and `check` refuses any other (a snapshot of box/Dockerfile among them) in words. A Daytona snapshot carries its own resources, so the create sends none (no `cpu`, `gpu`, `gpuType`, `memory` or `disk`: Daytona refuses them beside a snapshot, 400 "Cannot specify Sandbox resources when using a snapshot"), and the read-back's `snapshot`, `gpu` and `gpuType` must be the snapshot's. Another type or count needs a snapshot of its own, so `check` refuses it. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says. That is Daytona's ephemeral: its SDK's `ephemeral` sets it, and `CreateSandbox` has no `ephemeral` field, so none is sent. A GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 100 GiB memory and 400 GiB disk, the snapshot's; `mounts: []`, so a GPU computer with any mount is refused in words: daytona-gpu's user is not root and it has no Archil client. In serve's Mode 2 the run's folder is an Archil mount, so a Daytona GPU sandbox is refused there, and Settings' `gpu.why` says so. The org needs GPU credits, or the create is refused in Daytona's words. Create notes who installed the daemon: daytona-gpu's `daytona` user through passwordless sudo, or root on a snapshot of box/Dockerfile |
 
 ### What the provider does
 
@@ -2074,6 +2075,82 @@ AGENTRUN_COMPUTER_LIVE_KERNEL=1 COMPUTER_KERNEL_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider kernel
 ```
 
+## A local browser: this machine's Chrome, no keys
+
+The `local` provider (`local.ts`) is a computer of kind `browser` that is the Chrome or Chromium on the machine
+AgentRun runs on. No vendor, no key, nothing billed.
+
+```ts
+import { LocalBrowserProvider } from "@parcha/agentrun-computer";
+
+const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
+const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });
+const connected = await local.connect(made.value); // connected.value.cdp.url: ws://127.0.0.1:<port>/devtools/browser/<id>
+await local.release(made.value, "delete");
+```
+
+Each computer is one Chrome with a throwaway profile and a debugging port Chrome picks on 127.0.0.1. It runs
+headless by default. `headed: true` shows the window, for a person watching on this machine. `create()` returns
+once `/json/version` answers on that port. `connect()` hands over the DevTools URL. `release("delete")` ends Chrome and
+removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
+`browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
+refused when another user can write it). That file holds the labels and the deadline.
+
+Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
+ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process
+that made the browser. So a run that crashes leaves no Chrome behind once its deadline passes. `list()` reads the
+deadline, so the janitor's `sweep` also ends a browser whose supervisor was killed (`lifetime: "janitor"`). The cap is
+24 h.
+
+Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
+first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
+install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+`create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
+once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
+keeps nothing.
+
+The fence and the sandbox are PR #1718's:
+
+- Chrome's own sandbox is always on. A start as root is refused (Chrome refuses root with its sandbox on), and so is a
+  Chrome that cannot start its sandbox here, in words that name the fix (an AppArmor profile on Ubuntu 23.10 and later,
+  or Chrome's setuid helper). Nothing retries without the sandbox.
+- Every request Chrome makes goes through the browser's egress proxy, the same one Docker's computers use
+  (`docker/egress-proxy.ts`). A spec's `network` is `"open"` (no list) or `{ allow: [names and CIDRs] }`. With a list,
+  the proxy reaches only those hosts, on ports 80 and 443, and refuses any other host by name before its lookup. A
+  CIDR that covers a refused range (loopback, private) is refused at `check()`. The proxy reaches public addresses only, each checked after its lookup:
+  this machine's loopback, private networks, link-local and a cloud's metadata address (169.254.169.254) are
+  refused. Chrome is started with `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too. Its
+  `--host-resolver-rules=MAP <proxy> <proxy>, MAP * ~NOTFOUND` means Chrome resolves no name itself, so a request
+  sent around the proxy reaches nothing. QUIC is off (`--disable-quic`), and WebRTC sends no UDP
+  (`--webrtc-ip-handling-policy=disable_non_proxied_udp`). The proxy and its relay live in the supervisor, so the fence
+  holds for a browser driven from another process, and a browser whose supervisor is gone reaches nothing.
+
+Capabilities: `network: ["open"]` (public addresses), `isolation: "host"`, `daemon: "none"`, groups `cdp` only (no
+live view: run it headed to watch), `release: ["delete"]`, no mount.
+
+Known limits, so it is for local and development use:
+
+- The debugging port has no auth. Any process on this machine that finds the port can drive the browser, read its
+  pages and cookies, and navigate it. The port is on 127.0.0.1 only, and it is random per browser.
+- Chrome runs as the user AgentRun runs as, on this host. Chrome's sandbox is the only isolation between a page and
+  the machine. The fence keeps the browser off this machine's services and private networks, but the browser
+  process itself is not in a container or a VM.
+- The page cannot reach this machine's services, but the supervisor's relay port on 127.0.0.1 is reachable by local
+  processes. Through it they reach public addresses, which they can reach anyway.
+- No proxy of your own, no extensions, no saved profiles: each browser starts from an empty profile that goes with it.
+
+Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser with the same
+`snapshot` and `run` actions the vendor browsers take, with no Stagehand and nothing loaded into Chrome. `run` code is
+refused there; navigation is a `goto` action. Its snapshot does not read a frame another site runs in its own
+process (a cross-origin iframe). The snapshot names each frame it left out, so an agent knows the page has more.
+
+The conformance module starts a real Chrome, so it waits for its switch:
+
+```sh
+AGENTRUN_COMPUTER_LIVE_LOCAL=1 [COMPUTER_LOCAL_CHROME=/usr/bin/chromium] \
+  npm run conformance -w @parcha/agentrun-computer -- --provider local --kind browser
+```
+
 ## Phone harness (the phone kind)
 
 ```ts
@@ -2434,6 +2511,10 @@ AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
 ```
+
+`npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names
+one) and starts here with its sandbox on: it creates a local browser, drives it over CDP, checks that a service on this
+machine's loopback is out of its reach, and releases it. Elsewhere it skips with the reason.
 
 Where Xvfb is on PATH, the Go tests also run the X client, and screen and input against the fixture, on a real X
 server; elsewhere those tests skip in words and the fake X server's tests still run.
