@@ -42,7 +42,7 @@ there and never print it.
 | `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
-| `AGENTRUN_MAX_RUNS` | The `max_concurrent_runs` capabilities report. It does not stop a start: a run waits `queued` until a runner has a free loop. |
+| `AGENTRUN_MAX_RUNS` | The most runs a runner holds at once (the server's `--max-runs`, a runner process's `--loops`), and the `max_concurrent_runs` capabilities report. It does not refuse a start: a run past it waits `queued` until a runner has a free loop. |
 | `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without a key, only the checks that need it are UNTESTED: web_fetch's direct fetch and its private-host refusal need none and always run. |
 
 Stop the server with SIGTERM to its exact PID. The runner beside it stops every run where it can resume, and the next claim carries on from the run's journal.

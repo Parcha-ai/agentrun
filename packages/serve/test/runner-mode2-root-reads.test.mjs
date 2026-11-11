@@ -4,8 +4,6 @@
 // saved, over the Archil fake. The run's folder on the disk holds the real files; the run's local folder path holds
 // decoys:
 //   - the first message's file manifest (firstMessage) lists the run's inputs/ on the disk;
-//   - the gate's file checks (runGate) read the turn's origin, turn-origin.json, on the disk: a reflect turn's write under
-//     .learning/ is refused;
 //   - a monid answer too long for the model is filed in the run's evidence/monid/ on the disk, where the run's read finds
 //     it, never in the local folder;
 //   - and nothing at all is read under the run's local folder path while the spec is built and used: every node:fs read
@@ -35,7 +33,6 @@ const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
-const { NOTE_ONLY_TEXT } = await import("../dist/tool-gate.js");
 const { CLIP, MONID_KEY_ENV } = await import("../dist/monid.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
@@ -138,15 +135,13 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   await server.flush?.();
 
-  // The run's files on the disk: an input, and a reflect turn's origin.
+  // The run's files on the disk: an input.
   const disk = new FakeArchilDisk();
   disk.files.set(`${KEY}/inputs/from-disk.txt`, Buffer.from("on the disk"));
-  disk.files.set(`${KEY}/turn-origin.json`, Buffer.from(JSON.stringify({ origin: "reflect" })));
   // Decoys at the run's folder path on this machine, which a Mode 2 run never reads.
   const local = runFolder(dir, AGENT, RUN);
   mkdirSync(join(local, "inputs"), { recursive: true });
   writeFileSync(join(local, "inputs", "decoy.txt"), "on this machine");
-  writeFileSync(join(local, "turn-origin.json"), JSON.stringify({ origin: "person" }));
 
   await prepare(dir);
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
@@ -186,7 +181,7 @@ const callsOf = (control) => control.requests.map((request) => `${request.method
 
 /** The disk's reads of `key`: a get of the file, or a listing of the folder. */
 const readsOf = (disk, key) => disk.calls.filter((call) => (call.key ?? call.prefix ?? call.directory ?? "").startsWith(key));
-/** A reflect turn's write under .learning/, as the adapter loop asks the spec's gate about it. */
+/** A write, as the adapter loop asks the spec's gate about it. */
 const reflectWrite = { callId: "c1", tool: "write", args: { path: ".learning/notes.md", content: "kept" } };
 
 for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
@@ -195,13 +190,6 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.ok(spec.input.includes("from-disk.txt"), `the manifest names the disk's input: ${spec.input}`);
     assert.ok(!spec.input.includes("decoy.txt"), "nothing from the local folder's inputs/");
     assert.ok(readsOf(disk, `${KEY}/inputs`).length > 0, "inputs/ was listed on the disk, under the run's key");
-  });
-
-  test(`${name} in Mode 2: the gate's turn-origin check reads the disk: a reflect turn's write under .learning/ is refused`, async (t) => {
-    const { spec, disk } = await mode2Spec(t, { harness, build });
-    // The gate's own refusal of a reflect turn's write under .learning/: the one text the model reads (NOTE_ONLY_TEXT).
-    assert.equal((await spec.gate(reflectWrite))?.deny, NOTE_ONLY_TEXT, "the disk says the turn is the end-of-run reflect turn, whose writes under .learning/ are refused in the note-only words");
-    assert.ok(readsOf(disk, `${KEY}/turn-origin.json`).length > 0, "the turn's origin was read on the disk, under the run's key");
   });
 
   test(`${name} in Mode 2: nothing is read under the run's local folder path while its spec is built and used`, async (t) => {

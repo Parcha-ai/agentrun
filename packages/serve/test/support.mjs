@@ -20,10 +20,11 @@ import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { maxRunsOf } from "../dist/host.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
-import { FAUX_ENV, withoutFaux } from "../dist/model.js";
+import { withoutFaux } from "../dist/model.js";
 import { bootSealKey } from "../dist/seal-key.js";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
@@ -227,23 +228,6 @@ const sharing = new Map();
 /** Each data directory's trigger store (createServer's `store`), shared by every server serve() starts on it (a restart
  *  reads the triggers the first one made) and closed once the last of them has stopped. */
 const stores = new Map();
-async function storeFor(data) {
-  let held = stores.get(data);
-  if (!held) {
-    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-    held = { store: await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" }), dir, servers: 0 };
-    stores.set(data, held);
-  }
-  held.servers += 1;
-  return held;
-}
-async function storeDone(data, held) {
-  held.servers -= 1;
-  if (held.servers > 0 || stores.get(data) !== held) return;
-  stores.delete(data);
-  await held.store.close();
-  await rm(held.dir, { recursive: true, force: true });
-}
 
 /** `store` as a test server's triggers see it: a trigger's agent is put in the store first when it is not there, since
  *  until the cutover the server keeps its agents in its own files and the store holds only what the triggers write. Test
@@ -298,7 +282,10 @@ export async function triggerStore(of) {
  *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
  *  spec, a learning run on the learning loop, its model route the faux model under `faux`, its grade cut at
- *  `gradeTimeoutMs` when given. Returns a close() that stops the runner and closes its store handle. */
+ *  `gradeTimeoutMs` when given. It holds at most the server's run cap (`maxRuns`, else AGENTRUN_MAX_RUNS, else what the
+ *  host's memory holds: host.ts maxRunsOf), as the CLI's runner does; a run past it waits queued. Returns a close() that
+ *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
+ *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
 export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, ...switches } = {}) {
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
@@ -321,9 +308,12 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   const sealKey = seal.key;
   const computers = computerDepsFrom({ env, store, sealKey, dockerPaths: () => dockerPathsForRuns(env, data), hostAddresses: () => hostAddressesOnce(env) });
   let runner;
+  let beats = 0;
   try {
     runner = startRunner({
       store,
+      loops: maxRunsOf(process.env, switches.maxRuns),
+      onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
       createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) }),
@@ -333,11 +323,14 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
     await store.close();
     throw error;
   }
-  return async () => {
-    await runner.close().catch(() => {});
-    await store.close().catch(() => {});
-    seal.release();
-  };
+  return Object.assign(
+    async () => {
+      await runner.close().catch(() => {});
+      await store.close().catch(() => {});
+      seal.release();
+    },
+    { beats: () => beats },
+  );
 }
 
 export async function serve(t, { harnesses: asked, runner: wantRunner = true, ...options } = {}) {
@@ -358,11 +351,17 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
   // Under a fake docker (fixtures/fake-docker.mjs), a box command that asked for sudo fails the test: the stand-in refused
   // it, and noted it here.
   const dockerState = process.env.FAKE_DOCKER_STATE;
-  t.after(async () => {
-    // The runner releases its claims and closes its store handle before the server's directory goes.
+  // The whole start stopped, as the CLI's stop stops it (a restart's first half): the runner first, which lets each run
+  // it holds go where the next runner takes it up (runner.ts close: released, no backoff), then the server. Once.
+  let stopping;
+  const stop = () => (stopping ??= (async () => {
     if (closeRunner) await closeRunner();
     await store.close().catch(() => {});
     await server.close();
+  })());
+  t.after(async () => {
+    // The runner releases its claims and closes its store handle before the server's directory goes.
+    await stop();
     // The servers a test started on this one's data close before it goes: node:test runs after-hooks in the order they
     // were added, so this one runs before theirs, and a directory removed under a server still writing there fails with
     // ENOTEMPTY (and a hook that throws skips the rest, their closes among them, so the file hangs).
@@ -374,7 +373,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, ..
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, store, api: client(server.baseUrl, server.token) };
+  return { ...server, data, store, stop, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the

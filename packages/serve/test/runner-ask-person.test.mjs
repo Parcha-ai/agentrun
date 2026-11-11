@@ -123,6 +123,40 @@ test("resume: the person's message resumes the parked run as its next user turn,
   assert.equal(asks.length, 1, `ask_person was asked once, never re-asked on the resume: ${asks.length}`);
 });
 
+// #2291 (part of #2230): the server tells run.needs_input for a run held in its claim by the row's waiting summary. A
+// parked question's answer claims the run again; were the summary left until the end commit, the answer's turn would read
+// as that held wait and the server would tell the same question a second time.
+test("resume: the answer to a parked question clears the row's waiting summary in its take, so the answer's turn never reads as a wait held in the claim", async (t) => {
+  let hold;
+  const held = new Promise((resolve) => (hold = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  let asked = 0;
+  // The resume's model request (the run's second) waits until the row is read: the answer is taken, its turn running.
+  const upstream = async (url, init) => {
+    if (++asked === 2) {
+      hold();
+      await released;
+    }
+    return globalThis.fetch(url, init);
+  };
+  t.after(() => release());
+  const { row, server } = await askRun(t, { tools: ["ask_person"], upstream });
+  assert.deepEqual([row.state, row.summary], ["parked", "Waiting for your reply"], "parked on its question, the row saying so");
+  await sendCommand(server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+  await held;
+  const during = await server.runs.get(RUN);
+  assert.equal(during.state, "running", "the answer's turn runs");
+  assert.notEqual(during.runner, null, "in its claim");
+  assert.equal(during.summary, null, `the waiting summary went with the answer's take, never left to the end: ${JSON.stringify(during.summary)}`);
+  release();
+  const ended = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return now.state === "ended" && now.runner === null && now;
+  }, "the answer ends the run");
+  assert.equal(ended.summary, null);
+});
+
 test("CLI refused: a CLI-harness run that names ask_person is refused in main's words, never bound", async () => {
   const blockers = await blockersOf({}, { kind: "agentic", instructions: "Ask the person.", tools: ["ask_person"], harness: "codex", model: "gpt-5" });
   const ask = blockers.find((blocker) => blocker.tool === "ask_person");

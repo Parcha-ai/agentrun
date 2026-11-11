@@ -1,9 +1,11 @@
-import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, ChevronDown, Hourglass, Layers, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { LearningSwitch } from "@/components/LearningSwitch";
+import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
 import { Input, Textarea } from "@/components/ui/field";
 import { type Agent, editBody, noteSaveError, runsWhere } from "@/lib/agentForm";
@@ -12,9 +14,10 @@ import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
   APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
-  counted, type LearnedItem, statusFile,
+  counted, type LearnedItem, statusFile, supersedesOf,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
+import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
@@ -97,6 +100,24 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
+  // The notes each one replaces: the ones its own `supersedes` names (whole on its card, whatever page the old ones are on)
+  // and the ones the server marks `superseded_by` it, less one loaded that no longer is (restored). One not loaded yet is
+  // named by its file until a later page brings it.
+  const replaced = useMemo(() => {
+    const byFile = new Map(all.map((x) => [x.file, x]));
+    const by = new Map<string, Replaced[]>();
+    for (const x of all) {
+      if (x.status === "superseded") continue;
+      const files = [...new Set([...supersedesOf(x.text), ...all.filter((y) => y.status === "superseded" && y.superseded_by === x.file).map((y) => y.file)])];
+      const items = files.flatMap((file): Replaced[] => {
+        const known = byFile.get(file);
+        if (!known) return [{ file, name: null }];
+        return known.status === "superseded" && known.superseded_by === x.file ? [{ file, name: known.name }] : [];
+      });
+      if (items.length) by.set(x.file, items);
+    }
+    return by;
+  }, [all]);
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
   const from = useMemo(() => provenance([...(view?.log.items ?? []), ...olderLog.items]), [view, olderLog.items]);
   // A note an address points at past the pages read: the next pages are read until it shows, at most MORE_PAGES of them.
@@ -143,7 +164,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} approves={approves} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
@@ -156,7 +177,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div className="min-w-0 flex-1">
               <h2 className="text-lg font-semibold">What it has learned</h2>
-              <p className="mt-0.5 text-body text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads ${active.length === 1 ? "it" : "them"} before it starts.` : "No note is in use: the next run starts with nothing learned."}</p>
+              <p className="mt-0.5 text-body text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads ${active.length === 1 ? "it" : "them"} before it starts.` : [...skills, ...workflows].some((x) => x.status === "active") ? "No note is in use." : "No note is in use: the next run starts with nothing learned."}</p>
             </div>
             {!readOnly && !adding && <Button size="sm" onClick={() => setAdding(true)}><Plus aria-hidden /> Add a note</Button>}
           </div>
@@ -166,7 +187,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
@@ -220,8 +241,9 @@ function RefreshFailed({ error, onRetry }: { error: unknown; onRetry: () => void
   );
 }
 
-/** Said where the before and after goes until the server has one (it needs two runs on each side of the first note). */
-const IMPACT_LATER = "After two runs on each side of its first note, this shows what learning changed.";
+/** Said where the before and after goes until the server has one (it needs two runs on each side of the first thing the
+ *  agent learned: a note, a skill or a workflow). */
+const IMPACT_LATER = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
 
 /** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
 function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {
@@ -250,8 +272,9 @@ function Skeleton() {
   );
 }
 
-/** Before and after the agent first learned, as a flat panel like the others: the median time to its answer and the
- *  median cost of a run, each side's, how many runs the after side counts, and what learning itself costs a run when
+/** Before and after the agent first learned (a note, a skill or a workflow: the server counts a run that started from any
+ *  of them on the after side), as a flat panel like the others: the median time to its answer and the median cost of a
+ *  run, each side's, how many runs the after side counts, and what learning itself costs a run when
  *  the server says. Said as the numbers are, a slower or costlier after included: a change down is in the primary colour,
  *  one up in the warning colour, and neither is ever left out. Shown only when the server has two runs on each side. */
 function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }) {
@@ -261,7 +284,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
     ...(costsShown(impact) ? [{ label: "A run costs", now: money(a.median_cost_usd!), was: money(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
   ];
   const learning = learningCost(impact);
-  const basis = [`Medians of ${runsWord(b.runs)} before its first note and ${runsWord(a.runs)} that started from its notes.`,
+  const basis = [`Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a note, a skill or a workflow).`,
     `Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`].join(" ");
   return (
     <section className="border" aria-label={impactWords(impact)}>
@@ -343,12 +366,17 @@ function Empty({ on, lookedBack, switchRow, onAdd }: { on: boolean; lookedBack: 
 }
 
 type From = { run?: { id: string; at: string; reason: string } } | undefined;
+/** A note another one replaces: its file, and its name once a page read has it (null until then). */
+type Replaced = { file: string; name: string | null };
 
 /** One note: its name, type and description, its body, where it came from and how often runs used it; Edit and Retire. */
 /** `approves`: for a note that waits, whether this caller approves from the console (undefined while that is read).
+ *  `replaces`: the older notes it replaces (its `supersedes`, and each `superseded_by` it), said in its footer and listed
+ *  on expand, by name, or by file while the page that names one is not read yet.
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; replaces?: Replaced[] }) {
   const [editing, setEditing] = useState(false);
+  const [older, setOlder] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [flash, setFlash] = useState(focused);
   const [saved, setSaved] = useState<string | null>(null);
@@ -413,7 +441,17 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
         {/* As the server counts them: the runs it was given to, and the runs that opened it (once one did). */}
         <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Given to {runsWord(note.runs.given)}</span>
         {note.runs.read > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Read in {runsWord(note.runs.read)}</span>}
+        {replaces.length > 0 && (
+          <button type="button" onClick={() => setOlder((o) => !o)} aria-expanded={older} className="flex items-center gap-1.5 hover:text-foreground">
+            <Layers className="size-3" aria-hidden />Replaces {replaces.length} older {replaces.length === 1 ? "note" : "notes"}<ChevronDown className={cn("size-3 transition-transform", older && "rotate-180")} aria-hidden />
+          </button>
+        )}
       </footer>
+      {older && replaces.length > 0 && (
+        <ul aria-label="Notes it replaces" className="space-y-1 border-t px-5 py-2.5 text-body text-muted-foreground">
+          {replaces.map((x) => <li key={x.file} className={cn("break-words", x.name === null && "font-mono text-small")}>{x.name ?? x.file}</li>)}
+        </ul>
+      )}
       {retiring && <RetireConfirm name={note.name} kind="note" retire={() => v2.retireNote(agentId, note.file, note.etag)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
@@ -491,7 +529,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
       {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />
-        : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-small">{text}</pre>)}
+        : <LearnedWorkflow name={item.name} text={text} />)}
       <footer className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-label text-muted-foreground">
         {item.run && <LearnedIn run={item.run} runs={runs} />}
         {lastChangeLine(item.last_change) && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />{lastChangeLine(item.last_change)}</span>}
@@ -499,6 +537,29 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={() => v2.retireNote(agentId, statusFile(item), version)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
+  );
+}
+
+/** A learned workflow opened: drawn with the workflow graph a workflow agent's tab draws, from its workflow.json, with its
+ *  JSON a click away under it. A text that is not JSON, or names no root node to draw, shows as its text, as it is. */
+function LearnedWorkflow({ name, text }: { name: string; text: string }) {
+  const { doc, graph } = useMemo(() => {
+    try { const doc: unknown = JSON.parse(text); return { doc, graph: workflowGraph(doc) }; } catch { return { doc: null, graph: null }; }
+  }, [text]);
+  const marks = useMemo(() => (graph ? { meta: metaOf(doc, graph) } : undefined), [doc, graph]);
+  const json = <pre className="max-h-80 overflow-auto border bg-background p-3 font-mono text-small">{text}</pre>;
+  if (!graph?.nodes.length) return <div className="mx-5 mt-3">{json}</div>;
+  return (
+    <div className="mx-5 mt-3 space-y-2">
+      <div className="overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-4">
+        <WorkflowGraph graph={graph} marks={marks} label={`The workflow ${name}, as a graph`} minScale={0.55} maxScale={1} />
+      </div>
+      <GraphLegend />
+      <details>
+        <summary className="caps cursor-pointer text-label text-muted-foreground hover:text-foreground">workflow.json</summary>
+        <div className="mt-2">{json}</div>
+      </details>
+    </div>
   );
 }
 

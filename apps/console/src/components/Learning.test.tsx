@@ -182,6 +182,85 @@ describe("the Learning tab's notes", () => {
   });
 });
 
+// LS-05: consolidation merges related notes into one that replaces them (its front matter's `supersedes`; the server marks
+// each old one `superseded_by` it). The tab shows fewer notes: the new one says how many it replaces, listed on expand,
+// and each old one sits under Earlier notes naming what replaced it.
+describe("a note that replaces older ones (consolidation)", () => {
+  const MERGED = "refund-policy-pages.md";
+  const consolidated = () => view({
+    notes: { items: [
+      note(MERGED, "Refund policy pages", { text: `---\nname: Refund policy pages\ndescription: Where a shop's refund policy is\ntype: feedback\nsupersedes: [${FIRST}, ${OLD}]\n---\nTry /policies/refund-policy first.\n` }),
+      note(MINE, "Keep it to three lines"),
+      note(FIRST, "Try /policies/refund-policy first", { status: "superseded", superseded_by: MERGED }),
+      note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: MERGED }),
+    ], total: 4, next_cursor: null },
+  });
+
+  it("the note in use says it replaces 2 older notes, closed, and opens to their names", async () => {
+    const t = await open(agent(true), { learning: async () => consolidated() });
+    expect(t.text()).toContain("2 notes in use.");
+    const card = t.card("Refund policy pages")!;
+    const toggle = [...card.querySelectorAll("button")].find((b) => /^Replaces 2 older notes/.test(b.textContent ?? ""))!;
+    expect(toggle).toBeTruthy();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(card.querySelector('ul[aria-label="Notes it replaces"]')).toBeNull();
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const names = [...card.querySelectorAll('ul[aria-label="Notes it replaces"] li')].map((li) => li.textContent);
+    expect(names).toEqual(["Try /policies/refund-policy first", "Shopify refund policy path"]);
+    // A note that replaces none says nothing of it.
+    expect(t.card("Keep it to three lines")!.textContent).not.toContain("Replaces");
+  });
+
+  it("one that replaces a single note says so in the singular", async () => {
+    const t = await open(agent(true));
+    expect(t.card("Try /policies/refund-policy first")!.textContent).toContain("Replaces 1 older note");
+    expect(t.card("Try /policies/refund-policy first")!.textContent).not.toContain("older notes");
+  });
+
+  // Review on #2351: the server pages notes 50 at a time, active ones first, so a replaced note can sit on a later page.
+  // The count comes from the replacing note's own `supersedes` (whole on its card), never from the notes loaded so far;
+  // a replaced note not loaded yet is listed by its file until a later page names it.
+  it("counts the notes it replaces from its own supersedes, whole, when some are on a later page; their names fill in as pages load", async () => {
+    const first = view({ notes: { items: [
+      note(MERGED, "Refund policy pages", { text: `---\nname: Refund policy pages\ndescription: Where a shop's refund policy is\ntype: feedback\nsupersedes: [${FIRST}, "${OLD}"]\n---\nTry /policies/refund-policy first.\n` }),
+      note(FIRST, "Try /policies/refund-policy first", { status: "superseded", superseded_by: MERGED }),
+    ], total: 3, next_cursor: "p2" } });
+    const t = await open(agent(true), { learning: async () => first, notes: async () => ({ items: [note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: MERGED })], total: 3, next_cursor: null }) });
+    const card = t.card("Refund policy pages")!;
+    const toggle = [...card.querySelectorAll("button")].find((b) => /^Replaces \d+ older notes?/.test(b.textContent ?? ""))!;
+    expect(toggle.textContent).toMatch(/^Replaces 2 older notes/);
+    await act(async () => { toggle.click(); });
+    const names = () => [...t.card("Refund policy pages")!.querySelectorAll('ul[aria-label="Notes it replaces"] li')].map((li) => li.textContent);
+    expect(names()).toEqual(["Try /policies/refund-policy first", OLD]);
+    await t.click(/^Load more notes$/);
+    expect(names()).toEqual(["Try /policies/refund-policy first", "Shopify refund policy path"]);
+  });
+
+  it("a note its supersedes names that is no longer superseded by it (restored) is not counted", async () => {
+    const t = await open(agent(true), { learning: async () => view({ notes: { items: [
+      note(MERGED, "Refund policy pages", { text: `---\nname: Refund policy pages\ndescription: Where a shop's refund policy is\ntype: feedback\nsupersedes: [${FIRST}, ${OLD}]\n---\nBody.\n` }),
+      note(FIRST, "Try /policies/refund-policy first"),
+      note(OLD, "Shopify refund policy path", { status: "superseded", superseded_by: MERGED }),
+    ], total: 3, next_cursor: null } }) });
+    expect(t.card("Refund policy pages")!.textContent).toContain("Replaces 1 older note");
+  });
+
+  it("each replaced note sits under Earlier notes, says what replaced it, and takes you to it", async () => {
+    const t = await open(agent(true), { learning: async () => consolidated() });
+    expect(t.card("Try /policies/refund-policy first")).toBeNull();
+    expect(t.text()).toContain("Earlier notes2 no longer read");
+    await t.click(/^Earlier notes/);
+    const earlier = t.host.querySelector('section[aria-label="Earlier notes"]')!;
+    expect(earlier.textContent).toContain("Try /policies/refund-policy firstReplacedReplaced by Refund policy pages");
+    expect(earlier.textContent).toContain("Shopify refund policy pathReplacedReplaced by Refund policy pages");
+    const to = [...earlier.querySelectorAll("button")].filter((b) => b.textContent === "Refund policy pages");
+    expect(to).toHaveLength(2);
+    await act(async () => { (to[1] as HTMLButtonElement).click(); });
+    expect(document.activeElement).toBe(t.card("Refund policy pages"));
+  });
+});
+
 describe("what runs did not keep", () => {
   it("lists a refused note and a skip with their words, newest first, and counts the runs with nothing new", async () => {
     const t = await open(agent(true));
@@ -223,7 +302,7 @@ describe("the before and after", () => {
     expect(t.host.querySelector('section[aria-label^="Since it learned"]')).toBeNull();
   });
   it("until there is one, one quiet line says when it will show", async () => {
-    const LINE = "After two runs on each side of its first note, this shows what learning changed.";
+    const LINE = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
     const t = await open(agent(true), { learning: async () => view({ impact: null }) });
     expect(t.text()).toContain(LINE);
     expect(t.host.querySelectorAll("p").length).toBeGreaterThan(0);
@@ -1214,5 +1293,69 @@ describe("the Learning tab's per-note run counts", () => {
     expect(first).toContain("Given to 0 runs");
     expect(first).not.toContain("Read in");
     expect(first).not.toContain("Used in");
+  });
+});
+
+// LS-10: a learned workflow drawn with the console's workflow graph (the one a workflow agent's tab draws), from its
+// workflow.json as the learning file read gives it; its JSON stays a click away.
+describe("the Learning tab's learned workflow, drawn", () => {
+  const DRAFT_FILE = "workflows/check-refunds/workflow.json";
+  const README_FILE = "workflows/check-refunds/README.md";
+  const DOC = { v: 2, name: "check-refunds", schemas: { In: { type: "object" }, Page: { type: "object" } }, input: { schemaId: "In" }, root: { node: "chain", label: "check refunds", steps: [
+    { node: "call", label: "fetch the policy page", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page" },
+    { node: "extract", label: "read the refund window", from: "{page}", out: "Page", as: "window" },
+  ] } };
+  const learned = (status: "active" | "pending" = "active") => view({
+    workflows: [{ name: "check-refunds", file: DRAFT_FILE, readme: README_FILE, description: "Checks a store's refund window", status, run: "run-a", bytes: 640, etag: '"readme-v1"' }],
+  } as Partial<AgentLearning>);
+
+  it("an active one opens to its graph: each node drawn by its label, and the JSON behind it", async () => {
+    const t = await open(agent(true), { learning: async () => learned(), read: async () => ({ note: `${JSON.stringify(DOC, null, 2)}\n`, etag: '"wf-v1"' }) });
+    await t.click(/^Show the workflow check-refunds$/);
+    const flow = t.card("check-refunds")!;
+    const graph = flow.querySelector('svg[role="img"][aria-label="The workflow check-refunds, as a graph"]');
+    expect(graph).not.toBeNull();
+    expect(graph!.textContent).toContain("fetch the policy page");
+    expect(graph!.textContent).toContain("read the refund window");
+    expect(flow.textContent).toContain('"name": "check-refunds"');
+  });
+  it("a workflow.json that is not a workflow (no root, or not JSON) shows its text as before, with no graph", async () => {
+    for (const text of ['{"v": 2, "name": "check-refunds"}\n', "not json"]) {
+      const t = await open(agent(true), { learning: async () => learned(), read: async () => ({ note: text, etag: '"wf-v1"' }) });
+      await t.click(/^Show the workflow check-refunds$/);
+      const flow = t.card("check-refunds")!;
+      expect(flow.querySelector('svg[role="img"]')).toBeNull();
+      expect(flow.querySelector("pre")!.textContent).toBe(text);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
+});
+
+// LS-10: an agent's impact counts runs that started from a learned skill or workflow, as from a note: its words say
+// what it learned, never notes alone.
+describe("the before and after of an agent that learned only skills or workflows", () => {
+  const IMPACT = { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11, cost_runs: 2, median_learning_usd: null }, after: { runs: 3, median_duration_s: 12, median_cost_usd: 0.03, cost_runs: 3, median_learning_usd: null } };
+  const only = (kind: "skills" | "workflows") => view({
+    notes: { items: [], total: 0, next_cursor: null }, index: "", impact: IMPACT,
+    [kind]: [{ name: "find-policies", file: kind === "skills" ? "skills/find-policies/SKILL.md" : "workflows/find-policies/workflow.json", description: "Find a store's policies", status: "active", run: "run-b", bytes: 92, etag: '"v1"' }],
+  } as Partial<AgentLearning>);
+  for (const kind of ["skills", "workflows"] as const) {
+    it(`renders it for ${kind} alone, in words that name what it learned, not notes`, async () => {
+      const t = await open(agent(true), { learning: async () => only(kind) });
+      const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
+      expect(card).not.toBeNull();
+      expect(card.textContent).toContain("on 3 runs");
+      const basis = card.querySelector('[title^="Medians of"]')!.getAttribute("title")!;
+      expect(basis).toContain("Medians of 2 runs before it first learned and 3 runs that started from what it learned (a note, a skill or a workflow).");
+      expect(basis).not.toContain("first note");
+      expect(basis).not.toContain("its notes");
+      // The notes' own line says no note is in use, never that the run starts with nothing learned.
+      expect(t.text()).not.toContain("the next run starts with nothing learned");
+    });
+  }
+  it("until there is one, its line names the first thing it learned, not its first note", async () => {
+    const t = await open(agent(true), { learning: async () => view({ impact: null }) });
+    expect(t.text()).toContain("After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.");
+    expect(t.text()).not.toContain("its first note");
   });
 });

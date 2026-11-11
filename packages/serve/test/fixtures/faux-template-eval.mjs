@@ -4,8 +4,11 @@
 // The package's agent follows its run's input, one step a request:
 // - `Call <tool> with <json>`, one line each: that call, in order (an MCP tool by its wire name, mcp__<server>__<tool>);
 // - `Write <path>: <text>`: the write tool, making that file in the run's work folder;
+// - `Page through the filed answer`: as a model that follows the words it is given would, the read tool on the file the
+//   last result says the whole answer is filed at (`in the run's files at <path>`), from the line that result names
+//   (`offset=<n>`), then again from each `offset=<n>` the read answers, until a read names none;
 // - `Answer:` and the lines after it: the final answer, with `{{last-result}}` the text of the last tool result,
-//   `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned), and
+//   `{{tools}}` the names of the tools the run was given, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned), and
 //   `{{flaky:<a>|<b>}}` <a> the first time any run of this server answers it and <b> after (a count kept in the file
 //   AGENTRUN_TEST_EVAL_COUNTER names).
 // - `Hold until stopped.`: with AGENTRUN_TEST_EVAL_HOLD set, the run writes that file once it holds, so a test knows the
@@ -49,6 +52,39 @@ function flaky(first, later) {
   return readFileSync(file, "utf8").trim().split("\n").length === 1 ? first : later;
 }
 
+/** The names of the tools the run was given: the context's, else those its messages added. */
+const toolsOf = (context) => [...new Set([...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].map((tool) => tool.name))];
+
+/** Where the last result says the whole answer is filed, and the line it says to go on from. */
+const FILED = /in the run's files at (\S+?)(?=[\]:;,\s]|$)/;
+const OFFSET = /offset=(\d+)/;
+
+/** The input's next call, given the text of each result so far, or undefined once every step has its result. */
+function nextCall(input, said) {
+  let at = 0;
+  for (const line of input.split("\n")) {
+    const call = /^Call (\S+) with (\{.*\})$/.exec(line);
+    const write = /^Write (\S+): (.*)$/.exec(line);
+    if (call || write) {
+      if (at < said.length) {
+        at++;
+        continue;
+      }
+      return call ? [call[1], JSON.parse(call[2])] : ["write", { path: write[1], content: `${write[2]}\n` }];
+    }
+    if (line !== "Page through the filed answer") continue;
+    const path = FILED.exec(said[at - 1] ?? "")?.[1];
+    if (!path) continue;
+    let offset = OFFSET.exec(said[at - 1])?.[1];
+    for (;;) {
+      if (at === said.length) return ["read", { path, ...(offset ? { offset: Number(offset) } : {}) }];
+      offset = OFFSET.exec(said[at++])?.[1];
+      if (!offset) break;
+    }
+  }
+  return undefined;
+}
+
 export default function reply(context, faux) {
   const system = systemOf(context);
   if (system.includes("You grade one run of an AI agent against one rubric.")) return grade(context, faux);
@@ -56,14 +92,9 @@ export default function reply(context, faux) {
   const last = users.at(-1) ?? "";
   if (last.startsWith("The task is done. Before the run ends")) return faux.message("No notes.");
   const input = users[0] ?? "";
-  const steps = input.split("\n").flatMap((line) => {
-    const call = /^Call (\S+) with (\{.*\})$/.exec(line);
-    if (call) return [[call[1], JSON.parse(call[2])]];
-    const write = /^Write (\S+): (.*)$/.exec(line);
-    return write ? [["write", { path: write[1], content: `${write[2]}\n` }]] : [];
-  });
   const results = context.messages.filter((m) => m.role === "toolResult");
-  if (results.length < steps.length) return faux.message(faux.toolCall(...steps[results.length]), { stopReason: "toolUse" });
+  const next = nextCall(input, results.map((result) => textOf(result.content)));
+  if (next) return faux.message(faux.toolCall(...next), { stopReason: "toolUse" });
   const hold = process.env.AGENTRUN_TEST_EVAL_HOLD;
   if (input.includes("Hold until stopped.") && hold) {
     return new Promise((resolve) => {
@@ -75,6 +106,7 @@ export default function reply(context, faux) {
   const answer = at < 0 ? "Done." : input.slice(at + "Answer:\n".length);
   return faux.message(answer
     .replaceAll("{{last-result}}", textOf(results.at(-1)?.content ?? ""))
+    .replaceAll("{{tools}}", toolsOf(context).join(", "))
     .replace(/\{\{learned:([^}]+)\}\}/g, (_, text) => (system.includes(text) ? "yes" : "no"))
     .replace(/\{\{flaky:([^|}]*)\|([^}]*)\}\}/g, (_, a, b) => flaky(a, b)));
 }

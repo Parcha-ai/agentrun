@@ -89,9 +89,6 @@ export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the con
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
-/** A note's file name, as the server takes one: at the folder's top, a letter or digit first, then letters, digits, dots,
- *  dashes and underscores, ending .md; never MEMORY.md, which the server builds. */
-export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 export const NOTE_TYPES: readonly NoteType[] = ["feedback", "project", "reference", "user"];
 /** Each type in plain words, as a card and the editor's picker show it (the API's value is in its tooltip). */
 export const TYPE_LABEL: Record<NoteType, string> = { user: "About you", feedback: "How to work", project: "About the work", reference: "Where to look" };
@@ -252,6 +249,15 @@ const value = (v: string) => {
 };
 /** The parts as a note's whole text, the one a write sends. */
 export const noteText = (p: NoteParts) => `---\nname: ${value(p.name)}\ndescription: ${value(p.description)}\ntype: ${p.type}\n${p.rest.map((l) => `${l}\n`).join("")}---\n${p.body.replace(/^\n*/, "\n")}`;
+/** The notes a note says it replaces, by file: its front matter's `supersedes`, a `[a.md, b.md]` list or one name, read
+ *  as the server reads it (serve's learn/notes.ts: the whole value unquoted, then listOf). None when it names none. */
+export function supersedesOf(text: string): string[] {
+  const line = noteParts(text).rest.find((l) => /^supersedes:/.test(l));
+  // The whole value unquoted first, then the list split, as the server reads it: a quoted `"[old.md]"` is one list.
+  const raw = line ? unquote(line.replace(/^supersedes:\s*/, "").trim()).trim() : "";
+  if (!raw) return [];
+  return (/^\[.*\]$/.test(raw) ? raw.slice(1, -1).split(",") : [raw]).map((item) => unquote(item.trim())).filter(Boolean);
+}
 /** A note's body alone: its text past the front matter. */
 export const bodyOf = (text: string) => noteParts(text).body.replace(/^\n+/, "");
 

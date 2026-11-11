@@ -84,11 +84,28 @@ test("the Responses API adds no billed input the body does not carry: the input 
 const imageItem = { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' };
 const withImages = (n) => ({ ...RECORDED_REQUEST, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: Array.from({ length: n }, () => imageItem) }] });
 
-test("each image adds the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), through the shared figures", () => {
+test("each image counts at the most one image is billed as on the Responses API, 73,800 tokens (30,000 patches x 2.46), in place of its data URL's bytes, through the shared figures", () => {
   const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  const bytes = imageItem.image_url.length;
   assert.equal(host.OPENAI_IMAGE_TOKENS_MAX, 73_800);
-  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800, 3 * 73_800]);
-  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: 1 }), 'the policy and the shared function agree');
+  assert.deepEqual([withImages(1), withImages(3)].map((body) => policy.serverInputOverhead(body)), [73_800 - bytes, 3 * (73_800 - bytes)]);
+  assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: [{ bytes }] }), 'the policy and the shared function agree');
+});
+
+test("a 1280x720 screenshot on an OpenAI model counts at its tiles (1,105: 3 x 2 tiles of 512 px at 170 and a base of 85, about a thousand tokens), never the 73,800 maximum or its megabyte of base64; at detail low, 85", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  // A PNG's header saying 1280x720, and a megabyte of pixel data after it, as a real screen's.
+  const png = Buffer.alloc(1_000_000);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(png, 0);
+  png.write('IHDR', 12, 'latin1');
+  png.writeUInt32BE(1280, 16);
+  png.writeUInt32BE(720, 20);
+  const url = `data:image/png;base64,${png.toString('base64')}`;
+  const screen = (detail) => ({ ...RECORDED_REQUEST, model: 'gpt-5.1-codex', tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', image_url: url, ...(detail ? { detail } : {}) }] }] });
+  const counted = (body) => policy.serverInputOverhead(body) + url.length;
+  assert.equal(counted(screen()), 1105, 'its tiles');
+  assert.ok(counted(screen()) < 73_800 / 50, 'never the per-image maximum');
+  assert.equal(counted(screen('low')), 85, 'detail low');
 });
 
 test("a body with a file input (billed by its pages, with no stated bound) leaves the input bound unmeasured, so a cap treats it as unknown", async () => {
@@ -114,13 +131,15 @@ test("a request whose body fits what is left, but not with its image's allowance
     await send(p.url, { body });
     return sent;
   };
-  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing.
+  // Room for the body's bytes and all of the image's allowance but one token: refused, the provider sees nothing. The
+  // allowance is counted in place of the bytes its data URL takes in the body.
+  const allowance = 73_800 - imageItem.image_url.length;
   let bytes;
-  const refused = await sentBy((r) => { bytes = r.inputTokensMax - 73_800; return bytes + 73_800 - 1; });
+  const refused = await sentBy((r) => { bytes = r.inputTokensMax - allowance; return bytes + allowance - 1; });
   assert.equal(refused.length, 0);
-  const passed = await sentBy(() => bytes + 73_800);
+  const passed = await sentBy(() => bytes + allowance);
   assert.equal(passed.length, 1);
-  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance');
+  assert.equal(Buffer.byteLength(passed[0], 'utf8'), bytes, 'the bound is the sent body\'s bytes plus the image allowance, less its data URL\'s bytes');
 });
 
 test("the recorded stream's usage is booked from response.completed, read as JSON", async () => {

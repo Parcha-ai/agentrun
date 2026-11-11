@@ -123,7 +123,9 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
       const fresh = !ctx.isMemoized(key);
       // The gate first: before the flush and the intent, so a refused or parked call leaves nothing in the log.
       if (fresh && options.gate) {
-        const answer = await options.gate({ callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown> });
+        // An earlier attempt's start in the log (a replay-safe call a crash cut): it may have been sent, and the gate says so.
+        const replayed = ctx.state().effects.has(key);
+        const answer = await options.gate({ callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown>, ...(replayed ? { replayed: true as const } : {}) });
         if (answer !== 'allow') {
           if ('deny' in answer) return { text: answer.deny, isError: true };
           await parkedUntilAborted(signal ? AbortSignal.any([signal, ctx.signal]) : ctx.signal, tool.name);

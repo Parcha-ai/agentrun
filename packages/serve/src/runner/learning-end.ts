@@ -23,7 +23,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { isMessageRow, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readSnapshot } from "../learn/folder.js";
 import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";
@@ -37,8 +37,10 @@ import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import type { Store } from "../store/store.js";
+import type { McpServerRow, Store } from "../store/store.js";
+import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
+import { capNowOf } from "./journal-kinds.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
@@ -73,12 +75,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
-  const capUsd = launch.maxCostUsd;
   const hookFor = (runId: string) => createReflectHook({
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
-    // kept within it. A person's stop comes to the hook as its `cut`.
+    // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
+    // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
     facts: async (runId) => {
       const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
+      const capUsd = launch.maxCostUsd === undefined ? undefined : capNowOf(launch.maxCostUsd, await runEntries(deps.store, runId, BACKGROUND_CONTEXT));
       return { learns: true, costUsd, ...(capUsd !== undefined ? { capUsd, capReached: costUsd !== null && costUsd >= capUsd } : {}) };
     },
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
@@ -87,7 +90,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const { tools } = await draftTools(deps, runId);
       const draftFor = await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
-      const described = draftFor.length ? await describedOf(tools) : [];
+      const described = draftFor.length ? await describedOf(tools, deps.store) : [];
       return { active: start.seedNotes ?? start.given.length, tools, draftFor, described };
     },
     asked: async (runId) => {
@@ -121,10 +124,13 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
-    // A seed that could not be read (no seedNotes, no commit): the server dropped its learning at the start, and the run
-    // was never asked to look back.
+    // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
+    // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be
+    // read, or a start that could not be made from it; a start that records none names no reason.
     if (seedFailed(start)) {
-      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(STOPPED.notCopied) } } }] };
+      const failed = start.seedFailed;
+      const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
     return hookFor(input.runId)(input);
   };
@@ -150,14 +156,70 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
   return calls.every((row) => answered.has(row.tool_use_id));
 }
 
+/** Why each draft of `proposal` waits for its owner's OK whatever the grade: its steps calling an MCP tool with no
+ *  declared price (skills.ts unpricedCalls), by its workflow.json's path, from the prices each server's row keeps
+ *  (mcp-probe.ts McpPrices). A server the store can't read gives no price: held. */
+async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
+  const files = ((proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).filter((one): one is { file: string; text: string } => typeof one?.file === "string" && one.file.endsWith("/workflow.json") && typeof one.text === "string");
+  const { draftMcpTools, unpricedCalls, unpricedLine } = await import("../learn/skills.js");
+  const rows = new Map<string, Promise<McpServerRow | undefined>>();
+  const priced = new Map<string, number | undefined>();
+  const held: Record<string, string[]> = {};
+  for (const { file, text } of files) {
+    let doc: unknown;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    // Every MCP tool its call nodes run, as the workflow's own read reads them (draftMcpTools over the parsed JSON: an
+    // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
+    for (const name of draftMcpTools(doc)) {
+      const [server, tool] = name.slice("mcp:".length).split("/") as [string, string];
+      if (!rows.has(server)) rows.set(server, store.mcp.server(server).catch(() => undefined));
+      const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
+      priced.set(name, typeof price === "number" && Number.isFinite(price) ? price : undefined);
+    }
+    const lines = unpricedCalls(doc, (tool) => priced.get(tool)).map(unpricedLine);
+    if (lines.length) held[file] = lines;
+  }
+  return held;
+}
+
+/** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
+ *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
+async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
+  const rows = await store.mcp.servers().catch(() => [] as McpServerRow[]);
+  const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
+  return (server) => byName.get(server) ?? [];
+}
+
 /** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
- *  summary): the draft ask's `describe`. */
-async function describedOf(tools: readonly string[]): Promise<{ name: string; does: string }[]> {
+ *  summary): the draft ask's `describe`. An MCP tool (`mcp:<server>/<tool>`, LS-07) is described by its server's listing
+ *  as the store keeps it: what it does, the schema it takes and, when it lists one, the one it gives (reflect.ts cuts
+ *  each line to its cap). A server or a tool the store does not list is described by none. */
+async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">): Promise<{ name: string; does: string }[]> {
   const { toolOf } = await import("../tools.js");
-  return tools.flatMap((name) => {
-    const does = toolOf(name)?.summary;
-    return does ? [{ name, does }] : [];
-  });
+  const listed = new Map<string, Promise<McpServerRow | undefined>>();
+  const out: { name: string; does: string }[] = [];
+  for (const name of tools) {
+    const mcp = /^mcp:([^/]+)\/(.+)$/.exec(name);
+    if (!mcp) {
+      const does = toolOf(name)?.summary;
+      if (does) out.push({ name, does });
+      continue;
+    }
+    const server = mcp[1]!;
+    const tool = mcp[2]!;
+    if (!listed.has(server)) listed.set(server, store.mcp.server(server).catch(() => undefined));
+    const row = await listed.get(server)!;
+    const entry = ((row?.tools ?? []) as { name?: unknown; title?: unknown; description?: unknown; input_schema?: unknown; output_schema?: unknown }[]).find((one) => one?.name === tool);
+    if (!entry) continue;
+    const said = typeof entry.description === "string" && entry.description.trim() ? entry.description.trim() : typeof entry.title === "string" ? entry.title.trim() : "";
+    const does = [said ? `${said.replace(/[.\s]+$/, "")}.` : "", `Takes ${JSON.stringify(entry.input_schema ?? {})}.`, entry.output_schema !== undefined ? `Gives ${JSON.stringify(entry.output_schema)}.` : ""].filter(Boolean).join(" ");
+    out.push({ name, does });
+  }
+  return out;
 }
 
 /** How many of an agent's latest runs draftForOf reads at most: a skill offered to fewer than DRAFT_AFTER_RUNS of them is
@@ -208,19 +270,21 @@ export async function draftForOf(deps: Pick<LearningEndDeps, "store" | "learning
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; asked: string[] }> {
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-  if (revision?.kind !== "agentic") return { tools: [], gated: {} };
+  if (revision?.kind !== "agentic") return { tools: [], gated: {}, asked: [] };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
-  const [{ learnedDraftTools }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
+  const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
   // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
   const server = (await loadToolSettings(deps.store)).settings;
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
-  const { tools, gated } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from);
-  return { tools, gated };
+  // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
+  const granted = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
+  const { tools, gated, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
+  return { tools, gated, asked };
 }
 
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
@@ -228,18 +292,23 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
 async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[] }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
-    const { tools, gated } = await draftTools(deps, input.runId);
+    const { tools, gated, asked } = await draftTools(deps, input.runId);
+    // #2424's card rule (learnedAskFits): a draft whose ask-set MCP tools would not all show on its approval card is refused.
+    const { learnedAskFits } = await import("../learned-workflow.js");
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ask: { asked, fits: learnedAskFits } });
     } finally {
       await folder.end();
     }
     if (proposed.state !== "proposed") return proposed as Checked;
     const proposal: unknown = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8"));
-    return { ...proposed, proposal };
+    // A draft calling an MCP tool with no declared price waits for its owner's OK whatever the grade (LS-07): held here,
+    // from the prices the store keeps now, and said to the grader.
+    const held = await heldOf(deps.store, proposal);
+    return { ...proposed, proposal: Object.keys(held).length ? { ...(proposal as object), held } : proposal };
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }

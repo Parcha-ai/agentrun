@@ -39,8 +39,7 @@ async function midTurn(t) {
   return { child, exited, data, said: () => out };
 }
 
-// SKIP (follow-up #2080): a stop does not drain the runner beside the server, so it never says it waits for the run (in-flight fix: PR #2053).
-test.skip("one Ctrl-C that reaches the server twice in a moment drains as one stop: it waits for the run, exits 0 and removes its record", { timeout: 120_000 }, async (t) => {
+test("one Ctrl-C that reaches the server twice in a moment drains as one stop: it waits for the run, exits 0 and removes its record", { timeout: 120_000 }, async (t) => {
   const { child, exited, data, said } = await midTurn(t);
   child.kill("SIGINT");
   await new Promise((resolve) => setTimeout(resolve, 5));
@@ -52,7 +51,7 @@ test.skip("one Ctrl-C that reaches the server twice in a moment drains as one st
   assert.equal(existsSync(join(data, ".server.json")), false, "the record is removed");
 });
 
-// SKIP (follow-up #2080): a stop does not drain the runner beside the server, so the second Ctrl-C's words never come (in-flight fix: PR #2053).
+// SKIP (follow-up #2080): its 1.5 s exit bound is a wall-clock race on a loaded machine.
 test.skip("a second Ctrl-C a while later stops at once, saying the runs resume on the next start", { timeout: 120_000 }, async (t) => {
   const { child, exited, data, said } = await midTurn(t);
   child.kill("SIGINT");
@@ -64,5 +63,45 @@ test.skip("a second Ctrl-C a while later stops at once, saying the runs resume o
   assert.equal(end.signal, null, "it exits by itself, not by the signal");
   assert.equal(end.code, 130, said());
   assert.match(said(), /^stopping now; runs resume on the next start \(1 was running\)$/m);
+  assert.equal(existsSync(join(data, ".server.json")), false, "the record is removed");
+});
+
+/** The CLI on a fresh data root, sent `signal` the moment its output first matches `at` (the start still under way, or
+ *  its banner just shown): how it ended, its data root and what it said. */
+async function signalledAt(t, at, signal = "SIGTERM") {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, "--drain-timeout", "3s"], { env: { ...process.env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => child.on("exit", (code, sig) => resolve({ code, signal: sig })));
+  t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
+  let out = "";
+  let sent = false;
+  const read = (chunk) => {
+    out += chunk;
+    if (!sent && at.test(out)) {
+      sent = true;
+      child.kill(signal);
+    }
+  };
+  child.stdout.on("data", read);
+  child.stderr.on("data", read);
+  const end = await exited;
+  assert.ok(sent, `it never printed ${at}: ${out}`);
+  return { end, data, said: out };
+}
+
+// A platform's redeploy sends SIGTERM whenever it likes: the moment the banner shows, or while the server still starts.
+// The stop is listened for from before the start, so it is the same stop as any other (its drain, exit 0, its record
+// removed), never the default end by signal that cuts a run's paid request in flight.
+test("a SIGTERM the moment the banner shows is the server's own stop: exit 0, its record removed, never the end by signal", { timeout: 120_000 }, async (t) => {
+  const { end, data, said } = await signalledAt(t, /^Open /m);
+  assert.deepEqual(end, { code: 0, signal: null }, said);
+  assert.equal(existsSync(join(data, ".server.json")), false, "the record is removed");
+});
+
+test("a SIGTERM while the server still starts is kept and runs once the start is done: exit 0, never the end by signal", { timeout: 120_000 }, async (t) => {
+  // The seal key's line is said as the store opens, before the server listens.
+  const { end, data, said } = await signalledAt(t, /made a new seal key/);
+  assert.deepEqual(end, { code: 0, signal: null }, said);
   assert.equal(existsSync(join(data, ".server.json")), false, "the record is removed");
 });

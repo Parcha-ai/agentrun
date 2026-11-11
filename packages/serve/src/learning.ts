@@ -34,7 +34,7 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
 import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
@@ -130,7 +130,7 @@ export type Shown = { text: (text: string) => string; name: (name: string) => st
 /** What a name holding a secret reads: learn/secrets.ts redactSecrets' mark, the name's whole, never a part of it. */
 const REDACTED = "[redacted]";
 /** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
+ *  learn/secrets.ts redactLearned, a bank's numbers too), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
  *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. A text served
  *  has no loopback address, the address alone (key-refusal.ts withoutLoopbackAddresses, the pattern a run's words share,
  *  run-view.ts shownOf): the host's own, never a person's; a run error's `url:` tail is no rule of a note's, a patch's or a
@@ -138,8 +138,10 @@ const REDACTED = "[redacted]";
  *  # Learned section, server.ts's learning start), where an address on the run's own machine is the note's to give. */
 export function secretsShown(values: readonly string[], { local = false }: { local?: boolean } = {}): Shown {
   const matches = valueMatcher(values);
-  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  const cut = (text: string) => (holds(text) ? redactSecrets(text, values) : text);
+  // Every shape learning refuses, a bank's numbers beside their words too (learnedSecretShapes): a name or a text refused
+  // for one never shows it here, though a run's own view may show its user an account number.
+  const holds = (text: string) => matches(text) || learnedSecretShapes(text).length > 0;
+  const cut = (text: string) => (holds(text) ? redactLearned(text, values) : text);
   return { holds, text: local ? cut : (text) => withoutLoopbackAddresses(cut(text)), name: (name) => (holds(name) ? REDACTED : name) };
 }
 
@@ -216,7 +218,9 @@ export const LEARNING_LABEL = "learning";
  *  when it gives none), and what the user said in the run as the grader reads it (each message cut of the host's
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
+/** A run's proposal: its notes, skill and drafts, each draft's dry run by its workflow.json's path (learn/skills.ts
+ *  draftDryRun: passed, or not run and why), and what was said in the run. */
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; asked?: string[]; triggered?: Triggered[] };
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */
 export type Triggered = { source: string; text: string };
@@ -250,27 +254,29 @@ export const LEARNED_WORKFLOWS_FILE = "learned-workflows.json";
 /** The most bytes the `learned_workflow` tool's description gives its workflows, each one's line (workflowLine)
  *  together: every harness sends the description with each request, so it never grows with what an agent learned. */
 export const LEARNED_WORKFLOWS_BUDGET = 8 * 1024;
-/** A learned workflow's line in the `learned_workflow` tool's description: its name, and what its README says it does. */
-export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string =>
-  [`- ${name}: ${description || "(no description)"}`, ...inputLine(workflow)].join("\n");
+/** A learned workflow's line in the `learned_workflow` tool's description: its name, its input's fields (inputFields;
+ *  none for a workflow whose input names no schema) and what its README says it does. One line: the tool's own line says
+ *  once that `*` marks a required field. */
+export const workflowLine = ({ name, description, workflow }: Pick<LearnedWorkflow, "name" | "description"> & { workflow?: string }): string => {
+  const fields = inputFields(workflow);
+  return `- ${name}${fields ? ` ${fields}` : ""}: ${description || "(no description)"}`;
+};
 
 /** The most of a field's description a workflow's input line carries. */
 const FIELD_DESCRIPTION = 60;
 
-/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (inputSchema), on
- *  a line of its own, so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
-function inputLine(workflow: string | undefined): string[] {
+/** A workflow's input as its line in learned_workflow's description says it: its input schema, compact (compactSchema),
+ *  so a call names the fields the workflow takes; none for a workflow whose input names no schema. */
+function inputFields(workflow: string | undefined): string | undefined {
   let doc: { schemas?: Record<string, unknown>; input?: { schemaId?: unknown } } | undefined;
   try {
     doc = workflow ? JSON.parse(workflow) : undefined;
   } catch {
-    return [];
+    return undefined;
   }
   const id = doc?.input?.schemaId;
   const schema = typeof id === "string" ? doc?.schemas?.[id] : undefined;
-  if (!schema) return [];
-  const shown = compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema));
-  return [`  input: ${shown}${shown.includes("*") ? " (* required)" : ""}`];
+  return schema ? compactSchema(schema, doc?.schemas ?? {}, 0, definitionsOf(schema)) : undefined;
 }
 
 /** A schema's own inline definitions (`definitions`, `$defs`), which its `#/definitions/` references read first. */
@@ -321,7 +327,7 @@ const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_
  *  inside the skill, read only when the skill could fit a run's budget at all. */
 export type LearnedSkill = { name: string; bytes: number; files?: Record<string, string> };
 /** The agent's learning folder: `learning/` in its folder on the disk, which only the host writes. The folder is files.ts
- *  agentFolderOf (pi-durable-agent agentDiskDir), so two ids that differ only in case never share one. */
+ *  agentFolderOf (server-fs.ts agentDiskDir), so two ids that differ only in case never share one. */
 export const learningRepo = (data: string, agentId: string): string => join(agentFolderOf(data, agentId), "learning");
 
 const queues = new Map<string, Promise<unknown>>();
@@ -386,22 +392,25 @@ export async function seedFrom(commit: string | null, read: SeedReader, { order,
   seed.files = [...new Set([...(seed.index === undefined ? [] : [INDEX_FILE]), ...Object.keys(seed.notes), ...got.held, ...(skills.size ? [SKILLS_DIR] : [])])];
   seed.skills = [...skills.keys()].sort(by(skillAt)).map((name) => {
     const files = skills.get(name)!;
-    const bytes = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0);
+    // What the run is given, counted as given: a SKILL.md as servedSkill writes it (its name and description alone, each
+    // quoted where YAML needs it), which can be a few bytes more than the blob, every other file as it is.
+    const bytes = Object.entries(files).reduce((sum, [path, text]) => sum + Buffer.byteLength(path === "SKILL.md" ? servedSkill(text) : text, "utf8"), 0);
     return bytes > LEARNED_SKILLS_BUDGET ? { name, bytes } : { name, bytes, files };
   });
   // The active learned workflows, by name, each with its workflow.json whole. The read gives an active one's README.md
-  // and workflow.json; its front matter is read again here: one that does not read one way (readmeFront) could hold a
-  // status another reader sees, so it is never read as active, and is named in `skipped`.
+  // and workflow.json; its front matter is read again here, by the one reader of a learned item's status
+  // (learn/skills.ts frontMatter): one that does not read one way could hold a status another reader sees, so it is
+  // never read as active, and is named in `skipped`.
   seed.workflows = [];
   for (const name of [...flows.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
     const { "README.md": readme, "workflow.json": workflow } = flows.get(name)!;
     if (readme === undefined || workflow === undefined) continue;
-    const front = readmeFront(readme);
+    const front = frontMatter(readme);
     if (!front) {
       seed.skipped.push(`${WORKFLOWS_DIR}/${name} (its README.md's front matter does not read one way)`);
       continue;
     }
-    if ((front.get("status") ?? "active") !== "active") continue;
+    if (learnedStatus(readme) !== "active") continue;
     seed.workflows.push({ name, description: front.get("description") ?? "", workflow });
   }
   return seed;
@@ -416,35 +425,6 @@ export const readerOf = (ws: Workspace): SeedReader => async (commit) => {
 /** The places a seed can't read from its files alone, from the folder's snapshot: each note's and each skill's. */
 const orderOf = (snapshot: Snapshot | undefined): SeedOrder | undefined =>
   snapshot ? { notes: snapshot.notes.map(({ file, order }) => ({ file, order })), skills: snapshot.skills.map(({ name, order }) => ({ name, order })) } : undefined;
-
-/** A learned workflow README's front matter, each key to its value (quotes dropped; a `>` or `|` value's indented lines
- *  joined by spaces), or undefined when it does not read one way: no front matter, none closed (`---` on a line of its
- *  own, the last line or not), a line that is neither a key at its left edge, a comment, blank, nor a line of a `>` or
- *  `|` value, or a key set twice. */
-export function readmeFront(text: string): Map<string, string> | undefined {
-  const lf = text.replace(/\r\n/g, "\n");
-  if (!lf.startsWith("---\n")) return undefined;
-  const close = /\n---(?:\n|$)/.exec(lf.slice(3));
-  if (!close) return undefined;
-  const front = new Map<string, string>();
-  let block: string | undefined;
-  for (const line of lf.slice(4, 3 + close.index).split("\n")) {
-    if (block !== undefined && (/^\s+\S/.test(line) || line.trim() === "")) {
-      if (line.trim()) front.set(block, `${front.get(block)} ${line.trim()}`.trim());
-      continue;
-    }
-    block = undefined;
-    if (line.trim() === "" || line.startsWith("#")) continue;
-    const pair = /^([A-Za-z_][\w-]*):(?:\s+(.*))?$/.exec(line);
-    if (!pair || front.has(pair[1]!)) return undefined;
-    const value = (pair[2] ?? "").trim();
-    if (/^[>|][-+]?$/.test(value)) {
-      block = pair[1]!;
-      front.set(block, "");
-    } else front.set(pair[1]!, value.replace(/^(["'])(.*)\1$/, "$2"));
-  }
-  return front;
-}
 
 /** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
  *  learning script's init), and what main holds for a run (seedFrom over the folder's read): its index, its active
@@ -721,29 +701,39 @@ export async function takeSkills(work: Workspace, names: Iterable<string>): Prom
 const namesIn = (files: readonly string[] | undefined): string[] => [...new Set((files ?? []).map((path) => path.split("/")[0]!))];
 
 /** Which of `seed`'s learned skills a run gets, in `work`, in the seed's order: each whole while they fit their budget,
- *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files (by their bytes in `work`) leave of
- *  SKILL_BYTES. One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
- *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`), is left out. */
+ *  LEARNED_SKILLS_BUDGET and never more than the revision's `own` skill files leave of SKILL_BYTES, sized in each form a
+ *  harness is handed them, the larger: as they are in `work` (claude-agent, codex) and as servedSkills writes them
+ *  (OpenCode, whose check reads that form). One named like a folder of the revision's skills, or like anything already in `work/.agents/skills/`, is
+ *  the revision's, and not the run's; one that does not fit, or holds a host secret (`shown`) as stored or as laid, is
+ *  left out. */
 export async function chooseSkills(work: Workspace, seed: Seed, own: readonly string[], shown: Shown): Promise<{ taken: LearnedSkill[]; left: string[] }> {
   if (!seed.skills?.length) return { taken: [], left: [] };
-  let ownBytes = 0;
+  let stored = 0;
   const folders = new Map<string, Promise<Entry[]>>();
+  // Each skill's SKILL.md as stored, the one file servedSkills changes; every other file is served as it is.
+  const skillMds: { name: string; files: Record<string, string> }[] = [];
   for (const path of own) {
     const at = `${SKILLS_PATH}/${path}`;
     const dir = posix.dirname(at);
     if (!folders.has(dir)) folders.set(dir, work.list(dir));
     const entry = (await folders.get(dir)!).find((one) => one.name === posix.basename(at) && one.kind === "file");
     if (!entry) throw new WorkspaceError("NOT_FOUND", `the revision's skill file ${at} is not in the run's work`, { path: at });
-    ownBytes += entry.size;
+    stored += entry.size;
+    const [name, ...rest] = path.split("/");
+    if (rest.join("/") === "SKILL.md") skillMds.push({ name: name!, files: { "SKILL.md": Buffer.from(await work.read(at)).toString("utf8") } });
   }
-  let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - ownBytes));
+  const mdBytes = (skills: readonly { files: Record<string, string> }[]): number => skills.reduce((sum, skill) => sum + Buffer.byteLength(skill.files["SKILL.md"]!, "utf8"), 0);
+  const served = stored - mdBytes(skillMds) + mdBytes(servedSkills(skillMds));
+  let room = Math.max(0, Math.min(LEARNED_SKILLS_BUDGET, SKILL_BYTES - Math.max(stored, served)));
   const owned = new Set(namesIn(own));
   const there = await runSkillNames(work);
   const taken: LearnedSkill[] = [];
   const left: string[] = [];
   for (const skill of seed.skills) {
     if (owned.has(skill.name) || there.has(skill.name)) continue;
-    const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text));
+    // Each file as stored and as laid: a SKILL.md is laid as servedSkill writes it, its front matter's values decoded
+    // (a held secret spelled in escapes reads as the secret there), so that text is what is checked too.
+    const secret = shown.holds(skill.name) || Object.entries(skill.files ?? {}).some(([path, text]) => shown.holds(path) || shown.holds(text) || (path === "SKILL.md" && shown.holds(servedSkill(text))));
     if (!skill.files || secret || skill.bytes > room) {
       left.push(shown.name(skill.name));
       continue;
@@ -754,6 +744,10 @@ export async function chooseSkills(work: Workspace, seed: Seed, own: readonly st
   return { taken, left };
 }
 
+/** Whether a learned workflow's decoded strings (decodedStrings) hold a host secret, or can't be read past the bound:
+ *  either way it is never chosen. */
+const readsHeld = (decoded: string[] | "too_deep", shown: Shown): boolean => decoded === "too_deep" || decoded.some(shown.holds);
+
 /** Which of `seed`'s learned workflows a run may run (its `learned_workflow` tool), in the seed's order: each while its
  *  line (workflowLine) fits what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). One that does not,
  *  or holds a host secret (`shown`), is left out and named in `left`, but for one whose name is itself a secret, never
@@ -763,7 +757,8 @@ export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkf
   const left: string[] = [];
   let room = LEARNED_WORKFLOWS_BUDGET;
   for (const flow of seed.workflows ?? []) {
-    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name)) {
+    // Its JSON read as JSON reads it too (decodedStrings: its escapes decoded, as its learned call's run reads it).
+    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name) || readsHeld(decodedStrings(flow.workflow), shown)) {
       // Named, but for a name that is itself a secret.
       if (!shown.holds(flow.name)) left.push(flow.name);
       continue;

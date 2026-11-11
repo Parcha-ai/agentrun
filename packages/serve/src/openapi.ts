@@ -4,7 +4,7 @@
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { TRIGGER_SOURCES } from "@parcha/pi-durable-agent/timeline";
+import { TRIGGER_SOURCES } from "./timeline/index.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
@@ -32,6 +32,7 @@ import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
+import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
@@ -332,6 +333,16 @@ const TOOL_SETTINGS = {
   }])),
   additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
 };
+/** bash's policy in an agent's own tool settings (bash-read-only.ts). */
+const BASH_POLICY = {
+  enum: [...BASH_POLICIES],
+  description: "An agent's own setting on bash only, never the server's. read-only: the tool gate reads each shell call's command before it runs or anyone is asked, and refuses, in words the model reads, one that could write, run code or read outside the run's folder: a program outside its read list (git's read subcommands, grep, sed -n with one N,Mp range, cat, head, tail, wc, ls, find without -exec and the like), redirection other than 2>/dev/null and 2>&1, $ and backticks, subshells, ||, a lone &, a pipe into anything but a filter, an unquoted glob, or a path outside the folder or on the never-open list. bash_background and bash_input are refused under it. A policy adds to bash's permission and is never one: approvals `never` lifts none of it, and an approved call is decided again before it runs.",
+};
+/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy. */
+const AGENT_TOOL_SETTINGS = {
+  ...TOOL_SETTINGS,
+  properties: { ...TOOL_SETTINGS.properties, bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } } },
+};
 /** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, `browserbase`, or `unavailable: <reason>`. */
 const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|browserbase|unavailable: .+)$" };
 const RESOLVES = {
@@ -461,7 +472,7 @@ const LEARNING_COUNTS = closed({
 }, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`, counted as it counts them, from the runs this server holds and its learning ledger, no run's files opened.");
 /** One side of an agent's impact (learning-run.ts learningImpact). */
 const IMPACT_SIDE = (side: "before" | "after") => closed({
-  runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first note." : "The completed runs that started from at least one active note." },
+  runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first learned item (a note, a skill or a workflow)." : "The completed runs that started from at least one learned item: an active note, a learned skill they were offered, or a learned workflow their learned_workflow tool could run." },
   median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before it looks back (a run that does not look back: to its end)." },
   median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is." },
   cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
@@ -496,7 +507,7 @@ const AGENT_LEARNING = closed({
   counts: LEARNING_COUNTS,
   impact: {
     oneOf: [closed({ before: IMPACT_SIDE("before"), after: IMPACT_SIDE("after") }), { type: "null" }],
-    description: "What learning changed for the agent: its completed agentic runs that started from at least one active note (`after`) against those that started before its first note (`before`: before the earlier of its first merge and the start of its first run that started from a note, so a person's first note counts too). A later run with learning off, or seeded with no note (every note retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it \"on N runs\", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened.",
+    description: "What learning changed for the agent: its completed agentic runs that started from at least one learned item, an active note, a learned skill they were offered or a learned workflow they could run (`after`), against those that started before its first item (`before`: before the earlier of its first merge and the start of its first run that started from one, so a person's first note counts too). A later run with learning off, or seeded with no item (every note, skill and workflow retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it \"on N runs\", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened.",
     "x-agentrun-serve": "learning/2",
   },
 });
@@ -576,6 +587,29 @@ const SECRET_META = { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET
 const SECRET_ITEM = (nameDescription: string) => closed({ name: { type: "string", description: nameDescription }, ...SECRET_META });
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
 const COMPUTER_KIND = { enum: ["none", "sandbox", "desktop", "phone", "browser"] };
+/** A sandbox's GPUs on an agent's computer setting (computer-setting.ts GpuSetting). */
+const COMPUTER_GPU = {
+  type: "object", additionalProperties: false, required: ["type", "count"],
+  properties: {
+    type: { type: "string", minLength: 1, description: "A GPU type the provider declares, in the vendor's own name (GET /computers: the provider's `gpu.types`), such as \"T4\" or \"A100-80GB\"." },
+    count: { type: "integer", minimum: 1, description: "How many: at most the provider's `gpu.max`." },
+  },
+  description: "The GPUs a sandbox computer asks for; only a sandbox takes them (another kind is 422). A type or a count its provider does not give, or a provider whose GPU computers take no mount of this server's folder mode, keeps the agent from running here (409 agent_not_runnable, in the computer package's checkGpu words); absent, none.",
+};
+/** A provider's GPUs in Settings → Computers (computers.ts GpuView): what its sandbox configuration declares. */
+const COMPUTER_PROVIDER_GPU = closedWith({
+  types: { type: "array", items: { type: "string" }, description: "The GPU types it gives, as `computer.gpu.type` names them." },
+  max: { type: "integer", minimum: 1, description: "The most GPUs one computer gets." },
+}, {
+  isolation: { enum: ["container", "gvisor", "microvm", "vm", "machine"], description: "The isolation a GPU computer runs under, where it is not the provider's own (Modal's run on gVisor)." },
+  preemptible: { type: "boolean", description: "Whether the vendor may preempt a GPU computer mid-run." },
+  stopDeletes: { type: "boolean", description: "Whether stopping a GPU computer deletes it: no pause and no snapshot, so nothing on it persists." },
+  region: { type: "string", description: "The one region its GPU computers run in." },
+  perGpu: closed({ cpus: { type: "integer" }, memoryMb: { type: "integer" }, diskMb: { type: "integer" } }, "What a GPU computer is given per GPU, by default."),
+  mounts: { type: "array", items: { type: "string" }, description: "The mount kinds its GPU computers take, where fewer than its own: one that is not listed is refused as not proven." },
+  fence: { enum: ["netns", "userns-netns"], description: "How the computer's daemon holds a GPU computer's programs off its network, where it is not the plain network namespace: `userns-netns`, one made inside a user namespace (Modal's gVisor, where root may not make one itself). Either way the programs reach their own loopback alone." },
+  why: { type: "string", description: "Why a run on this server cannot have its GPUs: its GPU computers take no mount of this server's folder mode." },
+});
 /** A provider in Settings → Computers (computers.ts ProviderView). */
 const COMPUTER_PROVIDER = closedWith({
   id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
@@ -586,6 +620,8 @@ const COMPUTER_PROVIDER = closedWith({
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+  gpu: { ...COMPUTER_PROVIDER_GPU, description: "A sandbox provider's GPUs, where it declares them: the choices an agent's `computer.gpu` names." },
+  network:{ type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on the vendor's own network is open (\"the vendor's own network; this server's allow-list doesn't apply\"). Absent where the allow-list applies (Docker)." },
 });
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
@@ -741,7 +777,7 @@ const GITHUB_STATUS = { oneOf: [closed({ connected: { const: false } }, "No GitH
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
-const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, default: { type: ["string", "number", "boolean"], description: "Its value when apply leaves it out (of its type; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
+const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, format: { enum: ["cron", "timezone"], description: "What a string's value is, for a form to ask for it as such: `cron`, a schedule's cron line (a schedule picker); `timezone`, an IANA time zone. The value is the same text either way." }, default: { type: ["string", "number", "boolean"], description: "Its value when apply leaves it out (of its type; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
 const TEMPLATE = closed({
   name: { type: "string", description: "Its folder's name, the one apply takes." },
   display_name: { type: ["string", "null"], description: "The agent's name, its `${parameters.<name>}` filled at apply; null: the package's name." },
@@ -755,6 +791,7 @@ const TEMPLATE = closed({
   model: { type: ["object", "null"], additionalProperties: false, required: ["tier"], properties: { tier: { enum: Object.keys(MODEL_TIERS) }, prefer: { type: "string" } }, description: "The model it wants: `prefer` when this server runs it, else this server's model for the tier (fast: AGENT_MODEL_FAST, balanced: AGENT_MODEL, strong: AGENT_MODEL_STRONG, each else the default). Null: the server's default." },
   effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
   tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
+  tool_policy: { type: ["object", "null"], additionalProperties: false, required: ["bash"], properties: { bash: BASH_POLICY }, description: "A policy by tool, bash's alone: apply writes it as the tool's policy in the agent's tool_settings, so the tool gate refuses any command it does not allow, whatever bash's permission. Null: none.", "x-agentrun-serve": "bash-policy/1" },
   mcp: {
     type: "array",
     items: closed({
@@ -811,6 +848,10 @@ const RUN_LEARNING = {
       problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`; otherwise, the items the checks left out while the rest went on to the grader (on a merge, a grader's drop or a grade that failed)." },
       cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
       tokens: closed({ grade: { oneOf: [closed({ input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT }), { type: "null" }], description: "The grade's tokens; `input` excludes cached input." } }),
+      used: closed({
+        skills: { type: "array", items: closed({ name: { type: "string" }, read: { type: "boolean" } }), description: "Each learned skill the run was offered, and whether its job read the skill's SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, read_skill_file on it, or a harness's own Skill tool on it; the end-of-run turn's reads not counted). A name holding one of the host's secrets reads `[redacted]`." },
+        workflows: { type: "array", items: closed({ name: { type: "string" }, calls: COUNT, failed: COUNT }), description: "Each learned workflow the run's job called (`learned_workflow`), by the name its calls gave: how many calls, and how many of them failed. A name holding one of the host's secrets reads `[redacted]`." },
+      }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
     }, LEARNING_NOTES),
     { type: "null" },
   ],
@@ -1384,6 +1425,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, scopes: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } }, client_id: { type: "string", minLength: 1 }, client_secret: { type: "string", minLength: 1, description: "Only with client_id; kept sealed with the token set.", "x-agentrun-secret": true } } } } } },
       responses: { "200": json(closed({ authorization_url: { type: "string", format: "uri" } }), "The page the owner opens."), ...errors(400, 401, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
+      // Started anywhere but the owner's browser, the sign-in can never finish: the cookie its callback requires is set on
+      // this answer, to whoever sent it. The generated CLI and SDKs (scripts/generate-clients.mjs) give it no method.
+      "x-agentrun-browser-only": "The sign-in's cookie, which its callback requires, is set on the answer to whoever starts it, so it must start in the owner's browser: use the console's MCP page.",
     },
   },
   "/settings/mcp-servers/oauth/callback": {
@@ -1412,10 +1456,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/integrations/github/connect": {
     post: {
       operationId: "connectGitHub", tags: ["local"], summary: "Start Connect GitHub: the app-manifest form the console posts to GitHub",
-      description: "GitHub's app-manifest flow, which makes the server's one GitHub App. Answers the form the console auto-submits: `action` (GitHub's new-App page, under `org` when given, with `state` on it) and `manifest` (a field of that form, as JSON): a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its callback and its setup URL, the App's permissions (pull requests write, contents, metadata and issues read) and events (pull_request, issue_comment). `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`. 409 github_no_public_url (\"GitHub can't reach this server: set its public URL first\") with no public URL (AGENTRUN_PUBLIC_URL); 409 github_already_connected (\"This server already has a GitHub App. Disconnect it first.\"); 409 github_wrong_origin (\"Open this server at <public URL> to connect GitHub.\", `details.public_url` that URL, for the console's link) when the request came to another address than the public URL, where GitHub sends the browser back: nothing is started.",
+      description: "GitHub's app-manifest flow, which makes the server's one GitHub App. Answers the form the console auto-submits: `action` (GitHub's new-App page, under `org` when given, with `state` on it) and `manifest` (a field of that form, as JSON): a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its callback and its setup URL, the App's permissions (pull requests write, contents, metadata and issues read) and events (pull_request, issue_comment, release). `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`. 409 github_no_public_url (\"GitHub can't reach this server: set its public URL first\") with no public URL (AGENTRUN_PUBLIC_URL); 409 github_already_connected (\"This server already has a GitHub App. Disconnect it first.\"); 409 github_wrong_origin (\"Open this server at <public URL> to connect GitHub.\", `details.public_url` that URL, for the console's link) when the request came to another address than the public URL, where GitHub sends the browser back: nothing is started.",
       requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { org: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$", description: "The GitHub organization to make the App under; absent, the signed-in GitHub user." } } } } } },
       responses: { "200": json(closed({ action: { type: "string", format: "uri" }, manifest: { type: "object", description: "GitHub's app manifest, posted as the form's `manifest` field." }, state: { type: "string" } }), "The form to post to GitHub."), ...errors(400, 401, 409, 415, 422, 429, 500) },
       ...GITHUB_MARK,
+      "x-agentrun-browser-only": "Its state is bound by a cookie to the browser that posts the form to GitHub, which sends that browser back to the callback: Connect GitHub runs in the console.",
     },
   },
   "/integrations/github/callback": {
@@ -1425,6 +1470,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: ["code", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
       responses: { "302": { description: "To GitHub, to install the App; or to the console's GitHub settings with `github=error&reason=state_invalid`, `conversion_failed` or `already_connected`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
+      "x-agentrun-browser-only": "GitHub sends the owner's browser here with the new App's code; it takes no token, and its state and cookie are that browser's.",
     },
   },
   "/integrations/github/installed": {
@@ -1434,6 +1480,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: ["installation_id", "setup_action", "state"].map((name) => ({ name, in: "query", required: false, schema: { type: "string" } })),
       responses: { "302": { description: "To the console's GitHub settings: `github=connected`, or `github=error&reason=installation_unverified`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
+      "x-agentrun-browser-only": "GitHub sends the browser here once the App is installed; it takes no token, and it checks the cookie the callback set in that browser.",
     },
   },
   "/settings/mcp-servers/oauth/client.json": {
@@ -1514,7 +1561,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/approvals/{approval_id}": {
     post: {
       operationId: "answerApproval", tags: ["runs"], summary: "Answer a tool call that waits for the owner's approval",
-      description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's result. allow runs the call once, then resumes the session with one message that names the call and carries its result; deny resumes it with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run resumes in one turn with the refusal and their words, its row reads `Declined by your message`, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
+      description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
       parameters: [ref("parameters/RunId"), { name: "approval_id", in: "path", required: true, description: "The run's pending.id.", schema: { type: "string" } }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." } } } } } },
       responses: { "204": { description: "Answered: the run goes on." }, ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500) },
@@ -1941,6 +1988,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "On a trigger's row (`origin` `trigger`) alone: the trigger whose input the row is, so a client labels it by its source without reading its summary. Absent on every other row.",
       "x-agentrun-serve": "origin/1",
     },
+    learned_nodes: {
+      type: "array",
+      items: { type: "object", additionalProperties: false, required: ["label", "kind", "status", "duration_ms"], properties: { label: { type: "string" }, kind: { type: "string", description: "The node's kind, as the workflow DSL names it (`extract`, `agent`, `call`, ...)." }, status: { type: "string", description: "How the node ended: `ok`, `failed` or `escalated`. Why a node failed is never shown: its text may hold part of a secret." }, duration_ms: { type: "number" } } },
+      description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. Absent on every other row.",
+      "x-agentrun-serve": "learnednodes/1",
+    },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),
       description: `On a row of kind \`learning\` alone, labelled \`${LEARNING_LABEL}\`: where the run's learning ended (proposed, merged or dropped, \`seed_failed\` included), and why: one row, changed in place as it moves. Its \`summary\` and \`text\` are its \`detail\` (Run.learning.detail), in a person's words. The rows of the run's end-of-run turn are labelled \`${LEARNING_LABEL}\` too, its message and answer included, and are never the run's answer.`,
@@ -1970,11 +2023,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: {
         kind: { enum: ["none", "sandbox", "desktop", "phone", "browser"] },
         provider: { type: "string", description: "The provider that serves the kind, from GET /computers. Absent for `none`." },
+        gpu: COMPUTER_GPU,
       },
-      description: "The computer the revision's runs are given (Settings → Computers): its kind and the provider that serves it. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
+      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, and a sandbox's GPUs. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
-    tool_settings: { ...TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
+    tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
     learning: { type: "boolean", default: false, description: "Whether an agentic revision's runs learn: each starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true or false; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     cap_mode: { ...CAP_MODE, description: `The cap mode of each run of this agent that has a cap and names none of its own. ${CAP_MODE.description as string} An edit that leaves it out keeps the agent's. An agentic definition's or a workflow's alike.` },
@@ -2045,7 +2099,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: {
         type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available", "harnesses", "permission", "default_permission", "permissions"],
         properties: {
-          name: { type: "string" }, summary: { type: "string" }, blurb: { type: "string", description: "One short line for people (the editor's Tools grid); the model never sees it. Absent for an MCP server's tool.", "x-agentrun-serve": "tool-blurb/1" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash, and the background tools bash_background, bash_output, bash_input, bash_signal and bash_list): it runs in the box, and a runner has no shell." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing; for a sandbox-only tool (bash, the background tools) that no box this server has can run, `no box is set up on this server: …` with each box's own reason (`places.boxes`)." }, missing: { type: "array", items: { type: "string" } },
+          name: { type: "string" }, summary: { type: "string" }, blurb: { type: "string", description: "One short line for people (the editor's Tools grid); the model never sees it. Absent for an MCP server's tool.", "x-agentrun-serve": "tool-blurb/1" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, sandbox_only: { type: "boolean", description: "Only an agent whose place is a sandbox names it (bash, and the background tools bash_background, bash_output, bash_input, bash_signal and bash_list): it runs in the box, and a runner has no shell, except in Mode 2, where bash alone runs on Archil's serverless exec." }, available: { type: "boolean" }, reason: { type: "string", description: "Why the tool is unavailable here, present whenever `available` is false: a provider pick's own words (`web_search is turned off in settings`, `parallel picked, no PARALLEL_API_KEY`), or `Needs` and the variables it is missing; for a sandbox-only tool (bash, the background tools) that no box this server has can run, `no box is set up on this server: …` with each box's own reason (`places.boxes`); in Mode 2 bash is available with no box." }, missing: { type: "array", items: { type: "string" } },
           harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
           providers: { type: "array", items: { type: "string" }, description: "A tool with a provider choice: the providers offered for it, its default first.", "x-agentrun-serve": "providers/1" },
           provider: { type: "string", description: "A tool with a provider choice: the server's, its default where it sets none.", "x-agentrun-serve": "providers/1" },
@@ -2374,6 +2428,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // A contract field this server takes with a meaning of its own, said on it.
   definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition's or a workflow's alike." };
+  definition.properties.output_schema = { ...definition.properties.output_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's output is its workflow's): the JSON Schema its final answer's last fenced json block meets, at most 64 KiB, refused at save when it does not compile. A completed run's result.output is that block's value when it meets the schema, else null. An edit that leaves the field out keeps the agent's. A template's answer schema (its manifest's `output`) is set here at apply." };
+  const runResult = schemas.RunResult as Json & { properties: Record<string, Json> };
+  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses)." };
   // instructions XOR workflow (validate.ts): a workflow revision has none. version, skills and tools: this server
   // mints or keeps them when a write leaves them out (agents-store.ts definitionOf), so none of the four is required of a
   // write; only instructions ever misses from an answer (a workflow revision's), so Definition keeps the rest required.
@@ -2391,7 +2448,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
   const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
   errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };
-  const noted = ["DefinitionInput.max_cost_usd", "DefinitionInput.instructions", "DefinitionInput.workflow", "DefinitionInput.version", "DefinitionInput.skills", "DefinitionInput.tools", "TimelineRow.usage", "ErrorBody.fields"];
+  const noted = ["DefinitionInput.max_cost_usd", "DefinitionInput.output_schema", "RunResult.output", "DefinitionInput.instructions", "DefinitionInput.workflow", "DefinitionInput.version", "DefinitionInput.skills", "DefinitionInput.tools", "TimelineRow.usage", "ErrorBody.fields"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.

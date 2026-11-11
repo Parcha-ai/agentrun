@@ -33,8 +33,11 @@ export default {
     const status = await page.evaluate(async (value) => (await fetch("/v2/computers/faux-sandbox/keys", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ FAUX_SANDBOX_KEY: value }) })).status, fake);
     check(status === 200, `saving Faux sandbox's key answered ${status}`);
 
-    // The editor again: Faux sandbox is ready; pick it, see the tools its loop gets, and save.
+    // The editor again: Faux sandbox is ready; pick it, see the tools its loop gets, and save. The sandbox kind picked above
+    // is unsaved, so leaving the editor asks first; Leave drops it.
     await page.goto(`${base}/#/`);
+    await page.getByRole("dialog", { name: "Leave without saving?" }).getByRole("button", { name: "Leave", exact: true }).click();
+    await page.waitForFunction(() => location.hash === "#/");
     await page.goto(`${base}/#/agents/${encodeURIComponent(id)}/edit`);
     await page.locator("ol").first().getByRole("button", { name: /Computer/ }).click();
     await page.locator('input[name="computer-kind"][value="sandbox"]').check();

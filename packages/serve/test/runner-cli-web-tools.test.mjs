@@ -3,12 +3,13 @@
 // CLI wire calls web_fetch on a page; the run's plane resolves web_fetch to Parallel, whose extract is faked at the
 // network layer (the process's fetch, for Parallel's host only). The call reaches Parallel once, is booked once on the
 // run's one ledger (its paid-tools session, the fee counted once in the run's cost), and the run's record holds its
-// tool_use and tool_result rows. With web_fetch set to deny in the agent's settings, the run's gate refuses the call in
-// main's words, and nothing is sent or booked. The harness's calls ask the run's gate first, as claude-agent's and
+// tool_use and tool_result rows. With web_fetch set to deny in the agent's settings or on the server, or set to ask where
+// no one can approve, the run's gate refuses the call in main's words, nothing is sent or booked, and the call is on the
+// record as on pi: its tool_use row and its tool_result row failed in those words. The harness's calls ask the run's gate first, as claude-agent's and
 // codex's own tool bridges do (bridged, below). Through the real loop: startRunner over createDispatchLoop and the CLI
 // spec (cliRunSpecFromLaunch), on a real store; no sleeps, no port races.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -29,9 +30,12 @@ const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { parallelExtractFee } = await import("../dist/paid-calls.js");
-const { deniedText } = await import("../dist/tool-gate.js");
+const { deniedText, noApproverText } = await import("../dist/tool-gate.js");
+const { saveToolSettings } = await import("../dist/tool-plane.js");
+const { writeApprovers } = await import("../dist/server-approvers.js");
 const { entriesOf } = await import("../dist/runner/loop.js");
 const { runMetrics } = await import("../dist/runner/metrics.js");
+const { scratchFolder } = await import("../dist/workspace/paths.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -108,9 +112,10 @@ function bridged(spec, refused) {
 }
 
 /** A CLI run of the faux harness on `harness`, granted web_fetch (and write) on Parallel's plane, its agent's tool
- *  settings `toolSettings`, through the runner's dispatch. Its row once it rests, Parallel's requests, its timeline, its
- *  view's cost, and its session records. */
-async function webRun(t, harness, { toolSettings } = {}) {
+ *  settings `toolSettings`, the server's `serverSettings`, and `approvers` false for a server with accounts off (no one can
+ *  approve), through the runner's dispatch. Its row once it rests, Parallel's requests, its timeline, its view's cost, and
+ *  its session records. */
+async function webRun(t, harness, { toolSettings, serverSettings, approvers } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-web-tools-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -131,6 +136,8 @@ async function webRun(t, harness, { toolSettings } = {}) {
   await server.agents.create({ id: "agent-1", name: "Reads" }, { id: "rev-1", kind: "agentic", body: { instructions, harness, tools: ["web_fetch", "write"], ...(toolSettings ? { toolSettings } : {}) } });
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness, model: HARNESSES[harness].model, plane: { web_fetch: "parallel" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  if (serverSettings) await saveToolSettings(server, serverSettings);
+  if (approvers !== undefined) await writeApprovers(server.settings, approvers);
   await server.flush?.();
   // The harness table loads a test's module only under a test runner (harness-table.ts): the flag is handed the runner.
   const env = { ...HARNESSES[harness].env(gw.url), PARALLEL_API_KEY: fake("parallel"), AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
@@ -157,14 +164,17 @@ async function webRun(t, harness, { toolSettings } = {}) {
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) records.push({ key, ...record });
   // What the run's end metrics read of its record (its root conversation), as the spec's end patch reads it.
   const recorded = runMetrics(await entriesOf(journal, ROOT_CONVERSATION_ID, ctx), {}).costUsd;
-  return { row, sent, timeline, view, records, recorded, refused };
+  return { row, sent, timeline, view, records, recorded, refused, scratch: scratchFolder(dir, "agent-1", RUN) };
 }
 
 for (const harness of Object.keys(HARNESSES)) {
   test(`a ${harness} run granted web_fetch calls it: Parallel asked once, booked once on the run's one ledger, its tool_use and tool_result rows on the timeline`, { timeout: 90_000 }, async (t) => {
-    const { row, sent, timeline, view, records, recorded, refused } = await webRun(t, harness);
+    const { row, sent, timeline, view, records, recorded, refused, scratch } = await webRun(t, harness);
     assert.equal(row.state, "ended", `the run ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     assert.deepEqual(refused, [], "the run's gate allowed every call");
+    // The CLI's scratch folder (its working directory and private files) is swept when its claim ends (#2166): the release
+    // follows the end's commit, so it is waited for.
+    await until(() => !existsSync(scratch), `the run's scratch folder swept at its claim's end: ${scratch}`, 10_000);
     // The network: one extract of the page, on the claim's key.
     assert.deepEqual(sent, [{ path: "/v1/extract", key: fake("parallel"), urls: [PAGE] }], "Parallel asked once, for the page, on the claim's key");
     // The timeline: the call and its result, the page read.
@@ -206,14 +216,29 @@ for (const harness of Object.keys(HARNESSES)) {
     assert.equal(eight(view?.cost?.usd ?? -1), eight(model + FEE), `the view's cost: ${JSON.stringify(view?.cost)}`);
   });
 
-  test(`a ${harness} run whose agent sets web_fetch to deny: the call is refused in main's words, and nothing is sent`, { timeout: 90_000 }, async (t) => {
-    const { row, sent, timeline, records, refused } = await webRun(t, harness, { toolSettings: { web_fetch: { permission: "deny" } } });
-    assert.equal(row.state, "ended", `the run went on to its end: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
-    // The harness is handed the gate's refusal, in main's words for a tool set to deny for this agent.
-    assert.deepEqual(refused, [{ tool: "web_fetch", text: deniedText("web_fetch", undefined, "agent") }], "web_fetch refused for this agent, nothing sent or charged");
-    // Nothing sent, nothing booked, and the call never ran (no record of its start).
-    assert.deepEqual(sent, [], "nothing sent to Parallel");
-    assert.deepEqual(records.filter((record) => record.key === TOOL_SESSION), [], "nothing booked on the paid-tools session");
-    assert.equal(timeline.filter((one) => one.tool_name === "web_fetch").length, 0, `the refused call never ran: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
-  });
+  // Each way the run's gate refuses a call (#2137): a deny in the agent's settings, a deny set on the server, and an ask
+  // where no one can approve (accounts off). The refused call is on the record as pi writes one: its tool_use row, then its
+  // tool_result row failed in the gate's words, the same words the harness (and so its model) is handed.
+  const refusals = [
+    ["whose agent sets web_fetch to deny", { toolSettings: { web_fetch: { permission: "deny" } } }, deniedText("web_fetch", undefined, "agent")],
+    ["on a server that sets web_fetch to deny", { serverSettings: { web_fetch: { permission: "deny" } } }, deniedText("web_fetch")],
+    ["whose web_fetch asks, on a server with accounts off (no one can approve)", { toolSettings: { web_fetch: { permission: "ask" } }, approvers: false }, noApproverText("web_fetch")],
+  ];
+  for (const [how, settings, words] of refusals) {
+    test(`a ${harness} run ${how}: the call is refused in the gate's words, nothing is sent, and its call and its failed result are on the timeline, as on pi (#2137)`, { timeout: 90_000 }, async (t) => {
+      const { row, sent, timeline, records, refused } = await webRun(t, harness, settings);
+      assert.equal(row.state, "ended", `the run went on to its end: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+      // The harness is handed the gate's refusal, in main's words: what its model reads as the call's result.
+      assert.deepEqual(refused, [{ tool: "web_fetch", text: words }], "web_fetch refused in the gate's words, nothing sent or charged");
+      // Nothing sent and nothing booked.
+      assert.deepEqual(sent, [], "nothing sent to Parallel");
+      assert.deepEqual(records.filter((record) => record.key === TOOL_SESSION), [], "nothing booked on the paid-tools session");
+      // The call's row, then its result's: failed, in the same words.
+      const rows = timeline.filter((one) => one.tool_name === "web_fetch" && (one.kind === "tool_use" || one.kind === "tool_result"));
+      assert.deepEqual(rows.map((one) => one.kind), ["tool_use", "tool_result"], `the refused call's two rows: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
+      const [use, result] = rows;
+      assert.equal(result.tool_use_id, use.tool_use_id, "the result is the call's");
+      assert.deepEqual([result.tool_status, result.tool_result_preview], ["failed", words], `the result failed in the gate's words: ${JSON.stringify(result)}`);
+    });
+  }
 }

@@ -5,6 +5,7 @@
 // ping, files.read of /proc/self/status, files.stat of /proc/self/cwd and /proc/self/exe, and exec.run (an echo).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { netDevText } from "./net-dev.mjs";
 
 export const API = "https://api.daytona.test/api";
@@ -15,6 +16,11 @@ export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import
 /** The snapshot the fake gives a create that names none: the open platform takes its configured default snapshot
  *  (daytonaio/daytona@b5a5d9e7 apps/api/src/sandbox/services/sandbox.service.ts:471-475). The name is the fake's own. */
 export const DEFAULT_SNAPSHOT = "fake-default-snapshot";
+/** The GPU snapshots the fake holds, with the GPU each gives its sandboxes (its own resources, GET /snapshots/daytona-gpu). */
+export const GPU_SNAPSHOTS = { "daytona-gpu": { gpu: 1, gpuType: "H100" } };
+/** Daytona's answer to a create that names a snapshot and sends resources beside it (live, 11-11): a snapshot carries its own. */
+export const RESOURCES_WITH_SNAPSHOT = "Cannot specify Sandbox resources when using a snapshot";
+const RESOURCE_FIELDS = ["cpu", "gpu", "gpuType", "memory", "disk"];
 const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
 
@@ -146,7 +152,9 @@ export function fakeDaytona(initial = {}) {
 			kvm: false,
 			target: body.target ?? "us",
 			cpu: 1,
-			gpu: 0,
+			// A GPU snapshot's GPU, its own resource; else the GPUs asked for with no snapshot (CreateSandbox gpu, gpuType as a
+			// preference list), read back as gpu and the type assigned.
+			...(GPU_SNAPSHOTS[body.snapshot] ?? { gpu: body.gpu ?? 0, ...(Array.isArray(body.gpuType) ? { gpuType: body.gpuType[0] } : {}) }),
 			memory: 1,
 			disk: 3,
 			state: knobs.stuck ? "pending_build" : "creating",
@@ -278,7 +286,7 @@ export function fakeDaytona(initial = {}) {
 		if (typeof request.id !== "number") return undefined;
 		const reply = (body) => `${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`;
 		const { method, params = {} } = request;
-		if (method === "hello") return reply({ result: { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"], ...(knobs.hello ?? {}) } });
+		if (method === "hello") return reply({ result: { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"], fence: "netns", ...(knobs.hello ?? {}) } });
 		if (method === "ping") return reply({ result: {} });
 		if (method === "files.read" && params.path === "/proc/self/mounts") {
 			const archil = box.archil;
@@ -308,6 +316,12 @@ export function fakeDaytona(initial = {}) {
 			const report = { uid: 2510, gid: 2510, kernel: "6.8.0", interfaces: knobs.interfaces ?? ["lo"], quiet: knobs.quiet ?? [], raised: knobs.raised ?? [], reached: [], accepted: [], results: [] };
 			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
 		}
+		// nvidia-smi -L, as the computer's user: one line per GPU the sandbox was made with, else not found.
+		if (method === "exec.run" && params.argv[0] === "sh" && params.argv[2] === "nvidia-smi -L") {
+			if (!box.gpus) return reply({ result: { exitCode: 127, stdout: "", stderr: Buffer.from("sh: nvidia-smi: not found\n").toString("base64"), timedOut: false, truncated: false } });
+			const lines = Array.from({ length: box.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${box.gpus.type} (UUID: GPU-0000000${i}-fake)`);
+			return reply({ result: { exitCode: 0, stdout: Buffer.from(`${lines.join("\n")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false } });
+		}
 		if (method === "exec.run") {
 			const stdout = Buffer.from(`${params.argv.slice(1).join(" ")}\n`).toString("base64");
 			return reply({ result: { exitCode: 0, stdout, stderr: "", timedOut: false, truncated: false } });
@@ -335,7 +349,10 @@ export function fakeDaytona(initial = {}) {
 				box.files.delete(args[0]);
 				box.files.set(args[1], bytes);
 				const sha = knobs.installSha ?? createHash("sha256").update(bytes).digest("hex");
-				return json(200, { exitCode: 0, result: `sha256 ${sha}\n` });
+				// Who installs: Daytona's own images' user, daytona, through passwordless sudo (its default snapshot and
+				// daytona-gpu); root in a snapshot of box/Dockerfile.
+				const installer = sb.snapshot === DEFAULT_SNAPSHOT || sb.snapshot in GPU_SNAPSHOTS ? "installer 1001 daytona sudo" : "installer 0 root";
+				return json(200, { exitCode: 0, result: `${installer}\nsha256 ${sha}\n` });
 			}
 			return json(200, { exitCode: 0, result: "" });
 		}
@@ -405,9 +422,11 @@ export function fakeDaytona(initial = {}) {
 	async function control(method, path, url, body) {
 		if (method === "POST" && path === "/api/sandbox") {
 			if (knobs.createStatus) return json(knobs.createStatus, { statusCode: knobs.createStatus, message: "create refused by the fake" });
+			if (typeof body.snapshot === "string" && RESOURCE_FIELDS.some((field) => field in body)) return json(400, { statusCode: 400, error: "Bad Request", message: RESOURCES_WITH_SNAPSHOT });
 			const sb = sandboxOf(body);
 			sandboxes.set(sb.id, sb);
-			inside.set(sb.id, { reads: 0, files: new Map(), sessions: new Map(), running: false, installed: [], unknown: [], commandCount: 0 });
+			const gpus = sb.gpu > 0 ? { type: sb.gpuType ?? "H100", count: sb.gpu } : undefined;
+			inside.set(sb.id, { reads: 0, files: new Map(), sessions: new Map(), running: false, installed: [], unknown: [], commandCount: 0, ...(gpus ? { gpus } : {}) });
 			return json(200, sb);
 		}
 		if (method === "GET" && path === "/api/sandbox") {

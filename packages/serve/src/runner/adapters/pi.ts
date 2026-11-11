@@ -14,13 +14,13 @@ import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus, Wire } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
-import { CALL_REFUSED } from "@parcha/pi-durable-agent/timeline";
+import { CALL_REFUSED } from "../../timeline/index.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -35,6 +35,9 @@ export interface PreIntentCall {
   readonly callId: string;
   readonly tool: string;
   readonly args: Record<string, unknown>;
+  /** An earlier attempt of the call may have been sent (a CLI's kernel bridge, asking about a replay-safe call a crash
+   *  cut: GateCall's `replayed`), so a refusal never says nothing was. */
+  readonly replayed?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */
@@ -154,7 +157,11 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
   // piTool-wrapped here too: one tool by that name on the agent, offered once.
   const owned = new Set(nativeToolNames(options));
-  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io));
+  // The calls the gate let through in this session, before their intent. pi runs a call's beforeTool only before its
+  // intent: a call it runs with no pass here is one it reruns after a crash (a replay-safe call whose intent an earlier
+  // attempt stored), told to the host tool as an attempt above 0, so the loop asks the gate about it again.
+  const passed = new Set<string>();
+  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined)));
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -165,7 +172,10 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         beforeTool: async (call, _api, hookContext: Context) => {
           if (!io.gate) return undefined;
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown> }, hookContext);
-          if (answer === "allow") return undefined;
+          if (answer === "allow") {
+            passed.add(call.id);
+            return undefined;
+          }
           if ("deny" in answer) {
             refusals.refuse(call.id, answer.deny);
             return { block: answer.deny };
@@ -203,7 +213,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // session's tools and the run's native extensions, on every open. A conversation a native tool opens takes this agent's
   // model (pi copies its owner's), so its requests go through this session's proxy.
   const instructions = spec.system.join("\n\n");
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}) };
+  // Its thinking level, the session's (the run's effort), on every open; none leaves pi's default.
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}), ...(spec.thinking ? { thinkingLevel: spec.thinking } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 
@@ -305,23 +316,36 @@ export function refusalWords() {
   };
 }
 
-/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. Each call
- *  gets what pi's own tool task gives a tool: the calling agent's model, resolved in the session's models (its input and
- *  input limits, which a file read sizes an image by), and pi's output stream (the running tool's live slot). */
-function piTool(tool: HostTool, io: PiSessionIO) {
+/** pi's output limits for a host tool, from the host's result bound: a result within it holds at most that many
+ *  characters (UTF-16 units), so at most that many lines plus one, and three bytes of UTF-8 to a character. pi's own
+ *  default (50 KB or 2,000 lines, its head kept) would cut the end off a host tool's answer, where the answer says how to
+ *  go on: an MCP answer's "[cut at ...; the whole answer is in the run's files at <path>]", a read's "Use offset=<n> to
+ *  continue". Each CLI adapter is told the same bound (harness-opencode/config.ts TOOL_OUTPUT, Claude's maxResultSizeChars,
+ *  Codex's tool_output_token_limit); each host tool keeps its own answer within it (test/host-bounds.test.mjs). */
+export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS + 1, maxBytes: HOST_RESULT_MAX_CHARS * 3 });
+
+/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, passed
+ *  whole within the host's bound (HOST_TOOL_OUTPUT). Each call gets what pi's own tool task gives a tool: the calling
+ *  agent's model, resolved in the session's models (its input and input limits, which a file read sizes an image by),
+ *  and pi's output stream (the running tool's live slot); and its attempt (`attemptOf`: above 0 for a call the gate did
+ *  not pass in this session, pi's rerun after a crash). */
+function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined) {
   return defineTool({
     name: tool.name,
     description: tool.description,
     parameters: tool.inputSchema as never,
     replay: tool.replay === "safe" ? "safe" : "unsafe",
+    outputLimits: HOST_TOOL_OUTPUT,
     execute: async (args: unknown, api, toolContext: Context) => {
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
+      const attempt = attemptOf(api.callId);
       const ref = (await api.agent(toolContext)).model;
       const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
         ...(model ? { model } : {}),
         output: (chunk: string) => api.output(chunk),
+        ...(attempt === undefined ? {} : { attempt }),
       });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));

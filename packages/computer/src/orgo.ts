@@ -18,7 +18,7 @@ import { childCommands, type DaemonExpected, daemonDrift } from "./child.js";
 import { DaemonClient } from "./client.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
-import { EPOCH_LABEL, RUN_LABEL } from "./labels.js";
+import { EPOCH_LABEL, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
@@ -33,7 +33,9 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
+	checkGpu,
 	checkLifetime,
+	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -44,6 +46,8 @@ import { listTested } from "./test-connection.js";
 
 /** The mount kinds an Orgo computer takes: none yet (an Archil mount needs an Orgo template that bakes the helper). */
 export const MOUNT: readonly MountKind[] = [];
+/** The network an Orgo desktop's programs get: none, a network of their own. */
+export const NETWORK: readonly NetworkForm[] = ["none"];
 
 /** The groups every Orgo computer offers: a Linux shell, files and processes, and the desktop's screen and input. */
 const GROUPS: Group[] = ["exec", "files", "processes", ...DESKTOP_GROUPS];
@@ -135,10 +139,11 @@ const STAGING = "/tmp/agentrun-computerd-";
 const LISTEN_RETRY_MS = 250;
 /** How often a delete that answers 409 (the computer waking) is tried again. */
 const DELETE_TRIES = 5;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels", "gpu"]);
 /** The states in which a computer runs, or is on its way to. */
 const RUNNING = new Set(["running", "creating", "restarting", "updating", "resuming"]);
-const NETWORK =
+/** Why a network other than "none" is refused (NETWORK is the forms it makes). */
+const NETWORK_REFUSAL =
 	'an Orgo computer takes network "none" only: Orgo has no egress control, so its tools have no network of their own (init\'s namespace holds them to loopback), and open or an allowlist waits for the proxy-backed feature';
 
 /** The scripts the provider runs as root, each marked on its first line, its arguments after it. */
@@ -233,25 +238,6 @@ const pause = (ms: number, signal?: AbortSignal) =>
 		if (signal?.aborted) finish();
 		else signal?.addEventListener("abort", finish, { once: true });
 	});
-
-/** The run label's hash, as a name carries it: base32 of its sha256, lower case, 16 letters. */
-function runHash(run: string): string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-	const bytes = createHash("sha256").update(run, "utf8").digest();
-	let bits = 0;
-	let value = 0;
-	let out = "";
-	for (const byte of bytes) {
-		value = (value << 8) | byte;
-		bits += 8;
-		while (bits >= 5 && out.length < 16) {
-			out += alphabet[(value >>> (bits - 5)) & 31];
-			bits -= 5;
-		}
-		if (out.length >= 16) break;
-	}
-	return out;
-}
 
 /**
  * The name of a computer with these labels: computer-<hex>, then -r<the run label's hash> and -e<the epoch label> when
@@ -390,7 +376,7 @@ export class OrgoProvider implements ComputerProvider {
 		return {
 			kind: "desktop",
 			lifetime: "janitor",
-			network: ["none"],
+			network: [...NETWORK],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",
@@ -411,7 +397,7 @@ export class OrgoProvider implements ComputerProvider {
 		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
 		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
 		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
-		if (network !== "none") refuse("network", NETWORK);
+		if (network !== "none") refuse("network", NETWORK_REFUSAL);
 		if (memoryMb !== undefined && !RAM_GB.some((gb) => gb * 1024 === memoryMb)) refuse("memoryMb", "memoryMb is one of Orgo's sizes: 4096, 8192, 16384 or 32768");
 		if (cpus !== undefined && !CPUS.includes(cpus as number)) refuse("cpus", "cpus is one of Orgo's sizes: 0.5, 1, 2, 4 or 6");
 		if (labels !== undefined) {
@@ -420,6 +406,7 @@ export class OrgoProvider implements ComputerProvider {
 			if (bad) refuse("labels", bad);
 		}
 		refusals.push(...checkMount(mount, MOUNT));
+		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || field === "mount" || value === undefined) continue;
 			if (field === "user") refuse(field, `an Orgo computer's tools run as the provider's user (${this.#uid}:${this.#gid}, the remote tool user), never as one a spec names`);
@@ -856,8 +843,10 @@ export class OrgoProvider implements ComputerProvider {
 			if (labels[EPOCH_LABEL] !== undefined && parts.epoch !== labels[EPOCH_LABEL]) continue;
 			const ref = { id: record.id, name: record.name };
 			const running = RUNNING.has(record.status);
+			// The name keeps the run's hash, not the run: listed with no run to match, the hash is given, so a caller (serve's
+			// janitor) can still tell whose run a computer is.
 			let read: Record<string, string> = {
-				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
+				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : parts.run !== undefined ? { [RUN_HASH_LABEL]: parts.run } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
 			// The janitor's deadline is the name's; a name of an older make has none, and Orgo's end stands for it.
@@ -884,7 +873,7 @@ export class OrgoProvider implements ComputerProvider {
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
-		if (policy !== undefined && policy !== "none") return fail("refused", NETWORK);
+		if (policy !== undefined && policy !== "none") return fail("refused", NETWORK_REFUSAL);
 		const found = await this.#own(ref, signal);
 		if (!found.ok) return found;
 		if (found.value.status !== "running") return fail("refused", `${ref.name} is ${found.value.status}: its network is read from inside, and a read would wake it`);

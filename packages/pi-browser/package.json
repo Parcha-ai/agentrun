@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.33",
+  "version": "0.1.0-beta.34",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
     "pi-durable",
@@ -51,6 +51,10 @@
       "types": "./dist/driver/stagehand.d.ts",
       "import": "./dist/driver/stagehand.js"
     },
+    "./driver/cdp": {
+      "types": "./dist/driver/cdp.d.ts",
+      "import": "./dist/driver/cdp.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
@@ -60,6 +64,7 @@
     "dist",
     "!dist/**/*.map",
     "src/vendor/stagehand-facade/UPSTREAM.json",
+    "src/vendor/browser-use-pi/UPSTREAM.json",
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
