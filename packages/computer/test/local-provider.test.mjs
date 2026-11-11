@@ -167,7 +167,11 @@ test("create starts Chrome headless with a fresh profile, a loopback debugging p
 	assert.deepEqual((await p.list({})).value, []);
 });
 
-test("a browser made with an allowlist: its proxy reaches only the listed hosts, the public-address fence holds for them too, and its network reads back as the list", async () => {
+test("a browser made with an allowlist: its proxy reaches only the listed hosts, the public-address fence holds for them too, and its network reads back as the list", async (t) => {
+	// The fake asks for a host off the list and for loopback on 443 too: both refused before any lookup, so no DNS. That a
+	// listed name passes the list is the egress proxy's own test (egress-proxy.test.mjs, over a fake lookup).
+	process.env.FAKE_CHROME_LIST_PROBES = "1";
+	t.after(() => delete process.env.FAKE_CHROME_LIST_PROBES);
 	const p = provider();
 	const allow = ["listed.example", "8.8.8.0/24"];
 	const made = await p.create({ ...SPEC, network: { allow } });
@@ -178,7 +182,6 @@ test("a browser made with an allowlist: its proxy reaches only the listed hosts,
 	await until("the fake Chrome's probe", () => existsSync(join(dir, "profile", "probe.json")));
 	const probe = json(join(dir, "profile", "probe.json"));
 	assert.match(probe.unlisted, /^HTTP\/1\.1 403 .*unlisted\.example is not on this box's network list/, "a host off the list is refused by name, before any lookup");
-	assert.doesNotMatch(probe.listed, /not on this box's network list/, "a listed name passes the list (and then meets its lookup)");
 	assert.match(probe.metadata, /^HTTP\/1\.1 403 /, "a cloud's metadata address is still refused");
 	assert.match(probe.loopback, /^HTTP\/1\.1 403 /, "this machine's loopback is refused");
 	assert.match(probe.loopback443, /^HTTP\/1\.1 403 /, "loopback on a port a list takes is refused too");
