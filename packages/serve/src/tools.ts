@@ -10,7 +10,6 @@ import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
-import type { AppContext } from "@parcha/pi-durable-disk";
 import type { Revision } from "@parcha/pi-durable-agent";
 import { registerTurnEnding } from "@parcha/pi-durable-agent/timeline";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
@@ -75,9 +74,12 @@ export const askPerson = defineTool({
 // never imports the view.
 registerTurnEnding(ASK_TOOL);
 
+/** Where a run's tools are bound: the run, by its id, its folder and the folder its tools work in. */
+export type RunWhere = { readonly ref: { readonly id: string }; readonly root: string; readonly work: string };
+
 /** What a tool's binding gets from the run's process. */
 export type ToolHost = {
-  where: AppContext;
+  where: RunWhere;
   /** The run's environment: the server's, without the server's token. */
   env: NodeJS.ProcessEnv;
   /** Installs an extension in the run's registry, before the run opens. */
