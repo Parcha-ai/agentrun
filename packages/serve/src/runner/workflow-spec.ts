@@ -751,8 +751,9 @@ function decisionJudging(deps: { getCap: () => RunDecisions | undefined; provide
           const refusal = refused.get(params);
           if (!refusal) throw error;
           // The cap refused the admitted request: the driver ended it failed, unsent; that commit lands before the run
-          // parks, so the next claim asks it again rather than finding it asked and never answered.
-          await driver?.flush().catch(() => undefined);
+          // parks, so the next claim asks it again rather than finding it asked and never answered. A commit the store
+          // refused is thrown, never a park: parked with the request still asked, the next claim would refuse to ask it.
+          await driver?.flush();
           deps.park({ message: refusal.message, forGood: refusal.forGood, ...(refusal.figures ? { figures: refusal.figures } : {}) });
           throw refusal;
         } finally {
