@@ -186,13 +186,13 @@ export interface AskData {
   readonly price?: ApprovalPrice | null;
 }
 
-/** How an ask was answered: approved, denied, or withdrawn (a stop or cancel while the call waited). */
-export type AnswerDecision = "allow" | "deny" | "withdrawn";
+/** How an ask was answered: approved, denied, withdrawn (a stop while the call waited) or canceled (a cancel). */
+export type AnswerDecision = "allow" | "deny" | "withdrawn" | "canceled";
 
 export interface AnswerData {
   readonly callId: string;
   readonly approved: boolean;
-  /** allow, deny, or withdrawn: main's resolved entry. Optional for an answer written before it. */
+  /** allow, deny, withdrawn or canceled: main's resolved entry. Optional for an answer written before it. */
   readonly decision?: AnswerDecision;
   /** When it was answered (ISO), from the loop's clock (or the runner's, for an end it writes itself). */
   readonly answeredAt?: string;
@@ -222,8 +222,9 @@ function finished(entries: readonly { readonly kind: string; readonly data?: unk
 /** The withdrawn answers a stopped end writes in `entries`: for every call still waiting (an ask with no answer), and
  *  for every approved call that had not finished (no result, or one its abort wrote), which the stop overrides, keeping
  *  the allow it was given (main's supersede: an answer the run had not acted on to the end is withdrawn by the stop). A
- *  call that finished before the stop keeps its allow and its result. */
-export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], answeredAt: string): AnswerData[] {
+ *  call that finished before the stop keeps its allow and its result. `decision`: "canceled" for a cancel's end, whose
+ *  calls read cancelled with their run; "withdrawn" for a stop's. */
+export function withdrawnAnswers(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], answeredAt: string, decision: "withdrawn" | "canceled" = "withdrawn"): AnswerData[] {
   const answers = new Map<string, AnswerData>();
   for (const entry of entries) if (entry.kind === KINDS.answer) answers.set((entry.data as AnswerData).callId, entry.data as AnswerData);
   const out: AnswerData[] = [];
@@ -234,9 +235,9 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
     if (seen.has(callId)) continue;
     seen.add(callId);
     const given = answers.get(callId);
-    if (!given) out.push({ callId, approved: false, decision: "withdrawn", answeredAt });
-    else if (given.approved && given.decision !== "withdrawn" && !finished(entries, callId)) {
-      out.push({ callId, approved: false, decision: "withdrawn", answeredAt, superseded: { decision: "allow", ...(given.answeredAt ? { answeredAt: given.answeredAt } : {}) } });
+    if (!given) out.push({ callId, approved: false, decision, answeredAt });
+    else if (given.approved && given.decision !== "withdrawn" && given.decision !== "canceled" && !finished(entries, callId)) {
+      out.push({ callId, approved: false, decision, answeredAt, superseded: { decision: "allow", ...(given.answeredAt ? { answeredAt: given.answeredAt } : {}) } });
     }
   }
   return out;

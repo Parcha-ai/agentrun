@@ -127,6 +127,26 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   assert.deepEqual(daytona.launched[0][1].keys, { DAYTONA_API_KEY: "dk" });
 });
 
+test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's folder as their mount, in checkGpu's words, and handed to the launch", async () => {
+  const pick = "Change the GPUs or the provider for this agent's computer in Settings → Computers.";
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
+    refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100, H200, RTX-PRO-6000, RTX-4090, RTX-5090, MI355X. ${pick}`,
+  });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), {
+    refused: `A Modal sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
+  });
+  assert.match((await resolve({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }, 1, scratch(), SAVED, KINDS)).refused, /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
+  const root = scratch();
+  const side = claim(root);
+  const resolved = await resolveComputer({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }, 2, KINDS, side);
+  assert.deepEqual(shape(resolved), { kind: "sandbox", provider: "daytona", mounts: true, ports: ["files", "exec", "processes"] });
+  await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
+  assert.deepEqual(side.launched[0][1].gpu, { type: "H100", count: 2 });
+  const plain = claim(root);
+  await (await resolveComputer({ kind: "sandbox", provider: "daytona" }, 2, KINDS, plain)).start({ workspace: localWorkspace(root), check: { readBackOf } });
+  assert.equal("gpu" in plain.launched[0][1], false, "no GPUs asked, none handed");
+});
+
 test("start: an unmounted desktop, a phone and a browser launch with no mount; their runs keep the runner's folder, with no shell in Mode 1 and Archil's exec in Mode 2", async () => {
   const root = scratch();
   for (const [setting, mode, tools] of [

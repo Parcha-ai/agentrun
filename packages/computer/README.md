@@ -98,7 +98,10 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   refuses uid 0 for its programs (root shares its uid with every root process of the vendor's); refuses to start while
   any other process holds that uid (one could be signalled, traced or written to by them, and a vendor's agent among
   them would be theirs to command), naming each; moves every one of its threads into a new network namespace and
-  brings its loopback up, reading back that no thread stayed behind and that the loopback alone is up or addressed
+  brings its loopback up over rtnetlink (RTM_NEWLINK with IFF_UP on lo's index, as `ip link set lo up` does; and
+  RTM_NEWADDR for 127.0.0.1/8 where the kernel gave lo none), never by the SIOCSIFFLAGS ioctl, which gVisor's netstack
+  refuses in a new namespace (ENOTTY, live on Modal's gVisor, 11-11). It reads back lo up and running, 127.0.0.1 on it
+  and a listener there reached, and that no thread stayed behind and that the loopback alone is up or addressed
   (a kernel with the tunnel modules loaded gives every new namespace its fallback tunnels, tunl0, gre0, sit0 and the
   rest, down with no address: they stay so, since no program holds CAP_NET_ADMIN, and computerd's probe reports any
   it could bring up, which every read-back refuses); then drops as below, and installs a seccomp filter on every thread that refuses (EPERM) a socket of family
@@ -112,6 +115,24 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `--egress`: such a computer's network is `none` (open and allowlists wait for a proxy out of that namespace, which
   is not built yet). The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
+- **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
+  CAP_SYS_ADMIN on gVisor (Modal's GPU runtime), so `unshare(CLONE_NEWNET)` is EPERM. It may make a user namespace with
+  a network namespace inside it (a live probe on Modal's gVisor, 11-11). Init doesn't ask the vendor which it is: it
+  tries the plain namespace first, and on EPERM alone (`isolate.ErrNoNetworkNamespace`) it takes this way, whatever the
+  vendor.
+  - Init starts itself again as `computerd userns-init --started-in <its network namespace>`: a child in a new user
+    namespace that maps every uid and gid to itself, and a new network namespace. The root parent writes the map, which
+    needs CAP_SETUID and CAP_SETGID. The map keeps every id as it is, so the files the programs make, HOME, and the run's
+    folder belong to the same uid inside and out.
+  - The child does all of the above but make the namespace. Before touching anything, it reads back
+    (`isolate.KeepOwnNetwork`) that no thread is in the namespace it was started from. Then it brings the loopback up
+    over rtnetlink and reads it back, as above. The live T4 run at the fallback's first head (11-11) made the user and
+    network namespace, then failed at lo on the ioctl.
+  - The first init keeps no capability (no_new_privs, every set empty). It passes SIGTERM and SIGINT on, reaps, and exits
+    with the child's code.
+  - If neither way works, init refuses to start in words that name both, and the computer fails closed.
+  - hello says which fence holds, `fence: "netns"` or `"userns-netns"`. Every provider that starts init with
+    `--own-network` (Daytona, E2B, Orgo, Modal) refuses a hello that names neither.
 - **Init drops its privileges itself, as any user, root included,** before it listens, so the line holds on every
   vendor and not only where the provider drops capabilities (Docker: `--cap-drop ALL`). On every thread it sets
   `no_new_privs`; drops from the bounding set each capability up to the kernel's last
@@ -1144,7 +1165,7 @@ const modal = new ModalProvider({
 const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
 ```
 
-`ModalProvider` makes Modal sandboxes on the VM runtime only, through the slice of Modal's JS SDK named by `ModalSdk`
+`ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
 (apps, images, sandboxes and five methods of a sandbox). It has not yet run against real Modal: every test uses a fake
 of that slice, and the live conformance file waits for a key (below).
 
@@ -1156,7 +1177,9 @@ of that slice, and the live conformance file waits for a key (below).
 - **The loopback block.** Init starts with `--own-network` (see [Init, the socket and the
   bridge](#init-the-socket-and-the-bridge)) whatever Modal runs inside the sandbox: the daemon's programs reach their
   own loopback and nothing else, and the default computer user is 2510:2510 (`user` option or spec.user for another;
-  init refuses one another process holds). Modal's root holds every capability, so the namespace is made there. Known
+  init refuses one another process holds). On the VM runtime Modal's root holds every capability, so the namespace is
+  made there. On gVisor, a GPU computer's runtime, root may not make it, so init makes it inside a user namespace
+  (below). Known
   gap: network `open` is refused in words until a proxy carries it out of the daemon's own network, the next feature
   after this one; a computer that needs pip, npm or git from the internet cannot be made on Modal until then.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
@@ -1260,8 +1283,47 @@ of that slice, and the live conformance file waits for a key (below).
   sandbox terminated if one lands later. A create that refuses its sandbox (drift, an abort, a failed upload)
   terminates it and waits as release does, within `releaseMs`, so nothing is left listed when it returns. The terminate
   is sent whatever the caller's signal; the wait takes it, so an aborted create returns at once, and a wait past the
-  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read.
-- **GPU** is refused: this provider makes VM sandboxes, and Modal offers GPUs on gVisor only.
+  bound or cut short by an abort says the sandbox may still be ending and what `poll()` last read. Before that
+  terminate, a create whose sandbox's own command had ended says so: its exit code and the tail of its output. When
+  Modal refuses an exec with FAILED_PRECONDITION ("Modal Sandbox is shutting down", code `gone`), the command, init, has
+  just exited and Modal ends the sandbox asynchronously, so create first waits up to `endedMs` (30 s) for `poll()` to
+  read it finished, then reads init's words. The first GPU live run on gVisor ended this way, with no words.
+- **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
+  `A100` (40 GB), `A100-40GB`, `A100-80GB`, `RTX-PRO-6000`, `H100`, `H200`, `B200`, `B300`, at most 8 to a computer
+  (Modal refuses an `A10` past 4, in its words). Its `H100!` and `B200+` variants are not offered: a computer gets the
+  type it asked for. `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal
+  offers GPUs on gVisor only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM
+  runtime. The drift check holds the runtime from both sides: the probe's kernel must be gVisor's on a GPU computer, and a
+  VM's on any other. Modal reads no GPU back: the
+  spec tag records the GPUs, and attach reports them on a computer the probe reads as gVisor. `capabilities().isolation`
+  stays `vm`, every other computer's; a GPU computer's is declared apart, `gpu.isolation: "gvisor"`, so a caller that
+  needs a VM's isolation can tell. Modal's GPUs are `preemptible: true`: Modal may move a GPU workload, so a run on one
+  can be cut short (guide/preemption). `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu), since the
+  Archil client's FUSE mount is not proven on gVisor yet. That keeps serve from giving a run a Modal GPU sandbox in either
+  mode, as a serve sandbox always mounts the run's folder; the library takes one without a mount.
+- **The loopback fence on gVisor.** A GPU computer's init gets the same network namespace of its own, loopback alone,
+  made another way.
+  - Modal's gVisor gives root no CAP_SYS_ADMIN, so `unshare(CLONE_NEWNET)` is EPERM. With `--own-network`, init refused
+    to start there (live on a T4, 11-10).
+  - It does let root make a user namespace with a network namespace inside it (`unshare -Urn`, live on a T4, 11-11, as
+    root and as nobody; nothing of Modal's runs or listens inside a gVisor sandbox, and every loopback port answered
+    nothing).
+  - So init, given the same `--own-network` on every runtime, makes the namespace inside a user namespace when root's
+    own attempt is EPERM (the daemon's fallback, any vendor: see "Where root may not make the network namespace").
+  - The first init stays PID 1 with no capability and no_new_privs set. It passes SIGTERM and SIGINT on and ends with
+    the init that serves, so the sandbox lives as long as that one does.
+  - Declared: `gpu.fence: "userns-netns"`. Read back: hello's `fence` on every connect, which the drift check requires
+    to be one of the two. Create notes it when it is `userns-netns`, and the conformance report's `daemon.fence` records
+    it.
+  - Proven in Docker. In `test/docker/modal-commands.docker.test.mjs`, a root container with Docker's default
+    capabilities and no seccomp profile stands in for gVisor:
+    - `--own-network` falls back and serves;
+    - hello says `userns-netns`;
+    - the programs run as 1000 with no capability, in another network and user namespace than PID 1's, on the loopback
+      alone;
+    - what they write in HOME is 1000's from outside;
+    - with Docker's default seccomp profile (no user namespace either), init refuses in words that name both ways.
+  - Not yet proven live on Modal.
 
 ### What every Modal fact rests on
 
@@ -1507,6 +1569,7 @@ the TTL.
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `stop`, `delete` | `POST /sandbox/{id}/stop` and `DELETE /sandbox/{id}` |
 | `stopDeletes` | `true` with `autoDeleteMinutes: 0`, else `false` | `autoDeleteInterval` 0 deletes a sandbox as soon as it stops |
+| `gpu` | `H100`, `H200`, `RTX-PRO-6000`, `RTX-4090`, `RTX-5090`, `MI355X`; at most 8 | Daytona's `GpuType` names (its API's enum, `daytona_api_client` 0.214.0) and its 8 VFIO GPUs to a sandbox ([dotfiles/gpu-sandboxes](https://www.daytona.io/dotfiles/gpu-sandboxes)); `spec.gpu` becomes `gpu` (how many) and `gpuType` (the one type, as its preference list), and the read-back's `gpu` and `gpuType` must match. The types come from the API's `GpuType` enum alone: Daytona's docs and pricing page also list `L40S`, `B200` and `B300`, which the enum doesn't name, so they aren't offered. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says: a GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 192 GiB memory and 512 GiB disk, Daytona's defaults for each GPU. The org needs GPU credits, or the create is refused in Daytona's words. A GPU computer whose image is `"default"` (`DAYTONA_DEFAULT_SNAPSHOT`: the create sends no snapshot) gets Daytona's `daytona-gpu` snapshot. Whether a GPU sandbox takes a snapshot of box/Dockerfile, its class, the root init needs for its own network, and the network allowlist are not yet proven live |
 
 ### What the provider does
 
@@ -1571,7 +1634,8 @@ From Daytona's read of the sandbox:
 | `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
 | `sandboxClass` | the provider's class |
-| `public`, `kvm`, `gpu`, `volumes`, `linkedSandboxId` | false, not true, 0, none, none |
+| `gpu`, `gpuType` | `spec.gpu`'s count (0 with none) and, with one, its type |
+| `public`, `kvm`, `volumes`, `linkedSandboxId` | false, not true, none, none |
 
 From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
@@ -2205,7 +2269,7 @@ through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
 `src/conformance/cases/` names its level, its group (`health`, `exec`, `files`, `process`, `provider`, `drift`,
-`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`) and the capabilities it needs, and uses only `ComputerProvider`,
+`isolation`, `mount`, `screen`, `input`, `touch`, `apps`, `lifetime`, `browser`, `gpu`) and the capabilities it needs, and uses only `ComputerProvider`,
 `ComputerClient` and the suite's assertion helpers, so the same cases run against a provider with daemon `none`.
 
 ```sh
