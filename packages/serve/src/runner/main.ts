@@ -205,11 +205,9 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
     const parts = isStoreFactory(made) ? made(store, seal.key) : made;
     const createLoop = typeof parts === "function" ? parts : parts.createLoop;
-    // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's log,
-    // on stdout beside its other lines (runnerMain), unless a warn is given.
-    if (options.janitor && typeof parts !== "function") {
-      janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: options.warn ?? ((line) => console.log(`agentrun-serve runner: ${line}`)) });
-    }
+    // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
+    // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
     runner = startRunner({
       store,
       createLoop,
