@@ -57,10 +57,10 @@ async function folderWith(data, id, files) {
 }
 
 test("the draft ask says the draft's output is the job's answer in the skill's own output format, written by its last node (#2412)", () => {
-  const asked = reflectPrompt({ dir: "/work", active: 0, tools: ["read"], draftFor: ["card-report"] });
+  const asked = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"], draftFor: ["card-report"] });
   const line = asked.split("\n").find((one) => one.includes("has now served"));
   assert.match(line, /Its output is the job's answer in the output format the skill gives: its last node writes it, and `output` names that node's text\./, line);
-  const two = reflectPrompt({ dir: "/work", active: 0, tools: ["read"], draftFor: ["card-report", "weekly-report"] });
+  const two = reflectPrompt({ dir: ".learning", active: 0, tools: ["read"], draftFor: ["card-report", "weekly-report"] });
   assert.match(two.split("\n").find((one) => one.includes("have each served")), /in the output format its skill gives: its last node writes it/);
 });
 
