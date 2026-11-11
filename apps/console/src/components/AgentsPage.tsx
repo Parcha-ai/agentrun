@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
 import { AgentsList } from "@/components/AgentsList";
+import { CodingAgentHandoff } from "@/components/CodingAgentHandoff";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
@@ -26,6 +27,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
   useEffect(load, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
+      handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="lg" iconOnPhone className="max-sm:w-11" />}
       actions={{
         onOpen: (id) => go(agentHash(id)),
         onEdit: (id) => go(agentHash(id, "edit")),
