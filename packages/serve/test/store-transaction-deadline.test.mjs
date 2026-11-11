@@ -135,3 +135,27 @@ test("a transaction counted from its call keeps the wall clock's deadline, hold 
   assert.ok(refused instanceof StoreDeadline, `refused with StoreDeadline: ${refused}`);
   assert.equal(await db.get("SELECT 1 AS found FROM settings WHERE key = 'from-call'"), undefined, "nothing of it is kept");
 });
+
+// The runner-lease tests turn node:test's mocked timers on while a runner's transaction may be open: its deadline's
+// timers were set real, and cleared after through the mocked clears, which ignore them, so its 50 ms look ran on and held
+// the test's process open until the CI shard was killed. Cleared with what set them, the transaction leaves none.
+test("a transaction whose timers are swapped for mocked ones while it is open leaves no timer of its deadline behind", { timeout: 30_000 }, async (t) => {
+  const db = await scratchConnection(t);
+  const timeouts = () => process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
+  // A transaction already open before anything is measured, so the connection's own timers are counted in `before`.
+  await db.connection.transaction(async (tx) => { await tx.step({ sql: "SELECT 1" }); });
+  const before = timeouts();
+  let swapped = () => {};
+  const open = new Promise((resolve) => (swapped = resolve));
+  const done = db.connection.transaction(async (tx) => {
+    await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('swapped', '1', 1)" });
+    await open;
+  });
+  await sleep(20);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  swapped();
+  await done;
+  t.mock.timers.reset();
+  await sleep(120);
+  assert.equal(timeouts(), before, `no timer of the transaction's deadline is left: ${JSON.stringify(process.getActiveResourcesInfo())}`);
+});
