@@ -16,11 +16,3 @@ export function callKey(callId: string): string {
   const prefix = callId.slice(0, PREFIX_CHARS).replace(/[^A-Za-z0-9_.-]/g, "_");
   return `${prefix}~${createHash("sha256").update(callId).digest("hex").slice(0, DIGEST_HEX)}`;
 }
-
-/** The key a ledger holds a call under. Writes always use `callKey`; a read also accepts a row a
- *  ledger already keys by the raw id (`holds` answers for the raw id), so a run whose ledger keyed a
- *  wide id as it was resumes against its own receipts and never re-runs a recorded call. */
-export function heldCallKey(callId: string, holds: (rawKey: string) => boolean): string {
-  const key = callKey(callId);
-  return key !== callId && holds(callId) ? callId : key;
-}
