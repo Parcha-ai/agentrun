@@ -38,7 +38,7 @@ import { allPages, type Capabilities, ClientError, createClient, type ImportOffe
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { waitingOf } from "@/lib/learning";
-import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
+import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf, preparingBox } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
@@ -306,6 +306,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // Whether the runs asking a person have been read at least once: until then the Needs input tile's count is unknown,
   // never the empty list a failed first read leaves (a later failure keeps the last list, and its count).
   const [askingRead, setAskingRead] = useState(false);
+  // The same for the failures of the last 24 h (the Failed tile) and the runs working now (Active's "running now").
+  const [failedRead, setFailedRead] = useState(false);
+  const [liveRead, setLiveRead] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -462,6 +465,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   useEffect(() => {
     if (where.section !== "mission") return;
     let live = true;
+    // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
+    // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
+    // store's counts and analytics, and every run's row), so it is read again only then, never on every poll.
+    let failedSeen: Set<string> | null = null;
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
@@ -472,9 +479,16 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then(([asking, failed, working]) => {
         if (!live) return;
         const reads = [asking, failed, working];
-        const day = Date.now() - 86_400_000;
+        const day = Date.now() - FAILED_WINDOW_MS;
         setNeedsProblem(mergeNeeds(null, reads).problem);
         if (reads[0]?.status === "fulfilled") setAskingRead(true);
+        if (reads[1]?.status === "fulfilled") {
+          setFailedRead(true);
+          const ids = reads[1].value.map((r) => r.run_id);
+          if (failedSeen && ids.some((id) => !failedSeen!.has(id))) setMissionTry((n) => n + 1);
+          failedSeen = new Set(ids);
+        }
+        if (reads[2]?.status === "fulfilled") setLiveRead(true);
         setNeeds((prev) => {
           const { needs: next } = mergeNeeds(prev, reads);
           return { asking: next.asking.filter(asksPerson), failed: next.failed.filter((r) => Date.parse(r.ended_at ?? r.created_at) > day), live: next.live };
@@ -607,8 +621,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
-                asking={needs && askingRead ? needs.asking.length : null}
-                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
+                asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
+                needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keyCard={keyCardSavesModel} /> : undefined} />
             </div>

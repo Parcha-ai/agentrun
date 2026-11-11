@@ -9,6 +9,7 @@ import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunBar } from "@/components/RunBar";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
+import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
@@ -181,6 +182,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           </p>
         )}
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
+        <SignIns agent={agent} v2={v2} onAgent={setAgent} />
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
       <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />
