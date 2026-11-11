@@ -653,6 +653,21 @@ export function withEnv(t, vars, names = Object.keys(vars)) {
   Object.assign(process.env, vars);
 }
 
+const FAKE_DOCKER = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
+/** The docker box for test `t`, never a daemon: a fake `docker` first on PATH (fixtures/fake-docker.mjs: nothing is
+ *  pulled or built, and an `exec` runs on this machine) and docker listed in AGENTRUN_BOXES. A server started after this
+ *  has the box, so an agent with a shell (bash runs only in a box) is made there; code-review's is one. */
+export async function dockerBox(t) {
+  const dir = await scratch(t);
+  const bin = join(dir, "bin");
+  const state = join(dir, "state");
+  await mkdir(bin);
+  await mkdir(state);
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  return { execs: () => jsonLines(join(state, "argv.jsonl")).filter((args) => args[0] === "exec") };
+}
+
 /** One raw request to the server on `port` (Host 127.0.0.1:port unless given): status, headers, text and parsed JSON. */
 export function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
   const sent = Object.fromEntries(Object.entries({ host: `127.0.0.1:${port}`, ...headers }).filter(([, value]) => value !== undefined));

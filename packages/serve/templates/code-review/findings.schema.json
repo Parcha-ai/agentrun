@@ -33,7 +33,6 @@
     },
     "risk_reasons": {
       "type": "array",
-      "minItems": 1,
       "maxItems": 3,
       "items": {
         "type": "string",
@@ -185,16 +184,10 @@
             "maxLength": 240
           },
           "reason": {
-            "enum": [
-              "wrong",
-              "guarded",
-              "intended",
-              "not-this-change",
-              "never-flag",
-              "no-break",
-              "duplicate",
-              "unresolved"
-            ]
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "one of wrong, guarded, intended, not-this-change, never-flag, no-break, duplicate, unresolved (other words are kept as given)"
           },
           "note": {
             "type": "string",

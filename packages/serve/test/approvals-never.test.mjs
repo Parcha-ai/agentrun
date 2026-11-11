@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { deniedText, permissionFrom } from "../dist/tool-gate.js";
 import { runnerGate } from "./gate-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, dockerBox, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
@@ -179,6 +179,8 @@ test("approvals takes ask or never: anything else is a 422 naming the field", as
 });
 
 test("an apply's overrides.approvals sets the agent's approvals; none given takes the package's own; a wrong value is a 422", async (t) => {
+  // code-review's checkout needs a shell, so a box (bash runs only in one).
+  await dockerBox(t);
   const { api } = await serve(t);
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, overrides: { approvals: "never" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));

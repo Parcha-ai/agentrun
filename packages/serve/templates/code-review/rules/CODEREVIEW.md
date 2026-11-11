@@ -6,7 +6,7 @@ to it. The last section is the starter for a repository's file.
 ## Checklist: ask of every changed function
 
 Answer each yes or no. Yes means a bug, and needs a changed line and a named failure. "Not enough information" is no,
-unless one named fact elsewhere would decide it: then it is a candidate to prove, with that fact written down.
+unless one named fact elsewhere would decide it: then it is a candidate, with that fact written down.
 
 1. Did a contract change (sync to async, a nullable return, a new required argument, an error now thrown or now
    swallowed, a default or fallback removed) while a caller still relies on the old one?

@@ -22,8 +22,8 @@ file under `references/` and link it here when it grows.
 
 - Redact whole values before any cut: a 300-character error, a 2 KiB args preview, a first line (#1601, #2323). Titles
   and labels come from the redacted text (#1573); a verdict (failed/ok) comes from the raw one (#1573).
-- Every form of a held value: as written, JSON-escaped, slash-escaped, both (#2026), a bare JSON number (#2185), hex in
-  any case, a split pointer (#2074), and a value streamed across two ticks (#2185, #1577).
+- Every form of a held value: as written, JSON-escaped, slash-escaped, hex in any case, a split pointer (#2074), and a
+  value streamed across two chunks (#1577).
 - Launcher secrets are not in `process.env`: read them with `secret(NAME)`; a `withSecrets` env holds them
   non-enumerable, so a spread drops them (#2073). An env passed for a non-secret setting is fine (our wrong #2092).
 
@@ -53,7 +53,6 @@ file under `references/` and link it here when it grows.
 
 - A server deny beats an agent ask; an invalid permission never becomes allow (#2003, #1714).
 - A malformed pin keeps its protection when another setting is saved (#1990).
-- "Nothing was sent or charged" only when no request left (#1814).
 - Hostnames: a trailing dot (`klavis.ai.`) still matches the refusal (#1746).
 
 ## Workspace and computers: `packages/serve/src/workspace/**`, `packages/computer/src/**`
@@ -62,8 +61,7 @@ file under `references/` and link it here when it grows.
 - Replacing a file: the temp file takes its final mode after the last chunk (0444, 0200; #1957), and is synced
   before the rename (#1957).
 - Output caps apply while streaming, not after exit; deadlines bound searches and regexes (#1968, #1946).
-- Docker: a late create after an abort is removed with `--volumes` (#2218); two stagers never delete each other's
-  finished tree (#2180, #2188).
+- Docker: two stagers never delete each other's finished tree (#2180, #2188).
 
 ## Server, API and clients: `packages/serve/src/{server,openapi,cli,import}.ts`, `packages/client/**`, `python/**`
 
@@ -108,4 +106,3 @@ file under `references/` and link it here when it grows.
 ## Scripts and CI: `scripts/**`, `.github/**`
 
 - Guards that scan source with regexes miss renamed imports and bracket access (#1967, #1918).
-- A release compares against the last published version, not the PR's base (#2182).

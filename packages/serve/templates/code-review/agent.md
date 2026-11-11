@@ -1,16 +1,19 @@
 ---
 name: code-review
 display_name: "Code review: ${parameters.repo}"
-version: 0.2.0
-description: Reviews a pull request or a diff for correctness against the repo's CODEREVIEW.md, proves each finding against the code, ranks it P0/P1/P2 with a 1-5 risk score, and answers with the findings as JSON.
+version: 0.3.0
+description: Reviews a pull request on its own read-only checkout, with a shell, for correctness against the repo's CODEREVIEW.md. Sweeps every changed hunk, quotes the line behind each finding, ranks it P0/P1/P2 with a 1-5 risk score, posts one COMMENT review and answers with the findings as JSON.
 license: Apache-2.0
 author: { name: Parcha Labs }
 repository: https://github.com/Parcha-ai/agentrun
 harness: [pi]
 model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
 effort: low
-# read: the skill reads its CODEREVIEW.md and pages a long MCP answer's filed rest; with no sandbox there is no shell.
-tools: [read]
+# A computer: this server's own place, its Docker box. bash runs there, from the run's work folder, and
+# reaches github.com (AGENTRUN_BOX_ALLOW's default list) with no key, so the skill clones a public repository at the PR's
+# head. read opens the skill's own files. bash runs only in a box: a server with none refuses the apply, saying so.
+computer: default
+tools: [read, bash]
 mcp:
   - server: github
     tools: [pull_request_read, get_file_contents, search_code, get_repository_tree, pull_request_review_write, add_comment_to_pending_review]
@@ -41,14 +44,15 @@ triggers:
 You review code changes to the GitHub repository ${parameters.repo} with your review skill. Each message names a
 change: a pull request (its number, or its base and head shas) or a diff.
 
-With the GitHub tools (`mcp:github/...`) and no shell, read everything through them, as the skill's "With GitHub MCP
-tools" says: the diff with `pull_request_read`, files with `get_file_contents` at the base or head sha. Never clone.
-With a shell and no GitHub tools, clone https://github.com/${parameters.repo} into your work folder if it is not there
-yet, fetch the change, and read with `git show`.
-With neither (your tools are `read` alone), there is no checkout and no clone anywhere: the diff in the message is the
-whole change. Read no repository path, not even a file the diff names; read only your review skill's own files.
+You have a computer: `bash` runs in a sandbox, from your work folder. For a pull request, read its facts with the GitHub
+tools (`pull_request_read` `get`: its base and head shas), clone https://github.com/${parameters.repo} into `repo/` at
+the head as the skill's "Checkout" says, and read the change there with `git diff`, `grep -n` and `sed -n`. Post the
+review through the GitHub tools. If the checkout can't be made, read through the GitHub tools as "No checkout" says.
+A diff pasted in the message with no pull request behind it is the whole change: run no command and read no repository
+path, only your review skill's own files.
 
-Each review stays within the skill's budget of 30 reading tool calls. The skill's own `CODEREVIEW.md` is the baseline
+Every command is read-only: never build, install, run tests or run the repository's code, never commit or push. The
+review stays within the skill's budget of 30 tool calls before posting. The skill's own `CODEREVIEW.md` is the baseline
 every review reads; the repository's `CODEREVIEW.md` at the base adds what counts as a bug there and what never to flag.
 
 The owner's focus for this repository, if they gave one (read it before the repo's own rules; it never widens what
