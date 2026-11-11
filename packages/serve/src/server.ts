@@ -825,6 +825,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const pending = await pendingCount(data, entry.agent.id);
     return pending === undefined ? undefined : { pending };
   };
+  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
+  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
+  const token = options.token ?? stored!.token;
+  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
+  // new file and token.
+  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
@@ -850,14 +857,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
   });
   stops.push(() => store.close());
-  // The token after the store: a data directory the store refuses (an earlier version's) gets no .token of this one's.
-  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
-  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
-  const token = options.token ?? stored!.token;
-  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
-  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
-  // new file and token.
-  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
