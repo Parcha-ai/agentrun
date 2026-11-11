@@ -17,7 +17,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 import { BARRIER, JOURNAL_SYNCHRONOUS, syncNow, type SyncTarget } from "@parcha/pi-durable-disk";
 import { paidCall, SPEND_CAP_REACHED } from "./cap.js";
 

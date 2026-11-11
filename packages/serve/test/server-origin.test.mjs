@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import * as disk from "@parcha/pi-durable-disk";
-import * as timeline from "@parcha/pi-durable-agent/timeline";
+import * as timeline from "../dist/timeline/index.js";
 import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 

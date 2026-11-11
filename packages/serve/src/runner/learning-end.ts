@@ -23,7 +23,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { isMessageRow, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readSnapshot } from "../learn/folder.js";
 import { DRAFT_AFTER_RUNS } from "../learn/reflect.js";

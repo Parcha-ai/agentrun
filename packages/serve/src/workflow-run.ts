@@ -1,5 +1,5 @@
 // A workflow revision's run, on the run's journal in the one store: the DSL's durable runner (agentrun-pi's workflow task),
-// never the agent loop (copied from @parcha/pi-durable-agent's workflow.ts, which serve no longer imports; the per-run
+// never the agent loop (copied from @parcha/pi-durable-agent's workflow.ts; the per-run
 // store file reads are gone with that file). It loads @parcha/agentrun-dsl and @parcha/agentrun-pi only inside the
 // functions that need them.
 import type { Context } from "@earendil-works/chord";

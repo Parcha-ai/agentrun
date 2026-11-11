@@ -6,7 +6,7 @@
 // `agentrun.session.key` entry on the run's root conversation. Every entry inside a session's conversation is resume log
 // only (kernel.submission, kernel.start, kernel.end, kernel.retry, kernel.blob, runner.response, runner.submit,
 // runner.accepted, …): the reader skips every one of them, whatever its kind, and never reads it as a call or a message.
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { MessageOrigin } from "../timeline/index.js";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 
 export const KINDS = {

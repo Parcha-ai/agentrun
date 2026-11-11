@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { HOST_PHASE } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE } from "../dist/timeline/index.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";

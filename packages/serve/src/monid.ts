@@ -19,7 +19,7 @@ import { localWorkspace, type Workspace, workspaceErrorWords } from "./workspace
 import type { TSchema } from "typebox";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import { registerLabel, TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, TOOL_COST } from "./timeline/index.js";
 import { paidCall } from "./cap.js";
 import { wireName } from "./catalog.js";
 import { fauxFetch } from "./decisions.js";

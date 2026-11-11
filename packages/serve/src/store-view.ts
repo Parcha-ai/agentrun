@@ -4,7 +4,7 @@
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";

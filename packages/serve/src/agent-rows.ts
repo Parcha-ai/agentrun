@@ -1,5 +1,5 @@
 // The shapes an agent's revision and a run take where serve reads them as the file-era agent store wrote them (copied
-// from @parcha/pi-durable-agent's agent-store.ts and kinds.ts, which serve no longer imports): a revision with its body,
+// from @parcha/pi-durable-agent's agent-store.ts and kinds.ts): a revision with its body,
 // a run's row. The one store's own rows are store/store.ts'.
 import type { Workflow } from "@parcha/agentrun-dsl";
 import type { ImportSource } from "./store-reads/analytics.js";

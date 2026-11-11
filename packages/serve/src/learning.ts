@@ -321,7 +321,7 @@ const SKILL_FILE_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_
  *  inside the skill, read only when the skill could fit a run's budget at all. */
 export type LearnedSkill = { name: string; bytes: number; files?: Record<string, string> };
 /** The agent's learning folder: `learning/` in its folder on the disk, which only the host writes. The folder is files.ts
- *  agentFolderOf (pi-durable-agent agentDiskDir), so two ids that differ only in case never share one. */
+ *  agentFolderOf (server-fs.ts agentDiskDir), so two ids that differ only in case never share one. */
 export const learningRepo = (data: string, agentId: string): string => join(agentFolderOf(data, agentId), "learning");
 
 const queues = new Map<string, Promise<unknown>>();

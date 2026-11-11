@@ -7,7 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
-import { runDirIn } from "@parcha/pi-durable-agent";
+import { agentDiskDir } from "../dist/server-fs.js";
 import { learningRepo } from "../dist/learning.js";
 import { ID } from "../dist/validate.js";
 import { agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
@@ -37,7 +37,7 @@ async function refused(promise, code) {
 
 test("paths: a run's folder and an agent's learning folder are where today's code keeps them", () => {
   for (const agent of ["acme", "Acme", "a.b_c-9", "x".repeat(128)]) {
-    assert.equal(runFolder("/data", agent, "run-1"), join(runDirIn("/data", agent, "run-1"), "work"), agent);
+    assert.equal(runFolder("/data", agent, "run-1"), join(join(agentDiskDir("/data", agent), "runs", "run-1"), "work"), agent);
     assert.equal(agentLearningFolder("/data", agent), learningRepo("/data", agent), agent);
   }
   assert.match(runFolder("/data", "acme", "r1"), /^\/data\/disk\/agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);

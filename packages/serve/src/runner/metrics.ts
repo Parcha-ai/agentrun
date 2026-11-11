@@ -7,7 +7,7 @@
 // A pi run has no workflow decision receipts, so the decisions list is empty; a workflow run (when it joins the runner)
 // passes its decisions. `effort` is the level the run ran at and `model`, on a harness other than pi, the model its
 // revision named — both as storedMetrics added them, resolved by the caller from the run's launch and harness.
-import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMetrics, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMetrics, timelineOf } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS } from "./journal-kinds.js";

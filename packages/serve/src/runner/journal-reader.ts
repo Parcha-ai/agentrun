@@ -3,7 +3,7 @@
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
 import type { Context } from "@earendil-works/chord";
-import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, originOf } from "../timeline/index.js";
 import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { reflectFrom } from "./end-of-run.js";
 import { type CallEndData, type CallStartData, KINDS, type MessageData, type MessageRole, type SessionKeyData } from "./journal-kinds.js";

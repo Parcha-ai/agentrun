@@ -9,7 +9,7 @@
 // servedTriggerRow): its name read by its id from the store at each read, never one the run's launch froze, cut as the
 // row's words are; a trigger gone keeps the id the journal wrote.
 import type { Context } from "@earendil-works/chord";
-import { TRIGGER_LABELS, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
 import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
 import { withLearning } from "./learning-run.js";

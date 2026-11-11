@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { capToolSpend, paidHolds } from "../dist/cap.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, monidRegistration } from "../dist/monid.js";

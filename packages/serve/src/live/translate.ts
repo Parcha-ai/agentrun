@@ -14,7 +14,7 @@
 // submission's placement the commit that placed it. A call that never ran ends with no start, as the door says it.
 import type { JsonValue } from "@earendil-works/chord";
 import { AgentDoc, type EntryRecord, type SubmissionRecord, UsageDoc } from "@earendil-works/pi-durable";
-import { HOST_PHASE, RUN_RESUMED } from "@parcha/pi-durable-agent/timeline";
+import { HOST_PHASE, RUN_RESUMED } from "../timeline/index.js";
 import { REFLECT_LABEL, reflectFrom } from "../runner/end-of-run.js";
 import { type CallEndData, type CallStartData, type EndData, KINDS, type MessageData, type SessionKeyData } from "../runner/journal-kinds.js";
 import { PI_STOP } from "../runner/pi-stop.js";
