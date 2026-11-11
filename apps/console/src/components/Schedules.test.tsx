@@ -303,6 +303,35 @@ describe("a new schedule", () => {
     expect(t.text()).not.toContain("2026-11-09T14:00:00Z");
   });
 
+  // A browser clock behind the server's: a time a minute ahead of the page's clock (2026-11-10T00:00Z) has already passed
+  // on the server's. Its refusal is read as the past-time one, so the sentence is the person's time, never the ISO.
+  it("a time ahead of the page's clock that the server refuses as passed reads in the person's time: no ISO", async () => {
+    const message = "Pick a time in the future: 2026-11-10T00:01:00Z has already passed.";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-10T00:01");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe("Pick a time in the future: 12:01 AM today has already passed.");
+    expect(t.text()).not.toContain("2026-11-10T00:01:00Z");
+  });
+
+  it("a refusal of a time ahead for any other reason keeps the server's words", async () => {
+    const message = "at is too far ahead";
+    const { v2 } = server({ write: () => refuse([{ field: "source.at", reason: "invalid", message }]) });
+    const t = await open(v2, { trigger: null });
+    await t.choose("at");
+    await t.set("at", "2026-11-12T09:30");
+    await t.set("agent", "triage");
+    await t.set("content", "Look.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create schedule$/);
+    expect(t.issue("source.at")).toBe(message);
+  });
+
   it("shows each issue of the server's 422 under the field it names: an agent with no revision under the agent", async () => {
     const message = "the agent flow has no current revision";
     const { v2 } = server({ write: () => refuse([{ field: "target.agent_id", reason: "invalid", message }, { field: "source.cron", reason: "invalid", message: "cron is five fields" }]) });

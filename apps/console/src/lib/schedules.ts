@@ -105,18 +105,21 @@ const dailyTime = (cron: string): { hour: number; minute: number; days: boolean 
 
 /** When a cron line fires, for a viewer in `zone`. One time of day reads in the viewer's time, with the line's own time and
  *  zone (24-hour, as the line has it) after it when its zone is another: "At 3:00 AM your time (08:00 UTC), only on
- *  Monday"; in the viewer's own zone, "At 8:00 AM your time, only on Monday". The time is the one on `ref`'s day (the
- *  next run, else now), so a clock change moves it. A line that names its days and lands on another day for the viewer
- *  says so ("At 5:00 AM your time the next day (20:00 UTC), only on Monday"): its days are its own zone's. Any other
- *  line keeps cronstrue's words, its zone after them when it is not the viewer's: "Every 15 minutes (UTC)". */
-function cronLine(cron: string, own: string, zone: string, ref: Date): string {
+ *  Monday"; in the viewer's own zone, "At 8:00 AM your time, only on Monday". The viewer's time is the next run's
+ *  (`next`, the server's instant), so it never disagrees with the "next" beside it: a time its own zone's clock change
+ *  skips reads as the hour the server runs it at (02:30 on a spring-forward day runs at 3:00), a repeated hour as the
+ *  pass the server picked. With no next run it is the line's time on `now`'s day in its zone. A line that names its days
+ *  and lands on another day for the viewer says so ("At 5:00 AM your time the next day (20:00 UTC), only on Monday"):
+ *  its days are its own zone's. Any other line keeps cronstrue's words, its zone after them when it is not the viewer's:
+ *  "Every 15 minutes (UTC)". */
+function cronLine(cron: string, own: string, zone: string, next: Date | null, now: Date): string {
   const words = cronWords(cron);
   const other = own !== zone;
   const daily = dailyTime(cron);
   const head = daily && `At ${pad(daily.hour)}:${pad(daily.minute)}`;
   if (daily && head && words.startsWith(head)) {
     try {
-      const t = instantAt(ref, own, daily.hour, daily.minute);
+      const t = next ?? instantAt(now, own, daily.hour, daily.minute);
       const shift = daily.days ? Math.floor(wallIn(t, zone) / 864e5) - Math.floor(wallIn(t, own) / 864e5) : 0;
       const day = shift > 0 ? " the next day" : shift < 0 ? " the day before" : "";
       return `At ${clockIn(t, zone)} your time${day}${other ? ` (${head.slice(3)} ${own})` : ""}${words.slice(head.length)}`;
@@ -135,7 +138,7 @@ function cronLine(cron: string, own: string, zone: string, ref: Date): string {
  *  reads its time on. */
 export function scheduleLine(source: Schedule["source"], nextAt: string | null, { zone = browserZone(), instead, now = Date.now() }: { zone?: string; instead?: string | null; now?: number } = {}): string {
   const next = instead ? ` · ${instead}` : nextAt ? ` · next ${zonedWhen(nextAt, zone)}` : " · no next time";
-  if ("cron" in source) return `${cronLine(source.cron, source.timezone, zone, nextAt ? new Date(nextAt) : new Date(now))}${next}`;
+  if ("cron" in source) return `${cronLine(source.cron, source.timezone, zone, nextAt ? new Date(nextAt) : null, new Date(now))}${next}`;
   if ("at" in source) return `Once, ${zonedWhen(source.at, zone)}${!instead && nextAt && Date.parse(nextAt) === Date.parse(source.at) ? "" : next}`;
   return `Every ${span(source.every_s)}${next}`;
 }

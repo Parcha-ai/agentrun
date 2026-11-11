@@ -53,6 +53,17 @@ describe("a schedule's line", () => {
     expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-10-19T06:00:00Z", MADRID)).toBe("At 8:00 AM your time, only on Monday · next Mon Oct 19, 8:00 AM CEST");
     expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-10-26T07:00:00Z", MADRID)).toBe("At 8:00 AM your time, only on Monday · next Mon Oct 26, 8:00 AM CET");
     expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-10-26T07:00:00Z", NY)).toBe("At 3:00 AM your time (08:00 Europe/Madrid), only on Monday · next Mon Oct 26, 3:00 AM EDT");
+    // An hour its own zone's clock change skips: 02:30 does not exist in Los Angeles on Mar 8, 2026, and the server runs
+    // it at 3:00 AM PDT (10:00Z). Both clocks read the server's instant, never a rebuilt 09:30Z.
+    const LA = { zone: "America/Los_Angeles" };
+    expect(scheduleLine(cron("30 2 * * *", "America/Los_Angeles"), "2026-03-08T10:00:00Z", LA)).toBe("At 3:00 AM your time · next Sun Mar 8, 3:00 AM PDT");
+    expect(scheduleLine(cron("30 2 * * *", "America/Los_Angeles"), "2026-03-08T10:00:00Z", NY)).toBe("At 6:00 AM your time (02:30 America/Los_Angeles) · next Sun Mar 8, 6:00 AM EDT");
+    // An hour it repeats: 01:30 in Los Angeles on Nov 1, 2026 is 08:30Z (PDT) and again 09:30Z (PST); the pass the server
+    // gives is the one both clocks say.
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T08:30:00Z", LA)).toBe("At 1:30 AM your time · next Sun Nov 1, 1:30 AM PDT");
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T09:30:00Z", LA)).toBe("At 1:30 AM your time · next Sun Nov 1, 1:30 AM PST");
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T08:30:00Z", NY)).toBe("At 3:30 AM your time (01:30 America/Los_Angeles) · next Sun Nov 1, 3:30 AM EST");
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T09:30:00Z", NY)).toBe("At 4:30 AM your time (01:30 America/Los_Angeles) · next Sun Nov 1, 4:30 AM EST");
     // With no next time, the time is today's.
     expect(scheduleLine(cron("0 8 * * 1", "UTC"), null, { ...NY, now: Date.parse("2026-07-01T00:00:00Z") })).toBe("At 4:00 AM your time (08:00 UTC), only on Monday · no next time");
     expect(scheduleLine(cron("0 8 * * 1", "UTC"), null, { ...NY, now: Date.parse("2026-12-01T00:00:00Z") })).toBe("At 3:00 AM your time (08:00 UTC), only on Monday · no next time");

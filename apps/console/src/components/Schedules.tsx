@@ -58,6 +58,9 @@ function useRereads(read: () => void, every: number, deps: unknown[]) {
 /** A passed one time in words: "Done · ran <when>", or "Its time passed · <when>" with no run known to have started. */
 const onceWords = (state: OnceState): string | null => (!state ? null : "ran" in state ? `Done · ran ${at(state.ran.nominal_at)}` : `Its time passed · ${at(state.passed)}`);
 
+/** The server's refusal of a one time already passed (serve's trigger-schedule.ts), whatever time it names. */
+const PAST_REFUSAL = /has already passed\.?$/;
+
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
@@ -397,9 +400,13 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
     } catch (err) {
       const found = issuesOf(err);
       // A one-time schedule refused at a time already passed: said in the person's own time, as the schedule line reads,
-      // never in the API's ISO time (its error's details keep that). Any other refusal of the time keeps the server's words.
+      // never in the API's ISO time (its error's details keep that). Past by this page's clock, or by the server's own
+      // refusal (serve's trigger-schedule.ts: "Pick a time in the future: <ISO> has already passed."), since a browser
+      // clock running behind the server's can see a time as ahead that the server has already seen pass. Any other
+      // refusal of the time keeps the server's words.
       const pickedAt = draft.kind === "at" ? instantKept(draft.at, draft.read?.at) : null;
-      if (found.fields["source.at"] && pickedAt !== null && Date.parse(pickedAt) <= now()) found.fields["source.at"] = pastWords(pickedAt, { now: now() });
+      const atIssue = found.fields["source.at"];
+      if (atIssue && pickedAt !== null && (Date.parse(pickedAt) <= now() || PAST_REFUSAL.test(atIssue))) found.fields["source.at"] = pastWords(pickedAt, { now: now() });
       setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
       setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
       setSaving(false);
