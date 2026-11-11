@@ -12,6 +12,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { journalRecords } from "../dist/runner/journal-reader.js";
 import { REQUEST_COST } from "../dist/timeline/index.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { decisionSpentIn } from "../dist/cap.js";
@@ -39,6 +41,23 @@ function entriesOf(data, runId) {
 }
 /** The model requests the run sent and was answered: pi's entries that are no error. */
 const answered = (entries) => entries.filter((entry) => entry.kind === "pi.assistant" && entry.model?.[0]?.stopReason !== "error").length;
+
+/** On the runner: the run's paid model requests that were answered, from its booking (each `runner.turn` the model proxy
+ *  wrote that was not cut, given back or left unsent), over its journal in the store. */
+async function answeredOnStore(store, runId) {
+  const { entries } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  return entries.filter((entry) => entry.kind === "runner.turn" && entry.data?.cut !== true && entry.data?.givenBack !== true && entry.data?.unsent !== true).length;
+}
+
+/** On the runner: once run `runId`'s claim is let go (its row names no runner), as a paused run's is at its park. */
+async function releasedOnStore(store, runId) {
+  for (let i = 0; ; i++) {
+    const row = await store.runs.get(runId);
+    if (row?.runner === null) return row;
+    assert.ok(i < 300, `the run's claim was never let go: ${JSON.stringify(row)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 
 /** Two model nodes in a chain, `first` then `second`, each answering the question. */
 const twoNodes = () => ({
@@ -81,10 +100,9 @@ const collecting = (body, out) => ({
   root: { node: "chain", steps: [{ node: "map", label: "each", itemsPath: "questions", as: "found", resultPath: out, maxConcurrency: 2, onItemFailure: "collect", failedAs: "missed", body }] },
 });
 
-// SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
-test.skip("a capped workflow whose paid model node would cross the cap stops at it: the node's request is never sent, the run waits for a raise (input_required, pending budget naming the node), lets its process go after the hold, and a raise opens it again under the new cap, sending no completed node again", async (t) => {
+test("a capped workflow whose paid model node would cross the cap stops at it: the node's request is never sent, the run waits for a raise (input_required, pending budget naming the node), its claim let go, and a raise opens it again under the new cap, sending no completed node again", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
-  const { api, data } = await serve(t, { faux: PRICED });
+  const { api, data, store } = await serve(t, { faux: PRICED });
   assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
   // $0.12: the first node's one request fits ($0.1024 at least, $0.04 spent), the second's does not ($0.04 spent and
   // $0.1024 more). A model node sends one request: its submit ends its session.
@@ -95,18 +113,18 @@ test.skip("a capped workflow whose paid model node would cross the cap stops at 
   let run = await view(api, runId);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, run.pending?.node, run.pending?.cap_usd], ["input_required", "waiting", null, "budget", "second", 0.12]);
   assert.match(run.pending.said, /Raise the cap to at least \$0\.15 to continue\.$/);
-  // Held past the hold, its process lets go: the run stays paused at its cap, and nothing opens it again.
-  await letGo(data, runId);
+  // Its claim let go at the park: the run stays paused at its cap, and nothing opens it again.
+  await releasedOnStore(store, runId);
   run = await view(api, runId);
   assert.deepEqual([run.status, run.pending?.kind, run.pending?.node], ["input_required", "budget", "second"], JSON.stringify(run));
   assert.equal(storeRun(data, runId).state, "running", "not ended");
-  assert.equal(answered(entriesOf(data, runId)), 1, "the first node's request, none of the second's");
+  assert.equal(await answeredOnStore(store, runId), 1, "the first node's request, none of the second's");
   const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
   assert.deepEqual([raised.status, raised.body.max_cost_usd, raised.body.resumed], [200, 1, true], JSON.stringify(raised.body));
   await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.pending, run.result?.output, run.cost.cap_usd], ["completed", null, null, { answer: 42 }, 1], JSON.stringify(run));
-  assert.equal(answered(entriesOf(data, runId)), 2, "opened again from its journal: the first node was not sent again, the second ran once");
+  assert.equal(await answeredOnStore(store, runId), 2, "opened again from its journal: the first node was not sent again, the second ran once");
 });
 
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
