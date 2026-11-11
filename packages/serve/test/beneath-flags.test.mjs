@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { constants, readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 import { beneathFlags, DARWIN_NO_LINK } from "../dist/workspace/beneath.js";
 
 /** macOS's other open flags (sys/fcntl.h), for the flag sets local.ts and grep's worker pass. */
@@ -47,12 +48,49 @@ test("on linux an open below the root adds O_NOFOLLOW to the caller's flags, and
 });
 
 test("every open in beneath.ts takes its flags from beneathFlags: no other line names O_NOFOLLOW_ANY", () => {
-  const source = readFileSync(new URL("../src/workspace/beneath.ts", import.meta.url), "utf8");
-  const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*\*)/.test(line));
-  const naming = code.filter((line) => line.includes("O_NOFOLLOW_ANY"));
-  assert.ok(naming.every((line) => /\bNoLinkFlags\b|DARWIN_NO_LINK|noLink\.O_NOFOLLOW_ANY|readonly O_NOFOLLOW_ANY/.test(line)), `lines naming O_NOFOLLOW_ANY outside beneathFlags: ${naming.join(" | ")}`);
-  for (const call of ["openBeneath", "openBeneathSync"]) {
-    const body = source.slice(source.indexOf(`export ${call === "openBeneath" ? "async " : ""}function ${call}(`));
-    assert.match(body.slice(0, body.indexOf("\n}\n")), /beneathFlags\(flags, process\.platform\)/, `${call} computes its flags with beneathFlags`);
+  // Read by TypeScript's parser, so only code counts: a comment or a string never passes or fails it.
+  const file = ts.createSourceFile("beneath.ts", readFileSync(new URL("../src/workspace/beneath.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+  const text = (node) => node.getText(file);
+  const where = (node) => `beneath.ts:${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}: ${text(node).slice(0, 120)}`;
+  /** The declarations that may name macOS's flag: its type, its values, and the one function that combines it. */
+  const allowed = (node) => {
+    for (let at = node; at; at = at.parent) {
+      if (ts.isInterfaceDeclaration(at) && at.name.text === "NoLinkFlags") return true;
+      if (ts.isVariableDeclaration(at) && ts.isIdentifier(at.name) && at.name.text === "DARWIN_NO_LINK") return true;
+      if (ts.isFunctionDeclaration(at) && at.name?.text === "beneathFlags") return true;
+    }
+    return false;
+  };
+  const opens = [];
+  const hows = [];
+  const visit = (node) => {
+    const names = (ts.isIdentifier(node) && ["O_NOFOLLOW_ANY", "DARWIN_NO_LINK"].includes(node.text)) || (ts.isNumericLiteral(node) && Number(node.text) === DARWIN_NO_LINK.O_NOFOLLOW_ANY);
+    // A property name O_NOFOLLOW_ANY of NoLinkFlags or its literal is the declaration's; anything else names it in code.
+    if (names && !allowed(node)) assert.fail(`macOS's O_NOFOLLOW_ANY named outside beneathFlags: ${where(node)}`);
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && ["open", "openSync"].includes(node.expression.text)) opens.push(node);
+    // The Linux walk's step opens with the flags it is handed: each call hands it how or the folder flags.
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "step") {
+      const flags = node.arguments[2];
+      assert.ok(flags && ts.isIdentifier(flags) && ["how", "DIR_FLAGS"].includes(flags.text), `a step of the walk passes other flags: ${where(node)}`);
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "how") hows.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  assert.ok(opens.length >= 8, `${opens.length} opens found`);
+  // Every open passes the flags beneathFlags gave (how), or the Linux walk's folder flags (DIR_FLAGS), which a darwin
+  // open never reaches: each darwin open is a return inside `if (DARWIN)`, and passes how.
+  for (const call of opens) {
+    const flags = call.arguments[1];
+    assert.ok(flags && ts.isIdentifier(flags) && ["how", "DIR_FLAGS"].includes(flags.text), `an open passes flags other than beneathFlags' or the walk's: ${where(call)}`);
+    let branch = call.parent;
+    while (branch && !ts.isIfStatement(branch) && !ts.isFunctionDeclaration(branch)) branch = branch.parent;
+    if (branch && ts.isIfStatement(branch) && text(branch.expression) === "DARWIN") assert.equal(flags.text, "how", `a darwin open passes beneathFlags' flags: ${where(call)}`);
   }
+  assert.equal(opens.filter((call) => { let at = call.parent; while (at && !ts.isIfStatement(at)) at = at.parent; return at && text(at.expression) === "DARWIN"; }).length, 2, "openBeneath's and openBeneathSync's darwin opens");
+  // `how` is beneathFlags' answer for this process's platform, wherever it is declared.
+  assert.equal(hows.length, 2, "openBeneath and openBeneathSync each compute how");
+  for (const how of hows) assert.equal(text(how.initializer), "beneathFlags(flags, process.platform)", where(how));
+  const walk = file.statements.flatMap((s) => (ts.isVariableStatement(s) ? [...s.declarationList.declarations] : [])).find((d) => text(d.name) === "DIR_FLAGS");
+  assert.equal(text(walk.initializer), "O_RDONLY | O_DIRECTORY | O_NOFOLLOW", "the Linux walk's folder flags");
 });
