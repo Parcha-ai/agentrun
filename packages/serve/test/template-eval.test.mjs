@@ -540,14 +540,20 @@ test("template eval metricsOf: a run's metrics from GET /stats?agent=, null when
   assert.equal(await metricsOf(async () => ({ status: 200, body: "not json" }), "agt_1"), null);
   assert.equal(await metricsOf(async () => { throw new Error("the server did not answer"); }, "agt_1"), null);
 
-  // A read that stalls: null once the timeout passes, or as soon as the eval stops.
+  // A read that stalls: null once the timeout passes, or as soon as the eval stops. A stalled fake holds no socket and
+  // AbortSignal.timeout's timer is unref'd, so a referenced timer keeps the loop alive until both waits end.
   const stalls = async (method, path, body, headers, options) => new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
-  let started = Date.now();
-  assert.equal(await metricsOf(stalls, "agt_1", undefined, 50), null);
-  assert.ok(Date.now() - started < 5_000);
-  const stop = new AbortController();
-  setTimeout(() => stop.abort(new Error("stopped")), 20);
-  started = Date.now();
-  assert.equal(await metricsOf(stalls, "agt_1", stop.signal, 60_000), null);
-  assert.ok(Date.now() - started < 5_000);
+  const alive = setInterval(() => {}, 1_000);
+  try {
+    let started = Date.now();
+    assert.equal(await metricsOf(stalls, "agt_1", undefined, 50), null);
+    assert.ok(Date.now() - started < 5_000);
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(new Error("stopped")), 20);
+    started = Date.now();
+    assert.equal(await metricsOf(stalls, "agt_1", stop.signal, 60_000), null);
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    clearInterval(alive);
+  }
 });
