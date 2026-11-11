@@ -15,7 +15,7 @@
 // component that is a symlink, or was swapped for one before that check, is refused as changed. The operation then
 // names the path again, so a command that swaps a directory above the target between the check and the operation can
 // win: by path, the confinement holds against an agent's paths and the links already in place, not a command racing it.
-import { constants, existsSync, realpathSync } from "node:fs";
+import { constants } from "node:fs";
 import { lstat, mkdir, open, readlink, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -118,19 +118,6 @@ export async function canonicalize(path: string): Promise<string> {
     pending.unshift(...target.split("/").filter((part) => part !== ""));
   }
   return resolved;
-}
-
-/** `canonicalize` for a directory that may not exist yet, at construction. */
-export function canonicalizeSync(path: string): string {
-  let existing = path;
-  const tail: string[] = [];
-  while (!existsSync(existing)) {
-    const up = dirname(existing);
-    if (up === existing) break;
-    tail.unshift(basename(existing));
-    existing = up;
-  }
-  return join(realpathSync(existing), ...tail);
 }
 
 export const inside = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);

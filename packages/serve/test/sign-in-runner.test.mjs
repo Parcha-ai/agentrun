@@ -60,7 +60,7 @@ async function runner(t) {
     const root = join(s.dir, "runs", run);
     mkdirSync(join(root, "work"), { recursive: true });
     const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }) };
-    const host = { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, handoverInJournal: true, store: s.store, claim, sealKey: KEY };
+    const host = { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, store: s.store, claim, sealKey: KEY };
     const before = signInLines().count;
     await TOOLS.browser.bind(host);
     return { env, lines: signInLines(before).lines };
@@ -205,7 +205,7 @@ test("bound through a host whose lifecycle is the adapter loop's hostLifecycle()
   const root = join(r.dir, "runs", "run-a");
   mkdirSync(join(root, "work"), { recursive: true });
   const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) };
-  const host = { where: { root, work: join(root, "work"), ref: { id: "run-a" } }, env, install() {}, ...lifecycle.register, handoverInJournal: true, store: r.store, claim: r.claims["run-a"], sealKey: KEY };
+  const host = { where: { root, work: join(root, "work"), ref: { id: "run-a" } }, env, install() {}, ...lifecycle.register, store: r.store, claim: r.claims["run-a"], sealKey: KEY };
   const before = readFileSync(r.log, "utf8").split("\n").filter(Boolean).length;
   await TOOLS.browser.bind(host);
   assert.deepEqual([lifecycle.onConversation.length, lifecycle.beforeResume.length, lifecycle.beforeRelease.length], [1, 1, 1], "one of each, collected for the loop");

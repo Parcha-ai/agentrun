@@ -9,14 +9,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"syscall"
-	"unsafe"
-)
-
-const (
-	siocgifflags = 0x8913
-	siocsifflags = 0x8914
-	ifNameSize   = 16
 )
 
 // Iface is one interface as read: its name, whether it is up, whether it is a loopback, and how many addresses it holds.
@@ -100,33 +92,22 @@ func describe(iface Iface) string {
 	return fmt.Sprintf("%s (%s, %d addresses)", iface.Name, state, iface.Addrs)
 }
 
-// Raise tries to bring the interface name up, as the calling thread's credentials allow. When it can, it puts it back
-// down and answers true: a program that can is not cut off. A program with no CAP_NET_ADMIN is refused (false, the
-// kernel's error).
+// Raise tries to bring the interface name up over rtnetlink, as the calling thread's credentials allow: the one path
+// LoopbackUp takes too, so a probe asks what init itself would use. When it can, it puts it back down and answers true:
+// a program that can is not cut off. A program with no CAP_NET_ADMIN is refused (false, the kernel's error).
 func Raise(name string) (bool, error) {
-	if len(name) >= ifNameSize {
-		return false, fmt.Errorf("%q is longer than an interface name", name)
-	}
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
+	iface, err := net.InterfaceByName(name)
 	if err != nil {
-		return false, fmt.Errorf("cannot open a socket to try %s's flags: %w", name, err)
+		return false, fmt.Errorf("cannot find %s: %w", name, err)
 	}
-	defer syscall.Close(fd)
-	// struct ifreq: the name, then a union whose first member here is the flags, a short.
-	var req [40]byte
-	copy(req[:ifNameSize-1], name)
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocgifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return false, fmt.Errorf("cannot read %s's flags: %w", name, errno)
+	if err := setLinkUp(iface.Index, true); err != nil {
+		return false, fmt.Errorf("cannot bring %s up: %w", name, err)
 	}
-	flags := (*uint16)(unsafe.Pointer(&req[ifNameSize]))
-	was := *flags
-	*flags = was | syscall.IFF_UP
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocsifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return false, fmt.Errorf("cannot bring %s up: %w", name, errno)
+	if iface.Flags&net.FlagUp != 0 {
+		return true, nil
 	}
-	*flags = was
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocsifflags, uintptr(unsafe.Pointer(&req[0]))); errno != 0 {
-		return true, fmt.Errorf("brought %s up, and could not put it back: %w", name, errno)
+	if err := setLinkUp(iface.Index, false); err != nil {
+		return true, fmt.Errorf("brought %s up, and could not put it back: %w", name, err)
 	}
 	return true, nil
 }

@@ -5,7 +5,7 @@
 /** `{ kind: TURN_END, data: TurnEndData }`: a turn of the session `key` is over. Written in the same commit as the turn's
  *  last entries. #1424's first form held only `key` and `status`, and closes the message sent last before it. The
  *  timeline reads it too (the next message is not a steer), so the kind is the timeline's. */
-export { TURN_END } from "@parcha/pi-durable-agent/timeline";
+export { TURN_END } from "./timeline/index.js";
 
 /** The root's record of a message the door accepted (`{ key, id, content }`), and of its end (`{ key, id, sent }`):
  *  `sent` to the session, or dropped by a stop. The bridge writes a TURN_END naming the message once its turn is over;

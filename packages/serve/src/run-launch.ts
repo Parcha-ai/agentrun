@@ -6,7 +6,7 @@
 // The input's origin keeps its fail-safe on read (#1856): a run started by a trigger keeps an origin only when it names
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
-import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
@@ -38,6 +38,9 @@ export interface RunLaunch {
   readonly documents?: string;
   /** What a run's box may reach, as the server resolved it: the list, or "none". */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set AGENTRUN_BOX_ALLOW (box-settings.ts boxAllowSetIn): `boxAllow` is theirs, not the default. A
+   *  browser is held to an operator's list and runs open under the default. Absent: the default. */
+  readonly boxAllowSet?: true;
   /** The uploaded file ids the run was started with, in order (the create body's file_ids, already checked ready): the
    *  runner copies them into the run's work/inputs/ at its claim, as the old start copied them before the process ran. */
   readonly files?: readonly string[];
@@ -108,6 +111,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
     ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
     ...(launch.boxAllow !== undefined ? { box_allow: launch.boxAllow } : {}),
+    ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}) , ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}) } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
@@ -151,6 +155,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(typeof stored.approvers === "boolean" ? { approvers: stored.approvers } : {}),
     ...(typeof stored.documents === "string" ? { documents: stored.documents } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
+    ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null, section: "" } } : {}),
     ...(trigger ? { trigger } : {}),

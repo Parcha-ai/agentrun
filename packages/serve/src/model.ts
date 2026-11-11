@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel, Provider, ProviderStreams } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { Revision } from "./agent-rows.js";
 import { gatewayBase } from "./provider.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";

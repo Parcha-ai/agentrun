@@ -44,7 +44,7 @@ test("pi: the typical cost a live process counts is the one a process opened aga
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { REQUEST_COST } = await import("@parcha/pi-durable-agent/timeline");
+  const { REQUEST_COST } = await import("../dist/timeline/index.js");
   const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
   const answer = (total) => ({ role: "assistant", content: [{ type: "text", text: "42" }], api: "fake", provider: "fake", model: "m", usage: usage(total), stopReason: "stop", timestamp: 0 });
   // A Models that answers each request at the next figure of `costs`, in order.
