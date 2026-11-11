@@ -7,7 +7,7 @@ import type { Run } from "@/lib/v2";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const NOW = Date.parse("2026-11-03T16:20:00Z");
-const run = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: id, agent_id: agent, agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: `Run ${id}`,
   created_at: "2026-11-03T16:08:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });

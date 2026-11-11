@@ -6,10 +6,9 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "@parcha/pi-durable-agent/timeline";
+import { type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "@parcha/pi-durable-agent/timeline";
 import type { RevisionKind } from "@parcha/pi-durable-agent";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
-import { servedOnly } from "./served-only.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { APPROVAL_ROW, type PendingApproval, previewOf } from "./tool-gate.js";
@@ -17,13 +16,12 @@ import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
-import { pointerHash, type SignIns } from "./sign-ins.js";
+import { pointerHash, type signInReads } from "./sign-ins-store.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 
 /** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
- *  pointer) and `forgotten` (its tombstoned ones). Both the old `new SignIns(...)` and the store-backed bridge
- *  (sign-ins-store.ts signInsOverStore) satisfy it, so a view reads either path with no knowledge of which. */
-export type SignInReader = Pick<SignIns, "peek" | "forgotten">;
+ *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
+export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
 
 /** The run's newest usage row, which carries its cost. */
@@ -106,25 +104,9 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined, boun
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
-/** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
- *  its id the refusal's with NOTE_SUFFIX, so it is no message: isMessageRow), marked `paused`, never an error row. The
- *  refusal's sentence is the pause's (pending.said), which a client shows once, as its banner. */
-export const BUDGET_PAUSED = "Paused at the run's cap";
 /** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
  *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
 export const BUDGET_WAITING = "Waiting for you to raise the cap";
-export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const at = rows.findLastIndex((row) => row.paused === true);
-  if (at < 0) return [...rows];
-  // The refusal's own marker (`paused`, servedError) and the server's origin stay on the refusal's row: the waiting row
-  // is no refusal and no row of the server's, and keeps the id it had, the refusal's own with ":paused".
-  const { paused: _marker, origin: _origin, ...refusal } = rows[at]!;
-  const own = refusal.id.endsWith(NOTE_SUFFIX) ? refusal.id.slice(0, -NOTE_SUFFIX.length) : refusal.id;
-  // Only the served view makes it (servedOnly): once the run is raised, show() stops making it and it goes, even while a
-  // live process feeds the timeline (keepCommitted).
-  const paused: TimelineEvent = servedOnly({ ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
-  return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
-}
 
 /** A text clipped to `max` characters, with an ellipsis where it is cut (runs.ts' clip). */
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -614,6 +596,9 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
 
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+/** Why a run is refused at its claim: the browser sign-in it was handed can't be read here (the seal key changed or is
+ *  missing, or the sign-in is damaged). */
+export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
 
 /** A withheld run's title: a short line that fits the title's length and holds nothing the run said, so a title that
  *  repeats the handed sign-in is never served when this server can't cut it. The full sentence stays in the run's error
@@ -634,9 +619,6 @@ export function handedMark(value: unknown): Handed | undefined {
   return MALFORMED;
 }
 
-/** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
- *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
-export const refusedValuesOf = (serverSecrets: () => string[], handed: ReadonlySet<string> | undefined): string[] => [...serverSecrets(), ...(handed ?? [])];
 /** A run's redactor (decision-rows.ts, tool previews): redacted over its refused values. */
 export const redactorOf = (values: string[]) => (text: string) => redacted(text, values);
 /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
@@ -648,7 +630,7 @@ export const servedRunErrorWith = <E extends { message: string; details?: unknow
  *  other words are while the run is hidden (`unshown`), as a list row read from disk withholds it. */
 export const servedReviewWith = <R extends { reason: string }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null => (review && { ...review, reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason) });
 
-/** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its `sign_in_handed`: none
+/** The pointers a run was handed, read back to cut them (sign-ins-store.ts peek and forgotten), by its `sign_in_handed`: none
  *  for a run with no mark (it was never handed one); else, for each hash it names, the live or forgotten pointer whose
  *  SHA-256 it is. `unreadable` when what it was handed can't be read back here: a MALFORMED mark, no vendor browser kept
  *  beside the mark, the sign-ins file can't be read, or any of its hashes matches no pointer that opens (one under another
