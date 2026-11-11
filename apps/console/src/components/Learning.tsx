@@ -435,6 +435,9 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
   const [approving, setApproving] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  // One Idempotency-Key per promotion of this workflow, kept past a Cancel until it is answered: a retry after a lost
+  // answer, from this confirm or a new one, is the same request, so it never makes a second agent.
+  const promoteKeys = useRef(keeper()).current;
   const [made, setMade] = useState<Agent | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
@@ -506,7 +509,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={() => v2.retireNote(agentId, statusFile(item), version)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
-      {promoting && <PromoteConfirm name={item.name} promote={(key) => v2.promoteWorkflow(agentId, item.name, key)} onDone={(agent) => { setPromoting(false); if (agent) setMade(agent); }} />}
+      {promoting && <PromoteConfirm name={item.name} keys={promoteKeys} promote={(key) => v2.promoteWorkflow(agentId, item.name, key)} onDone={(agent) => { setPromoting(false); if (agent) setMade(agent); }} />}
     </article>
   );
 }
@@ -590,11 +593,10 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
 
 /** "Make this an agent", after a confirm in place as a retire's: it says what it makes, "Yes, make the agent" takes the
  *  focus, and Esc or Cancel keeps things as they are, except while the agent is being made. Each Yes goes under the
- *  confirm's one Idempotency-Key, so a retry after a lost answer is the same request. A token is told it takes the password sign-in; a refusal (no longer
+ *  card's Idempotency-Key (`keys`), kept until an answer comes, so a retry after a lost answer is the same request. A token is told it takes the password sign-in; a refusal (no longer
  *  active, the checks, what this host can't run) shows the server's words, and nothing was made. */
-function PromoteConfirm({ name, promote, onDone }: { name: string; promote: (idempotencyKey: string) => Promise<Agent>; onDone: (made: Agent | null) => void }) {
+function PromoteConfirm({ name, keys, promote, onDone }: { name: string; keys: ReturnType<typeof keeper>; promote: (idempotencyKey: string) => Promise<Agent>; onDone: (made: Agent | null) => void }) {
   const [busy, setBusy] = useState(false);
-  const keys = useRef(keeper()).current;
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
   useEffect(() => { yes.current?.focus(); }, []);
