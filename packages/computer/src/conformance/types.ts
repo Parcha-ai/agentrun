@@ -3,7 +3,7 @@ import type { MountKind, MountSpec } from "../mount.js";
 import type { ComputerClient, ComputerKind, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
-import type { ComputerSettingKind } from "../kinds.js";
+import type { ComputerSettingKind, KindCapabilities } from "../kinds.js";
 import type { CdpDialer, CdpSocket } from "./cdp.js";
 import type { StartedFixture } from "./fixture.js";
 import type { KindVerdict } from "./kind.js";
@@ -17,8 +17,9 @@ export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
  * network the provider declares, the janitor as the keeper of deadlines, a spec.user the provider takes, a release that
  * stops a computer and keeps it, a mount kind capabilities().mount declares, a provider method that is optional
- * (extend, stream), declared by being there, or the ports of a vendor's agent in the computer (vendor-agent: declared
- * by capabilities().vendorAgentPorts, an empty list included).
+ * (extend, stream), declared by being there, the ports of a vendor's agent in the computer (vendor-agent: declared
+ * by capabilities().vendorAgentPorts, an empty list included), or a secret the provider takes (secrets: declared by the
+ * run's planted provider, which its conformance module's ENV makes possible).
  */
 export type Capability =
 	| Group
@@ -33,7 +34,8 @@ export type Capability =
 	| "mount:archil"
 	| "extend"
 	| "stream"
-	| "vendor-agent";
+	| "vendor-agent"
+	| "secrets";
 
 /**
  * A fresh run's folder for one mount kind, made by the provider's conformance module: the mount that reaches it, and its
@@ -121,6 +123,10 @@ export interface CaseContext {
 	dir(): Promise<string>;
 	/** The same provider with a daemon that reports another version; skips the case when none was given. */
 	drifted(): Promise<ComputerProvider>;
+	/** What the provider declares of itself (ConformanceOptions.declared); undefined when the run was given none. */
+	readonly declared: readonly KindCapabilities[] | undefined;
+	/** The provider built with planted secrets (ConformanceOptions.planted); skips the case when none was given. */
+	planted(): Promise<PlantedProvider>;
 	/** A fresh run's folder for this mount kind, closed when the case ends; skips the case when the run can make none. */
 	runFolder(kind: MountKind): Promise<RunFolder>;
 	/**
@@ -234,6 +240,12 @@ export interface ComputerNote {
 	note: string;
 }
 
+/** A provider built with planted secrets, and the values planted: none of them may show in anything it answers. */
+export interface PlantedProvider {
+	provider: ComputerProvider;
+	secrets: string[];
+}
+
 export interface ConformanceOptions {
 	/** The image every computer of the run starts from. */
 	image: string;
@@ -249,6 +261,16 @@ export interface ConformanceOptions {
 	cases?: Case[];
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
+	/**
+	 * What the provider declares of itself, each configuration's kind and groups, for health.declared: its descriptor
+	 * (until the descriptor lands, its PROVIDERS entry, or its module's CAPABILITIES). Without it, that case skips.
+	 */
+	declared?: readonly KindCapabilities[];
+	/**
+	 * The same provider built with a planted value in place of each of its secrets (an API key, a token), and those
+	 * values, for health.no-key-in-errors. Without it (a provider that takes no secret), that case skips.
+	 */
+	planted?: () => Promise<PlantedProvider> | PlantedProvider;
 	/**
 	 * A fresh run's folder for a mount kind, for the mount cases: the provider's conformance module makes it (a folder on
 	 * the Docker host for a bind), or gives undefined for a kind it cannot make. Without it, those cases skip in words.
