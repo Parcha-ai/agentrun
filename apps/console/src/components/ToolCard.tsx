@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 /** A description longer than this many characters is more than the card's three lines hold: More shows the rest. */
 const CLAMPED = 140;
 /** The characters a collapsed card's one-line name, tag and alert hold at the grid's narrowest column (18rem); past
- *  them, the line is cut. The name's is a fallback only: the card measures whether its name is cut. */
+ *  them, the line is cut. Fallbacks only, where nothing is laid out: the card measures whether each line is cut. */
 const NAME_CUT = 32, TAG_CUT = 40, ALERT_CUT = 60;
 
 /** One tool in the agent editor's Tools step, the same card for every source (a built-in tool, an MCP server's, one a
@@ -23,20 +23,26 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
   on: boolean; disabled: boolean; warn?: boolean; onToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  // Whether the collapsed name and description are cut, as the browser draws them (the checkbox and a note take the
-  // name's room; wide or unbroken text fills three lines sooner), so no count of characters says it. The count is only
-  // the fallback where nothing is laid out (a test's DOM).
-  const nameRef = useRef<HTMLSpanElement>(null), lineRef = useRef<HTMLSpanElement>(null);
+  // Whether each collapsed line is cut, as the browser draws it (the checkbox and a note take the name's room; wide or
+  // unbroken text fills a line, or three, sooner), so no count of characters says it. The count is only the fallback
+  // where nothing is laid out (a test's DOM).
+  const nameRef = useRef<HTMLSpanElement>(null), lineRef = useRef<HTMLSpanElement>(null), tagRef = useRef<HTMLSpanElement>(null), alertRef = useRef<HTMLSpanElement>(null);
   const nameCut = useCut(nameRef, "width", open, name);
   const lineCut = useCut(lineRef, "height", open, description);
-  // More is offered only when the card hides something: a description under a blurb or past its three lines, a reason the
-  // short tag stands for, an alert longer than its one line, or a name cut on its.
-  const longName = nameCut ?? name.length > NAME_CUT, longAlert = !!alert && alert.length > ALERT_CUT;
+  const tagCut = useCut(tagRef, "width", open, tag);
+  const alertCut = useCut(alertRef, "width", open, alert);
+  const longName = nameCut ?? name.length > NAME_CUT;
   const longLine = !!description && (lineCut ?? description.length > CLAMPED);
-  const more = (!!description && (!!blurb || longLine)) || (!!why && why !== tag) || longAlert || longName;
+  const longTag = !!tag && (tagCut ?? tag.length > TAG_CUT);
+  const longAlert = !!alert && (alertCut ?? alert.length > ALERT_CUT);
+  // The reason the tag doesn't show whole: one it stands for (a short "Sandbox-only"), or its own words cut on its line.
+  const hiddenWhy = !!why && (why !== tag || longTag);
+  // More is offered only when the card hides something: a description under a blurb or past its three lines, a hidden
+  // reason, a cut alert, or a cut name.
+  const more = (!!description && (!!blurb || longLine)) || hiddenWhy || longAlert || longName;
   // A hover title only says what the card cuts or hides, never what it already shows (Manuel's #20): the whole name when
-  // it's cut, the whole description past its three lines, the reason a short tag stands for (or a reason too long for
-  // its line), the whole alert when it's cut. An open card shows all of it, so it has none.
+  // it's cut, the whole description past its three lines, a hidden reason, the whole alert when it's cut. An open card
+  // shows all of it, so it has none.
   const hover = (text: string | undefined, cut: boolean) => (!open && text && cut ? text : undefined);
   const toggle = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); };
   return (
@@ -50,8 +56,8 @@ export function ToolCard({ value, name, note, blurb, description, tag, why, aler
       </span>
       {blurb ? <span data-line className="mt-1 truncate font-sans text-small text-muted-foreground">{blurb}</span>
         : description && !open ? <span ref={lineRef} data-line className="mt-1 line-clamp-3 font-sans text-label text-muted-foreground [overflow-wrap:anywhere]" title={hover(description, longLine)}>{description}</span> : null}
-      {tag && <span data-tag title={hover(why, !!why && (why !== tag || why.length > TAG_CUT))} className="mt-1 max-w-full self-start truncate border px-1.5 text-micro text-muted-foreground">{tag}</span>}
-      {alert && !open && <span className="mt-1 truncate font-sans text-label text-warning-text" role="alert" title={hover(alert, longAlert)}>{alert}</span>}
+      {tag && <span ref={tagRef} data-tag title={hover(why, hiddenWhy)} className="mt-1 max-w-full self-start truncate border px-1.5 text-micro text-muted-foreground">{tag}</span>}
+      {alert && !open && <span ref={alertRef} className="mt-1 truncate font-sans text-label text-warning-text" role="alert" title={hover(alert, longAlert)}>{alert}</span>}
       {open && (
         <span data-more className="mt-2 min-w-0 space-y-1 font-sans text-label text-muted-foreground">
           {description && <span className="block whitespace-pre-wrap [overflow-wrap:anywhere]">{description}</span>}

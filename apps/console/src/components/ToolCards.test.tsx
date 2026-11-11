@@ -162,6 +162,37 @@ describe("the tool cards' hover titles", () => {
   });
 });
 
+// Whether a line is cut is what the browser draws, never a count of characters: with a layout given (every element 200 px
+// wide, its text 6 px a character), a refusal under the count's 60 characters but wider than its line is whole in its
+// title and offers More; a short name, not cut, has no title.
+describe("the tool cards' measured lines", () => {
+  const sizes = ["clientWidth", "scrollWidth", "clientHeight", "scrollHeight"] as const;
+  const kept = sizes.map((k) => [k, Object.getOwnPropertyDescriptor(HTMLElement.prototype, k)] as const);
+  // jsdom keeps these on Element.prototype: a stub on HTMLElement.prototype is taken away again, never left for later tests.
+  afterEach(() => { for (const [k, d] of kept) { if (d) Object.defineProperty(HTMLElement.prototype, k, d); else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k]; } });
+  it("a refusal cut on its line, though under 60 characters, is whole in its title and offers More", async () => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 200 });
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", { configurable: true, get(this: HTMLElement) { return (this.textContent ?? "").length * 6; } });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 48 });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 48 });
+    const REFUSED = "claude-agent drops a tool whose schema's root has anyOf";
+    expect(REFUSED.length).toBeLessThan(60);
+    const server = { name: "crm", url: "https://mcp.crm.example/mcp", auth: { type: "none" }, credential: null,
+      tools: [{ name: "find", description: "Find a contact.", input_schema: { anyOf: [{ type: "object" }] } }] } as McpServer;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", harnesses: ["pi", "claude-agent"], onChange: () => {} })));
+    await settle();
+    const card = host.querySelector<HTMLElement>('[data-tool-card="mcp:crm/find"]')!;
+    const alert = card.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toBe(REFUSED);
+    expect(alert.getAttribute("title")).toBe(REFUSED);
+    expect(button(card, "More")).toBeTruthy();
+    const name = [...card.querySelectorAll("span")].find((s) => s.textContent === "find" && !s.querySelector("span"))!;
+    expect(name.hasAttribute("title")).toBe(false);
+  });
+});
+
 // Manuel's beta.33 report: an MCP server's tools (Linear's create_attachment, list_comments) printed their whole
 // description, some cards 60 lines tall, and only built-in tools had More. The MCP picker's cards are the same ToolCard.
 describe("an MCP server's tool cards", () => {
