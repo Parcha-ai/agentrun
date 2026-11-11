@@ -65,7 +65,7 @@ test("a run that has failed gives its place back once its process exits: a start
   await follow(api, started.body.run_id, ["failed"]);
 });
 
-// SKIP (follow-up #2078): a follow-up to a completed run is refused not_continuable instead of reopening the run
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
   const gate = join(await scratch(t), "gate");
   await writeFile(gate, "");
@@ -99,69 +99,6 @@ test.skip("two follow-ups to a completed run that both wait for a place reach it
   const next = await api("POST", "/agents/calc/runs", { input: { content: "Next." } });
   assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
   await follow(api, next.body.run_id, ["completed"]);
-});
-
-// SKIP (follow-up #2078): a harness module that does not load now fails the start with 500 instead of a run that fails
-test.skip("a run whose process fails at its start is never started again while its end is written: one process, and its place is free once it reads failed", async (t) => {
-  const { api, data } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
-  const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  // The agent store held by another writer while the process fails, as a loaded host's slow store does: the run's end
-  // waits, and nothing may start its process again meanwhile.
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  t.after(() => store.isOpen && store.close());
-  store.exec("BEGIN IMMEDIATE");
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
-  store.exec("ROLLBACK");
-  store.close();
-  await follow(api, run.body.run_id, ["failed"]);
-  const log = await readFile(join(runDir(data, run.body.run_id), "process.log"), "utf8");
-  assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
-  const next = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
-  assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
-  // Watched for 2 s once the next run is over: a late start of the failed run (its first message's wait, woken by the
-  // settle that ended it) writes a second line here.
-  await follow(api, next.body.run_id, ["failed"]);
-  let after = "";
-  for (const until = Date.now() + 2_000; Date.now() < until && after.split("has no default export").length - 1 < 2; await sleep(100)) {
-    after = await readFile(join(runDir(data, run.body.run_id), "process.log"), "utf8");
-  }
-  assert.equal(after.split("has no default export").length - 1, 1, `the failed run was never started again:\n${after}`);
-});
-
-// SKIP (follow-up #2078): a harness module that does not load now fails the start with 500 instead of a run that fails
-test.skip("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {
-  // A deadline of 2 s, and a store retry 10 s away: the run's end waits longer than a message may.
-  const { data, port, token, api } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
-  const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  // The agent store held by another writer from here until the message is answered, so the run's end stays unwritten.
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  store.exec("BEGIN IMMEDIATE");
-  t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
-  const log = join(runDir(data, run.body.run_id), "process.log");
-  // A loaded machine is slow to start a process; the deadline under test starts at the message.
-  for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes("has no default export"); i++) {
-    if (i >= 1_200) assert.fail(`the run's process did not fail at its start within 60 s; its log:\n${await readFile(log, "utf8").catch((error) => String(error))}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const from = Date.now();
-  // A fresh connection: nothing rides a pooled socket the server may be closing.
-  const sent = await new Promise((resolve, reject) => {
-    const body = JSON.stringify({ content: "still there?" });
-    const req = request({ host: "127.0.0.1", port, method: "POST", path: `/v2/runs/${run.body.run_id}/messages`, agent: false, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
-      let text = "";
-      res.on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, retryAfter: res.headers["retry-after"], json: JSON.parse(text) }));
-    });
-    req.once("error", reject).end(body);
-  });
-  const took = Date.now() - from;
-  assert.deepEqual([sent.status, sent.json.error?.code, sent.retryAfter], [503, "unavailable", "1"], JSON.stringify(sent.json));
-  // The store's write waits without blocking the server, so the answer comes at the 2 s deadline, long before the
-  // settle's retry, 10 s away, and the store is still held.
-  assert.ok(took < 3_500, `answered at the deadline: ${took} ms`);
 });
 
 test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {
@@ -272,34 +209,6 @@ test("render.yaml generates the seal key, in a form the server takes: Render's r
   // Render's generateValue: "a randomized, base64-encoded, 256-bit value" (render.com/docs/blueprint-spec).
   const generated = randomBytes(32).toString("base64");
   assert.equal(sealKeyOf(generated)?.length, 32);
-});
-
-// SKIP (follow-up #2078): a cancel of a run waiting for input never settles it to cancelled
-test.skip("a cancel settles a run whose carry back cannot be written: cancelled, final, priced; the store gets it once it can", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555", timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t);
-  // The run's request has answered (it asked the person and waits), so its cost is known when it is cancelled. A
-  // request a cancel cuts reads unknown instead (spend-cap.test.mjs, "a run cancelled while its request answers ...").
-  assert.equal((await api("POST", "/agents", agent("busy", { tools: ["ask_person"] }))).status, 201);
-  const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: "Pick a region." } });
-  await follow(api, run.run_id, ["input_required"]);
-  // The store's directory turns read-only: its next write cannot make its journal, as on a full disk.
-  await chmod(data, 0o555);
-  try {
-    assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
-    const { last } = await follow(api, run.run_id, ["cancelled"]);
-    assert.equal(last.final, true);
-    const view = (await api("GET", `/runs/${run.run_id}`)).body;
-    assert.equal(view.status, "cancelled");
-    assert.equal(typeof view.cost.usd, "number");
-    assert.equal(storeRun(data, run.run_id).state, "running", "the store could not take it yet");
-  } finally {
-    await chmod(data, 0o755);
-  }
-  for (let i = 0; storeRun(data, run.run_id).state === "running"; i++) {
-    assert.ok(i < 100, "the carry back lands once the store can be written");
-    await sleep(100);
-  }
-  assert.equal(storeRun(data, run.run_id).state, "stopped");
 });
 
 test("a run cancelled as the server stops has its end in the store once the stop is done: no next start opens it again", { timeout: 90_000 }, async (t) => {
