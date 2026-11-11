@@ -5,9 +5,11 @@
 // redaction set, and is minted again with REFRESH_BEFORE_MS left, mid-run, so a long run's calls never carry an expired
 // token. A token that could not be renewed answers its calls in words once it expires, never a crash. One claim per run
 // mints for itself: there is no stored token to share, so no refresh lease.
+import type { GithubPermissions } from "../github.js";
 
-/** The App's answer for one repository: a token and when it expires (ms), or why not. */
-export type GithubAppMint = (target: { installation?: number; repo: string }) => Promise<
+/** The App's answer for one repository: a token and when it expires (ms), or why not. `permissions` narrows the token
+ *  below the App's own (a checkout's: contents read alone). */
+export type GithubAppMint = (target: { installation?: number; repo: string }, permissions?: GithubPermissions) => Promise<
   { ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed"; message: string }
 >;
 

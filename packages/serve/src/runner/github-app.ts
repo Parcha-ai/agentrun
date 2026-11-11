@@ -41,5 +41,5 @@ export async function githubAppAccess(
   const pem = open(GITHUB_FIELDS.privateKey);
   if (!appId || !pem) return undefined;
   const target = githubTargetOf(isObject(firstInput) ? firstInput.content : firstInput);
-  return { api, mint: (to) => mintInstallationToken(api, appId, pem, to, now()), target };
+  return { api, mint: (to, permissions) => mintInstallationToken(api, appId, pem, to, now(), permissions), target };
 }

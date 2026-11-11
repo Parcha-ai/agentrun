@@ -23,7 +23,11 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "output_schema"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "cap_mode", "output_schema", "checkout"];
+/** What an agentic definition may ask the server to check out in each run's folder before its first turn
+ *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
+ *  `repo/`; `none` clears it on an edit. */
+export const CHECKOUTS = ["pull_request", "none"] as const;
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
@@ -110,6 +114,11 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   // an edit that leaves it out keeps the agent's (agents-store.ts), so leaving a field out never removes a spend limit.
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
+  }
+  // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
+  if (d.checkout !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
+    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
   }
   // How a run's cap prices its requests (cap.ts CapMode): kept, as the default cap is, by an edit that leaves it out.
   if (d.cap_mode !== undefined) {

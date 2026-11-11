@@ -65,6 +65,7 @@ import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
+import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
@@ -146,6 +147,10 @@ export interface AdapterSpecDeps {
   /** A test runner's fake GitHub API, where the GitHub App's installation tokens are minted (runner/github-app.ts). Absent,
    *  https://api.github.com: the CLI's runner never sets it, and no environment variable, flag or setting maps onto it. */
   readonly githubApi?: string;
+  /** A test runner's GitHub site, where a run's pull request is checked out from (pr-checkout.ts): a folder of bare
+   *  repositories, or a git server on loopback. Absent, https://github.com; nothing kept, no environment variable and no
+   *  flag reaches it. */
+  readonly githubWeb?: string;
   /** A test runner's fake GitHub MCP origin, the one a github_app server may be at (mcp-claim.ts githubMcpOrigin):
    *  for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP (github.ts GITHUB_MCP_ORIGIN). Only a test's in-process runner sets it; the CLI's runner never does. */
   readonly githubMcpOrigin?: string;
@@ -178,6 +183,8 @@ type RevisionBody = {
   readonly harness?: string;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
+  /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
+  readonly checkout?: Checkout;
   /** The revision's own model ("provider/model-id"), absent for the host's. */
   readonly model?: string;
 };
@@ -343,6 +350,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     }
   }
 
+  // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
+  // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
+  // there is none. Removed at the release, after the tools' end.
+  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch.input, cut, run.signal) : undefined;
+  holds.hold({ checkout });
+
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
@@ -506,7 +519,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
-  const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
+  const system = [environmentLine(), checkout?.note, instructions, guidance].filter((line): line is string => Boolean(line));
 
   // The level pi thinks at: the launch's effort (the run's own, else its revision's, else the host's), every level pi's
   // agent takes; none, pi's default.
