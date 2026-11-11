@@ -3460,8 +3460,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
     }
     const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
+    const newestRows = new Map(newest.map((row) => [row.id, row]));
     for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
       if (open.has(id) || closing) continue;
+      // An end already told is never read again: its notice (the run's summary, its words redacted) is built only for an
+      // end not told yet. Else every ended run among the newest would be summarized and redacted on every read, 4 times a
+      // second, for good.
+      const known = newestRows.get(id);
+      const ended = known && final(known) && known.endedAt !== null ? new Date(known.endedAt).toISOString() : undefined;
+      if (ended !== undefined && toldEnds.get(id) === ended) continue;
       const now = await endNotice(id).catch(() => undefined);
       // Unread (a busy store): read again at the next turn, never lost.
       if (now === undefined) {
