@@ -14,7 +14,7 @@ This app uses the real interpreter and Jev adapter with fictional documents and 
 
 ## Install outside the checkout
 
-Requires Node 24.11+ and npm. From the AgentRun repository root:
+Requires Node 24.22.3+ and npm. From the AgentRun repository root:
 
 ```sh
 cp -R examples/starter ../my-evidence-workflow

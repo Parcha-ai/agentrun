@@ -5,7 +5,7 @@ next: its definition, its skills, its saved sign-ins and every run it has made. 
 the sign-ins it made go back to the home, so the agent's next run starts signed in. The home moves as that directory, or
 as one file, a pack, which leaves the sign-ins behind.
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node 22.19 or later. The agent store and each run's store are
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node 24.22.3 or later. The agent store and each run's store are
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) stores, read and written with pi's own Session, so
 there is no second format. This package opens its own at `synchronous = FULL`.
 
@@ -38,7 +38,7 @@ where each tool runs. The definition names tools; the host binds them. It does n
 npm install @parcha/pi-durable-agent@latest @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
 ```
 
-The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
+The package needs Node 24.22.3 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
 ([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
 to 1.5.0, the one version its peers take. It does not need a browser, a key or a network.
 
@@ -876,7 +876,7 @@ carried back later.
 
 ## Requirements
 
-- Node 22.19 or later.
+- Node 24.22.3 or later.
 - `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its suite
   on 1.5.0.
 

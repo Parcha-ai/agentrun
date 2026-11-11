@@ -10,7 +10,7 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.5.0 exactly (its
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=24.22.3`, pi 1.5.0 exactly (its
 pi-durable and chord peers). ESM only: the
 package has `import` entries and no `require` entry.
 

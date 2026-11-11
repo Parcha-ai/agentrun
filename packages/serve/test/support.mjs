@@ -290,8 +290,29 @@ export async function triggerStore(of) {
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, computerForClaim, ...switches } = {}) {
-  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, computerForClaim, runnerTiming, ...switches } = {}) {
+  const opened = await openSqliteStore({ dataDir: data, role: "runner" });
+  // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
+  // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
+  let dead = false;
+  const frozen = [];
+  const journalOf = (journal) => new Proxy(journal, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "commit") return typeof value === "function" ? value.bind(target) : value;
+      return (...args) => (dead ? new Promise((_, reject) => frozen.push(reject)) : value.apply(target, args));
+    },
+  });
+  const store = new Proxy(opened, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop === "journal") return (...args) => journalOf(value.apply(target, args));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  // Each loop the runner makes, so a killed runner's loops are stopped at its handle's close, as its process's death
+  // would have ended them.
+  const loops = [];
   // The runner's env mirrors the server's faux (model.ts FAUX_ENV): its model route reads the faux model from it, so a run
   // never reaches the network. The seal key is the server's (seal-key.ts), booted as the CLI's runner boots it: the one
   // handed over, else the one in the data directory, checked against what the store records. It seals the live-viewer
@@ -316,7 +337,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   let runner;
   let beats = 0;
   try {
+    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
     runner = startRunner({
+      ...(runnerTiming ?? {}),
       store,
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
@@ -325,20 +348,36 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
       onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
-      createLoop: dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) }),
+      createLoop: (deps) => {
+        const loop = createLoop(deps);
+        loops.push(loop);
+        return loop;
+      },
     });
   } catch (error) {
     seal.release();
-    await store.close();
+    await opened.close();
     throw error;
   }
   return Object.assign(
     async () => {
-      await runner.close().catch(() => {});
-      await store.close().catch(() => {});
+      if (dead) {
+        // A crashed runner: its frozen writes fail now, as a dead process's never land, and its loops are stopped.
+        for (const fail of frozen.splice(0)) fail(new Error("the runner died"));
+        await Promise.all(loops.map((loop) => loop.stop({ kind: "shutdown" }).catch(() => {})));
+      } else await runner.close().catch(() => {});
+      await opened.close().catch(() => {});
       seal.release();
     },
-    { beats: () => beats },
+    {
+      beats: () => beats,
+      // The runner's crash, as its process's death is (runner.ts kill): every timer stops, nothing is stopped, flushed or
+      // released, and no write of its loops lands from here on; its claims are left to run out for another runner.
+      kill: () => {
+        dead = true;
+        runner.kill();
+      },
+    },
   );
 }
 
@@ -351,7 +390,10 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
-  const closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, ...(computerForClaim ? { computerForClaim } : {}) });
+  const runnerOptions = { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, ...(computerForClaim ? { computerForClaim } : {}) };
+  let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
+  // Runners a test crashed (crashRunner), closed with the rest at the stop.
+  const crashed = [];
   // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store.
   const store = await openSqliteStore({ dataDir: data, role: "runner" });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
@@ -365,6 +407,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   let stopping;
   const stop = () => (stopping ??= (async () => {
     if (closeRunner) await closeRunner();
+    for (const dead of crashed.splice(0)) await dead();
     await store.close().catch(() => {});
     await server.close();
   })());
@@ -382,7 +425,16 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
     if (dir) await writableTree(dir).then(() => rm(dir, { recursive: true, force: true }));
     if (sudo.length) throw new Error(`a box command ran sudo on this machine (the stand-in refused it): ${sudo.join("; ")}`);
   });
-  return { ...server, data, store, stop, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: closeRunner.beats } : {}) };
+  // The runner beside the server dies where it stands (its process's crash: runner.ts kill, nothing released, no write of
+  // its loops lands), and a new one starts on the same data, which claims its runs once their claims run out (the
+  // runner's lease: `runnerTiming` shortens it).
+  const crashRunner = async () => {
+    if (!closeRunner) throw new Error("this server has no runner beside it to crash");
+    closeRunner.kill();
+    crashed.push(closeRunner);
+    closeRunner = await startInProcessRunner(data, runnerOptions);
+  };
+  return { ...server, data, store, stop, crashRunner, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: () => closeRunner.beats() } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
@@ -779,6 +831,12 @@ export function runDir(data, runId) {
   } catch {}
   const folder = agent === undefined ? "unknown-agent" : `${agent.toLowerCase()}-${createHash("sha256").update(agent, "utf8").digest("hex").slice(0, 16)}`;
   return join(data, "disk", "agents", folder, "runs", runId);
+}
+
+/** Run `runId`'s scratch folder in data directory `data`, where a CLI harness's process works on the runner:
+ *  `<data>/scratch/<agent>/<run>` (workspace/paths.ts scratchFolder), its agent's folder name as runDir finds it. */
+export function scratchDir(data, runId) {
+  return join(data, "scratch", basename(dirname(dirname(runDir(data, runId)))), runId);
 }
 
 /** The run folders' names on the disk of data directory `data`, across its agents' folders. */
