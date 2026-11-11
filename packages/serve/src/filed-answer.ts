@@ -115,5 +115,35 @@ export async function filedAnswer(work: Workspace | (() => Workspace), folder: s
   } catch (error) {
     return `${head}${cut}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
   }
-  return `${head}${cut}the whole answer is in the run's files at ${path}: read it with offset=${shown + 1} to go on]`;
+  return `${head}${cut}the whole answer is in the run's files at ${path}: read it with offset=${shown + 1} to go on${diffIndex(lines, shown)}]`;
+}
+
+/** The most files a diff's index names, and the longest it runs. */
+const INDEX_FILES = 300;
+const INDEX_CHARS = 12_000;
+
+/** For a unified diff (`diff --git a/... b/...` lines), where each file not wholly shown starts in the filed text and
+ *  how many lines it runs, so a reader takes the files it needs by range (and passes a generated one by) rather than
+ *  paging through all of it: "; files past the cut, from the line each starts at (its lines): a.ts 908 (120), ...". */
+export function diffIndex(lines: readonly string[], shown: number): string {
+  const starts: { path: string; at: number }[] = [];
+  lines.forEach((line, at) => {
+    const match = /^diff --git a\/(.*) b\/(.*)$/.exec(line);
+    if (match) starts.push({ path: match[2]!, at: at + 1 });
+  });
+  if (starts.length === 0) return "";
+  const rows: string[] = [];
+  let chars = 0;
+  for (let i = 0; i < starts.length; i++) {
+    const end = i + 1 < starts.length ? starts[i + 1]!.at - 1 : lines.length;
+    if (end <= shown) continue;
+    const row = `${starts[i]!.path} ${starts[i]!.at} (${end - starts[i]!.at + 1})`;
+    if (rows.length >= INDEX_FILES || chars + row.length > INDEX_CHARS) {
+      rows.push("...");
+      break;
+    }
+    rows.push(row);
+    chars += row.length + 2;
+  }
+  return rows.length ? `; files past the cut, from the line each starts at (its lines): ${rows.join(", ")}` : "";
 }

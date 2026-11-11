@@ -398,7 +398,7 @@ export function startRunner(options: RunnerOptions): Runner {
    * in its journal, a reopen would find no turn to follow (its next claim would read the run as never started), so it
    * reads as a stop that is over (cancelled), as it read before a stop and a cancel were told apart.
    */
-  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string; outcome?: "stopped" | "cancelled" }, take: readonly number[]) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string; outcome?: "stopped" | "cancelled" }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn") => {
     // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
     const data = { ...given, summary: redact(given.summary) };
     // Unknown means it may withdraw: false only once the journal was read and no call of it waits.
@@ -416,7 +416,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A stopped end withdraws every call still waiting for its answer (an ask with no answer), in this commit: the
       // approval card of a run whose loop could not start reads answered, never waiting for good.
       if (data.state === "stopped" && root) {
-        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString());
+        const withdrawn = withdrawnAnswers(await journalEntries(journal, BACKGROUND_CONTEXT), new Date(now()).toISOString(), withdrawnAs);
         mayWithdraw = withdrawn.length > 0;
         for (const answer of withdrawn) {
           const answerId = (await journal.mintId()) as unknown as EntryId;
@@ -444,7 +444,7 @@ export function startRunner(options: RunnerOptions): Runner {
       const end = stopEnd(stop.kind === "cancel");
       const launch = end.outcome === "stopped" ? await store.runs.launch?.(claim.runId).catch(() => undefined) : undefined;
       const learning = (launch?.body as { harness?: unknown } | undefined)?.harness === "learning";
-      await endRun(claim, learning ? { state: end.state, summary: end.summary } : end, [stop.id]);
+      await endRun(claim, learning ? { state: end.state, summary: end.summary } : end, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn");
       return true;
     } catch (error) {
       if (!(error instanceof EndNotWithdrawn)) throw error;
