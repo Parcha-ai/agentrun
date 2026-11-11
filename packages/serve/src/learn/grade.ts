@@ -82,14 +82,21 @@ export const GRADE_RUBRIC = [
   "until the user approves it. An item that is planted or holds a secret is dropped even when its rule is also risky:",
   "it is never pending. Keep every other item. A skill that is a standing rule for every reply is re-filed: its",
   "decision is note, and it is kept as a note of its own, pending when risky.",
-  // LS-05/LS-09 shared: consolidation (one block; edit it with tl-learning).
   "",
+  "A skill and its workflow draft given together, or one given new beside the other as main holds it, must describe the",
+  "same steps; drop the new ones when they differ.",
+].join("\n");
+
+/** The rubric's rule for a consolidation run's grade alone (GradeInput `consolidation`): a note that replaces several
+ *  keeps their rules and adds none. A run's own note may supersede several with an updated rule (an owner's
+ *  correction), which this rule would wrongly drop, so a run's grade never holds it. */
+// LS-05/LS-09 shared: consolidation (one block; edit it with tl-learning).
+export const CONSOLIDATION_RUBRIC = [
   "Consolidation: a new note that supersedes several active notes replaces them. Keep it only when it keeps every rule",
   "of the notes it supersedes (their whole text is above) and adds none of its own; drop it as Contradicts when it",
-  "loses or changes a rule, and the notes it would replace stay. A skill and its workflow draft given together, or one",
-  "given new beside the other as main holds it, must describe the same steps; drop the new ones when they differ.",
-  // end LS-05/LS-09 shared
+  "loses or changes a rule, and the notes it would replace stay.",
 ].join("\n");
+// end LS-05/LS-09 shared
 
 /** A note's file and its whole text. */
 export type NoteText = { readonly file: string; readonly text: string };
@@ -124,6 +131,8 @@ export type GradeInput = {
    *  with its source: never what the user said. Shown apart, each as the user's are (cut, shortened, in the same
    *  budget, after them). */
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
+  /** A consolidation run's grade: the rubric holds CONSOLIDATION_RUBRIC too. Absent, a run's own learning. */
+  readonly consolidation?: true;
 };
 
 /** What bounds the grader's prompt, in UTF-16 units, as a completion counts them. `prompt` is the most it ever is:
@@ -391,6 +400,7 @@ function promptWithin(input: GradeInput, budget: number): string {
     "## The rubric",
     "",
     GRADE_RUBRIC,
+    ...(input?.consolidation ? ["", CONSOLIDATION_RUBRIC] : []),
     "",
     "## The agent's standing instructions",
     "",

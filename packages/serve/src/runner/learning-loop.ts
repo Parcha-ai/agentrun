@@ -391,7 +391,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
          *  the merge, its `source` in the journal): a run's kept proposal, or a consolidation's own. `checked` is what the
          *  checks left out, said with the merge; `beside`, what the grader reads with the proposal and grades not (a pair's
          *  side main holds). After a run's merge, `afterwards` asks whether a consolidation is due, before the run ends. */
-        const settle = async (ws: unknown, who: { readonly runId: string; readonly agentId: string; readonly instructions?: string }, proposal: KeptProposal, checked: readonly Problem[], afterwards: boolean, beside: readonly NoteText[] = []): Promise<LoopEnd> => {
+        const settle = async (ws: unknown, who: { readonly runId: string; readonly agentId: string; readonly instructions?: string }, proposal: KeptProposal, checked: readonly Problem[], afterwards: boolean, beside: readonly NoteText[] = [], consolidation = false): Promise<LoopEnd> => {
           const source = who;
           const entries = await journalEntries(journal, context);
           rooted = entries.length > 0;
@@ -420,6 +420,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: grading,
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}),
+              ...(consolidation ? { consolidation: true as const } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
@@ -620,7 +621,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             await append(KINDS.learningConsolidation, made);
             await deps.flush();
           }
-          return settle(ws, who, made.proposal, made.left, false, made.beside ?? []);
+          return settle(ws, who, made.proposal, made.left, false, made.beside ?? [], true);
         };
 
         const consolidating = learning.consolidation;
