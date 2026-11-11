@@ -264,9 +264,10 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
       if (!info) return { refused: `no file at ${rel} in the workspace` };
       if (info.kind !== "file") return { refused: `${rel} is not a regular file` };
       if (info.size > maxBytes) return { refused: `${rel} is ${info.size} bytes, over the ${maxBytes}-byte limit` };
-      // One byte past the bound: a file that grew since its stat is refused, never cut.
-      const bytes = await work.read(rel, { length: maxBytes + 1 });
-      if (bytes.byteLength > maxBytes) return { refused: `${rel} is over the ${maxBytes}-byte limit` };
+      // The file as its stat sized it, and nothing past that: one that shrank, or grew before or while it was read, is
+      // refused, never chosen in part.
+      const bytes = await work.read(rel, { length: info.size });
+      if (bytes.byteLength !== info.size || (await work.read(rel, { offset: info.size, length: 1 })).byteLength > 0) return { refused: `${rel} changed while it was read; try again` };
       const name = rel.split("/").at(-1) ?? rel;
       return { bytes, name, mime: mime(name) };
     } catch (error) {

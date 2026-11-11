@@ -129,5 +129,8 @@ test("browser_upload chooses a file from the disk, by its path in the run's fold
   assert.deepEqual(await files.resolve("missing.txt"), { refused: "no file at missing.txt in the workspace" });
   assert.deepEqual(await files.resolve("reports"), { refused: "reports is not a regular file" });
   assert.deepEqual(await files.resolve("big.bin"), { refused: "big.bin is 17 bytes, over the 16-byte limit" });
+  // A file that grows while it is read is refused, never chosen in part.
+  const growing = { ...work, stat: (path) => work.stat(path), read: async (path, range) => { const bytes = await work.read(path, range); if (range?.offset === undefined) await work.append(path, "+"); return bytes; } };
+  assert.deepEqual(await uploadsFrom(growing, 16, () => "text/plain").resolve("reports/q3.pdf"), { refused: "reports/q3.pdf changed while it was read; try again" });
   for (const outside of ["../other-run/secret.txt", "/etc/passwd"]) assert.deepEqual(await files.resolve(outside), { refused: `${outside} resolves outside the workspace` }, outside);
 });
