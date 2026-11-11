@@ -652,6 +652,45 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    id: "message-mid-turn-kept",
+    title: "messages sent mid-turn are never dropped: each is taken, in order, and the model answers each",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, letSlowGo, slowStarted } = suiteTools();
+      // A harness that steers places a message in the turn in flight (steer-mid-turn); one that does not (a CLI's: its
+      // adapter's facts say steer false) sends each as a turn of its own once the turn ends, in the order they came. Either
+      // way the model reads it, and its row is taken, never refused after the API accepted it (#2174).
+      const steers = subject.facts?.steer !== false;
+      const texts = steers ? ["check the totals"] : ["check the totals", "and the dates"];
+      // The model's steps: the call, then what it says after it (the steer it read, when it steers), then, for each message
+      // sent as a turn of its own, that message (the last the person sent).
+      const script: ScriptStep[] = [{ call: "slow" }, { sayLastSteer: true }, ...(steers ? [] : texts.map((): ScriptStep => ({ sayLastSteer: true })))];
+      await w.start("runner-a", { script, tools, hooks: quiet });
+      await slowStarted;
+      const rows: { id: number }[] = [];
+      for (const text of texts) rows.push(await sendCommand(w.server, RUN, { kind: "steer", body: { text } }));
+      // The tool goes on once every message is with the loop: the turn in flight has them, never a timer.
+      await until(() => rows.every((row) => w.handedOver(row.id)), "the messages handed to the loop mid-turn");
+      letSlowGo();
+      await w.ended("ended");
+      const { calls, messages } = await w.read();
+      const slow = calls.find((call) => call.tool === "slow");
+      assert.ok(slow?.endEntry !== undefined && slow.status === "done", `slow ran to its end: ${JSON.stringify(calls)}`);
+      const sent = texts.map((text) => messages.find((message) => message.role !== "model" && message.text === text));
+      assert.ok(sent.every((message) => message !== undefined), `each message is in the journal: ${JSON.stringify(messages)}`);
+      for (const [i, message] of sent.entries()) {
+        assert.ok(message!.entry > slow.endEntry!, `"${texts[i]}" comes after the call it was sent during: ${JSON.stringify(messages)}`);
+        if (i > 0) assert.ok(message!.entry > sent[i - 1]!.entry, `in the order they came: ${JSON.stringify(messages)}`);
+        const answered = messages.find((one) => one.role === "model" && one.entry > message!.entry && one.text.includes(texts[i]!));
+        assert.ok(answered, `the model answered "${texts[i]}": ${JSON.stringify(messages)}`);
+      }
+      for (const row of rows) {
+        const taken = await w.commandRow(row.id);
+        assert.ok(taken.takenAt !== null && taken.refused === null, `its row is taken, not refused: ${JSON.stringify(taken)}`);
+      }
+    },
+  },
+  {
     id: "stop-ends-turn",
     title: "stop ends the turn; the run says why",
     async body(subject, t) {
@@ -907,7 +946,7 @@ const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model
 /** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
 export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
   if (!facts) return {};
-  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words`;
+  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so a message sent while it works is never placed in the turn in flight: it is the run's next turn (message-mid-turn-kept)`;
   return {
     // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),

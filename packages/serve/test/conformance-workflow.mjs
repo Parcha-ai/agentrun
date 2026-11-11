@@ -90,7 +90,7 @@ export function workflowSubject() {
       "crash-before-intent": crash, "crash-after-intent": crash, "crash-before-intent-process": crash, "crash-after-intent-process": crash,
       "stalled-past-lease-process": "the workflow subject runs in-process; it names no runner-process module",
       "fault-effects-once": crash, "fault-restarts-bounded": crash, "replay-safe-rerun": crash,
-      "steer-mid-turn": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
+      "steer-mid-turn": person, "message-mid-turn-kept": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
       "approval-names-its-call": person, "approval-double-click": person, "message-never-answers": person,
       "length-ends-failed": cut, "length-mid-run": cut,
       "end-of-run-answer": "a workflow revision does not learn (the agent definition's learning applies to agentic revisions only), so a workflow run has no end-of-run turn to answer",
