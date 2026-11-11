@@ -145,3 +145,14 @@ test("a grade model the server names is the strong tier's on a gateway: sent who
   const own = await gradeRouteFor({ own: "openai/agent-own", agentId: "agent-1" }, env, routeOf);
   assert.deepEqual([own.model, own.price(own.model, million)], ["agent-own", 1]);
 });
+
+test("a named grader on the strong tier keeps every key the runner's environment holds, a non-enumerable one too (a launcher-held or Settings key): its request authenticates", async () => {
+  const { gradeRouteFor } = await import("../dist/runner/harness-loops.js");
+  const { routeOf } = await import("../dist/runner/model-route.js");
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "agent-model", AGENT_MODEL_STRONG_PRICE: "10,20,1,10" };
+  // Held as the launcher and Settings hold a key: readable by name, never listed (spread or Object.keys leave it out).
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: "fake-test-key", enumerable: false });
+  const named = await gradeRouteFor({ model: "openai/gpt-grader", agentId: "agent-1" }, env, routeOf);
+  assert.equal(named.model, "openai/gpt-grader");
+  assert.equal(await named.provider.credential(), "fake-test-key", "the grade's request carries the held key");
+});

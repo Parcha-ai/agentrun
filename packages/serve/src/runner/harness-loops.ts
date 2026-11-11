@@ -82,7 +82,9 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
  *  the default tier. */
 export function gradeRouteFor(grade: GradeRouteAsk, env: NodeJS.ProcessEnv, routeOf: AdapterSpecDeps["routeOf"]): Promise<GraderRoute> {
   return gradeRouteOf(gradeModelFor(grade), env, (model) => (grade.model !== undefined && model === grade.model
-    ? routeOf(undefined, { ...env, AGENT_MODEL_STRONG: model }, "strong", PI_WIRES)
+    // The runner's environment under the grader as its strong model: every key it holds read through it, a non-enumerable
+    // one (a launcher-held or Settings key) too, which a copy would drop.
+    ? routeOf(undefined, Object.create(env, { AGENT_MODEL_STRONG: { value: model, enumerable: true } }) as NodeJS.ProcessEnv, "strong", PI_WIRES)
     : routeOf(model, env, "default", PI_WIRES)));
 }
 
