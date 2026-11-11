@@ -50,10 +50,11 @@ function standInCli(turns, replies = []) {
 }
 
 /** The adapter loop over the stand-in (`replies`: its scripted end-of-run answers), the run's agent named, the end-of-run
- *  step `endOfRun` in its deps. */
+ *  step `endOfRun` in its deps. Only run-1's turns are `turns` and only it takes `replies`: a learning run its end queues,
+ *  which the same runner claims whenever it does, talks to a stand-in of its own. */
 function loopWith(turns, endOfRun, replies = []) {
-  const inner = createAdapterLoop(() => ({
-    adapter: standInCli(turns, replies),
+  const inner = createAdapterLoop((claim) => ({
+    adapter: claim.runId === "run-1" ? standInCli(turns, replies) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
