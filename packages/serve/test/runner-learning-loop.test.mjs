@@ -224,3 +224,23 @@ test("a learning run whose source kept nothing ends with nothing graded", async 
   assert.equal(calls.ask.length, 0);
   assert.deepEqual(await kindsOf(store, claim), [KINDS.learningDropped]);
 });
+
+// LS-07: a kept proposal's `held` (the learning end's: a draft calling an unpriced MCP tool) holds that draft for its
+// owner's OK whatever the grade: its README is merged pending.
+test("a draft the proposal holds as unpriced is merged pending though the grader keeps it; without the hold it is merged active", async (t) => {
+  const FLOW = { file: "workflows/file-ticket/workflow.json", text: "{}" };
+  const README = { file: "workflows/file-ticket/README.md", text: "---\nname: file-ticket\ndescription: Files a ticket\n---\n" };
+  const keepAll = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }, { file: FLOW.file, decision: "keep", why: "a repeatable job" }] });
+  for (const [held, want] of [[{ [FLOW.file]: ["its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap"] }, [README.file]], [undefined, undefined]]) {
+    const { store, clock } = await storeOn(t);
+    await agentWithRevision(store);
+    await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+    const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+    const proposal = { ...PROPOSAL, files: [FLOW, README], ...(held ? { held } : {}) };
+    await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: { answer: "…" }, proposal: { state: "proposed", notes: ["Retries"], skills: [], workflows: ["file-ticket"], proposal, detail: "Proposed." } } }, { table: "learning_run", row: { id: "learn-1" } }] });
+    const claim = await store.claim("learn-1", "runner-a", { leaseMs: 60_000 });
+    const { loop, calls } = loopOn(store, clock, { answers: [keepAll] });
+    assert.deepEqual(await loop.start(claim), { state: "ended" });
+    assert.deepEqual(calls.commit[0].change.held, want, JSON.stringify(calls.commit[0].change));
+  }
+});
