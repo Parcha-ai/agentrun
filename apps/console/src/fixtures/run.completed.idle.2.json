@@ -17,6 +17,9 @@
     "status": "completed",
     "state": "idle",
     "title": "Example Tutoring Club",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:41.746Z",
     "updated_at": "2026-10-28T21:19:54.544Z",
     "ended_at": "2026-10-28T19:33:45.626Z",

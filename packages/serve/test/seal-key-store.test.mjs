@@ -259,8 +259,8 @@ test("two servers on two data directories in one process each keep their own key
   }
   // What each sealed opens under its own key alone, never the other's.
   for (const [data, own, other] of [[a, keyA, keyB], [b, keyB, keyA]]) {
-    assert.ok("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: own }), `${data}: its own key opens it`);
-    assert.ok(!("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: other })), `${data}: the other's key does not`);
+    assert.ok("secret" in webhookSecretIn(data, Buffer.from(own, "base64")), `${data}: its own key opens it`);
+    assert.ok(!("secret" in webhookSecretIn(data, Buffer.from(other, "base64"))), `${data}: the other's key does not`);
   }
   // Both keys are cut from what a run writes while their servers are open.
   const listed = hostSecrets({});
