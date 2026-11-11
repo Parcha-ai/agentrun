@@ -2,7 +2,6 @@
 // The server-wide durable-file plumbing and the data-directory location moved to server-fs.ts; this module re-exports it
 // so callers that still reach for it here keep working until they are pointed at server-fs.ts.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export { DATA_ENV, SERVER_FILE, TOKEN_FILE, agentFolderOf, defaultData, readJson, removeOwnRecord, serialBy, syncDir, tempOf, writeDurable, writeDurableSync, writeWhole } from "./server-fs.js";
@@ -12,12 +11,6 @@ export const RUN_META = "serve.json";
 /** A cancelled run's mark in its directory, written before its process is told: the run's process sends no model
  *  request once it is there, however the cancel and the process's start interleave. */
 export const RUN_CANCELLED = "cancelled";
-/** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
- *  or exits: found at a start, the server went down while it launched the run. */
-export const RUN_LAUNCHING = "launching";
-/** Set in a run's process environment when the server opens the run for a person's follow-up to a run whose turn had
- *  ended (it answered, or the person stopped it): that open resumes no cut work, so it writes no "resumed" row (app.ts). */
-export const FOLLOW_UP_OPEN_ENV = "AGENTRUN_FOLLOW_UP_OPEN";
 
 /** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
 export const DOOR_TOKEN_FILE = ".door-token";
@@ -26,15 +19,6 @@ export const DOOR_TOKEN_FILE = ".door-token";
  *  (box-relay.ts), which takes a call for a run only with that run's token. */
 export const RUN_DOOR_TOKEN = "door-token";
 
-/** Run directory `dir`'s own door token (RUN_DOOR_TOKEN), when it has one. */
-export function runDoorToken(dir: string): string | undefined {
-  try {
-    const token = readFileSync(join(dir, RUN_DOOR_TOKEN), "utf8").trim();
-    return token && !/\s/.test(token) ? token : undefined;
-  } catch {
-    return undefined;
-  }
-}
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 /** Why a run fails that the store has running with no serve.json: its server went down before it set the run up. */
@@ -46,7 +30,7 @@ export const dataOfRun = (runDir: string): string => resolve(runDir, "..", "..",
 export const HOMES_DIR = "homes";
 /** Paths in an agent's home that only the host reads and writes (another component owns them): the home API reads and
  *  writes neither, and lists each by its name alone. `learning` (learning.ts, read through its own API) and `sign-ins`
- *  (sign-ins.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
+ *  (sign-ins-store.ts: the agent's saved sign-ins, sealed pointers to its browser vendor's objects, shown without them on
  *  GET /agents/{id}). */
 export const HOME_HOST_OWNED = ["learning", "sign-ins"];
 /** An agent's home directory's name: its id in lower case, then 16 hex digits of the id's SHA-256. Ids that differ only

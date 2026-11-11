@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Agents } from "../dist/agents.js";
+import { commitAgent, createAgent } from "../dist/agents-store.js";
 import { checkDefinitionBody } from "../dist/validate.js";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 test("PUT definition commits a new revision whose parent is the current one and makes it current; skills carry over", async (t) => {
   const { api } = await serve(t);
@@ -228,18 +229,17 @@ test.skip("the switch: kept on a revision when a definition sets it, true or fal
 });
 
 test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
+  const { store } = await storeOn(t);
   const edit = (definition) => checkDefinitionBody({ definition: { name: "x", ...definition } }, { creating: false });
-  const read = await agents.create(checkDefinitionBody(agent("x")));
+  const read = await createAgent(store, checkDefinitionBody(agent("x")));
   assert.equal(read.revision.body.learning, undefined);
   // B leaves the switch out and reads the agent before A; its checks hold until A, which turns learning on, has landed.
   let started, release;
   const running = new Promise((resolve) => (started = resolve));
   const held = new Promise((resolve) => (release = resolve));
-  const b = agents.commit(read, edit({ instructions: "Answer briefly." }), { check: () => (started(), held) });
+  const b = commitAgent(store, read, edit({ instructions: "Answer briefly." }), { check: () => (started(), held) });
   await running;
-  const a = await agents.commit(read, edit({ instructions: "Answer.", learning: true }));
+  const a = await commitAgent(store, read, edit({ instructions: "Answer.", learning: true }));
   assert.equal(a.revision.body.learning, true);
   release();
   const landed = await b;

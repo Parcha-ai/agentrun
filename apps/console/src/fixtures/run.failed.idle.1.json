@@ -17,6 +17,9 @@
     "status": "failed",
     "state": "idle",
     "title": "Data loss after the update",
+    "place": {
+      "mode": "runner"
+    },
     "created_at": "2026-10-28T19:33:38.990Z",
     "updated_at": "2026-10-28T21:19:54.614Z",
     "ended_at": "2026-10-28T19:33:41.748Z",

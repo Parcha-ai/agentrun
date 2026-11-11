@@ -22,8 +22,6 @@ import { readJson, RUN_DOOR_TOKEN, writeWhole } from "./files.js";
 export const BOX_RELAY_FILE = ".box-relay";
 /** Where the relay listens: only this machine's runs reach it. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the relay listens on loopback only, for the runs of this machine
-/** What a run's Daytona provider sends as its key: never a key. The relay sends the server's in its place. */
-export const RELAYED_KEY = "relayed-by-the-server";
 /** The header that names the Daytona URL a relayed call is for. */
 const TARGET = "x-agentrun-target";
 /** The label that names a box's run (run-box.ts RUN_LABEL), kept here so the run's process loads no more than it needs. */
@@ -214,23 +212,4 @@ export async function relayAddress(root: string, runDir: string): Promise<{ url:
   return { url, token: token.trim() };
 }
 
-/** The `fetch` a run's Daytona provider uses: each call goes to the relay, which sends it on with the key. */
-export const relayFetch = (root: string, runDir: string, runId: string): typeof fetch =>
-  (async (input: string | URL | Request, init?: RequestInit) => {
-    const { url, token } = await relayAddress(root, runDir);
-    const headers = new Headers(init?.headers);
-    headers.set("authorization", `Bearer ${token}`);
-    headers.set(TARGET, input instanceof Request ? input.url : String(input));
-    return fetch(`${url}/runs/${encodeURIComponent(runId)}/daytona`, { ...init, headers });
-  }) as typeof fetch;
 
-/** Asks the relay for run `runId`'s box: made and seeded by the server when it has none. */
-export async function relayedBox(root: string, runDir: string, runId: string, signal?: AbortSignal): Promise<{ id: string; made: boolean; replaced?: boolean; apiUrl?: string }> {
-  const { url, token } = await relayAddress(root, runDir);
-  const sent = await fetch(`${url}/runs/${encodeURIComponent(runId)}/box`, { method: "POST", headers: { authorization: `Bearer ${token}` }, redirect: "error", ...(signal ? { signal } : {}) });
-  const body = (await sent.json().catch(() => null)) as { id?: unknown; made?: unknown; replaced?: unknown; api_url?: unknown; message?: unknown } | null;
-  if (!sent.ok || typeof body?.id !== "string") {
-    throw new Error(`the server did not give the run its box: ${typeof body?.message === "string" ? body.message : `it answered ${sent.status}`}`);
-  }
-  return { id: body.id, made: body.made === true, ...(body.replaced === true ? { replaced: true } : {}), ...(typeof body.api_url === "string" ? { apiUrl: body.api_url } : {}) };
-}
