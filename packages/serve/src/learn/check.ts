@@ -343,9 +343,12 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   }
 
   /** `notes` by rule, in order: the first of a rule holds it, the rest are its alternates (each with its holder). A
-   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update). */
+   *  rule the seed's active notes hold is held by that note, unless the new note supersedes it (an update), or any of
+   *  `notes` does: a note this proposal supersedes keeps no rule after it, so a copy of its rule under another name is
+   *  no duplicate, and the rule is never left with no active note. */
   function byRule(notes: readonly ProposedNote[]): { holders: ProposedNote[]; alternates: [ProposedNote, string][] } {
-    const rules = new Map(input.base.rules ?? []);
+    const going = new Set(notes.flatMap((note) => note.supersedes));
+    const rules = new Map([...(input.base.rules ?? [])].filter(([, holder]) => !going.has(holder)));
     const holders: ProposedNote[] = [];
     const alternates: [ProposedNote, string][] = [];
     for (const note of notes) {

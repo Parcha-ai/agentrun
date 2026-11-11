@@ -21,6 +21,7 @@ const POOL = [
   { file: "s2.md", body: "Rule four replaces old zero too.", supersedes: ["old-0.md"] },
   { file: "gone.md", body: "Rule five replaces a note that is not there.", supersedes: ["missing.md"] },
   { file: "old-again.md", body: "Old rule number 1.", supersedes: [] },
+  { file: "old0-again.md", body: "Old rule number 0.", supersedes: [] },
 ];
 
 /** A seed whose index holds `lines` active notes, old-0.md to old-<lines-1>.md, each its own rule. */
@@ -61,7 +62,9 @@ function survivors(base, notes) {
  *  note supersedes the one it repeats). */
 function valid(base, lines, set) {
   const active = new Set(base.active.map(({ file }) => file));
-  const rules = new Map(base.rules);
+  // A seed note any note of the set supersedes keeps no rule after it.
+  const going = new Set(set.flatMap((note) => note.supersedes));
+  const rules = new Map([...base.rules].filter(([, holder]) => !going.has(holder)));
   const replaced = new Set();
   let count = lines;
   for (const note of set) {

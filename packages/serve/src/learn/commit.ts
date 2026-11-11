@@ -222,8 +222,16 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
   const left: LeftNote[] = [];
   const newNotes = change.files.filter(({ path }) => isNote(path));
   if (newNotes.length) {
+    // The notes this merge supersedes (its own marks, or what its new notes not held for the owner's OK supersede by
+    // their front matter) keep no rule after it: a copy of their rule under another name is no duplicate, so a rule is
+    // never left with no active note.
+    const held = new Set(change.held ?? []);
+    const going = new Set([...(change.supersede ?? []).map(({ path }) => path), ...newNotes.filter(({ path }) => !held.has(path)).flatMap(({ path, text }) => {
+      const note = parseNoteFile(path, text);
+      return Array.isArray(note) ? [] : note.supersedes;
+    })]);
     const rules = new Map<string, string>();
-    for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active")) {
+    for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active" && !going.has(one.file))) {
       const text = parseNoteFile(note.file, await body(note.file, blobOf(snapshot, note.file)!));
       if (!Array.isArray(text)) rules.set(ruleOf(text.body), note.file);
     }
