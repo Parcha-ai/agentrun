@@ -68,7 +68,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
@@ -91,6 +91,8 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_S
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
+import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
+import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { redactedOutput } from "./key-refusal.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
@@ -119,11 +121,12 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, GITHUB_TRIGGER_UNCONNECTED, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
-import { writeApprovers } from "./server-approvers.js";
+import { readApprovers, writeApprovers } from "./server-approvers.js";
+import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
@@ -137,7 +140,6 @@ import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
-// server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -297,8 +299,7 @@ export type ServeOptions = {
    *  the CLI says a first build in words, as it starts and as it ends. */
   onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
-   *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
-   *  standard error, after `agentrun-serve: `. */
+   *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
@@ -780,9 +781,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
-  // One server per data root is the store's own EXCLUSIVE lock (StoreOwned), taken when startHolding opens the store; a
-  // data directory an earlier version wrote is refused there too (StoreFromEarlierVersion), in words, to start fresh. No
-  // server.lock, no oldHomes/oldLayout checks, no migration.
+  // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
+  // when startHolding opens the store; a data directory an earlier version wrote is refused there too
+  // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
   // What a start that fails stops: the webhook deliveries it began, which would write the next server's outbox, and the
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
@@ -791,6 +792,26 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
+  }
+}
+
+/** How much longer than its drain timeout a start waits for the server it replaces (a redeploy, a restart that starts the
+ *  new server before the old one has exited): the old one's close, after its runs' drain. */
+const START_WAIT_MARGIN_MS = 30_000;
+
+/** `take()`, tried again every 250 ms while `held(error)` says the server this one replaces still holds what it takes, up
+ *  to `until` (epoch ms); `waiting` is told this wait's `until` once, as it begins. Past `until`, or on any other error,
+ *  it throws. */
+async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknown) => boolean, until: number, waiting: (until: number) => void): Promise<T> {
+  let told = false;
+  for (;;) {
+    try {
+      return await take();
+    } catch (error) {
+      if (!held(error) || Date.now() >= until) throw error;
+      if (!told) (told = true), waiting(until);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 }
 
@@ -804,13 +825,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const pending = await pendingCount(data, entry.agent.id);
     return pending === undefined ? undefined : { pending };
   };
-  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
-  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
-  const token = options.token ?? stored!.token;
-  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
-  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
-  // new file and token.
-  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
@@ -825,17 +839,47 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
-  // EXCLUSIVE lock is the one-server lock (no server-lock.ts), and it refuses a data directory an earlier version wrote, in
-  // words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
+  // owner lock holds the store to this server (the data root's own lock follows), and it refuses a data directory an
+  // earlier version wrote, in words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
   // server writes and reads rows, and a runner (its own process, sharing only this store) runs every run.
-  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts), its owner lock the one-server lock.
+  // On Postgres when this process's AGENTRUN_STORE_URL secret names one (store/open.ts).
   // A server deploying while the old one still holds the schema waits for it (said once), never exits at once.
-  const store = await openStore({
+  // The server this one replaces may still be stopping (a redeploy, a restart that starts this one before the old one has
+  // exited): its close comes after its runs' drain, so this start waits for as long as its own drain timeout and a
+  // margin, saying so once, before it refuses. On Postgres the store's owner lock waits on its own (store/open.ts); on
+  // SQLite the store file's owner lock is waited for here, and the data root's lock below on either.
+  const replacedDrainMs = durationMs(options.drainTimeout ?? DRAIN_TIMEOUT) ?? 0;
+  const replacedUntil = Date.now() + replacedDrainMs + START_WAIT_MARGIN_MS;
+  const sayReplaced = noticeOf(options);
+  let replacedTold = false;
+  const waitingForReplaced = (until: number) => {
+    if (replacedTold) return;
+    replacedTold = true;
+    sayReplaced(`another server holds this data root: waiting up to ${Math.max(1, Math.ceil((until - Date.now()) / 1000))} s for the previous server to stop`);
+  };
+  const onSqlite = storeTarget(data).kind === "sqlite";
+  const store = await whileReplaced(() => openStore({
     dataDir: data, role: "server",
     warn: (message) => void process.stderr.write(`agentrun-serve: ${message}\n`),
     ...(options.onStoreLost ? { onOwnerLost: options.onStoreLost } : {}),
-  });
+  }), (error) => onSqlite && error instanceof StoreOwned, replacedUntil, waitingForReplaced);
   stops.push(() => store.close());
+  // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
+  // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
+  // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
+  // Postgres) would share. The lock is SQLite's EXCLUSIVE lock (server-lock.ts): the kernel drops it when its process
+  // dies, so a crashed server never leaves it held.
+  // Its wait runs from when the store was held at the earliest, since a store on Postgres may have been waited for first.
+  const dataLock = await whileReplaced(() => takeServerLock(data), (error) => error instanceof ServerLockHeldError, Math.max(replacedUntil, Date.now() + START_WAIT_MARGIN_MS), waitingForReplaced);
+  stops.push(async () => dataLock.release());
+  // The token, once both locks are held: a start the locks refuse reads, makes and removes nothing in the data root.
+  const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
+  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
+  const token = options.token ?? stored!.token;
+  // Given a token (AGENTRUN_TOKEN), a .token an earlier start made holds one this server refuses: it goes, so nothing
+  // (a person told the token is there, a CLI that reads it) takes a dead token from it. A later start without one makes a
+  // new file and token.
+  if (options.token !== undefined) await rm(join(data, TOKEN_FILE), { force: true });
   // No start without a seal key (seal-key.ts), checked against the store before anything reads it: the one handed over,
   // else the one in the data directory beside the store, made at the first start with only its path printed. A store whose
   // secrets another key sealed is refused, in words, and no key is made over them. Every secret here is kept under it;
@@ -1545,14 +1589,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. */
-  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string> }> {
+  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
     const revision = (await needAgent(id)).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools }, { permissionOf }] = await Promise.all([import("./tools.js"), import("./tool-gate.js")]);
+    const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
-    return learnedDraftTools(body.tools ?? [], (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"));
+    // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
+    const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
+    const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
+    const { tools, gated, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"), undefined, undefined, { mcp: true, approvers: await readApprovers(store.settings) });
+    // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
+    return { tools, gated, ask: { asked, fits: learnedAskFits } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1788,7 +1837,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
-      ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: GITHUB_TRIGGER_UNCONNECTED } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
+      ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
       : []));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
@@ -3397,6 +3446,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
+    dataLock.release();
     seal.release();
   }
   return {
