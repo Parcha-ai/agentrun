@@ -346,6 +346,27 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
    plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
    the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
    with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
+7. **An Android phone, end to end** (live: it rents one cloud Android from the phone harness, a few minutes at about
+   5 cents a minute; UNTESTED without its key). What the server needs:
+   - `adb` (Android platform-tools) on the server's `PATH`: the phone provider drives the phone with it, through an adb
+     server it starts on port 5037. The deploy image carries none.
+   - The key saved: `PUT /v2/computers/phone-harness/keys {"PHONE_HARNESS_API_KEY": …}`, then
+     `POST /v2/computers/phone-harness/test` → ok, with words on what it read and nothing rented.
+   - No live session on the account before the case (`GET https://api.phone-harness.com/sessions`, the key as a bearer:
+     none `provisioning` or `ready`), so the run's phone is the account's one live session.
+
+   The case: an agent whose computer is `{ "kind": "phone", "provider": "phone-harness" }` (an Android: the provider makes
+   no iPhone yet), with instructions to use its phone, and a run whose input is "Open the Settings app on your phone,
+   find which Android version the phone runs (Settings → About phone), and answer with that version number alone."
+   While the run is `running` and `GET /v2/runs/{id}/computer` answers `state: "live"` with `kind: "phone"`, read the
+   phone's own version once: the account's one live session, by its id, through `@parcha/agentrun-computer`'s phone
+   provider on an adb server of the QA run's own (another port, its own `HOME`), then
+   `getprop ro.build.version.release` over that phone's transport. Leave the phone to the run after.
+
+   It passes when the run completes; its timeline shows `phone_open` of `com.android.settings` (or a tap that opens it)
+   and a `phone_tree` or `phone_screen` read of the About phone page; its final answer names the version `getprop`
+   read (a phone of this account read `15`); the phone is released at the run's end (the account has no live session
+   a minute later); and no key is in any answer, the timeline or the server's log.
 
 ### Console, import and analytics
 
