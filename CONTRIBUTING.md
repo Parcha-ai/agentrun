@@ -1,6 +1,6 @@
 # Contributing
 
-Use Node 24.11 or newer (`.nvmrc` pins 24.21.0) and npm 11.21.0. From the repository root:
+Use Node 24.22.3 or newer (`.nvmrc` pins 24.22.3) and npm 11.21.0. From the repository root:
 
 ```sh
 npm install --global npm@11.21.0 --ignore-scripts

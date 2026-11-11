@@ -495,7 +495,7 @@ test("a create whose answer is lost is swept by its name even when the listing s
 		assert.deepEqual(fake.kills, [sb.id], `${create}: the sandbox was killed once the listing showed it`);
 		assert.ok(fake.calls.filter(([name]) => name === "Sandbox.list").length >= 3, `${create}: the listing was read until it showed the name`);
 		if (create === "broken") {
-			assert.equal(made.error.code, "e2b");
+			assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "e2b"]);
 			assert.match(made.error.message, new RegExp(`${sb.id} was killed and read back gone`));
 			const lastKill = fake.calls.findLastIndex(([name]) => name === "Sandbox.kill");
 			assert.ok(fake.calls.slice(lastKill).some(([name, id]) => name === "Sandbox.getInfo" && id === sb.id), "it was read back after the kill");
