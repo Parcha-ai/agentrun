@@ -302,12 +302,26 @@ test("the release workflow's fold at the tag puts what the tag carries into the 
 
 test("a late fragment's own section is made under the release's, never from what Unreleased holds, and the next fold dates both", () => repo(async (root, git) => {
   await taggedWithLateFragments(root, git);
-  // The kernel was held at the tag and is published now: its Unreleased entry is the next release's, not the earlier one's.
+  // An entry under Unreleased is the next release's, not the earlier one's: the earlier section is made beside it, never from it.
   await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Held until now.\n');
-  await commitAll(git, 'an entry the kernel kept while held');
+  await commitAll(git, 'an entry under the kernel\'s Unreleased');
   await fold(root, '0.1.0-beta.14', '2026-10-25');
   assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'),
     '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Held until now.\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Late.\n- Late vision.\n');
+}));
+
+test("a package held at the tag and published now ships its late fragments in this release, its first; the root's copy of the same fragment stays in the tagged release", () => repo(async (root, git) => {
+  const manifest = join(root, 'packages/run-adapters/package.json');
+  await writeFile(manifest, JSON.stringify({ name: '@parcha/agentrun-kernel', private: true }));
+  await taggedWithLateFragments(root, git);
+  assert.deepEqual([...(await previousRelease(root, '0.1.0-beta.14')).held], ['run-adapters']);
+  await writeFile(manifest, JSON.stringify({ name: '@parcha/agentrun-kernel' }));
+  await commitAll(git, 'the kernel\'s hold is lifted');
+  const result = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual([result.shipped, result.previous], [['a-late.md'], '0.1.0-beta.13'], 'only the root changelog shipped a-late in 0.1.0-beta.13');
+  assert.match(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.13 \(2026-10-20\)\n\n- Existing root bullet\.\n- Early\.\n- Late\.\n/);
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.14 (2026-10-25)\n\n- Late.\n- Late vision.\n', 'no 0.1.0-beta.13 section: that release did not publish the kernel');
 }));
 
 test("a held package's late fragment joins its Unreleased in the fold's order with the rest, and passes the check", () => repo(async (root, git) => {
