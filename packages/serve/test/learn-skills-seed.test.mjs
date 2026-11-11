@@ -140,6 +140,35 @@ test("on claude-agent's real adapter: with 900 KiB of the revision's skills, the
   assert.equal((await pinOf({ data }, run.body.run_id)).seed, sha, "started from the seed its launch names");
 });
 
+test("at the 1 MiB cap the revision's skills are sized in each form a harness is handed: a learned skill that fits them only as stored is left out for OpenCode (served, quoted), and one that fits them only as served is left out for claude-agent (stored)", { timeout: 60_000 }, async (t) => {
+  const SKILL_BYTES = 1024 * KIB;
+  const data = join(await scratch(t), "agents");
+  await folderWith(data, "edge", asLearned({ "check-units": { "SKILL.md": skillMd("check-units", filler(100 * KIB)) } }));
+  const seed = await seedOf(data, "edge");
+  const room = seed.skills[0].bytes;
+  // The revision's SKILL.md at exactly the room the learned one needs, as stored; served (servedSkill), its plain
+  // description of backslashes is quoted as JSON writes it, each one doubled: 2,000 bytes more than stored.
+  const grows = `---\nname: cite\ndescription: ${"\\".repeat(2000)}\n---\n`;
+  const atRoom = (head, extra = 0) => ({ "cite/SKILL.md": head + filler(SKILL_BYTES - room - Buffer.byteLength(head) + extra) });
+  const quoted = atRoom(grows);
+  const opencode = await runWith(t, quoted);
+  const pin = await pinSeed(opencode.runDir, opencode.ws, seed, { ...PLAIN, own: Object.keys(quoted) });
+  assert.deepEqual([pin.skills ?? [], pin.skills_left_out], [[], ["check-units"]], "it fits the revision's stored bytes, not what OpenCode is served");
+  const check = await builtinHarness("opencode").skillCheck();
+  assert.ok(check, "OpenCode's own check");
+  const learned = await withLearned(opencode.runDir, opencode.ws, "Answer.", Object.keys(quoted));
+  const { system, native } = await systemOf(learned.instructions, learned.skills, opencode.ws, check);
+  assert.deepEqual([native.map(({ name }) => name), inlined(system)], [["cite"], []], "the revision's stay OpenCode's own, none in the prompt");
+
+  // The other way: a front matter key servedSkill drops makes the served form smaller than the stored one, which
+  // claude-agent and codex are handed. One byte short of room as stored: left out, though it would fit as served.
+  const shrinks = `---\nname: cite\ndescription: Cite.\nlicense: ${"x".repeat(2000)}\n---\n`;
+  const dropped = atRoom(shrinks, 1);
+  const claude = await runWith(t, dropped);
+  const pinned = await pinSeed(claude.runDir, claude.ws, seed, { ...PLAIN, own: Object.keys(dropped) });
+  assert.deepEqual(pinned.skills_left_out, ["check-units"], "claude-agent is handed the revision's as stored");
+});
+
 test("the learned skills' budget is 256 KiB, whatever room the revision's leave: the newest that fit, whole, and the rest named as left out", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   assert.equal(learning.LEARNED_SKILLS_BUDGET, 256 * KIB);
