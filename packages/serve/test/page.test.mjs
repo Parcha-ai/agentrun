@@ -8,7 +8,41 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
+import { readFileSync } from "node:fs";
+import { createHmac } from "node:crypto";
+import { ConsoleSessions } from "../dist/page.js";
 import { agent, builtConsole, CONSOLE_INDEX, scratch, serve } from "./support.mjs";
+
+// The console's session with no accounts (page.ts ConsoleSessions): random, per launch, never from the API token.
+test("each launch makes its own random launch code and session ids: two launches never share one, a code or id of one is nothing to the other, and each carries 192 and 256 bits from the system's random source", () => {
+  const BASE64URL = /^[A-Za-z0-9_-]+$/;
+  const launches = Array.from({ length: 50 }, () => new ConsoleSessions());
+  const codes = launches.map((one) => one.code);
+  assert.equal(new Set(codes).size, codes.length, "no two launches share a code");
+  for (const code of codes) {
+    assert.match(code, BASE64URL);
+    assert.equal(Buffer.from(code, "base64url").length, 24, "a code is 24 random bytes (192 bits)");
+  }
+  const [a, b] = launches;
+  assert.equal(a.open(b.code), undefined, "another launch's code opens nothing");
+  const ids = [];
+  for (const launch of launches) for (let i = 0; i < 20; i++) ids.push(launch.open(launch.code));
+  assert.equal(new Set(ids).size, ids.length, "no two sessions, in one launch or across launches, share an id");
+  for (const id of ids) {
+    assert.match(id, BASE64URL);
+    assert.equal(Buffer.from(id, "base64url").length, 32, "an id is 32 random bytes (256 bits)");
+  }
+  const id = a.open(a.code);
+  assert.equal(a.holds(id), true);
+  assert.equal(b.holds(id), false, "one launch's session is no session of another's");
+  // Not derived from the token: the cookie the earlier build made (an HMAC of the token) is no session.
+  assert.equal(a.holds(createHmac("sha256", "the-api-token").update("console").digest("base64url")), false);
+  // From node:crypto's randomBytes, never Math.random.
+  const source = readFileSync(new URL("../src/page.ts", import.meta.url), "utf8");
+  assert.match(source, /readonly code = randomBytes\(24\)\.toString\("base64url"\)/);
+  assert.match(source, /const id = randomBytes\(32\)\.toString\("base64url"\)/);
+  assert.doesNotMatch(source, /Math\.random/);
+});
 
 /** One request with every header the caller names, Host and Origin included (fetch sets those itself). */
 function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
