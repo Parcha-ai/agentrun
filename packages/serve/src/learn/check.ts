@@ -6,7 +6,7 @@
 import { hiddenCharacter } from "./invisible.js";
 import { INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
+import { type DraftAsk, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedName, learnedPlace, type LearnedPlace, setsStatus, skillProblems, WORKFLOWS_DIR } from "./skills.js";
 
 /** The most the host adds to a run's note as it merges it: `origin: you` and `status: pending`, a front matter line
  *  each (notes.ts mergedNote). */
@@ -77,6 +77,8 @@ export type CheckInput = {
   /** The agent's granted tools the gate does not allow, with what each is set to (tools.ts learnedDraftTools): a draft
    *  whose call node calls one is refused, in the words a workflow revision's is (learn/skills.ts gatedNodes). */
   readonly gated?: Readonly<Record<string, string>>;
+  /** The MCP tools set to ask a learned call would ask about, and the gate's card rule (skills.ts DraftAsk, #2424). */
+  readonly ask?: DraftAsk;
   /** Where each of `gated`'s denies was set (this agent's settings or this server's), for the refusal's words. */
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
@@ -196,7 +198,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
     if (!input.dsl) throw new TypeError(`${path}: a workflow draft is read with the workflow DSL, which was not given`);
-    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy);
+    const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.ask);
     for (const { rule, detail } of problems) add(rule, detail, path);
     // A draft the checks pass whose dry run failed: its wiring breaks at run time, before any node is paid for.
     const dry = input.dryRuns?.[path];
