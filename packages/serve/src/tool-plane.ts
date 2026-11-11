@@ -30,6 +30,7 @@ import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
+import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -85,7 +86,7 @@ const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -396,9 +397,14 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
     if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
-    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}}` }];
+    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
+      // bash's policy (bash-read-only.ts): an agent's own, on bash's key only, as what its commands may do is the agent's.
+      if (key === "policy") {
+        if (layer !== "agent" || name !== "bash") return [{ field: field(name, key), reason: "not_allowed", message: `A policy is set on bash in an agent's own tool settings (definition.tool_settings.bash.policy), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
+        return (BASH_POLICIES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${BASH_POLICIES.join(", ")}: read-only refuses, before it runs, any command that could write, run code or read outside the run's folder` }];
+      }
       // The server's own mark of a pin in its file that does not read (withDefaults serves it), which a whole-map save
       // sends back: it keeps the broken pin, and nothing else. Never an agent's.
       if (key === "pin_broken") {
@@ -417,7 +423,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   });
 }
 
-/** `map` as a revision body keeps it: each tool's provider, permission and pin as written (never a stand-in's internal
+/** `map` as a revision body keeps it: each tool's provider, permission, pin and policy as written (never a stand-in's internal
  *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
  *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
  *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
@@ -425,7 +431,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
   const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
   return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
     if (!setting) return [];
-    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
     return Object.keys(kept).length ? [[name, kept]] : [];
   })));
 }

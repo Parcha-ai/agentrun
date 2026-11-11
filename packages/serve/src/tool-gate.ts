@@ -8,6 +8,11 @@
 // allow or an ask, so an allowed call not as pinned is refused unsent, and one under ask is refused before anyone is
 // asked; an approved call is checked again before it runs. The agent's pin and the server's both hold.
 //
+// bash's setting in an agent's own tool settings may carry a policy the same way (policyRefusal): `policy: "read-only"`
+// (bash-read-only.ts) reads each shell call's command and refuses one that could write, run code or read outside the
+// run's folder, after a deny and a pin and before an allow or an ask, so approvals "never" lifts none of it; an approved
+// call is decided again before it runs.
+//
 // An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The runner's loop answers the
 // call with waitingText and ends the turn, as ask_person's does; the run goes needs_input with the pending approval. On
 // an answer the loop runs the approved call once, through the journal, and resumes the session with a message naming the
@@ -18,7 +23,7 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { DESKTOP_TOOL_DEFS, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
+import { defaultPermissionOf, DESKTOP_TOOL_DEFS, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
@@ -29,6 +34,7 @@ import { SHELL_TOOLS } from "./background.js";
 import { DECISION_PROVIDER_KEYS, SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
+import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -40,8 +46,18 @@ export const mcpToolName = (server: string, tool: string): string => `mcp:${serv
 export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name);
 /** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or an MCP server's (`mcp:<server>/<tool>`). */
 export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
-/** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. */
-export const defaultPermission = (name: string): Permission => (isCatalogTool(name) ? "ask" : "allow");
+/** Where a run's shell is, as its default permissions read it: `computer` false for a run with no computer (its bash, where
+ *  it has one, runs on the run's folder's own exec: Archil's in Mode 2); undefined where no run is in view (the server's
+ *  settings page, capabilities), which reads the computer's defaults. */
+export type ShellWhere = { readonly computer?: boolean };
+
+/** The owner's defaults (11-01): a built-in kernel tool allow; a third-party catalog tool ask. On a run with no computer,
+ *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
+ *  refused. */
+export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
+  if (isCatalogTool(name)) return "ask";
+  return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
+};
 
 /** The tools that run a command in the run's box (background.ts SHELL_TOOLS), each held to bash's setting: bash: deny
  *  refuses bash_background as it refuses bash, and none of them is a settings key of its own. Under bash: ask the
@@ -132,7 +148,7 @@ export const MAX_PIN_CHOICES = 16;
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
  *  gate reads it: a permission by settings key, and an MCP tool's pin. */
-export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts checkToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's settings that does not read (tool-plane.ts checkToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true } | undefined>>;
+export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts checkToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's settings that does not read (tool-plane.ts checkToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true; /** bash's policy, in an agent's own settings only (bash-read-only.ts): what its commands may do. */ policy?: string } | undefined>>;
 
 /** A one-of list in its one form: each value once, null first, then by its JSON text; any other value as it is. The
  *  same meaning is the same text (a revision's id) and the same words (a refusal). */
@@ -196,8 +212,8 @@ export function pinRefusal(name: string, args: unknown, server: PermissionSettin
  *  layer, nor an ask that stands in for a setting that does not read. Nor is anything RunGate.enter refuses before it
  *  decides between running and parking ever lifted (a template's pin, among them). Without never, the answer is as it
  *  always was. */
-export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask"): { permission: Permission; from: SettingFrom } {
-  const { permission, from } = settingOf(name, server, agent);
+export function permissionFrom(name: string, server: PermissionSettings, agent: PermissionSettings = {}, approvals: Approvals = "ask", where: ShellWhere = {}): { permission: Permission; from: SettingFrom } {
+  const { permission, from } = settingOf(name, server, agent, where);
   if (approvals !== "never" || permission !== "ask" || standsBehind(name, server, agent)) return { permission, from };
   return { permission: "allow", from: "unattended" };
 }
@@ -226,15 +242,17 @@ function standsBehind(name: string, server: PermissionSettings, agent: Permissio
 }
 
 /** permissionFrom before approvals: what the layers and the default say. */
-function settingOf(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: SettingFrom } {
+function settingOf(name: string, server: PermissionSettings, agent: PermissionSettings, where: ShellWhere): { permission: Permission; from: SettingFrom } {
   // A shell tool's permission is bash's (SHELL_FAMILY), from bash's layer, wherever it is read: the gate, capabilities, an
   // agent's tools. A watcher (SHELL_WATCHERS) runs unasked only under an ask set as written in a layer: an ask that stands
   // in for anything else (a value not offered, nothing set) stays an ask. No key of its own is read, so none lifts bash's.
   if (Object.hasOwn(SHELL_FAMILY, name) && SHELL_FAMILY[name] !== name) {
-    const bash = settingFrom(SHELL_FAMILY[name]!, server, agent);
+    const bash = settingFrom(SHELL_FAMILY[name]!, server, agent, where);
+    // Nothing set, on a run with no computer: the tool's own default (defaultPermissionOf: the background tools refused).
+    if (bash.from === "default" && where.computer === false) return { permission: defaultPermission(name, where), from: "default" };
     return { permission: bash.written ? shellPermission(name, bash.permission) : bash.permission, from: bash.from };
   }
-  const { permission, from } = settingFrom(name, server, agent);
+  const { permission, from } = settingFrom(name, server, agent, where);
   return { permission, from };
 }
 
@@ -244,7 +262,7 @@ function settingOf(name: string, server: PermissionSettings, agent: PermissionSe
  *  wildcard) is deny, that is the answer, from the server, before the agent's own settings are read, so no ask or allow
  *  of the agent's reaches past it. The server's own exact allow under its wildcard deny is its answer, as before.
  *  Otherwise the agent's own setting comes first, then the server's, then the default. */
-function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
+function settingFrom(name: string, server: PermissionSettings, agent: PermissionSettings, where: ShellWhere = {}): { permission: Permission; from: "agent" | "server" | "default"; written: boolean } {
   const own = permissionKeys(name).map((key) => server[key]).find((setting) => setting?.permission !== undefined);
   if (own?.permission === "deny") return { permission: "deny", from: "server", written: own.fallback !== true };
   for (const [from, layer] of [["agent", agent], ["server", server]] as const) {
@@ -256,7 +274,7 @@ function settingFrom(name: string, server: PermissionSettings, agent: Permission
       return { permission: set, from, written: setting.fallback !== true };
     }
   }
-  return { permission: defaultPermission(name), from: "default", written: false };
+  return { permission: defaultPermission(name, where), from: "default", written: false };
 }
 
 /** `name`'s permission in force (permissionFrom): the one rule every path reads, the gate's, the tool plane's and a
@@ -347,8 +365,8 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** A run's folder as its spec names it: the run's Workspace (Mode 2: its folder on the run's disk, never a folder of this
@@ -361,7 +379,7 @@ export class RunGate {
   /** `readServerSettings`: the server's tool settings, read at each call; `overrides`: the pinned revision's own;
    *  `approvers`: whether anyone can answer an ask here (the owner's password session: accounts on); `approvals`: the
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[] }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; mcpServers?: readonly string[]; computer?: boolean }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
    *  reaches a live run at its next call; under approvals "never", an ask is an allow. */
@@ -369,8 +387,8 @@ export class RunGate {
 
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
    *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. The order:
-   *  the deny (with where it was set, and that nothing was sent or charged), a pin, then the allow, then the ask, so an
-   *  allow that approvals "never" made is decided
+   *  the deny (with where it was set, and that nothing was sent or charged), a pin, bash's policy (policyRefusal), then
+   *  the allow, then the ask, so an allow that approvals "never" made is decided
    *  only after every refusal. Where no one can approve (accounts off: the store's approvers row a runner reads at each
    *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
@@ -380,6 +398,8 @@ export class RunGate {
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
+    const policed = this.policyRefusal(key, name, args);
+    if (policed) return { deny: policed };
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, "no") };
   }
@@ -411,19 +431,35 @@ export class RunGate {
     // No settings ever read: every tool asks, the shell watchers too (fail closed: an ask nothing read is never lifted),
     // or keeps the revision's own deny. Approvals "never" lifts none of these asks: the server's settings may hold a deny
     // no read has seen.
+    const where = { computer: this.where.computer };
     if (server === undefined) {
-      const own = permissionFrom(key, {}, this.overrides);
+      const own = permissionFrom(key, {}, this.overrides, "ask", where);
       return own.permission === "deny" ? own : { permission: "ask", from: "default" };
     }
     // A shell tool under every harness's name for it is read as its own name, by bash's key (permissionFrom): a watcher's
-    // ask is allow only where bash's ask is set as written.
-    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides, this.approvals);
+    // ask is allow only where bash's ask is set as written. Its default is where the run's shell is (defaultPermission).
+    return permissionFrom(shellToolOf(tool) ?? key, server, this.overrides, this.approvals, where);
   }
 
   /** Why a pin refuses the call of `key` with `args` now (pinRefusal): the revision's own pins and the server's, read at
    *  each call as its permission is, so a pin set or changed reaches a live run at its next call. */
   private pinned(key: string, args: unknown, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
     return pinRefusal(key, args, this.serverSettings() ?? {}, this.overrides, ran);
+  }
+
+  /** Why bash's policy refuses the call `name` (held to `key`) with `args` now, or undefined: the revision's own setting
+   *  (an agent's tool_settings.bash.policy), so every shell tool under every harness's name for it is held to it. A policy
+   *  this server does not know refuses every shell call (fail closed), as a pin that does not read does. */
+  private policyRefusal(key: string, name: string, args: unknown): string | undefined {
+    if (key !== "bash") return undefined;
+    const policy = this.overrides.bash?.policy;
+    if (policy === undefined) return undefined;
+    // Its own name for a background tool (bash_background, under claude-agent's mcp__hands__ name too); bash for bash and
+    // a CLI's own shell (codex's shell, claude-agent's Bash).
+    const tool = shellToolOf(name) ?? "bash";
+    if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool} can't be called: this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
+    const reason = readOnlyReason(tool, args, [this.where.work, COMPUTER_ROOT]);
+    return reason === undefined ? undefined : readOnlyText(tool, reason, NOT_RUN);
   }
 
   private lastGood?: PermissionSettings;
