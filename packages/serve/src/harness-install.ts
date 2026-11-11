@@ -21,9 +21,8 @@
 // cut short) is never loaded, and the next install replaces it.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -65,19 +64,86 @@ export function installLine(dir: string, lock: string): string {
 }
 
 /** Where `specifier` (a package, or a file of one) resolves from `dir`'s node_modules, only when it is that package's own
- *  file there: undefined when the package is not in `dir`, or its file resolves outside it (a node_modules above `dir`,
- *  NODE_PATH, a global one). A package linked into `dir` counts by where its link points. */
+ *  file there: undefined when the package is not in `dir`, does not export it, or its file resolves outside it (a link to
+ *  a file elsewhere). A package linked into `dir` counts by where its link points. Its real path, as Node's resolver gives.
+ *
+ *  Read from the tree as it is now, never through Node's resolver: a long-lived process (a runner) keeps what that
+ *  resolver read for its whole life (its path cache, and the real path of each link it walked), so a package once linked
+ *  into the tree, then replaced at the same path by an install, would read as the link's old target until the process
+ *  restarts. The package's own package.json is read here, and real paths taken with no cache. */
 export function inTree(dir: string, specifier: string): string | undefined {
   const parts = specifier.split("/");
   const name = parts.slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
   const home = join(dir, "node_modules", name);
-  if (!existsSync(join(home, "package.json"))) return undefined;
   try {
-    const found = createRequire(join(dir, "package.json")).resolve(specifier);
-    return realpathSync(found).startsWith(realpathSync(home) + sep) ? found : undefined;
+    const manifest = JSON.parse(readFileSync(join(home, "package.json"), "utf8")) as { exports?: unknown; main?: unknown };
+    const subpath = `.${specifier.slice(name.length)}`;
+    const target = manifest.exports !== undefined ? exportsTarget(manifest.exports, subpath) : (subpath === "." ? (typeof manifest.main === "string" ? manifest.main : "index.js") : subpath);
+    if (target === undefined) return undefined;
+    const found = [target, `${target}.js`, join(target, "index.js")].map((path) => join(home, path)).find(statFile);
+    if (!found) return undefined;
+    const real = realpathSync(found);
+    return real.startsWith(realpathSync(home) + sep) ? real : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** Whether `path` is a file (a link to one counts). */
+const statFile = (path: string): boolean => {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** The conditions Node's require() matches a package's exports by; a package's own key order decides among them. */
+const REQUIRE_CONDITIONS: ReadonlySet<string> = new Set(["require", "node", "node-addons", "module-sync", "default"]);
+
+/** The file `exports` maps `subpath` (".", "./server/mcp.js") to, as Node's require() reads it: the subpath's own key,
+ *  else the pattern ("./*") whose part before its "*" is longest, its "*" given the rest; within it, the first condition
+ *  require() matches, in the package's own order (an array: its first target that is one). Undefined when the package
+ *  does not export it. */
+function exportsTarget(exportsField: unknown, subpath: string): string | undefined {
+  const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+  const map: Record<string, unknown> = isObject(exportsField) && Object.keys(exportsField).some((key) => key.startsWith(".")) ? exportsField : { ".": exportsField };
+  let target: unknown = Object.hasOwn(map, subpath) ? map[subpath] : undefined;
+  let star: string | undefined;
+  if (target === undefined) {
+    let best: { key: string; before: number } | undefined;
+    for (const key of Object.keys(map)) {
+      const at = key.indexOf("*");
+      if (at < 0 || key.indexOf("*", at + 1) >= 0) continue;
+      const [before, after] = [key.slice(0, at), key.slice(at + 1)];
+      if (subpath.length < key.length - 1 || !subpath.startsWith(before) || !subpath.endsWith(after)) continue;
+      if (!best || before.length > best.before || (before.length === best.before && key.length > best.key.length)) best = { key, before: before.length };
+    }
+    if (!best) return undefined;
+    const at = best.key.indexOf("*");
+    star = subpath.slice(at, subpath.length - (best.key.length - at - 1));
+    target = map[best.key];
+  }
+  const chosen = (function pick(value: unknown): string | null | undefined {
+    if (typeof value === "string" || value === null) return value;
+    if (Array.isArray(value)) {
+      for (const one of value) {
+        const got = pick(one);
+        if (typeof got === "string") return got;
+      }
+      return undefined;
+    }
+    if (isObject(value)) {
+      for (const [condition, inner] of Object.entries(value)) {
+        if (!REQUIRE_CONDITIONS.has(condition)) continue;
+        const got = pick(inner);
+        if (got !== undefined) return got;
+      }
+    }
+    return undefined;
+  })(target);
+  if (typeof chosen !== "string" || !chosen.startsWith("./")) return undefined;
+  return star === undefined ? chosen : chosen.replaceAll("*", star);
 }
 
 /** The file at `path` inside `dir`'s package `name`, when it is that package's own file (where a link points counts). */
