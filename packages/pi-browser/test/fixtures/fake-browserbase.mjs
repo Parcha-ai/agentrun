@@ -71,7 +71,5 @@ export function fakeBrowserbase(knobs = {}) {
     const bytes = Buffer.from(content);
     downloads.set(`dl_${dlSeq}`, { id: `dl_${dlSeq}`, sessionId, filename, mimeType: "application/octet-stream", size: bytes.length, checksum: "not-checked", createdAt: new Date(Date.UTC(2026, 9, 6, 12, 0, dlSeq)).toISOString(), bytes });
   };
-  sdk.fetchAPI = { create: async (input, options) => { record("fetch", { input, options }); if (input.url.includes("blocked")) return { id: "f", statusCode: 403, contentType: "text/html", encoding: "utf-8", headers: {}, content: "" }; return { id: "f", statusCode: 200, contentType: "text/markdown", encoding: "utf-8", headers: {}, content: "# Example\n\nHello from fetch." }; } };
-  sdk.search = { web: async (input, options) => { record("search", { input, options }); return { query: input.query, requestId: "r", results: [{ id: "1", url: "https://example.com/a", title: "A" }] }; } };
   return { sdk, calls, sessions, addDownload, only: (op) => calls.filter((c) => c.op === op) };
 }
