@@ -477,3 +477,15 @@ test("the checks: a note refused for what it supersedes reserves no rule, so a v
   const alone = checkProposal({ base, changes: [change(b)] });
   assert.deepEqual([alone.ok, alone.notes.map(({ file }) => file)], [true, [b.file]], "with a.md left out, b.md passes");
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62DYhZ): a re-filed skill alone, whose note main already holds the same: no new item is
+// left to merge, but the skill main holds is still retired, so the old skill never stays served beside the note.
+test("a re-filed skill alone whose note main already holds the same still retires the old skill", async (t) => {
+  const same = skillAsNote(SKILL.file, SKILL.text).text;
+  const answer = verdictOf([{ file: SKILL.file, decision: "note", why: "a rule for every report" }]);
+  const { end, notes, skills, learning } = await refileRun(t, { existing: same, skill: SKILL, notes: [], files: [SKILL], answer });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(notes["report-format.md"], same, "the note stands as it was");
+  assert.deepEqual(skills.map(({ name, status }) => [name, status]), [["report-format", "retired"]], "the old skill is retired, not left active");
+  assert.notEqual(learning?.state, undefined);
+});
