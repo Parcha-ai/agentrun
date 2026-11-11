@@ -232,6 +232,43 @@ test("--check: a running runner's heartbeat passes; a name that never ran fails 
   assert.match(never.err.join("\n"), /runner-never has no heartbeat/);
 });
 
+test("a SIGTERM during the runner's start (it already claims runs) is its own stop: it closes once the start is done and exits 0, never ended by the signal itself", { timeout: 60_000 }, async (t) => {
+  // One run queued, so the runner holds a claim when the stop comes.
+  const dir = await serverData(t, ["run-held"]);
+  // A child that runs runnerMain with a start hook: once the runner holds the run, before its stop handlers take over, it
+  // sends itself SIGTERM and waits for the signal to land. Ended by the signal, the child never says its code.
+  const script = [
+    `const { runnerMain } = await import(${JSON.stringify(new URL("../dist/runner/main.js", import.meta.url).href)});`,
+    `const held = async (process) => { for (let i = 0; i < 1000 && process.runner.held().length === 0; i++) await new Promise((r) => setTimeout(r, 10)); console.log("held " + process.runner.held().map((c) => c.runId).join(",")); };`,
+    `const code = await runnerMain(["--data", ${JSON.stringify(dir)}, "--name", "runner-early"], process.env, { started: async (started) => { await held(started); process.kill(process.pid, "SIGTERM"); await new Promise((r) => setTimeout(r, 500)); } });`,
+    `console.log("exit " + code);`,
+    `process.exit(code);`,
+  ].join("\n");
+  const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: scratch(t, "agentrun-runner-config-"), TMPDIR: process.env.TMPDIR ?? tmpdir(), AGENTRUN_SEAL_KEY: SEAL };
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const exiting = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  // A child a regression keeps alive is ended with the test, its pipes closed.
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exiting;
+  });
+  const out = [];
+  createInterface({ input: child.stdout }).on("line", (line) => out.push(line));
+  const exited = await exiting;
+  assert.deepEqual(exited, { code: 0, signal: null }, `closed by its own stop, not ended by the signal: ${JSON.stringify(out)}`);
+  assert.ok(out.includes("held run-held"), `it held the run when the stop came: ${JSON.stringify(out)}`);
+  assert.ok(out.includes("Runner runner-early stopping: a stop came during its start"), JSON.stringify(out));
+  assert.ok(!out.some((line) => READY.test(line)), "never said ready: it was stopping");
+  // Its close handed the run back: no runner holds it.
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  try {
+    const row = await store.runs.get("run-held");
+    assert.equal(row.runner, null, `the run is handed back: ${JSON.stringify({ state: row.state, runner: row.runner })}`);
+  } finally {
+    await store.close();
+  }
+});
+
 test("the runner says ready only once its stop signals are handled: a SIGTERM sent on reading the line always closes it", async () => {
   // In this process, on a signal no one else listens to (SIGWINCH: not SIGUSR2, which a test runner's --report-on-signal
   // answers with a report file): the ready callback must find the handler already installed. Emitted, never sent.

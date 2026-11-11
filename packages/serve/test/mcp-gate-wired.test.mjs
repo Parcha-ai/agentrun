@@ -39,6 +39,18 @@ async function echoGateway(t) {
   return { url: `http://127.0.0.1:${server.address().port}`, seen };
 }
 
+/** `send`'s answer, sent again while the store answers 409 home_busy (retryable: another write holds it, such as a CLI's
+ *  first-use install), after the retry_after_ms it names, as an API client does; at most 20 tries. The claude-agent
+ *  deny case went red on the first busy answer to its agent's create (any-4 on #2410 and #2383). */
+async function whenFree(send) {
+  for (let tries = 1; ; tries++) {
+    const answer = await send();
+    const error = answer.body?.error;
+    if (answer.status !== 409 || error?.code !== "home_busy" || error.retryable !== true || tries >= 20) return answer;
+    await new Promise((resolve) => setTimeout(resolve, error.retry_after_ms ?? 500));
+  }
+}
+
 /** A server for `harness` with the fake MCP server saved, an owner who can answer approvals, and the run's prompt. */
 async function setup(t, harness) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
@@ -88,8 +100,9 @@ async function setup(t, harness) {
   const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const run = async (id) => {
-    assert.equal((await server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra }))).status, 201);
-    const started = await server.api("POST", `/agents/${id}/runs`, { input: { content } });
+    const made = await whenFree(() => server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra })));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const started = await whenFree(() => server.api("POST", `/agents/${id}/runs`, { input: { content } }));
     assert.equal(started.status, 202, JSON.stringify(started.body));
     return started.body.run_id;
   };

@@ -25,7 +25,7 @@ import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
-import { FAUX_ENV, withoutFaux } from "../dist/model.js";
+import { withoutFaux } from "../dist/model.js";
 import { bootSealKey } from "../dist/seal-key.js";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
@@ -229,23 +229,6 @@ const sharing = new Map();
 /** Each data directory's trigger store (createServer's `store`), shared by every server serve() starts on it (a restart
  *  reads the triggers the first one made) and closed once the last of them has stopped. */
 const stores = new Map();
-async function storeFor(data) {
-  let held = stores.get(data);
-  if (!held) {
-    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-    held = { store: await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" }), dir, servers: 0 };
-    stores.set(data, held);
-  }
-  held.servers += 1;
-  return held;
-}
-async function storeDone(data, held) {
-  held.servers -= 1;
-  if (held.servers > 0 || stores.get(data) !== held) return;
-  stores.delete(data);
-  await held.store.close();
-  await rm(held.dir, { recursive: true, force: true });
-}
 
 /** `store` as a test server's triggers see it: a trigger's agent is put in the store first when it is not there, since
  *  until the cutover the server keeps its agents in its own files and the store holds only what the triggers write. Test

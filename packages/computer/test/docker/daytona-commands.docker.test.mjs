@@ -73,7 +73,7 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 			const { name, arch, sha } = sandbox(image);
 			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString(), user: "1000:1000" });
 			const installed = execFileSync("docker", ["exec", "-i", name, "sh"], { input: commands.install, encoding: "utf8" });
-			assert.equal(installed.trim(), `sha256 ${sha}`, "the install prints the installed binary's sha256");
+			assert.equal(installed.trim(), `installer 0 root\nsha256 ${sha}`, "the install prints who ran it, root, and the installed binary's sha256");
 			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun/computerd").trim(), "0:0 755");
 			assert.equal(docker("exec", name, "sh", "-c", `test -e ${STAGING} && echo left || echo gone`).trim(), "gone");
 
@@ -134,7 +134,7 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 			docker("exec", name, "sh", "-c", "mkdir -p /opt/agentrun && chown 1000:1000 /opt/agentrun && chmod 0755 /opt/agentrun");
 			const installed = shell(name, commands.install, { piped: true });
 			assert.equal(installed.status, 0, installed.stdout + installed.stderr);
-			assert.equal(installed.stdout.trim(), `sha256 ${sha}`);
+			assert.equal(installed.stdout.trim(), `installer 0 root\nsha256 ${sha}`);
 			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun", "/opt/agentrun/computerd").trim(), "0:0 755\n0:0 755");
 			const swapped = shell(name, "mv /opt/agentrun/computerd /tmp/computerd", { user: "1000:1000" });
 			assert.notEqual(swapped.status, 0, "the computer's user cannot move the daemon out of its directory");
@@ -152,7 +152,7 @@ describe("the Daytona provider's commands in a root container", { skip: LIVE ? f
 		it(`${image}: init and the bridge never run, as root, a daemon another user could have replaced`, () => {
 			const { name, sha } = sandbox(image);
 			const commands = daytonaCommands({ staging: STAGING, deadline: new Date(Date.now() + 300_000).toISOString() });
-			assert.equal(shell(name, commands.install, { piped: true }).stdout.trim(), `sha256 ${sha}`);
+			assert.equal(shell(name, commands.install, { piped: true }).stdout.trim(), `installer 0 root\nsha256 ${sha}`);
 			// The directory as an older install left it when the snapshot already held it, owned by the computer's user,
 			// who then swaps the binary for one that records who ran it.
 			docker("exec", name, "chown", "1000:1000", "/opt/agentrun");

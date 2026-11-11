@@ -1,18 +1,16 @@
 // The end-of-run turn's range in a run's record: which store entries and rows are the turn's (reflects), the rows
 // labelled as the host's (labelled), and whether a run is in its turn now (reflecting). The runner's learning end
 // (runner/learning-end.ts), the store's reads (store-reads/journal.ts) and the store-backed view (store-view.ts) read
-// a run's turn by it; the tool gate names who sent it (TurnOrigin).
+// a run's turn by it.
 import type { TimelineEvent } from "./timeline/index.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { said } from "./learning-words.js";
+import { askedForDryRun } from "./learn/reflect.js";
 import type { Status } from "./run-view.js";
 
 /** A run's end-of-run turn: the job's outcome, the newest store entry before the turn and, once the run ended, the newest
  *  after it (its rows are those between), its deadline, and how it ended. */
 export type Reflect = { outcome: Status; after: number; until?: number; deadline: string; ended?: true; timedOut?: true };
-/** Who sent the end-of-run turn: the host, never a person, and no request field sets it; the tool gate reads it and
- *  refuses that turn's writes under work/.learning/ (tool-gate.ts NOTE_ONLY_TEXT). */
-export type TurnOrigin = "reflect";
 /** The run asked its end-of-run turn and has not ended since. */
 export const reflecting = (run: { meta: { reflect?: Reflect } }) => run.meta.reflect !== undefined && run.meta.reflect.until === undefined;
 /** A row's store entry, from its id (`<conversation>:<entry>[:...]`); NaN for a row no entry made (a live one, usage). */
@@ -33,6 +31,7 @@ export function labelled(reflect: Reflect | undefined, rows: TimelineEvent[]): T
   return rows.map((row) => (!reflects(reflect, row.id) ? row : {
     ...row, agent_label: LEARNING_LABEL,
     ...(row.kind === "final_answer" ? { kind: "text_block" as const } : {}),
-    ...(row.kind === "user_message" ? { summary: said.asked, text: said.asked } : {}),
+    // The turn asked again for a draft whose dry run failed says so; every other message of the turn is its ask.
+    ...(row.kind === "user_message" ? (askedForDryRun(row.text) ? { summary: said.askedDryRun, text: said.askedDryRun } : { summary: said.asked, text: said.asked }) : {}),
   }));
 }
