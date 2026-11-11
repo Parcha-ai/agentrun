@@ -13,7 +13,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { seal, unseal } from "@parcha/pi-durable-agent";
+import { seal, unseal } from "./sealing.js";
 import { ApiError, invalid } from "./errors.js";
 import { writeDurableSync } from "./files.js";
 import { mintSecret, signatureOf } from "./standard-webhooks.js";

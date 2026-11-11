@@ -11,7 +11,7 @@
 // webhook's signing secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
-import { unseal } from "@parcha/pi-durable-agent";
+import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
 import type { SealedSecretRow, Store } from "../store/index.js";
 import type { TriggerAdapter } from "../trigger-adapter.js";

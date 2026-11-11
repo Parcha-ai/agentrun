@@ -27,7 +27,7 @@ export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRu
 export { type LedgerEntry, type PhoneLedger, type PhoneLedgerEntry, phoneLedger, type ProviderLedger, storeLedger } from "./computer-ledger.js";
 export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
-export { type RunBrowser, type RunComputer, type RunHold, runTools, type RunTools, withKindTools } from "./run-tools.js";
+export { type RunComputer, type RunHold, runTools, type RunTools, withKindTools } from "./run-tools.js";
 export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type Port,

@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { TOOL_COST } from "@parcha/pi-durable-agent/timeline";
+import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { TOOL_COST } from "../dist/timeline/index.js";
 import { BROWSER_CHARGED, BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { paidCall, paidHolds, takePaidRefusal, useSpend } from "../dist/cap.js";
@@ -337,7 +338,7 @@ test("a person's time the cap refuses pauses the run only when it is the agent's
 });
 
 test("prices by provider: Browserbase, Kernel and local Chrome, each overridden by its own variable; one unknown or unreadable has none", async (t) => {
-  assert.deepEqual(BROWSER_PRICES, { browserbase: { usdPerHour: 0.12, minimumS: 60 }, kernel: { usdPerHour: 0.06, minimumS: 0 }, cdp: { usdPerHour: 0, minimumS: 0 } });
+  assert.deepEqual(BROWSER_PRICES, { browserbase: { usdPerHour: 0.12, minimumS: 60 }, kernel: { usdPerHour: 0.06, minimumS: 0 }, cdp: { usdPerHour: 0, minimumS: 0 }, local: { usdPerHour: 0, minimumS: 0 } });
   assert.deepEqual(browserPrice("kernel", {}), { usdPerHour: 0.06, minimumS: 0 });
   assert.deepEqual(browserPrice("kernel", { AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL: "0.48" }), { usdPerHour: 0.48, minimumS: 0 });
   assert.deepEqual(browserPrice("browserbase", { AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE: " 0.1 " }), { usdPerHour: 0.1, minimumS: 60 }, "a contract price keeps the minimum");
@@ -802,7 +803,7 @@ test("through the API: a browser call counts once among the run's paid tool call
 });
 
 test("a run that mixes browser and monid charges, as serve books them, reads from its rows as booked: $0.0448 in all, $0.0018 browser time, $0.003 monid's, each charge once", async () => {
-  const [{ timelineOf, TOOL_COST }, { costOf, knownToolCostOf, toolCostOf }] = await Promise.all([import("@parcha/pi-durable-agent/timeline"), import("../dist/run-view.js")]);
+  const [{ timelineOf, TOOL_COST }, { costOf, knownToolCostOf, toolCostOf }] = await Promise.all([import("../dist/timeline/index.js"), import("../dist/run-view.js")]);
   let id = 1;
   const at = (s) => Date.UTC(2026, 10, 5, 12, 0, s);
   // Each model request costs $0.01; four of them.
