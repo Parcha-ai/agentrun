@@ -35,6 +35,9 @@
 //   runs one command in the foreground); bash_output, bash_list and bash_signal, which reach only processes this run
 //   started, pass. A CLI harness's own shell call (codex's `shell`, an argv) is read as the command it runs.
 //
+// - The shell's environment: a shell under a policy runs git with its config locked down (policyEnv, below): no
+//   system or global config, and command-line config that turns off what a repository's config could run.
+//
 // What it does not hold: the policy reads bash alone. An agent that may also write or edit can change what a read
 // program obeys (a repository's .git/config names programs git runs), so a read-only agent's tools are read and bash.
 // The never-open list refuses a command that names such a file; it is no fence around the folder's contents: a recursive
@@ -45,6 +48,67 @@ import { posix } from "node:path";
 /** The policies an agent may set on bash (tool_settings.bash.policy). */
 export const BASH_POLICIES = ["read-only"] as const;
 export type BashPolicy = (typeof BASH_POLICIES)[number];
+
+/** An agent's bash policy as its own tool settings write it (tool_settings.bash.policy), or undefined for none: any
+ *  value, a policy this server does not know too (the gate refuses its every call; policyEnv holds its shell all the same). */
+export function bashPolicyOf(toolSettings: unknown): string | undefined {
+  const bash = typeof toolSettings === "object" && toolSettings !== null ? (toolSettings as Record<string, unknown>).bash : undefined;
+  const policy = typeof bash === "object" && bash !== null ? (bash as Record<string, unknown>).policy : undefined;
+  return policy === undefined ? undefined : String(policy);
+}
+
+// git's config under a policy. The policy refuses `git -c`, `--config-env`, `--ext-diff`, `--textconv` and `--paginate`,
+// but git also reads config from files, and config can name a program git runs on a plain read (core.fsmonitor on
+// status and diff, core.pager, a hook on an index write, a diff or filter driver that an attribute attaches to a path, a
+// signature program for log's %G?, a transport for a partial clone's lazy fetch). A checkout of someone else's code can
+// hold such config: a bare repository planted in the tree, found when a command runs from inside it. So a shell under a
+// policy runs git with:
+// - no system or global config (the image's and HOME's are no business of a read);
+// - command-line config (GIT_CONFIG_COUNT, which outranks every file) turning those programs off: no fsmonitor, hooks
+//   from /dev/null, cat as the pager, attributes from an empty tree and no attributes file (so no in-tree .gitattributes
+//   attaches a textconv, external diff or filter driver), a bare repository only when named (safe.bareRepository,
+//   which git reads from command-line config, never a repository's own), no transport at all, and no signature program;
+// - GIT_PAGER and PAGER cat, no prompt, no optional lock (status leaves the index unwritten) and no lazy fetch.
+// What config cannot turn off: diff.external (an empty value makes git diff fail; git has no unset on the command
+// line). It needs a repository's own config, which the policy never lets a command write and safe.bareRepository keeps
+// a planted repository from supplying.
+
+/** The empty tree's id, as attr.tree's value: attributes read from no tree (an id that does not resolve, a sha256
+ *  repository's case, reads as the empty tree too). */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+/** The command-line config a shell under a policy gives git (GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n). */
+export const POLICY_GIT_CONFIG: readonly (readonly [string, string])[] = [
+  ["core.fsmonitor", "false"],
+  ["core.hooksPath", "/dev/null"],
+  ["core.pager", "cat"],
+  ["core.attributesFile", "/dev/null"],
+  ["attr.tree", EMPTY_TREE],
+  ["safe.bareRepository", "explicit"],
+  ["protocol.allow", "never"],
+  ["log.showSignature", "false"],
+  ["gpg.program", "false"],
+  ["gpg.openpgp.program", "false"],
+  ["gpg.x509.program", "false"],
+  ["gpg.ssh.program", "false"],
+];
+
+/** What a shell under bash policy `policy` adds to the run's fixed environment (hands.ts shellEnv): git's config locked
+ *  down (POLICY_GIT_CONFIG and the variables above); nothing without a policy. */
+export function policyEnv(policy: string | undefined): Readonly<Record<string, string>> {
+  if (policy === undefined) return {};
+  return {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_PAGER: "cat",
+    PAGER: "cat",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_CONFIG_COUNT: String(POLICY_GIT_CONFIG.length),
+    ...Object.fromEntries(POLICY_GIT_CONFIG.flatMap(([key, value], n) => [[`GIT_CONFIG_KEY_${n}`, key], [`GIT_CONFIG_VALUE_${n}`, value]])),
+  };
+}
 
 /** The programs a read-only command may run. */
 export const PROGRAMS: ReadonlySet<string> = new Set(["git", "grep", "egrep", "fgrep", "rg", "sed", "ls", "cat", "head", "tail", "wc", "nl", "sort", "uniq", "cut", "tr", "find", "diff", "basename", "dirname", "true", "echo"]);
