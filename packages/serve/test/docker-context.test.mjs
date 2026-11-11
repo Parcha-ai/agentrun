@@ -38,12 +38,21 @@ test("the image's build context holds the workspace and the console's sources, a
   for (const path of dropped) assert.equal(existsSync(join(out, path)), false, `${path} is not in the context`);
 });
 
-test("every stage builds on one digest-pinned node:24 trixie base, and the runtime has git 2.40 or newer", async () => {
+test("every stage builds on one digest-pinned debian trixie base, its Node the verified 24.22.3 alone, and the runtime has git 2.40 or newer", async () => {
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
-  const bases = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map(([, image]) => image);
-  assert.equal(bases.length, 3, "a build stage, the adb stage and a runtime stage");
-  assert.match(bases[0], /^node:24\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "pinned by digest");
-  assert.deepEqual(bases.slice(1), [bases[0], bases[0]], "one base for every stage");
+  const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map(([, image, name]) => ({ image, name }));
+  assert.deepEqual(stages.map((stage) => stage.name), ["node", "build", "adb", undefined], "a node stage, a build stage, the adb stage and a runtime stage");
+  assert.match(stages[0].image, /^debian:trixie-slim@sha256:[0-9a-f]{64}$/, "plain Debian, pinned by digest: no other Node in any layer");
+  for (const stage of stages) assert.equal(stage.image, stages[0].image, "one base for every stage");
+  // The node stage installs the release through install-node.sh, which verifies it against the pinned signer.
+  const [, node] = dockerfile.split(/^FROM /m);
+  assert.match(node, /^ARG NODE_VERSION=24\.22\.3$/m, "Node 24.22.3, the November 2026 security release");
+  assert.match(node, /^ARG NODE_SIGNER=[0-9A-F]{40}$/m, "the signer pinned by its full fingerprint");
+  assert.match(node, /^ARG NODE_RELEASE_KEYS=[0-9a-f]{40}$/m, "nodejs/release-keys pinned by commit");
+  assert.match(node, /sh \/usr\/local\/sbin\/install-node\.sh "\$NODE_VERSION" "\$NODE_SIGNER" "\$NODE_RELEASE_KEYS" \/opt\/node/, "installed by the verifying script");
+  assert.equal(dockerfile.match(/^COPY --from=node \/opt\/node\/ \/usr\/local\/$/gm)?.length, 2, "the build and runtime stages take that Node, and only it");
+  const runtimeNode = /^RUN \[ "\$\(node --version\)" = v24\.22\.3 \][^\n]*\\\n[^\n]*find \/ -xdev -type f -name node ! -path \/usr\/local\/bin\/node/m;
+  assert.match(dockerfile.slice(dockerfile.lastIndexOf("\nFROM ")), runtimeNode, "the runtime fails on any other node binary");
   // An agent's learning folder needs git 2.32 (the learning script's floor, learn/learning.sh); the image holds itself to 2.40 by its own choice, and
   // trixie's is 2.47.
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));

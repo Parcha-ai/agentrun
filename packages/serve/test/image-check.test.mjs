@@ -77,7 +77,8 @@ test("the image check accepts a tree given as a path relative to its working dir
 test("the Dockerfile removes the CLIs after the build and runs the check on the final image's tree", async () => {
   const dockerfile = await readFile(DOCKERFILE, "utf8");
   const stages = dockerfile.split(/^FROM /m).slice(1);
-  const [build, final] = [stages[0], stages.at(-1)];
+  const build = stages.find((stage) => /^\S+ AS build\n/.test(stage)) ?? "";
+  const final = stages.at(-1) ?? "";
   for (const name of ["@anthropic-ai/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk-*", "@anthropic-ai/claude-code", ".bin/claude", "@openai/codex", "@openai/codex-*", ".bin/codex"])
     assert.ok(build.includes(` node_modules/${name} `) || build.includes(` node_modules/${name} \\`) || build.includes(` node_modules/${name}\n`), `the build stage removes node_modules/${name}`);
   const copy = final.indexOf("COPY --from=build");

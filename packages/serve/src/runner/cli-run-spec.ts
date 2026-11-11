@@ -19,8 +19,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import { noNewPrivsPrefix } from "@parcha/pi-durable-disk/internals";
 import type { AdapterNeeds } from "../adapters.js";
-import { thinkingFor } from "../adapters.js";
+import { confineOf, thinkingFor } from "../adapters.js";
 import { installDirOf, installingWords, installSettled } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -302,7 +303,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     const settled = await (deps.installSettled ?? installSettled)(installs, installDirOf(deps.data, name), await entry.pins(), { ...(waitOn ? { signal: waitOn } : {}), onWait: () => run.phase?.(installingWords(installs.label)) });
     if (typeof settled === "object") throw new HarnessUnavailable(settled.failed, "install");
   }
-  const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(native.length ? { skills: native } : {}) });
+  // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
+  // (pi-durable-disk's noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
+  // or a command it runs reaches grants nothing; none on macOS. Where setpriv is not usable the run is refused, in pi's words.
+  const confine = confineOf(noNewPrivsPrefix());
+  const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
