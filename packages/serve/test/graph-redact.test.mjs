@@ -18,6 +18,21 @@ const noKey = (text, where) => {
   for (const piece of pieces(CUT_KEY)) assert.ok(!text.includes(piece), `${where} holds ${piece}`);
 };
 
+/** Once no redaction pass has run for a whole second (four of the server's run-end reads, RUN_ENDS_POLL_MS 250): what the
+ *  server does on its own after a run's end (telling it once) is done, so a read counted after this counts its own passes
+ *  alone, whatever the box's load. A server that keeps redacting with no read (the run-end read building every newest
+ *  run's view on each turn) fails here. */
+async function quiet() {
+  const deadline = Date.now() + 15_000;
+  for (let last = refusal.answerPasses.count; ; ) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const now = refusal.answerPasses.count;
+    if (now === last) return;
+    assert.ok(Date.now() < deadline, `the server kept redacting with no read: ${now - last} passes in the last second`);
+    last = now;
+  }
+}
+
 /** A workflow of two llm calls: one answers with the held key, the next fails with its provider echoing it. */
 const flow = (second) => ({
   v: 2, name: "graph-keyed",
@@ -64,6 +79,7 @@ test("a workflow run's graph shows its llm call's output and a failed call's err
 test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
   await api("GET", `/runs/${runId}/graph`);
+  await quiet();
   const read = refusal.answerPasses.count;
   const second = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.equal(refusal.answerPasses.count, read, "the second read redacted nothing again");
@@ -130,6 +146,7 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
   assert.equal(graph.decisions[0].state.text, "Is [redacted] a question?");
   noKey(JSON.stringify(graph), "the graph");
   // The label and the decision's state are read once per held key set, as every part is.
+  await quiet();
   const read = refusal.answerPasses.count;
   assert.deepEqual((await api("GET", `/runs/${runId}/graph`)).body.nodes, graph.nodes);
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no label or state again");
@@ -169,6 +186,7 @@ test("a call's error and a decision's state, each long enough to be cut, with th
   assert.ok(graph.effects.some((e) => e.status === "failed" && e.error), JSON.stringify(graph.effects.map((e) => [e.status, e.error?.length])));
   noKey(JSON.stringify(graph), "the graph");
   // The error and the stored-cut state are read once per held key set, as every part is.
+  await quiet();
   const read = refusal.answerPasses.count;
   await api("GET", `/runs/${started.body.run_id}/graph`);
   assert.equal(refusal.answerPasses.count, read, "a second read redacted no error or state again");

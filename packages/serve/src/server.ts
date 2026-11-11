@@ -3413,6 +3413,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!row || !summary) return null;
     return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
   };
+  /** The run-end read's look at a run: its end from its row alone when it has none, or one told already; else its
+   *  endNotice. The run's view redacts the run's words (its title, its output) on every build, and the newest runs are
+   *  read every RUN_ENDS_POLL_MS, so only an end still to tell builds one. */
+  const endToTell = async (id: string): Promise<ReturnType<typeof endOf> | Awaited<ReturnType<typeof endNotice>>> => {
+    const row = await store.runs.get(id);
+    if (!row) return null;
+    const end = endOf(row);
+    return !end.endedAt || toldEnds.get(id) === end.endedAt ? end : endNotice(id);
+  };
   const toldEnds = new Map<string, string>();
   /** Each waiting run's row as it was last read for its wait (its state, epoch and runner): a row that has not moved since
    *  is not read again, and a new wait comes with a new claim, so a new epoch. */
@@ -3462,7 +3471,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const newest = await store.runs.list({ limit: RUN_ENDS_NEWEST });
     for (const id of new Set([...openRuns, ...newest.map((row) => row.id)])) {
       if (open.has(id) || closing) continue;
-      const now = await endNotice(id).catch(() => undefined);
+      const now = await endToTell(id).catch(() => undefined);
       // Unread (a busy store): read again at the next turn, never lost.
       if (now === undefined) {
         open.add(id);
@@ -3470,7 +3479,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       readWaits.delete(id);
       heldReadAt.delete(id);
-      if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
+      if (!now?.endedAt || !("notice" in now) || toldEnds.get(id) === now.endedAt) continue;
       if ((await webhooks.emit("run.ended", now.notice, now.endedAt)) !== "unsaved") toldEnds.set(id, now.endedAt);
     }
     openRuns = open;
