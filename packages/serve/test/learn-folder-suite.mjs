@@ -321,7 +321,7 @@ export function folderSuite(backend, make) {
     assert.equal(writes, 1);
   });
 
-  test(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is refused; a person's stale ifMatch is a conflict; a failing exec is unavailable`, async () => {
+  test(`${backend}: learningCommit (COMMIT-API v1): a merge with a held note and a supersede is one exec and idempotent; a stale graded oid is a conflict; a name main holds is left out alone; a person's stale ifMatch is a conflict; a failing exec is unavailable`, async () => {
     const { ws } = await make();
     // A folder with no main: made in the same call.
     const first = await execsOf(() => learningCommit(ws, { kind: "person", action: "created", file: "check-units.md", text: UNITS, ifMatch: null }));
@@ -343,16 +343,19 @@ export function folderSuite(backend, make) {
     assert.equal(text(await ws.read("MEMORY.md")), indexOf({ "units-v2.md": V2 }));
     assert.equal((await readRunDiff(ws, "run-c1")).merge, merged.result.main);
     const again = await execsOf(() => learningCommit(ws, merge));
-    assert.deepEqual([again.result, again.ops], [{ ok: true, main: snap.main, commit: snap.main, files: merged.result.files }, []], "merged once: nothing written again");
+    // The run's merge on main already (a retry after a crash): its commit, said `already`, and nothing written again.
+    assert.deepEqual([again.result, again.ops], [{ ok: true, main: snap.main, commit: snap.main, files: merged.result.files, already: true }, []], "merged once: nothing written again");
     // A graded oid that is another blob on main now, on a note the merge would mark: a conflict, named by the note that
     // marks it, nothing written. One the merge leaves alone stands.
     const V3 = note("Units v3", "Convert, always", "Best.\n", "supersedes: [units-v2.md]\n");
     const stale = await learningCommit(ws, { kind: "merge", runId: "run-c2", reason: "x", files: [{ path: "units-v3.md", text: V3 }], graded: { "units-v2.md": unitsOid } });
     assert.deepEqual([stale.ok, stale.reason, stale.problems.map((p) => [p.path, p.detail])], [false, "conflict", [["units-v3.md", "units-v2.md changed after the grade read it"]]]);
     assert.equal((await readSnapshot(ws)).main, snap.main, "nothing written");
-    // A new note named like a note on main: refused.
+    // A new note named like a note on main: settled alone, never a refusal of the merge (learn/SPEC.md, the merge): the
+    // same rule main's note says is no change, left out (`same`), and nothing is written.
     const taken = await learningCommit(ws, { kind: "merge", runId: "run-c3", reason: "x", files: [{ path: "units-v2.md", text: V2 }], graded: {} });
-    assert.deepEqual([taken.ok, taken.reason, taken.problems?.map((p) => p.rule)], [false, "refused", ["exists"]], JSON.stringify(taken));
+    assert.deepEqual([taken.ok, taken.files, taken.left], [true, [], [{ path: "units-v2.md", reason: "same" }]], JSON.stringify(taken));
+    assert.equal((await readSnapshot(ws)).main, snap.main, "nothing written");
     // A person's write by an ETag main moved past: a conflict. By the right one: lands.
     const edited = note("Units v2", "Convert to the answer's unit, always", "Better.\n", "supersedes: [check-units.md]\n");
     const v2oid = snap.notes.find((n) => n.file === "units-v2.md").oid;
@@ -396,7 +399,8 @@ export function folderSuite(backend, make) {
     const main = await readMain(ws, { notes: [{ file: "units-v2.md", text: V2 }] });
     const unitsOid = (await readSnapshot(ws)).notes[0].oid;
     assert.deepEqual(main, { active: [{ file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing" }], superseded: [{ file: "check-units.md", text: UNITS }], graded: { "check-units.md": unitsOid } });
-    assert.deepEqual(await readMain(ws, { notes: [{ file: "check-units.md", text: UNITS }] }), { problems: [{ rule: "exists", path: "check-units.md", detail: "the folder has a note by this name" }] });
+    // A new note named like one main holds is left out of the grade and settled alone (`taken`), never a refusal.
+    assert.deepEqual(await readMain(ws, { notes: [{ file: "check-units.md", text: UNITS }] }), { active: [{ file: "check-units.md", name: "Check units", description: "Convert every amount to one unit before comparing" }], superseded: [], graded: {}, taken: [{ path: "check-units.md", reason: "same" }] });
     const HELD = note("Held v3", "A risky rule", "Hold it.\n", "supersedes: [check-units.md]\nrisky: true\n");
     const one = await learningCommit(ws, { kind: "merge", runId: "run-h", reason: "Held.", files: [{ path: "held-v3.md", text: HELD }], held: ["held-v3.md"], graded: {} });
     assert.equal(one.ok, true, JSON.stringify(one));
