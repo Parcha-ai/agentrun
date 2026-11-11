@@ -442,9 +442,10 @@ const RETIRED = {
   properties: {
     at: { type: "string", format: "date-time", description: "When: the commit that retired it; for `host`, the newest commit on its file." },
     by: { enum: ["person", "run", "host"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it; `host`: no one retired it, a skill's SKILL.md or a draft's README.md whose front matter can't be read (it reads no way, or its status is none the host writes) reads retired, so no run is given it (`why`). Fix the file, then restore it." },
+    from: { enum: ["active", "pending"], description: "With `by: person` or `run`: the status POST .../restore gives it back, as its retire recorded it (`retired_from` in its front matter): `active`, or `pending`, waiting for its owner's OK again, so a retire and a restore never skip that OK. One whose retire recorded none reads `pending`. Absent with `by: host`." },
     why: { const: "unreadable", description: "With `by: host` alone: why it reads retired." },
   },
-  description: "When and by whom it was retired; absent unless `status` is `retired`. POST .../restore makes it active again.",
+  description: "When and by whom it was retired, and what its restore gives back; absent unless `status` is `retired`. POST .../restore puts it back in the status it had before its retire (`from`).",
 };
 /** The newest change to a note, skill or draft, from the newest commit on its file. */
 const LAST_CHANGE = closed({
@@ -944,8 +945,8 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/agents/{agent_id}/learning/files/{file}/restore": {
     post: {
-      operationId: "restoreLearningFile", tags: ["agents"], summary: "Restore a retired note, skill or workflow draft: active again for the next run",
-      description: "A retired note is made active, a skill (its SKILL.md) or a workflow draft (its README.md) is given to every later run again, in one commit on main (`learning: restored by a person: <file>`, Changed-By: user) with MEMORY.md rebuilt. The text is checked again as a new note or skill is (a secret's shape, the host's own values, a hidden character, its format), so a value a retire took out of every run never comes back: such a note stays retired, and the answer names the rule, never the value. Only a retired one is restored (else 400). The owner's password session alone, as an approval.",
+      operationId: "restoreLearningFile", tags: ["agents"], summary: "Restore a retired note, skill or workflow draft to the status it had before its retire",
+      description: "A retired note, skill (its SKILL.md) or workflow draft (its README.md) goes back to the status its retire recorded (`retired.from`): active, given to every later run again, or waiting for its owner's OK again (a retire that recorded none restores it waiting): a restore is never an approval. In one commit on main (`learning: restored by a person: <file>`, Changed-By: user) with MEMORY.md rebuilt. The text is checked again as a new note or skill is (a secret's shape, the host's own values, a hidden character, its format), so a value a retire took out of every run never comes back: such a note stays retired, and the answer names the rule, never the value. Only a retired one is restored (else 400). The owner's password session alone, as an approval.",
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS }, ...MARK,

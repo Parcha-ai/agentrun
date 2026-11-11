@@ -48,9 +48,10 @@ export type LearnedFileRef = { file: string; name: string; pending?: true };
 export type LearnedItem = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
 /** When a retired one was retired, and by whom (absent on one not retired): its retire commit, kept across later
  *  changes. */
-/** Who retired a retired item, and when; or, for a skill or draft whose file can't be read (its front matter reads no
- *  way), that no one did: the host could not read it (`by: "host"`, `why: "unreadable"`). */
-export type Retired = { at: string; by: "person" | "run" } | { at: string; by: "host"; why: "unreadable" };
+/** When and by whom an item was retired, and `from`, the status its restore gives back: `active`, or `pending` (it goes
+ *  back to waiting for your OK); or, for a skill or draft whose file can't be read (its front matter reads no way), that
+ *  no one did: the host could not read it (`by: "host"`, `why: "unreadable"`, no `from`). */
+export type Retired = { at: string; by: "person" | "run" | "host"; from?: "active" | "pending"; why?: "unreadable" };
 /** What a skill's or a draft's card says when it reads retired only because its file can't be read: never who retired
  *  it, since no one did, and what the owner does about it. */
 export const UNREADABLE_RETIRED = "Not read: its front matter can't be read; fix the file to use it";
@@ -86,17 +87,15 @@ export type NoteText = { note: string; etag: string | null };
 export const NO_VERSION = "Can't tell which version this is: reload.";
 /** Said when the note changed since a card showed it. */
 export const CHANGED = "It changed since you opened it.";
-/** What a restore says before it is made: what it changes. */
-export const RESTORES = "It becomes active again for the next run.";
+/** What a restore says before it is made: what it changes, by the status it goes back to. Only an item that was active
+ *  before its retire becomes active; one that waited for your OK waits again. */
+export const restores = (from: Retired["from"] | undefined): string => (from === "active" ? "It becomes active again for the next run." : "It goes back to waiting for your OK: no run uses it until you approve it.");
 /** A restore made by a token, not the owner's password sign-in: the server refuses it (403). */
 export const RESTORE_SIGN_IN = "Restoring takes your password sign-in in the console.";
 
 /** Why the server's checks refused a note a person wrote: each problem, printable. */
 export type NoteProblem = { rule: string; path?: string; detail: string };
 
-/** A note's file name, as the server takes one: at the folder's top, a letter or digit first, then letters, digits, dots,
- *  dashes and underscores, ending .md; never MEMORY.md, which the server builds. */
-export const NOTE_FILE = /^(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md$/;
 export const NOTE_TYPES: readonly NoteType[] = ["feedback", "project", "reference", "user"];
 /** Each type in plain words, as a card and the editor's picker show it (the API's value is in its tooltip). */
 export const TYPE_LABEL: Record<NoteType, string> = { user: "About you", feedback: "How to work", project: "About the work", reference: "Where to look" };

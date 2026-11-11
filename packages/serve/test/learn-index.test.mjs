@@ -17,9 +17,9 @@ const VALUES = {
   grade: ["GRADE_CAPS", "GRADE_RUBRIC", "gradedFiles", "gradedItems", "gradePrompt", "parseVerdict", "shortMessage", "UNREADABLE_REASON"],
   invisible: ["hiddenCharacter"],
   reflect: ["ANSWER_MAX", "NOTE_BLOCK", "parseReflection", "reflectAgain", "reflectDryRun", "reflectPrompt", "SKILL_BLOCK", "WORKFLOW_BLOCK"],
-  notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "retire", "supersede"],
+  notes: ["activeNotes", "approve", "buildIndex", "INDEX_BYTES", "INDEX_FILE", "INDEX_LINES", "indexLine", "loadedIndex", "mergedNote", "NOTE_FILE", "NOTE_ORIGINS", "NOTE_STATUSES", "NOTE_TYPES", "parseNoteFile", "restore", "retire", "supersede"],
   secrets: ["MIN_SECRET", "PRINT_MAX", "redactSecrets", "secretShapes", "valueMatcher"],
-  skills: ["draftDryRun", "draftFiles", "draftProblems", "DRY_RUN_FAILED", "frontKeys", "frontMatter", "held", "isHeld", "LEARNED_KEYS", "LEARNED_MAX_TURNS", "learnedFront", "learnedName", "learnedPlace", "learnedStatus", "NO_TOOL_LIST", "readmeOf", "released", "retiredLearned", "servedSkill", "servedSkills", "setsStatus", "SKILL_NAME", "skillProblems", "SKILLS_DIR", "statusOnOneLine", "UNCLEAR_FRONT", "unclearFront", "WORKFLOW_NAME", "WORKFLOWS_DIR"],
+  skills: ["draftDryRun", "draftFiles", "draftProblems", "DRY_RUN_FAILED", "frontKeys", "frontMatter", "held", "isHeld", "LEARNED_KEYS", "LEARNED_MAX_TURNS", "learnedFront", "learnedName", "learnedPlace", "learnedStatus", "NO_TOOL_LIST", "readmeOf", "released", "restorable", "restoredLearned", "retiredFrom", "retiredLearned", "servedSkill", "servedSkills", "setsStatus", "SKILL_NAME", "skillProblems", "SKILLS_DIR", "statusOnOneLine", "UNCLEAR_FRONT", "unclearFront", "WORKFLOW_NAME", "WORKFLOWS_DIR"],
 };
 const MODULES = { check, grade, invisible, reflect, notes, secrets, skills };
 const TYPES = ["Base", "Change", "CheckInput", "DraftDryRun", "DraftProblem", "DraftReader", "GradeInput", "IndexEntry", "LearnedBlock", "LearnedNote", "LearnedPlace", "NoteOrigin", "NoteStatus", "NoteText", "NoteType", "Problem", "ProposalCheck", "ProposedNote", "Reflection", "Rule", "Verdict", "VerdictItem"];
