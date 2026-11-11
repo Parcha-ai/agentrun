@@ -208,7 +208,7 @@ export default function reply(context, faux) {
 // SKIP (follow-up #2078): a message to a run whose files are still copied is not held as before on the runner
 test.skip("a run whose files are still being copied does not start for a message meanwhile: its process waits for the copy", async (t) => {
   // A request waits half a second for a run's door, so the message meanwhile is answered while the copy is still held.
-  const server = await serve(t, { readyTimeoutMs: 500 });
+  const server = await serve(t);
   const { api } = server;
   const notes = await upload(server, "notes.txt", Buffer.from("copied before the start\n"));
   assert.equal((await api("POST", "/agents", agent("held"))).status, 201);

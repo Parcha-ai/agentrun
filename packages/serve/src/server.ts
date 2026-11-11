@@ -41,7 +41,8 @@ import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, read
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./box-settings.js";
+import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
@@ -765,7 +766,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
-  boxLimitsOf(process.env);
+  // A Docker computer's size an operator sets (workspace/computer-deps.ts): a value the Docker provider refuses stops the
+  // start, in its words.
+  dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
   const boxAllow = boxAllowOf(process.env);
@@ -1027,10 +1030,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process sees it.
   const vmSecrets = () => [...serverSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
   const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
-  const vmLimits = (() => {
-    const limits = boxLimitsOf(env);
-    return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };
-  })();
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
   // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
   const onNoBoxList = (code: string, message: string) => {
@@ -1307,6 +1306,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+    completedOutput: async (runId: string) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (view?.status !== "completed") return undefined;
+      return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null };
+    },
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);

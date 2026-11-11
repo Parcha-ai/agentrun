@@ -363,7 +363,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held });
       webTools = await webHostTools(host, granted, ctx);
     }
-    if (learns) learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx });
+    if (learns) {
+      // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
+      // own MCP as the loop wraps it.
+      gate.learn(workflows);
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, ...(mcp ? { mcp } : {}) });
+    }
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
