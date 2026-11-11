@@ -65,12 +65,12 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
-| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs at once that capabilities report (`limits.max_concurrent_runs`), beside the memory each run's harness reserves ([capacity](#capacity-and-health)). It does not stop a start: a run waits `queued` until a runner has a free loop. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else as many pi runs as fit | The most runs the runner beside the server holds at once ([capacity](#capacity-and-health)); a run past that waits `queued` until one ends. Capabilities report the same number (`limits.max_concurrent_runs`), capped by each harness's memory. |
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
 | `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
-| `--drain-timeout D` | `30s` (the image: `6s`) | Checked as a duration (`8s`, `500ms`, `1m`) and kept, but a runner does not wait on it yet: when the server stops, the runner beside it stops every run where it can resume, and the next claim carries on from the run's journal (a model request the stop cut is sent again). |
+| `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped where it can resume, and the next claim carries on from its journal (that turn's model request sent again). The stop says how long it waits and for how many runs. A runner of its own (`agentrun-serve runner`) takes `--drain-timeout` too, default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
@@ -256,11 +256,14 @@ runner you start yourself).
 The measure is a short task (write a file, read it back, answer) on a real server in a container of its own; the table
 in `src/harness.ts` says how it was taken. So a 512 MB instance holds 3 pi runs, 2 codex runs or 1 claude-agent run at
 once (or 1 codex and 1 pi), 1 GB holds 7, 4 or 3, and 8 GB 63, 42 or 28; an opencode run, OpenCode's own process with
-it, needs a 1 GB instance for one and 2 GB for two. A harness whose one run needs more than all the memory for runs
-(claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable: capabilities say why in its `harnesses`
-entry. pi always has one place, however small the host.
+it, needs a 1 GB instance for one and 2 GB for two. The runner beside the server holds at most `--max-runs` runs at
+once (below); a run past that waits `queued` until one ends, and is never refused for a place. A harness whose one run
+needs more than all the memory for runs (claude-agent on a host under 416 MB, opencode under 832 MB) is unavailable:
+capabilities say why in its `harnesses` entry. pi always has one place, however small the host.
 
-`--max-runs N` or `AGENTRUN_MAX_RUNS` sets the count capabilities report (by default, as many as pi runs fit): pi's in
+`--max-runs N` or `AGENTRUN_MAX_RUNS` sets that count (by default, as many as pi runs fit): the runner beside the
+server claims at most that many runs at once, of any harness, and the rest wait queued. A runner of its own
+(`agentrun-serve runner`) holds `--loops N`, else the same default. Capabilities report it: pi's in
 `limits.max_concurrent_runs`, and each harness's own, the lower of that and what its memory holds, in its `harnesses`
 entry (`max_concurrent_runs`, beside `run_memory_mib`).
 
@@ -1505,8 +1508,13 @@ asked by default.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
-  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
-  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model reads the text blocks and embedded text resources joined (GitHub's `get_file_contents` answers a file as one);
+  past 60,000 characters it reads the answer's first lines, whole, and the rest is filed under the run's
+  `evidence/mcp/<server>/` as lines (JSON laid out a value a line, its indent capped at 32 levels, and filed as
+  written when the layout would pass twice its size and 64 KiB; a line past 10,000 characters broken), the text
+  naming the file and the `read` offset that goes on, so a run with `read` and no shell pages through it. With blocks
+  that are neither (an image, a blob), the whole answer is filed there as JSON and the text says where. On pi, every
+  host tool's answer reaches the model whole within the host's result bound, as each CLI harness is told. A tool's own error (`isError`) reaches the
   model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
   expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
   there"; another failure names the server and the HTTP status, never a header. A stop, or a
@@ -1893,7 +1901,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" | "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
@@ -2702,6 +2710,9 @@ stretch, a release that takes longer than 30 s to be confirmed, and the time a r
 session (spent before any process could hold it). A session whose release is never confirmed is billed in full
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
 last charges booked before its process exits.
+
+A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
+AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
 
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:

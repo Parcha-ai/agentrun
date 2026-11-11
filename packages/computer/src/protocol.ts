@@ -60,12 +60,23 @@ export const GROUPS: readonly Group[] = ["exec", "files", "processes", "screen",
 /** The groups a provider answers itself, which a computerd hello never lists. */
 export const PROVIDER_GROUPS: readonly Group[] = ["cdp", "stream", "downloads"];
 
+/**
+ * The version of this protocol: its methods, their params and results, the limits and the error kinds, as spec/computer
+ * publishes them. hello carries it, apart from the daemon's own version. It changes when the wire changes, not with
+ * each release: a minor step adds (a method, an optional field, a group), a major one changes or removes. computerd's
+ * Go constant (methods.ProtocolVersion) holds the same value, and a test keeps them equal.
+ */
+export const PROTOCOL_VERSION = "0.1";
+
 export interface HelloParams {
 	/** Who is asking, for the daemon's log: a name and version. */
 	client: string;
 }
 
 export interface HelloResult {
+	/** The protocol version this computer speaks: PROTOCOL_VERSION. */
+	protocol: string;
+	/** The daemon's own version (with daemon none, the provider's). */
 	version: string;
 	os: ComputerOs;
 	kind: ComputerKind;

@@ -132,6 +132,31 @@ test("a provider's test opens its saved keys, makes it with them through compute
   assert.equal(await routes.test("nope"), undefined);
 });
 
+test("a provider's test answer that quotes the saved key in another form (base64 in an auth header, hex) comes back with no form of it, failed or ok", async (t) => {
+  const sealKey = randomBytes(32);
+  const { store } = await storeOn(t);
+  const KEY = "fake-test-key";
+  const forms = [Buffer.from(KEY).toString("base64"), Buffer.from(KEY).toString("hex")];
+  // A vendor that echoes the key it was made with in the forms testConnection's plain cut does not know.
+  let answer = "refused";
+  const echoing = (options) => ({
+    async testConnection() {
+      const said = `Authorization: Basic ${Buffer.from(options.apiKey).toString("base64")} (key id ${Buffer.from(options.apiKey).toString("hex")})`;
+      return answer === "ok" ? { ok: true, value: { detail: `2 computers for ${said}` } } : { ok: false, error: { code: "unauthorized", message: `401 ${said}` } };
+    },
+  });
+  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: { e2b: echoing }, tools, mode: "local" });
+  await routes.saveKeys("e2b", { E2B_API_KEY: KEY });
+  const refused = await routes.test("e2b");
+  assert.equal(refused.ok, false);
+  assert.match(refused.why, /^E2B refused the saved key: check E2B_API_KEY in Settings → Computers\./, "the plain words stay");
+  for (const form of [KEY, ...forms]) assert.ok(!refused.why.includes(form), `no ${form} in the why: ${refused.why}`);
+  answer = "ok";
+  const ok = await routes.test("e2b");
+  assert.equal(ok.ok, true);
+  for (const form of [KEY, ...forms]) assert.ok(!ok.detail.includes(form), `no ${form} in the detail: ${ok.detail}`);
+});
+
 test("the claim's options: computer_unavailable with the refusal's words, else the provider's create() options from its saved keys", async (t) => {
   const { routes } = await setup(t);
   assert.equal(await routes.claimOptions({ kind: "none" }), undefined);

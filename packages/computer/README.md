@@ -33,6 +33,10 @@ full VM, a machine. The protocol has two layers:
   inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
   and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
+The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.1
+(`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
+`src/protocol.ts` by `node scripts/generate-computer-spec.mjs`, and a test fails when they drift.
+
 ## What it does today
 
 The daemon answers `hello`, `ping`, `exec.run`, the `files.*` methods, `tar.*`, the `process.*` methods and
@@ -43,7 +47,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.1","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
