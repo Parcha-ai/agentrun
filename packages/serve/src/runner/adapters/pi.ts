@@ -14,7 +14,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
-import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus, Wire } from "@parcha/agentrun-kernel";
+import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
@@ -305,15 +305,25 @@ export function refusalWords() {
   };
 }
 
-/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows. Each call
- *  gets what pi's own tool task gives a tool: the calling agent's model, resolved in the session's models (its input and
- *  input limits, which a file read sizes an image by), and pi's output stream (the running tool's live slot). */
+/** pi's output limits for a host tool, from the host's result bound: a result within it holds at most that many
+ *  characters (UTF-16 units), so at most that many lines plus one, and three bytes of UTF-8 to a character. pi's own
+ *  default (50 KB or 2,000 lines, its head kept) would cut the end off a host tool's answer, where the answer says how to
+ *  go on: an MCP answer's "[cut at ...; the whole answer is in the run's files at <path>]", a read's "Use offset=<n> to
+ *  continue". Each CLI adapter is told the same bound (harness-opencode/config.ts TOOL_OUTPUT, Claude's maxResultSizeChars,
+ *  Codex's tool_output_token_limit); each host tool keeps its own answer within it (test/host-bounds.test.mjs). */
+export const HOST_TOOL_OUTPUT = Object.freeze({ maxLines: HOST_RESULT_MAX_CHARS + 1, maxBytes: HOST_RESULT_MAX_CHARS * 3 });
+
+/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, passed
+ *  whole within the host's bound (HOST_TOOL_OUTPUT). Each call gets what pi's own tool task gives a tool: the calling
+ *  agent's model, resolved in the session's models (its input and input limits, which a file read sizes an image by),
+ *  and pi's output stream (the running tool's live slot). */
 function piTool(tool: HostTool, io: PiSessionIO) {
   return defineTool({
     name: tool.name,
     description: tool.description,
     parameters: tool.inputSchema as never,
     replay: tool.replay === "safe" ? "safe" : "unsafe",
+    outputLimits: HOST_TOOL_OUTPUT,
     execute: async (args: unknown, api, toolContext: Context) => {
       io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
       const ref = (await api.agent(toolContext)).model;

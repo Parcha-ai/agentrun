@@ -1,6 +1,6 @@
 // The run's MCP gateway against the fake MCP server: a call stopped mid-way is cancelled upstream, a refused credential
-// and a redirect are words the model reads (never a header, never a hop), a long answer is filed in work/, and a server
-// whose address changed is sent nothing.
+// and a redirect are words the model reads (never a header, never a hop), a long answer is filed in work/ as lines the
+// read tool pages through, and a server whose address changed is sent nothing.
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { createServer, request } from "node:http";
@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
+import { FILED_LINE_MAX } from "../dist/filed-answer.js";
 import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -19,13 +20,20 @@ const cap = await import("../../run-adapters/dist/kernel/cap/index.js");
 
 const TOKEN = `not-a-secret-${"gateway-bearer-0123"}`;
 const schema = { type: "object" };
-const tools = ["add", "slow_write", "long", "echo", "paid", "hang"].map((name) => ({ name, inputSchema: schema }));
+const tools = ["add", "slow_write", "long", "echo", "paid", "hang", "json", "file"].map((name) => ({ name, inputSchema: schema }));
+/** A long answer of many lines, as a pull request's diff is: past the clip. */
+const LONG = Array.from({ length: 3_000 }, (_, i) => `+line ${i} ${"x".repeat(40)}`).join("\n");
+/** A long answer of one line of JSON, as most of GitHub's are, with one value longer than a filed line. */
+const JSON_LONG = JSON.stringify({ items: Array.from({ length: 2_000 }, (_, i) => ({ id: i, name: `item ${i}` })), patch: "p".repeat(3 * FILED_LINE_MAX) });
 
 async function setup(t, { token = TOKEN, url, prices, commit, bounds } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   fake.tools.echo = { description: "Echoes what it was sent.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `seen Bearer ${TOKEN} and ${TOKEN}` }, { type: "image", data: Buffer.from(TOKEN).toString("base64"), mimeType: "image/png" }], structuredContent: { token: TOKEN } }) };
-  fake.tools.long = { description: "A long answer.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: "x".repeat(MCP_CLIP + 10) }] }) };
+  fake.tools.long = { description: "A long answer.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: LONG }] }) };
+  fake.tools.json = { description: "A long answer of one line of JSON.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: JSON_LONG }] }) };
+  // GitHub's get_file_contents: a line of text, and the file as an embedded text resource.
+  fake.tools.file = { description: "A file.", input: { type: "object", properties: { size: { type: "number" } } }, run: (args) => ({ content: [{ type: "text", text: "successfully downloaded text file (SHA: abc)" }, { type: "resource", resource: { uri: "repo://o/r/contents/a.ts", mimeType: "text/plain", text: "const a = 1;\n".repeat(args?.size ?? 2) } }] }) };
   const work = await mkdtemp(join(tmpdir(), "mcp-gateway-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const pinned = url ?? fake.url;
@@ -66,9 +74,39 @@ test("a refused credential says where to update it and never shows it; an answer
   assert.equal(textOf(said), "The MCP server fake refused its credential (its sign-in expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential there.");
   const { gateway, work } = await setup(t);
   const long = textOf(await gateway.call("fake", "long", {}, { signal: signal() }));
-  const filed = /evidence\/mcp\/fake\/(\S+\.json)\]$/.exec(long)?.[1];
-  assert.ok(long.startsWith("x".repeat(MCP_CLIP)) && filed, long.slice(-200));
-  assert.equal(JSON.parse(await readFile(join(work, "evidence", "mcp", "fake", filed), "utf8")).content[0].text.length, MCP_CLIP + 10);
+  // Its start is the file's first lines, whole; the note names the file and the read offset that goes on.
+  const note = /\n\[cut at line (\d+) of 3000 \((\d+) of (\d+) characters\); the whole answer is in the run's files at evidence\/mcp\/fake\/(\S+\.txt): read it with offset=(\d+) to go on\]$/.exec(long);
+  assert.ok(note, long.slice(-300));
+  const [, shown, chars, total, file, offset] = note;
+  assert.equal(Number(offset), Number(shown) + 1);
+  assert.equal(Number(total), LONG.length);
+  assert.ok(Number(chars) <= MCP_CLIP && Number(chars) > MCP_CLIP - 100, chars);
+  const filed = await readFile(join(work, "evidence", "mcp", "fake", file), "utf8");
+  assert.equal(filed, LONG, "the answer filed as its own lines, never inside JSON");
+  assert.equal(long.slice(0, long.length - note[0].length), LONG.split("\n").slice(0, Number(shown)).join("\n"));
+});
+
+test("a long answer of one line of JSON is filed a value a line, no line past what read shows of one", async (t) => {
+  const { gateway, work } = await setup(t);
+  const long = textOf(await gateway.call("fake", "json", {}, { signal: signal() }));
+  const note = /\n\[cut at line (\d+) of (\d+) \(\d+ of \d+ characters; its JSON laid out a value a line; 1 line longer than 10,000 characters broken into pieces of that length\); the whole answer is in the run's files at evidence\/mcp\/fake\/(\S+\.json): read it with offset=(\d+) to go on\]$/.exec(long);
+  assert.ok(note, long.slice(-400));
+  const filed = (await readFile(join(work, "evidence", "mcp", "fake", note[3]), "utf8")).split("\n");
+  assert.equal(filed.length, Number(note[2]));
+  assert.ok(filed.every((line) => line.length <= FILED_LINE_MAX), "every line read shows whole");
+  assert.equal(filed.join("\n").replace(/p\n(?=p)/g, "p"), JSON.stringify(JSON.parse(JSON_LONG), null, 2), "the JSON laid out, its long value broken and nothing else changed");
+  assert.equal(long.slice(0, long.length - note[0].length), filed.slice(0, Number(note[1])).join("\n"));
+});
+
+test("an embedded text resource (GitHub's file contents) is read inline; one past the clip is filed as its lines", async (t) => {
+  const { gateway, work } = await setup(t);
+  assert.equal(textOf(await gateway.call("fake", "file", {}, { signal: signal() })), "successfully downloaded text file (SHA: abc)\n\n[resource repo://o/r/contents/a.ts (text/plain)]\nconst a = 1;\nconst a = 1;\n");
+  assert.deepEqual(await readdir(work), [], "nothing filed for an answer read whole");
+  const long = textOf(await gateway.call("fake", "file", { size: 10_000 }, { signal: signal() }));
+  const note = /in the run's files at (evidence\/mcp\/fake\/\S+\.txt): read it with offset=(\d+) to go on\]$/.exec(long);
+  assert.ok(note, long.slice(-300));
+  const filed = await readFile(join(work, note[1]), "utf8");
+  assert.ok(filed.startsWith("successfully downloaded text file (SHA: abc)\n\n[resource repo://o/r/contents/a.ts (text/plain)]\nconst a = 1;\n") && filed.endsWith("const a = 1;\n"), filed.slice(0, 200));
 });
 
 test("an answer past the clip that cannot be filed (a link at evidence/) still answers, cut, with the port's code and its line", async (t) => {
@@ -77,7 +115,8 @@ test("an answer past the clip that cannot be filed (a link at evidence/) still a
   t.after(() => rm(outside, { recursive: true, force: true }));
   await symlink(outside, join(work, "evidence"));
   const long = textOf(await gateway.call("fake", "long", {}, { signal: signal() }));
-  assert.ok(long.startsWith("x".repeat(MCP_CLIP)), long.slice(0, 40));
+  assert.ok(long.startsWith(LONG.slice(0, 10_000)), long.slice(0, 40));
+  assert.match(long, /\n\[cut at line \d+ of 3000 \(\d+ of \d+ characters\); /);
   assert.ok(long.endsWith(`the whole answer could not be saved (ESCAPE: ${WORKSPACE_ERRORS.ESCAPE})]`), long.slice(-200));
   assert.deepEqual(await readdir(outside), [], "nothing written through the link");
 });
