@@ -8,14 +8,14 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BOX_IDS, boxRegistry, VM_PROVIDER } from "../dist/boxes.js";
+import { BOX_IDS, placeOffers } from "../dist/place-offers.js";
 import { boxesLine } from "../dist/place.js";
 import { hostOwnedRefusal } from "../dist/home-path.js";
 import { banner } from "../dist/print.js";
 import { ROUTES } from "../dist/server.js";
 import { agent, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
-const VM = VM_PROVIDER.id;
+const VM = "modal";
 const BOXES = BOX_IDS.join(", ");
 const DOCKER_PLACE = '"place": {"mode": "sandbox", "box": "docker"}';
 const ENABLE_DOCKER = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
@@ -134,9 +134,9 @@ test("a box this server does not enable names the setting that enables it: in ca
 });
 
 test("the setting a box names keeps the boxes AGENTRUN_BOXES already lists", async () => {
-  const registry = await boxRegistry({ AGENTRUN_BOXES: "daytona" });
-  assert.equal(registry.offers().find((offer) => offer.id === "docker").reason, "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona");
-  assert.equal(registry.offers().find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM},daytona`);
+  const offers = await placeOffers({ AGENTRUN_BOXES: "daytona" });
+  assert.equal(offers.find((offer) => offer.id === "docker").reason, "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona");
+  assert.equal(offers.find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM},daytona`);
 });
 
 test("docker enabled with no daemon answering: its reason says to start Docker or join the docker group, the 409 ends in one full stop, and the banner says no box is ready", async (t) => {
@@ -161,11 +161,11 @@ test("docker enabled with no daemon answering: its reason says to start Docker o
   assert.equal(lines.at(-1), server.boxesLine, "the banner's last line");
 });
 
-test("the banner says in words which boxes are ready: none with nothing enabled, naming the setting; docker when the faux box stands in for it", async (t) => {
+test("the banner says in words which boxes are ready: none with nothing enabled, naming the setting; docker when the faux docker stands in for it", async (t) => {
   const none = await serve(t);
   assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${ENABLE_DOCKER}. ${VM}: ${ENABLE_VM}. daytona: ${ENABLE_DAYTONA}.`);
-  const faux = await serve(t, { faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname, fauxBox: new URL("./fixtures/faux-box.mjs", import.meta.url).pathname });
-  assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes have no network: a faux box (tests).");
+  const faux = await serve(t, { faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname, fauxDocker: true });
+  assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes have no network: a faux docker (tests).");
   const bash = (await faux.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason], [true, undefined], "a box can run it");
 });

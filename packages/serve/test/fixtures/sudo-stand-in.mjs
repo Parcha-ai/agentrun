@@ -1,4 +1,4 @@
-// A `sudo` stand-in for the fakes whose box commands run in a real shell of this machine (fake-daytona.mjs, fake-vm.mjs):
+// A `sudo` stand-in for the fakes whose box commands run in a real shell of this machine (fake-docker.mjs):
 // first on every such command's PATH, so a sudo a box command asks for never reaches this machine's own.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

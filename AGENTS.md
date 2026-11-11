@@ -14,7 +14,7 @@ and delivery.
 ## Layout
 
 Each package's README is its API reference. Packages with no dependency on the others:
-`pi-durable-disk`, `pi-browser`, `pi-transport`.
+`pi-durable-disk`, `pi-browser`.
 
 | Path | What an agent must know |
 | --- | --- |
@@ -22,7 +22,6 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/jev`, `packages/pi` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`); the Pi extension (`/agentrun`) and Pi-backed `runNode` |
 | `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
 | `packages/pi-browser` | packages/pi-browser is the source; other repos copy FROM it. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
-| `packages/pi-transport` | Vitest on source; its biome `lint` and Docker suite (`test:live:docker`) run in the `transport-docker` CI job |
 | `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
 | `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
 | `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
@@ -56,7 +55,7 @@ npm run verify:packages   # packs each package into a clean consumer (install ne
 ```
 
 - Most package suites import `dist/`, so rebuild before running one file with `node --test`.
-  Exceptions: `pi-durable-disk` runs on `src/*.ts`, `pi-transport` runs Vitest on source.
+  Exception: `pi-durable-disk` runs on `src/*.ts`.
 - Tests use scripted adapters and need no credentials or network. Live examples are opt-in.
 - After changing workflow types: `npm run build`, then `node scripts/generate-schema.mjs`,
   `node scripts/generate-author-contract.mjs` (reads `packages/dsl/dist/`) and

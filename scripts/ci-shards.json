@@ -1,11 +1,10 @@
 {
-  "about": "CI's test shards (scripts/ci-plan.mjs, scripts/ci-shard.mjs). A pool's shards run its suites, split by file and assigned by time; the pool without suites takes every other one. gh runs on GitHub-hosted runners only, lean holds the suites whose workflows the lean job's validator sweep reads (see ci.yml). The counts here and the matrices in ci.yml must agree (scripts/ci-plan.test.mjs).",
+  "about": "CI's test shards (scripts/ci-plan.mjs, scripts/ci-shard.mjs). A pool's shards run its suites, split by file and assigned by time; the pool without suites takes every other one. lean holds the suites whose workflows the lean job's validator sweep reads (see ci.yml). The counts here and the matrices in ci.yml must agree (scripts/ci-plan.test.mjs).",
   "rootSuites": ["test:release", "test:examples"],
   "whole": {
     "@parcha/pi-browser": "node scripts/run-tests.mjs"
   },
   "pools": {
-    "gh": { "shards": 2, "suites": ["@parcha/pi-transport"] },
     "lean": { "shards": 2, "suites": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "@parcha/agentrun-pi", "test:examples"] },
     "any": { "shards": 6 }
   }

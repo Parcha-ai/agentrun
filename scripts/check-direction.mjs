@@ -25,7 +25,7 @@ export const LAYERS = {
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
   subsystem: [
     'packages/dsl', 'packages/pi', 'packages/pi-browser',
-    'packages/pi-durable-agent', 'packages/pi-durable-disk', 'packages/pi-transport',
+    'packages/pi-durable-agent', 'packages/pi-durable-disk',
   ],
   server: ['packages/serve'],
   surface: ['apps/console', 'packages/agentrun', 'packages/client'],

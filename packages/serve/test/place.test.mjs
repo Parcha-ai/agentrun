@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import { Agents } from "../dist/agents.js";
-import { BOX_IDS } from "../dist/boxes.js";
+import { BOX_IDS } from "../dist/place-offers.js";
 import { agent, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const storedBodies = (data) => {

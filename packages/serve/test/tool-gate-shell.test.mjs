@@ -16,7 +16,7 @@ import { BACKGROUND_TOOLS } from "../dist/background.js";
 import { permissionFrom, RunGate, settingsKeyOf, waitingText } from "../dist/tool-gate.js";
 import { loadToolSettings, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
-import { agent, call, cookieOf, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
 /** pi's registration `name`, wrapped by a run's gate on `data`'s settings: what its call answers, whether it ran, and
  *  the requests the gate kept. */
@@ -231,12 +231,8 @@ test("with bash: ask, capabilities and an agent's tools show ask for bash, bash_
 });
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
-const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const SHELL = ["bash", ...BACKGROUND_TOOLS];
-const json = { "content-type": "application/json" };
-/** A test password, not a real one. */
-const pw = (name) => `not-a-secret-${name}`;
 
 /** Each tool call of run `runId` and its answer, in order, from its store. */
 function answers(data, runId) {
@@ -267,56 +263,9 @@ const groupAlive = (group) => {
   }
 };
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("bash: ask, end to end: bash_background parks and the owner allows it; its output pages, the list and a TERM run unasked; bash_input parks again; one approval per start or feed", { timeout: 150_000 }, async (t) => {
-  const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX, accounts: true, openSetup: true });
-  const { api } = server;
-  const origin = `http://127.0.0.1:${server.port}`;
-  const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: pw("owner") } });
-  assert.equal(setup.status, 201, setup.text);
-  const cookie = cookieOf(setup);
-  const approve = async (runId, approvalId) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body: { decision: "allow" } })).status;
-  assert.equal((await api("PUT", "/settings/tools", { bash: { permission: "ask" } })).status, 200);
-  const made = await api("POST", "/agents", { definition: { id: "bg", name: "bg", instructions: "Probe.", place: SANDBOX, tools: SHELL } });
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  const plan = [
-    { tool: "bash_background", args: { command: "printf 'one\\n'; read line; printf 'got:%s\\n' \"$line\"; sleep 30" } },
-    { tool: "bash", args: { command: "sleep 1" } },
-    { tool: "bash_output", args: { id: "1", max_bytes: 2 } },
-    { tool: "bash_output", args: { id: "1", offset: 2 } },
-    { tool: "bash_list", args: {} },
-    { tool: "bash_input", args: { id: "1", text: "hello\n" } },
-    { tool: "bash_signal", args: { id: "1", signal: "TERM" } },
-    { tool: "bash_output", args: { id: "1" } },
-  ];
-  const runId = await probe(server, "bg", plan);
-  const asked = [];
-  for (const expected of ["bash_background", "bash", "bash_input"]) {
-    await follow(api, runId, ["input_required"], { deadlineMs: 60_000 });
-    const view = (await api("GET", `/runs/${runId}`)).body;
-    assert.deepEqual([view.pending?.kind, view.pending?.tool], ["approval", expected], JSON.stringify(view.pending));
-    asked.push(view.pending.tool);
-    assert.equal(await approve(runId, view.pending.id), 204);
-    // The answer is acted on before the next park is read.
-    for (const end = Date.now() + 20_000; (await api("GET", `/runs/${runId}`)).body.pending?.id === view.pending.id; ) {
-      assert.ok(Date.now() < end, `the ${expected} approval is acted on`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
-  // Exactly three approvals: the start, bash, and the feed. The pages, the list and the TERM asked nothing.
-  assert.deepEqual(asked, ["bash_background", "bash", "bash_input"]);
-  const said = answers(server.data, runId).filter((answer) => !answer.text.includes("waits for a person's approval"));
-  const watched = said.filter((answer) => WATCHERS.includes(answer.tool));
-  assert.deepEqual(watched.map((answer) => [answer.tool, answer.error]), [["bash_output", false], ["bash_output", false], ["bash_list", false], ["bash_signal", false], ["bash_output", false]], JSON.stringify(said));
-  assert.match(watched[0].text, /^Background process 1 is running\. Output bytes 0 to 2 of 4; call again with offset 2/);
-  assert.match(watched[3].text, /^Sent TERM to background process 1: it ended by signal TERM \(exit code 143\)\.$/);
-  assert.match(watched[4].text, /\n\none\ngot:hello\n/);
-});
-
 // SKIP (follow-up #2078): the run's background-process watchers do not see the run's process on the runner
 test.skip("the watchers reach only this run's own processes: another run's id, live in its own box, is the tool's own no-such answer, and nothing of it is read or signalled", { timeout: 150_000 }, async (t) => {
-  const server = await serve(t, { faux: PROBE, fauxBox: FAUX_BOX });
+  const server = await serve(t, { faux: PROBE, fauxDocker: true });
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { bash: { permission: "ask" } })).status, 200);
   const made = await api("POST", "/agents", { definition: { id: "bg", name: "bg", instructions: "Probe.", place: SANDBOX, tools: SHELL, tool_settings: { bash: { permission: "allow" } } } });

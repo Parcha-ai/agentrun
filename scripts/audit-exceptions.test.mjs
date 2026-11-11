@@ -140,7 +140,7 @@ test('undici anywhere else, or with another advisory, blocks; the exception narr
   const undici = withUndici().undici;
   const cases = [
     ['a copy at the top level', withUndici({ undici: { ...undici, nodes: [codingAgentUndici, 'node_modules/undici'] } })],
-    ['a copy under another parent', withUndici({ undici: { ...undici, nodes: [codingAgentUndici, 'node_modules/@parcha/pi-transport/node_modules/undici'] } })],
+    ['a copy under another parent', withUndici({ undici: { ...undici, nodes: [codingAgentUndici, 'node_modules/@parcha/pi-browser/node_modules/undici'] } })],
     ['another undici advisory', withUndici({ undici: { ...undici, via: [...undiciAdvisories, advisory('GHSA-pppp-qqqq-rrrr', 'high')] } })],
   ];
   for (const [label, vulnerabilities] of cases) assert.ok(realBlocked(vulnerabilities).includes('undici'), label);

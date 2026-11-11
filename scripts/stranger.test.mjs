@@ -108,16 +108,6 @@ test('a child killed by a signal, or closed with no code, is a failing exit', ()
   assert.equal(exitCodeOf(null, null), 1);
 });
 
-test('the local box spec accepts the host kernel name, and the Docker spec requires Linux', async () => {
-  const output = name => `0 ${name} host 6.8.0 #1 SMP x86_64 GNU/Linux\n\n`;
-  const [linux, darwin] = ['Linux', 'Darwin'];
-  const local = await loadSpec('pi-transport');
-  const docker = await loadSpec('pi-transport-docker');
-  assert.deepEqual([linux, darwin].map(name => judge(local, { exitCode: 0, stdout: output(name), stderr: '', timedOut: false }).length), [0, 0]);
-  assert.equal(judge(docker, { exitCode: 0, stdout: output(linux), stderr: '', timedOut: false }).length, 0);
-  assert.equal(judge(docker, { exitCode: 0, stdout: output(darwin), stderr: '', timedOut: false }).length, 1);
-});
-
 test("the agent-home spec accepts exactly the output its README shows under the command, followed by nothing but Node's warning lines", async () => {
   const agent = await loadSpec('pi-durable-agent');
   const [file] = agent.files;

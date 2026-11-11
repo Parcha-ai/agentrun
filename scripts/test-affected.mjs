@@ -49,7 +49,6 @@ export const SMOKE = {
   '@parcha/pi-browser': 'test/dial.test.mjs',
   '@parcha/pi-durable-agent': 'test/export.test.mjs',
   '@parcha/pi-durable-disk': 'test/package.test.ts',
-  '@parcha/pi-transport': 'test/config.test.ts',
   '@parcha/agentrun-kernel': 'test/kernel.test.mjs',
   '@parcha/agentrun-harness-claude': 'test/names.test.mjs',
   '@parcha/agentrun-harness-codex': 'test/machine.test.mjs',

@@ -1,7 +1,7 @@
 // CI's test plan: every test suite of the repository, its files, and their assignment to shards by time.
 //
 // A suite is a workspace's `test` script or one of the root scripts scripts/ci-shards.json names. A suite whose script is
-// `node --test [--test-concurrency=<n>] [--test-timeout=<ms>] <files or globs>`, or pi-transport's `vitest --run`, is split
+// `node --test [--test-concurrency=<n>] [--test-timeout=<ms>] <files or globs>`, or `vitest --run`, is split
 // by file; any other script ci-shards.json lists under `whole` runs as it is, as one unit. A script of any other shape is
 // refused, so a script that changes shape is looked at here instead of running unseen.
 //
