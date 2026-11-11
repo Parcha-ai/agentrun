@@ -1,22 +1,39 @@
 // Why a run's browser is not up while the run is still going, for GET /v2/runs/{run_id}/computer's `none`: the browser
 // was let go while the run waited for its person (browser-person.ts personHands.wait ends with a timeline row saying so),
 // and the run has opened none since. The Screen tab says that, with when, instead of waiting for a browser nobody is
-// opening. Read from the run's timeline rows, so it is the same fact the Timeline shows.
+// opening.
+//
+// One small server setting per run holds it (`browser_wait_ended:<run id>`: { at, why }), written by the run's process as
+// the wait ends and removed as any browser session of the run opens, whatever let the old one go (its idle release, the
+// tool, a close at the park). So a Screen poll, every few seconds on a parked run, reads one row, never the run's journal.
 
-import { BROWSER_GONE_WHILE_WAITING } from "./browser-person.js";
+/** The store seam: the server's settings (store/store.ts Settings), the three calls this uses. */
+export type WaitEndedSettings = {
+  get(key: string): Promise<unknown | undefined>;
+  put(key: string, value: unknown): Promise<void>;
+  remove(key: string): Promise<void>;
+};
 
-/** The rows a wait's end writes (browser-person.ts): released at its window, at the cap, or the session ended under it. */
-const ENDED_PREFIXES = ["The browser was released after ", "The browser was released while the run waited for you", BROWSER_GONE_WHILE_WAITING];
-/** The row the Timeline shows when a browser session opens (timeline/timeline.ts). */
-const SESSION_STARTED = "A live browser session started";
+/** A browser let go while its run waited for its person: when (ISO) and the timeline row's words. */
+export type WaitEnded = { at: string; why: string };
 
-/** The newest wait-end row with no session opened after it: `at` (ISO) and `why` (the row's words), else undefined. */
-export function browserWaitEnded(rows: readonly { kind: string; summary: string | null; timestamp: string }[]): { at: string; why: string } | undefined {
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const row = rows[i]!;
-    if (row.kind !== "phase" || row.summary === null) continue;
-    if (row.summary === SESSION_STARTED) return undefined;
-    if (ENDED_PREFIXES.some((prefix) => row.summary!.startsWith(prefix))) return { at: row.timestamp, why: row.summary };
-  }
-  return undefined;
+const keyOf = (runId: string) => `browser_wait_ended:${runId}`;
+
+/** The run's process, as its wait ends with the browser let go: kept for the Screen tab. */
+export async function markWaitEnded(settings: WaitEndedSettings, runId: string, ended: WaitEnded): Promise<void> {
+  await settings.put(keyOf(runId), ended);
+}
+
+/** The run's process, as any browser session of the run opens: nothing ended any more. */
+export async function clearWaitEnded(settings: WaitEndedSettings, runId: string): Promise<void> {
+  await settings.remove(keyOf(runId));
+}
+
+/** The server, for a going run's `none` browser: the ended state, or undefined. One settings read; a value of another
+ *  shape is no ended state. */
+export async function readWaitEnded(settings: Pick<WaitEndedSettings, "get">, runId: string): Promise<WaitEnded | undefined> {
+  const value = await settings.get(keyOf(runId));
+  if (!value || typeof value !== "object") return undefined;
+  const { at, why } = value as { at?: unknown; why?: unknown };
+  return typeof at === "string" && typeof why === "string" ? { at, why } : undefined;
 }

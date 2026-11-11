@@ -132,10 +132,20 @@ test("the wait in the claim is bounded as a hand-over is: past the bound the bro
   const booked = (await w.records()).entries.filter((entry) => entry.kind === "runner.request").map((entry) => entry.data?.model);
   assert.ok(booked.includes(WAIT_HOLD), `the person's time was held on the run's ledger while it waited: ${JSON.stringify(booked)}`);
   assert.ok(booked.includes("paid:this browser session's time"), `the session's time, the wait's included, is booked at its release: ${JSON.stringify(booked)}`);
-  assert.equal((await w.computer()).state, "none", "no live view once the browser is let go");
+  const gone = await w.computer();
+  assert.equal(gone.state, "none", "no live view once the browser is let go");
+  // The Screen tab's ended state: why and when, from the one settings row the wait's end wrote, not "waiting".
+  assert.equal(gone.ended?.why, "The browser was released after 1 min waiting for you", JSON.stringify(gone));
+  assert.ok(Number.isFinite(Date.parse(gone.ended.at)), JSON.stringify(gone.ended));
   const view = await w.server.api("GET", `/runs/${w.runId}`);
   assert.equal(view.body.status, "input_required");
   assert.equal(view.body.pending?.kind, "question", JSON.stringify(view.body.pending));
+  // The answer after the release goes on with a new browser: its launch clears the ended state, whatever let the old
+  // session go (here, the park's close release, not the browser_release tool).
+  assert.equal((await w.server.api("POST", `/runs/${w.runId}/messages`, { content: "Yes, go on." })).status, 202);
+  await follow(w.server.api, w.runId, ["completed", "failed"]);
+  assert.equal(w.ops().filter((op) => op.op === "create").length, 2, "a new session for the answer");
+  assert.equal(await w.server.store.settings.get(`browser_wait_ended:${w.runId}`), undefined, "the new session's launch cleared the ended state");
 });
 
 for (const [act, state] of [["stop", "stopped"], ["cancel", "stopped"]]) {

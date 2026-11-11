@@ -103,6 +103,9 @@ export function personHands(options: {
    *  step, its ask, does (cap.ts paidCall). */
   personTime(what: string, seconds: number, options?: { pauses?: boolean; tag?: string; from?: number }): Promise<{ refused: string } | { drop(): void }>;
   note: Note;
+  /** A wait on the person's answer ended with its browser let go (its window, the cap, its session gone): when (ms) and
+   *  the timeline row's words, for the Screen tab's ended state (browser-wait-ended.ts). Never throws out. */
+  waitEnded?(at: number, why: string): void;
   holdMs?: number;
   pollMs?: number;
   /** For tests: the timer functions the person's time is held again by. */
@@ -548,7 +551,9 @@ export function personHands(options: {
         if (over) return;
         over = true;
         settle(words);
-        void note(HOST_PHASE, { summary: row, at: now() }).catch(() => undefined);
+        const at = now();
+        void note(HOST_PHASE, { summary: row, at });
+        try { options.waitEnded?.(at, row); } catch { /* the Screen tab's state is a convenience; the row stands */ }
       };
       const lapse = (words: string) => end(words, words === WAIT_SESSION_GONE ? BROWSER_GONE_WHILE_WAITING : `The browser was released while the run waited for you: ${words}`);
       const entry = { tags: new Set(held), lapse };
