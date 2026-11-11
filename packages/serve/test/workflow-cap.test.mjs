@@ -127,6 +127,29 @@ test("a capped workflow whose paid model node would cross the cap stops at it: t
   assert.equal(await answeredOnStore(store, runId), 2, "opened again from its journal: the first node was not sent again, the second ran once");
 });
 
+/** `first`, then a nested workflow `inner` whose one step is the model node `second`. */
+const nested = () => {
+  const { schemas, input, output } = twoNodes();
+  const inner = { v: 2, name: "inner", schemas, input, output, root: { node: "extract", label: "second", instructions: "Answer the question again.", out: "Answer", as: "answer" } };
+  return { ...twoNodes(), name: "nested", root: { node: "chain", steps: [
+    { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
+    { node: "workflow", label: "inner", workflow: inner, input: { question: "{question}" }, out: "Answer", as: "answer" },
+  ] } };
+};
+
+test("a capped workflow's model node inside a nested workflow names itself at the cap, under its parent step: the enclosing workflow step, still open, is not a step that sends", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const { api } = await serve(t, { faux: PRICED });
+  assert.equal((await api("POST", "/agents", flowAgent("nested", nested()))).status, 201);
+  // $0.12, as above: `first` fits, `second` (inside `inner`) does not.
+  const started = await api("POST", "/agents/nested/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, SETTLED, { deadlineMs: 60_000 });
+  const run = await view(api, started.body.run_id);
+  // Named as the interpreter labels a child's step (workflow.ts scopeDepsToChild): under its parent step's label.
+  assert.deepEqual([run.status, run.pending?.kind, run.pending?.node], ["input_required", "budget", "inner/second"], JSON.stringify(run));
+});
+
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
 test.skip("a capped workflow's decision on Parallel that would cross the cap is not sent: the run waits for a raise at the decision node, and the raise sends it once", async (t) => {
   const calls = join(await scratch(t), "parallel-calls.jsonl");
