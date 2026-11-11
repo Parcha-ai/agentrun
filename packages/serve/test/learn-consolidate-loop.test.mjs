@@ -597,3 +597,53 @@ test("a consolidation that rewrites a draft to call an MCP tool with no declared
   assert.deepEqual([item?.keep, item?.pending, item?.question], [true, true, "Unpriced"], JSON.stringify(item));
   assert.match(item.why, /lookup on door, which has no price/, item.why);
 });
+
+// PRRT_kwDOUmdVMs62Vj3P (a money test): a consolidation's paid request honours a person's stop as the grade's does. A stop
+// pending before it sends nothing and costs nothing; a stop during it cuts it at once (its cost then unknown, never $0).
+test("a stop pending before a consolidation's first request sends nothing: the run ends stopped at $0, no request made", async (t) => {
+  const w = await world(t);
+  const { end, row, asks } = await consolidate(w, replaceAsked, { stopFirst: true });
+  assert.deepEqual(end, { state: "stopped" });
+  assert.deepEqual(asks, [], "no request sent");
+  assert.deepEqual([row.state, row.costUsd], ["stopped", 0], "nothing spent");
+});
+
+test("a stop during a consolidation's first request cuts it at once: its signal aborts, the run ends stopped, its cost unknown (null), never $0", async (t) => {
+  const w = await world(t);
+  const id = "run-0-consolidate";
+  await w.store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", []) });
+  const claim = await w.store.claim(id, "runner-a", { leaseMs: 60_000 });
+  let loop;
+  let cut;
+  // The request in flight: the person's stop lands while it runs, and the request learns of it through its signal alone.
+  const ask = async ({ prompt }, signal) => {
+    assert.ok(prompt.startsWith("You keep an agent's learned notes"), "only the consolidation request is asked");
+    await loop.stop({ kind: "command", commandId: (await w.store.command(id, { kind: "stop" })).id });
+    cut = signal.aborted;
+    if (signal.aborted) throw signal.reason;
+    return { text: replaceAsked(prompt), usd: 0.01 };
+  };
+  loop = learningLoopFactory({ refuse: async () => [], store: w.store, data: w.data, ask })({ journal: (c) => w.store.journal(c), flush: () => w.store.flush(), signal: new AbortController().signal });
+  assert.deepEqual(await loop.start(claim), { state: "stopped" });
+  assert.equal(cut, true, "the stop aborted the request's signal while it ran");
+  const row = await w.store.runs.get(id);
+  assert.deepEqual([row.state, row.costUsd], ["stopped", null], "a cut request may have been billed: unknown, never 0");
+});
+
+// PRRT_kwDOUmdVMs62Vj3X: a pair a consolidation was asked about and left out of step is not forgotten when the next merges
+// touch neither side: the next consolidation (queued as its merges and budget say) is asked about it again.
+test("a skill and its draft a consolidation left out of step are asked about again by the next consolidation, though no later merge touches them", async (t) => {
+  const w = await driftedWorld(t);
+  const pair = { skill: "find-policies", workflow: "find-policies", changed: "skill" };
+  const after = (await w.onFolder((ws) => readSnapshot(ws))).main;
+  await w.store.runs.create({ id: "run-d-consolidate", agentId: "agent-1", revisionId: "rev-1" }, { body: consolidationLaunchOf("agent-1", [pair], { after }) });
+  // It ends without writing the pair back in step (its request failed, say).
+  await endConsolidation(w, "run-d-consolidate");
+  for (const i of [1, 2, 3, 4]) {
+    assert.deepEqual((await learn(w, `run-${i}`, `long-${i}.md`)).end, { state: "ended" });
+    assert.equal(await w.store.runs.get(consolidationRunId(`run-${i}`)), undefined, `merge ${i} since the queue: none`);
+  }
+  assert.deepEqual((await learn(w, "run-5", "long-5.md")).end, { state: "ended" });
+  const launch = (await w.store.runs.launch(consolidationRunId("run-5")))?.body;
+  assert.deepEqual(launch?.input.consolidate.pairs, [pair], JSON.stringify(launch?.input));
+});
