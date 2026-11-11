@@ -384,7 +384,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         paidTools = await run.tools(await sessions.open(TOOL_SESSION), { flush: () => deps.store.flush() });
         hooks.setPort(booking.models as never);
       },
-      settle: () => hooks.bookingsSettled(),
+      settle: async () => {
+        const left = await hooks.bookingsSettled();
+        // Past the bound: the end is written, and each request still unbooked counts at its hold and bound (never less).
+        if (left > 0) console.warn(`[runner] ${claim.runId}: ${left} model request(s) still unbooked ${CLOSE_MS} ms after the workflow ended; each counts at its hold and bound`);
+      },
       release: async () => {
         for (const proxy of proxies) await proxy.close().catch(() => undefined);
       },
@@ -480,13 +484,14 @@ function deferredHooks() {
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
     },
     setPort: (p: typeof port) => { port = p; },
-    /** Waits, at most CLOSE_MS, until every request admitted is booked. Past the bound the run's end is written anyway,
-     *  and a request left unbooked reads at its hold and bound, the worst it can have cost. */
-    bookingsSettled: async (): Promise<void> => {
-      if (unbooked === 0) return;
+    /** Waits, at most CLOSE_MS, until every request admitted is booked, and says how many are still not. Past the bound
+     *  the run's end is written anyway, and a request left unbooked reads at its hold and bound, the worst it can have cost. */
+    bookingsSettled: async (): Promise<number> => {
+      if (unbooked === 0) return 0;
       let timer: NodeJS.Timeout | undefined;
       await Promise.race([new Promise<void>((resolve) => bookedAll.push(resolve)), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
       clearTimeout(timer);
+      return unbooked;
     },
     park: (refusal: CapRefusal) => loop?.park(refusal),
     // A person's pause, asked where the cap is (the loop's hooks): none before the loop hands its hooks over.

@@ -381,6 +381,28 @@ test("a person's stop whose request is still being booked when the node ends: th
   assert.equal(closes[0], "after settle", `the run closed nothing before its bookings settled: ${JSON.stringify(closes)}`);
 });
 
+// The same stop, the provider's side never ending: the run's end waits for the stopped request's booking only so long
+// (CLOSE_MS), then is written anyway. The request, never booked, counts at its hold and bound, the most it can have cost
+// (never less), and a line names it.
+test("a person's stop whose request is never booked: the run still ends, the request counts at its hold and bound, and a line says so", async (t) => {
+  const origin = stallingOrigin("Half of one.md", new Promise(() => {}));
+  const warned = [];
+  t.mock.method(console, "warn", (line) => void warned.push(String(line)));
+  const { server, store } = await worldWith(t, { capUsd: 1, question: "Take your time.", providerOf: pricedProvider(origin.fetch) });
+  const acting = (async () => {
+    await origin.streamed;
+    await sendCommand(server, "run-1", { kind: "stop", body: {} });
+  })();
+  acting.catch(() => {});
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  await acting;
+  assert.equal(row.state, "stopped", `the run still ends: ${JSON.stringify(row)}`);
+  const [asked] = (await sessionRecords(store)).requests;
+  assert.ok(asked?.heldUsd > 0.5, `the request was held at most of the cap: ${JSON.stringify(asked)}`);
+  assert.equal(await spendFromRecords(store), eight(asked.heldUsd + (asked.boundUsd ?? 0)), "unbooked, it counts at its hold and bound, never less");
+  assert.ok(warned.some((line) => /run-1: 1 model request\(s\) still unbooked/.test(line)), `a line names it: ${JSON.stringify(warned)}`);
+});
+
 test("a model node on a tier other than the default runs on that tier's model: asked, held and booked at its price", async (t) => {
   // Each tier its own model and price: the default's output $100 a million, the strong tier's $300. A node that names the
   // strong tier is asked of the strong model, held by the cap at the strong price, and booked at it, never the default's.
