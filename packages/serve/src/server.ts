@@ -21,7 +21,7 @@ import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
-import { FAUX_BROWSER_ENV, NODE_TOOLS, toolingOf, toolOf, toolsView } from "./tools.js";
+import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
@@ -41,11 +41,12 @@ import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, read
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxLimitsOf, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes, memoryMbOf } from "./box-settings.js";
+import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./box-settings.js";
+import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
-import { computerViewerLink, familyReaches, handoverById, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, readHandover, readHandovers, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
+import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
 import { durationMs, logLine } from "./print.js";
@@ -67,18 +68,16 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
-/** A busy store, and the home_busy answer it maps to (agents.ts homeBusy's words), for a read or write that
- *  meets the one store under load. */
-const storeBusy = (error: unknown): boolean => error instanceof StoreBusy;
-const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
@@ -104,7 +103,7 @@ import { mcpServersOverStore } from "./mcp-servers-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
-import { type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
+import { OUTBOUND_WEBHOOK, type RunNotice, WEBHOOK_EVENTS, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
@@ -136,7 +135,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 // server-lock.ts is gone: the store's EXCLUSIVE connection is the one-server lock (StoreOwned refuses a second server).
 
@@ -292,8 +291,6 @@ export type ServeOptions = {
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
-  /** How often a carry back the store refused is tried again while the server lives (default 30 s). */
-  settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
   /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
@@ -303,39 +300,18 @@ export type ServeOptions = {
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
-  /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
-   *  hook called at each such refusal. */
-  /** A test hook the per-run process used for carry-back; the runner owns carry-back now (unused by the server cut). */
-  carryBackRetry?: unknown;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
    *  process is launched, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
-  /** A test's seam: awaited where a raise that opens a let-go workflow pins what its launch needs, after its place is
-   *  taken (runs.ts finishRaise); one that throws stands for a pin that fails there. */
-  beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
   hostMemory?: number;
-  /** A test's seam: told each stat and each read of a workflow run's pause by its watch (runs.ts watchPause). */
-  onPauseCheck?: (runId: string, what: "stat" | "read") => void;
-  /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
-  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
   onRunLoad?: (runId: string) => void;
-  /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
-  beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
    *  carries it), so a test sends a server-written message down the path a person's message takes. */
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
-  /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
-  readyTimeoutMs?: number;
-  /** How long a launched run's process has to open its run before it is stopped and the run opened again (default 45 s,
-   *  READY_TIMEOUT_MS: the wait of a run's first message). */
-  openTimeoutMs?: number;
-  /** With `faux` only: the door nonce each run's process is handed in place of its launch's own, so its door answers the
-   *  launch's proof wrongly (a test of a door that fails its proof). */
-  fauxHandedNonce?: string;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -649,14 +625,15 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
- *  needsOf says it for a revision that names no model (null when it runs). */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], gradeModel?: string, refused: Readonly<Record<string, string>> = {}) {
+ *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
+ *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], gradeModel?: string, refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>) {
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
   // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow).
   const keyFor = (tool: { name: string; provider?: string; resolves?: Record<string, string> }) => (tool.name === "browser" ? browserKeyRow(tool.provider, tool.resolves?.[DEFAULT_HARNESS]) : keyOf(tool.name));
-  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
+  const tools = toolsView(env, toolSettings, noBoxReason(boxes), refused, runnerShell).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
   const browser = tools.find((tool) => tool.name === "browser");
   return {
     backend: "local",
@@ -789,7 +766,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
   enabledBoxes(process.env);
-  boxLimitsOf(process.env);
+  // A Docker computer's size an operator sets (workspace/computer-deps.ts): a value the Docker provider refuses stops the
+  // start, in its words.
+  dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
   const boxAllow = boxAllowOf(process.env);
@@ -929,7 +908,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // With accounts off no one can answer an ask (the answer route takes the owner's session alone): each tool ask is
   // offered for says it needs the password sign-in, as learning's approve does.
   const askNeeds = (made: ReturnType<typeof capabilitiesWith>) => (options.accounts ? made : { ...made, tools: made.tools.map((tool) => (tool.permissions.includes("ask") ? { ...tool, ask_needs: "password" as const } : tool)) });
-  const recompose = () => void (caps = askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, options.gradeModel, toolKeys.refused())));
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, options.gradeModel, toolKeys.refused(), runnerShell));
+  const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
@@ -1050,10 +1030,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // process sees it.
   const vmSecrets = () => [...serverSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
   const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
-  const vmLimits = (() => {
-    const limits = boxLimitsOf(env);
-    return { cpus: limits.cpus, memoryMb: memoryMbOf(limits.memory) };
-  })();
   // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
   // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
   const onNoBoxList = (code: string, message: string) => {
@@ -1095,15 +1071,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
+   *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
+   *  box, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
+   *  daemon that stops after the start is seen, and one that is gone says so in noDockerWords); once it answers, the
+   *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
+   *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
+   *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
+   *  reason, which says how to fix it. */
+  const dockerDaemon = dockerDaemonCheck({ env });
+  const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
+    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
+    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+      const daemon = await dockerDaemon();
+      if (!daemon.up || box?.available) return daemon;
+    } else if (box?.available) return { up: true };
+    return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
+  };
   let computerRoutes: ComputerRoutes | undefined;
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
+      // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        answers: dockerAnswers,
       }),
   }));
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
@@ -1111,14 +1106,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
-   *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
-   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
-  const dockerAnswers = (provider: string): true | string => {
-    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
-  };
+   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
+  /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
+  const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
   const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
+    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
+  /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
+   *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
+   *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
+  const shellOf = async (setting: { kind: string; provider?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1160,9 +1156,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
-  const webhooks = new Webhooks(data, env, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
-  // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
-  secretStores.add("webhook", () => webhooks.signingSecrets());
+  // The outbound webhook and its outbox, in the store; its signing secret among the server's sealed settings, which list it
+  // (and each one it held before) with the server's own secrets.
+  const webhooks = new Webhooks(store, triggerSettings.get(OUTBOUND_WEBHOOK.id)!, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), options.webhookRetryMs);
+  await webhooks.load();
   stops.push(() => webhooks.close());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
@@ -1224,6 +1221,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     approvers: options.accounts === true,
     ...(documents ? { documents: resolve(documents) } : {}),
     ...(boxAllow !== undefined ? { boxAllow } : {}),
+    // Whether that is the operator's own setting, not the default: a browser is held to an operator's list alone.
+    ...(boxAllowSetIn(process.env) ? { boxAllowSet: true as const } : {}),
     modelOf,
     // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
     // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
@@ -1300,6 +1299,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
+    completedOutput: async (runId: string) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (view?.status !== "completed") return undefined;
+      return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null };
+    },
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
@@ -1623,7 +1627,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
   async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
+    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: mcpTools, decisionPrice });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -1659,14 +1663,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, offers, mcp: mcpTools });
+    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, offers, mcp: mcpTools });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, offers, mcp: mcpTools })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, offers, mcp: mcpTools, decisionPrice });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, shellOf, offers, mcp: mcpTools })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, boxes: boxOffers, computerReady, shellOf, offers, mcp: mcpTools, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). A tool's pick a cap rules out refuses it.
       const added = capped.filter((b) => !plain.has(key(b)));
@@ -2369,8 +2373,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") {
       // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
-      // Archil on or off, or saving a key, changes them.
-      const answer = forCaller(caps, byOwnerSession(req));
+      // Archil on or off, or saving a key, changes them. So does a shell on the runner (bash on Archil's serverless exec
+      // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box.
+      const runnerShell = shellTools(await shellOf({ kind: "none" }));
+      const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
@@ -3009,11 +3015,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "saveWebhook": {
         // Never through `idempotent`: its record would keep the answer, and the first one holds the secret.
         // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets its metadata and the words.
-        const saved = webhooks.save(await bodyOf(req));
+        const saved = await webhooks.save(await bodyOf(req));
         return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, mayHoldSecrets(req)));
       }
       case "deleteWebhook":
-        webhooks.remove();
+        await webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "testWebhook":
         return send(res, 200, await webhooks.test());
@@ -3130,9 +3136,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (res.headersSent) return void res.end();
       // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
       if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
-      // A store still busy past a request's wait is home_busy, whichever read or write met it.
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      // A store still busy past a request's wait, or a write still open at its deadline, is home_busy, whichever read or
+      // write met it: the request may be sent again, never a 500 (agents.ts answerOf, as an MCP tool's call answers).
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;
@@ -3156,7 +3163,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {
@@ -3290,7 +3297,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
     const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
     const notice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: { kind } } as RunNotice;
-    if (webhooks.emit("run.needs_input", notice, marker) !== "unsaved") readWaits.set(row.id, seen);
+    if ((await webhooks.emit("run.needs_input", notice, marker)) !== "unsaved") readWaits.set(row.id, seen);
   };
   let openRuns = new Set<string>();
   let endsTimer: NodeJS.Timeout | undefined;
@@ -3326,7 +3333,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       readWaits.delete(id);
       heldReadAt.delete(id);
       if (!now?.endedAt || toldEnds.get(id) === now.endedAt) continue;
-      if (webhooks.emit("run.ended", now.notice, now.endedAt) !== "unsaved") toldEnds.set(id, now.endedAt);
+      if ((await webhooks.emit("run.ended", now.notice, now.endedAt)) !== "unsaved") toldEnds.set(id, now.endedAt);
     }
     openRuns = open;
   };

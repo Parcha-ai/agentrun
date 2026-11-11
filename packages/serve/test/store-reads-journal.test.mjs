@@ -59,3 +59,22 @@ test("a run with no journal reads as no entries, no hearing, no rows", async (t)
   assert.equal((await runHearing(store, "none", context)).heard.size, 0);
   assert.deepEqual(await runTimeline(store, "none", context), []);
 });
+
+test("the paid-tools session's steps read as the run's charges: a step that names its tool folds as that tool's charge, a hold given back is no charge at all", async () => {
+  const { withPaidCosts } = await import("../dist/store-reads/journal.js");
+  const { KINDS } = await import("../dist/runner/journal-kinds.js");
+  const conv = 23;
+  const entries = [
+    { kind: "pi.tool-result", conversationId: ROOT, model: [{ role: "toolResult", toolCallId: "c1" }] },
+    { kind: KINDS.sessionKey, conversationId: ROOT, data: { key: "paid-tools", conversation: conv } },
+    // A browser call's hold, given back when it returned; its charge, its own step; the session's reserve, given back.
+    { kind: "runner.request", conversationId: conv, data: { turn: 1, model: "paid:this browser call", call: "c1", charged_by: "browserbase", tool: "browser", hold: true } },
+    { kind: "runner.request", conversationId: conv, data: { turn: 2, model: "paid:this browser session's time", call: "c1", charged_by: "browserbase", tool: "browser", tag: "s1", owed: true } },
+    { kind: "runner.turn", conversationId: conv, data: { turn: 2, usd: 0.0003 } },
+    { kind: "runner.request", conversationId: conv, data: { turn: 3, model: "paid:this browser session's reserve", charged_by: "browserbase", tool: "browser", tag: "s1", hold: true } },
+    { kind: "runner.turn", conversationId: conv, data: { turn: 1, usd: 0, givenBack: true } },
+    { kind: "runner.turn", conversationId: conv, data: { turn: 3, usd: 0, givenBack: true } },
+  ];
+  const charges = withPaidCosts(entries).filter((e) => e.kind === "agentrun.tool_cost").map((e) => e.data);
+  assert.deepEqual(charges, [{ tool: "browser", charged_by: "browserbase", call: "c1", tag: "s1", usd: 0.0003 }], "one charge, the browser's, under its call; the holds given back show nothing");
+});

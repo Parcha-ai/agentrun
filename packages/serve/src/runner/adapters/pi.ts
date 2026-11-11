@@ -203,7 +203,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // session's tools and the run's native extensions, on every open. A conversation a native tool opens takes this agent's
   // model (pi copies its owner's), so its requests go through this session's proxy.
   const instructions = spec.system.join("\n\n");
-  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}) };
+  // Its thinking level, the session's (the run's effort), on every open; none leaves pi's default.
+  const agent = { model: { provider: PROVIDER, modelId: model }, extensions: [extension, ...native], ...(instructions ? { instructions } : {}), ...(spec.thinking ? { thinkingLevel: spec.thinking } : {}) };
   const root: Conversation = await run.harness.root(context, { agent } as never);
   await root.configure(agent as never, context);
 

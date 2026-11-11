@@ -137,6 +137,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
+    ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -313,6 +314,8 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
         ...(definition.max_cost_usd === undefined && currentBody.maxCostUsd !== undefined ? { max_cost_usd: currentBody.maxCostUsd } : {}),
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
+        // The structured answer's schema is the agent's contract with its callers: an edit that leaves it out keeps it.
+        ...(definition.output_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).outputSchema !== undefined ? { output_schema: (currentBody as AgenticBody).outputSchema } : {}),
       }
     : {};
   return makeRevision({ ...definition, ...carried }, files, note);
@@ -360,7 +363,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,

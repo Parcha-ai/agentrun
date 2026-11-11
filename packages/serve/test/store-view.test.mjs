@@ -22,17 +22,6 @@ async function agent(store, { kind = "agentic" } = {}) {
   await store.agents.create({ id: "agent-1", name: "First agent" }, { id: "rev-1", kind, body: kind === "workflow" ? { workflow: {} } : { instructions: "Answer." } });
 }
 
-/** Launches run `id` with the given body, claims it, writes the journal entries, and ends it with `patch`. */
-async function endedRun(store, { id = "run-1", launch, journal: writes = [], patch }) {
-  await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
-  const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-  if (writes.length) {
-    const journal = store.journal(claim);
-    await commitWrites(journal, writes, context);
-  }
-  await store.runs.update(claim, patch);
-}
-
 /** A user message and the model's final answer, with the request's cost on the answer. */
 async function conversation(store, claim, { ask, answer, usd }) {
   const journal = store.journal(claim);

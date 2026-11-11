@@ -7,12 +7,12 @@
 // written only once a request carrying them is admitted: never for a note no request carried, across a crash or a
 // turn's end.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, letGo, runDir, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, letGo, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const WRAPUP = new URL("./fixtures/faux-wrapup.mjs", import.meta.url).pathname;
@@ -291,14 +291,4 @@ test.skip("claude-agent on the faux harness: a side call that comes first (the h
   await letGo(data, runId);
   assert.deepEqual(noteRequests(data, runId), [[0, WRAP_UP_FIRST("$0.29")]], "in the session's first request, once");
 });
-
-/** A claude-agent run on input-priced faux (output free) under `cap`, its harness scripted by `instructions`, followed
- *  until it rests. */
-const inputPricedRun = async (t, id, instructions, cap) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: new URL("./fixtures/faux-input-priced.mjs", import.meta.url).pathname });
-  assert.equal((await api("POST", "/agents", agent(id, { harness: "claude-agent", instructions }))).status, 201);
-  const runId = (await api("POST", `/agents/${id}/runs`, { input: { content: "go" }, max_cost_usd: cap })).body.run_id;
-  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
-  return { api, data, runId };
-};
 
