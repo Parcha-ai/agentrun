@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
-const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, claimInstallsStopped, claimSettled, installDirOf, installForClaim, installMarkOf, installSettled } = await import("../dist/harness-install.js");
+const { HarnessInstall, HarnessNotInstalled, HARNESS_INSTALLS, claimInstallsStopped, claimSettled, installDirOf, installForClaim, installMarkOf, installSettled, releaseHold, takeHold } = await import("../dist/harness-install.js");
 const { CODEX_STANDIN_ENV, claudePins, codexPins } = await import("../dist/adapters.js");
 const { copyStandIn } = await import("../../run-adapters-codex/test/stand-in.mjs");
 /** Codex's stand-in confines its app-server with setpriv, and a platform with no Codex build has no binary to check. */
@@ -122,6 +122,28 @@ test("installSettled: an install that fails is read with the install's own words
   held.open();
   assert.equal((await installing).message, why);
   assert.deepEqual(await settled, { failed: why });
+});
+
+test("an install that waits while another process retries a failed install takes that retry's outcome, never the last install's failure", async (t) => {
+  const target = join(scratch(t, "install-retry"), "harnesses", "fake");
+  mkdirSync(join(target, ".."), { recursive: true });
+  // The last install failed; another process has just taken the hold to try again and has not yet written its own mark.
+  writeFileSync(installMarkOf(target), JSON.stringify({ failed: "the last install's npm answered 503", at: Date.now() }));
+  const token = await takeHold(target);
+  assert.ok(token, "the other process holds the install");
+  let looks = 0;
+  const install = new HarnessInstall(FAKE, target, async () => (looks++, PINS), async () => assert.fail("the other process installs it"));
+  const installing = install.ensure();
+  // It has read the old failure once and looks again, still waiting for the hold.
+  await Promise.race([until(() => looks >= 2, "a second look while the hold is taken"), installing]);
+  // The retry: its mark, then the harness in whole, its mark gone, its hold let go.
+  writeFileSync(installMarkOf(target), JSON.stringify({ host: hostname(), pid: process.pid, startedAt: Date.now() }));
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "whole"), "");
+  rmSync(installMarkOf(target), { force: true });
+  await releaseHold(target, token);
+  await installing;
+  assert.equal(await installSettled(FAKE, target, PINS), "installed");
 });
 
 test("installSettled: with no install running (no mark, or one a process that is gone left) it reads none at once; installed whole, installed", async (t) => {
