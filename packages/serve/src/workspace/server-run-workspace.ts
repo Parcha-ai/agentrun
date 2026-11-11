@@ -29,7 +29,8 @@ export interface ServerRunWorkspaceOptions {
   readonly sealKey: Buffer | undefined;
   /** Makes the Archil disk (default archilDisk): a test's fake. */
   readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk;
-  /** The server's environment: an ARCHIL_API_KEY there is the account key, over a saved one. */
+  /** The server's environment: an ARCHIL_API_KEY there is the account key, over a saved one, and the Archil settings
+   *  there (ARCHIL_SETTINGS_ENV) the disk, over the saved row. */
   readonly env?: KeyEnv;
 }
 
@@ -64,7 +65,7 @@ export function readOnlyWorkspace(workspace: Workspace): Workspace {
 export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" | "sealedKeys">, runId: string, options: ServerRunWorkspaceOptions): Promise<Workspace | null> {
   const run = await store.runs.get(runId);
   if (run === undefined) return null;
-  const settings = await loadArchilSettings(store);
+  const settings = await loadArchilSettings(store, options.env);
   let workspace: Workspace;
   if (settings === undefined) {
     const folder = runFolder(options.data, run.agentId, runId);

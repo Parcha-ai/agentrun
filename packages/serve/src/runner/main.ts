@@ -12,6 +12,7 @@
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { HARNESS_TABLE_ENV } from "../harness-table.js";
@@ -384,8 +385,11 @@ export async function runnerMain(argv: readonly string[], env: NodeJS.ProcessEnv
   let holds: ReturnType<typeof runnerHolds>;
   try {
     holds = runnerHolds(args, env);
+    // The Archil disk an operator sets, read by every run's claim here as the server reads it (archil-settings.ts): some
+    // of it but not all, or a value the server would refuse, stops this start as it stops the server's.
+    archilSettingsFromEnv(env);
   } catch (error) {
-    if (!(error instanceof RunnerRefused)) throw error;
+    if (!(error instanceof RunnerRefused) && !(error instanceof ArchilSettingsEnvInvalid)) throw error;
     console.error(`agentrun-serve runner: ${error.message}`);
     return 2;
   }

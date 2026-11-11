@@ -770,6 +770,23 @@ computer is made with the GPUs asked.
   `ARCHIL_API_KEY`; `DELETE` turns it off. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
   mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
 
+  The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
+  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_DISK`,
+  `AGENTRUN_ARCHIL_REGION` and `AGENTRUN_ARCHIL_S3_URL` together, and `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image,
+  with the account key in `ARCHIL_API_KEY`:
+
+  ```sh
+  AGENTRUN_ARCHIL_DISK=dsk-0123456789abcdef AGENTRUN_ARCHIL_REGION=aws-us-east-1 \
+  AGENTRUN_ARCHIL_S3_URL=https://s3.example.com ARCHIL_API_KEY=... node packages/serve/dist/cli.js
+  ```
+
+  Each value is checked as the PUT checks it. Some of the three without the others, or a value the PUT would refuse,
+  stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
+  saved key, and nothing is written to the store: `GET /v2/workspace/archil` says `source: "env"` (saved ones say
+  `"console"`), and `PUT` and `DELETE` are `409 key_set_by_server`, since they are changed where the server is started.
+  Unset, the saved settings, if any, hold again. A runner started on its own (`agentrun-serve runner`) reads them from its
+  own environment, as it reads `ARCHIL_API_KEY`, so give it the same values.
+
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
 phone and a browser never mount it.

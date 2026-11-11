@@ -205,6 +205,13 @@ test("the folder mode is read at each call (folderModeOf): turning Archil on or 
   assert.equal((await docker()).ready, true, "Mode 1 again");
 });
 
+test("the folder mode reads the Archil settings in the server's environment too: Mode 2 with nothing saved", async (t) => {
+  const { store } = await storeOn(t);
+  const env = { AGENTRUN_ARCHIL_DISK: "dsk-00000000000env00", AGENTRUN_ARCHIL_REGION: "aws-us-east-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.archil.example" };
+  assert.equal(await folderModeOf(store, env)(), "disk");
+  assert.equal(await folderModeOf(store)(), "local", "the same store without it: Mode 1");
+});
+
 test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
