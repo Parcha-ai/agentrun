@@ -577,3 +577,50 @@ test("a decision its provider refuses unbilled (rate limited) charged nothing: i
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.deepEqual([row.state, asked, row.costUsd], ["failed", 1, 0], `asked once, refused unbilled, nothing counted: ${JSON.stringify(row)}`);
 });
+
+test("a decision the cap refuses inside its admission parks the run only once the driver's commit of its failed end has landed: a commit the store refuses there never leaves the run parked with the decision still asked", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-refused-commit-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let runner;
+  t.after(async () => {
+    await runner?.close().catch(() => {});
+    await real.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // Once the decision is priced (armed), the first commit is the driver's admission of the request, which lands; the next
+  // is its end, failed and unsent after the cap refused it for room, which the store refuses.
+  let armed = false;
+  let stored = 0;
+  let refusedOne = false;
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "journal") return (claim) => {
+      const journal = target.journal(claim);
+      return new Proxy(journal, { get(inner, property) {
+        const value = Reflect.get(inner, property, inner);
+        if (property !== "commit") return typeof value === "function" ? value.bind(inner) : value;
+        return async (...args) => {
+          if (armed && !refusedOne && stored >= 1) {
+            refusedOne = true;
+            throw new Error("the store refused this commit");
+          }
+          const result = await value.apply(inner, args);
+          if (armed && result.stored > 0) stored += 1;
+          return result;
+        };
+      } });
+    };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const base = fauxOpenrouter({ price: feeOnly(10), costUsd: null });
+  const decider = { ...base, priceOf: async (model) => { armed = true; return base.priceOf(model); } };
+  const providers = { providers: { openrouter: decider }, default: "openrouter" };
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.ok(refusedOne, "the store refused the commit after the admission");
+  assert.notEqual(row.state, "parked", `a refused commit of the decision's failed end is thrown, never a park with the decision still asked: ${JSON.stringify(row)}`);
+});
