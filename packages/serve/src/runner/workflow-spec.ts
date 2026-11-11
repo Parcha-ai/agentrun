@@ -468,7 +468,7 @@ export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, 
  *  stop cut short is booked only once its proxy sees the provider's side end, which can be after its node ended, and the
  *  run's end waits for it (bookingsSettled), as the pi adapter's loop does. */
 function deferredHooks() {
-  let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined } | undefined;
+  let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined; noteReturned?(n: string): void } | undefined;
   let loop: WorkflowHostHooks | undefined;
   let unbooked = 0;
   const bookedAll: (() => void)[] = [];
