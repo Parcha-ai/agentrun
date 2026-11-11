@@ -34,7 +34,8 @@ test("--grade-model and --grade-models together, or --set and --cases, are refus
 
 test("agreement: each note by each grade model's decision (kept, held, dropped); notes all judged the same agree, the rest are named with each model's decision; a row no grade reached is no decision", () => {
   const note = (file) => ({ file, text: "x" });
-  const row = (grader, c, merged, pending = [], stage = "grader") => ({ grader, case: c, rep: 0, mode: "grade", stage, merged, notes: [note(`${c}.md`)], verdict: { items: pending.map((file) => ({ file, pending: true })) } });
+  // Each merged note has its own item, as parseVerdict gives one: kept, and held when pending names it.
+  const row = (grader, c, merged, pending = [], stage = "grader") => ({ grader, case: c, rep: 0, mode: "grade", stage, merged, notes: [note(`${c}.md`)], verdict: { items: [{ file: `${c}.md`, keep: merged, ...(pending.includes(`${c}.md`) ? { pending: true } : {}) }] } });
   const rows = [
     row("a", "keep-one", true), row("b", "keep-one", true), row("c", "keep-one", true),
     row("a", "refund-limit", true, ["refund-limit.md"]), row("b", "refund-limit", true), row("c", "refund-limit", true, ["refund-limit.md"]),

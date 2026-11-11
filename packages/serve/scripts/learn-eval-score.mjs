@@ -8,10 +8,10 @@ export const pattern = (source) => { const m = /^\(\?([a-z]+)\)/.exec(source); r
  *  the owner's OK. A proposal that holds one note can serve its siblings at once, and each counts as what it is. */
 export function fateOf(row) {
   if (!row.merged) return { served: [], held: [] };
-  // Each note by its own item: kept and served, kept and held (pending), or dropped beside siblings that merged. A note
-  // with no item of its own (a verdict that gives none) merged as the whole did.
+  // Each note by its own item: kept and served, kept and held (pending), or dropped beside siblings that merged. A merged
+  // verdict gives every note an item (parseVerdict): a note with none is no note kept.
   const items = new Map((row.verdict?.items ?? []).map((item) => [item.file, item]));
-  const notes = (row.notes ?? []).filter((n) => items.get(n.file)?.keep !== false);
+  const notes = (row.notes ?? []).filter((n) => items.get(n.file)?.keep === true);
   return { served: notes.filter((n) => !items.get(n.file)?.pending), held: notes.filter((n) => items.get(n.file)?.pending) };
 }
 
