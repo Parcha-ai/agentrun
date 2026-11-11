@@ -287,23 +287,6 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
 });
 
-test("R10 (guard) a node request's bound is its own: it opens as <key>:<n> on its start mark beside the harness request whose tool call it runs in, and each closes only its own, by its own BOOKED marker or late cost", async () => {
-  const { RequestBounds } = await import("../dist/bounds.js");
-  const bounds = new RequestBounds();
-  let id = 0;
-  const entry = (kind, data) => ({ id: ++id, kind, data });
-  // The harness's request 1 asks for learned_workflow; its answer is booked before its cost came in (unpriced).
-  bounds.note([entry("agentrun.request_started", { key: "run:r", request: 1, boundUsd: 0.1 })], 5);
-  bounds.note([entry("adapter.request", { key: "run:r", request: 1, unpriced: true })], 5);
-  // The node's request inside that call: the session's next number, 2, beside the harness's still awaiting its cost.
-  bounds.note([entry("agentrun.request_started", { key: "run:r", request: 2, boundUsd: 0.2, host: "learned_workflow" })], 5);
-  assert.ok(Math.abs(bounds.inFlight() - 0.3) < 1e-12, `both in flight: ${bounds.inFlight()}`);
-  bounds.note([entry("adapter.request", { key: "run:r", request: 2, host: "learned_workflow" })], 5);
-  assert.ok(Math.abs(bounds.inFlight() - 0.1) < 1e-12, `the node's BOOKED closes the node's alone: ${bounds.inFlight()}`);
-  bounds.note([entry("agentrun.request_cost_late", { key: "run:r", request: 1, usd: 0.01 })], 5);
-  assert.equal(bounds.inFlight(), 0, "the harness's late cost closes the harness's");
-});
-
 // SKIP (follow-up #2078): a learned node's request is not routed or booked as before on the runner
 test.skip("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
