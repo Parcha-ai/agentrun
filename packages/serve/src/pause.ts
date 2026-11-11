@@ -17,7 +17,6 @@ import { join } from "node:path";
 import { RUN_CANCELLED } from "./files.js";
 
 export const RUN_PAUSED = "paused";
-export const NODE_LOG = "nodes.jsonl";
 export const LIVE_VIEW = "live.json";
 const LIVE_MS = 300;
 const POLL_MS = 250;
@@ -34,26 +33,12 @@ export function gated<P, R>(root: string, fn: (params: P) => Promise<R>): (param
   };
 }
 
-/** One line of the node log. `path` is the execution path; `item` the map item's index, null outside a map. */
+/** One line of the node log (the runner's KINDS.nodeEffect entries). `path` is the execution path; `item` the map item's
+ *  index, null outside a map. */
 export type NodeLine =
   | { t: "node.start" | "node.end"; path: string; kind: string; at: string; status?: string; duration_ms?: number; error?: string }
   | { t: "effect.start"; path: string | null; item: number | null; tool: string; label: string; input: unknown; at: string }
   | { t: "effect.end"; path: string | null; item: number | null; tool: string; label: string; status: "done" | "failed"; output?: unknown; error?: string; error_truncated?: boolean; at: string };
-
-
-/** The node log of the run at `root`, in order; a torn last line is left out. */
-export async function readNodeLog(root: string): Promise<NodeLine[]> {
-  const { readFile } = await import("node:fs/promises");
-  const text = await readFile(join(root, NODE_LOG), "utf8").catch(() => "");
-  const out: NodeLine[] = [];
-  for (const line of text.split("\n")) {
-    if (!line) continue;
-    try {
-      out.push(JSON.parse(line) as NodeLine);
-    } catch {}
-  }
-  return out;
-}
 
 /** The llm calls the node log says answered, in order: a run's `llmRead` counts them, and its cost reads the rest. */
 export const llmAnswers = (lines: readonly NodeLine[]) =>
