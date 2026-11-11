@@ -3,7 +3,7 @@
 // pipes, a missing root, and durability on return, shown with pi-durable-disk's fsync-snapshot shim.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -373,10 +373,26 @@ for (const branch of BRANCHES) {
     if (branch.procFd) assert.equal(await get(swapped, "a/victim"), "the run's file\n");
     else await assert.rejects(get(swapped, "a/victim"), notFound, "a GET through a swapped folder is a 404, never the host's bytes");
     // A link at the path itself, made by the box before the GET: never listed, never followed.
-    rmSync(join(root, "a")); // the first swap's link (only the link), and the run's folder back
+    // The first swap's link (unlinkSync: node 24.11's rmSync follows a link to a folder), and the run's folder back.
+    unlinkSync(join(root, "a"));
     renameSync(join(root, "a.real"), join(root, "a"));
     await assert.rejects(get(localWorkspace(root, { procFd: branch.procFd }), "a/linked"), notFound, "a link at the path is a 404");
     hostUntouched(outside);
+  });
+
+  test(`local, ${branch.name}: an append that makes a file, its folder replaced by another under the root once held, lands it and syncs the folder it is in`, { skip: branch.skip }, async () => {
+    const { root } = scratch();
+    const a = join(root, "a");
+    mkdirSync(a);
+    let replaced = false;
+    // Once a/ is held, it is moved aside and a new folder put at its path: no link, still under the root.
+    const workspace = localWorkspace(root, { procFd: branch.procFd, onHeld: (abs) => { if (abs === a && !replaced) { replaced = true; renameSync(a, `${a}.old`); mkdirSync(a); } } });
+    await workspace.append("a/log", "line\n");
+    assert.equal(replaced, true, "the folder was replaced while held");
+    // Through /proc/self/fd the file is made in the folder held, now a.old; by path, in the folder at a/ now.
+    const madeIn = branch.procFd ? `${a}.old` : a;
+    assert.equal(readFileSync(join(madeIn, "log"), "utf8"), "line\n");
+    assert.equal(existsSync(join(branch.procFd ? a : `${a}.old`, "log")), false, "and only there");
   });
 
   test(`local, ${branch.name}: grep never searches a host file through a folder swapped for a link once walked`, { skip: branch.skip }, async () => {
@@ -400,7 +416,7 @@ for (const branch of BRANCHES) {
     mkdirSync(a);
     writeFileSync(join(a, "victim"), "the run's file\n");
     const toLink = () => { renameSync(a, `${a}.real`); symlinkSync(outside, a); };
-    const toFolder = () => { rmSync(a); renameSync(`${a}.real`, a); };
+    const toFolder = () => { unlinkSync(a); renameSync(`${a}.real`, a); };
     // The box's swap: a/ is a link to the host when the file is opened, the run's folder again while the path is
     // resolved (realpath), and the link once more when that real path is stat'd. A check that resolves the path again
     // after the open finds a real path under the root that leads to the very file opened, the host's.

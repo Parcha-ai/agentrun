@@ -152,6 +152,27 @@ class Held {
       await there.close();
     }
   }
+  /** Makes entry `name`, the file `made` just made by `open`, durable: syncs the folder it was made in. On Linux that is
+   *  the folder held. Elsewhere `open` went by the folder's path, which may name another folder under the root by now
+   *  (one put in its place), so the folder the path opens now, through no link, is synced, once its `name` is that very
+   *  file (dev and inode); else ESCAPE, as for any swap. */
+  async syncMade(name: string, made: Stats, path: string): Promise<void> {
+    if (this.reach.procFd) return this.handle.sync();
+    let parent: FileHandle | undefined;
+    let entry: FileHandle | undefined;
+    try {
+      parent = await openBeneath(this.reach.root, this.below, DIR_FLAGS);
+      entry = await openBeneath(this.reach.root, this.below === "" ? name : `${this.below}/${name}`, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+      const now = await entry.stat();
+      if (now.dev !== made.dev || now.ino !== made.ino) throw swapped(path);
+      await parent.sync();
+    } catch (error) {
+      throw errno(error) === "ELOOP" ? swapped(path) : error;
+    } finally {
+      await entry?.close();
+      await parent?.close();
+    }
+  }
   /** `fn`, its folder confirmed before and after: what it read was read in the folder held. */
   async confirmed<T>(path: string, fn: () => Promise<T>): Promise<T> {
     await this.confirm(path);
@@ -365,14 +386,16 @@ class LocalWorkspace implements Workspace {
             handle = await dir.open(target, O_RDWR | O_APPEND | O_NOFOLLOW | O_NONBLOCK);
           }
         }
+        let stats: Stats;
         try {
-          if (!(await handle.stat()).isFile()) throw new WorkspaceError("REFUSED", `${show(path)} is not a file`, { path });
+          stats = await handle.stat();
+          if (!stats.isFile()) throw new WorkspaceError("REFUSED", `${show(path)} is not a file`, { path });
           await handle.writeFile(bytes);
           await handle.datasync();
         } finally {
           await handle.close();
         }
-        if (made) await dir.handle.sync();
+        if (made) await dir.syncMade(target, stats, path);
       } catch (error) {
         throw failed(error, path);
       }
