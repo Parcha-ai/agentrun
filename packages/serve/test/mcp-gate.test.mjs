@@ -608,7 +608,7 @@ test("a person's cancel of a run parked on an MCP call reads its call withdrawn 
   assert.deepEqual(await answer.refused(runId, pending.id, { decision: "allow" }), [409, `The tool call ${pending.id} was already canceled with its run.`]);
 });
 
-test("a person's stop of a run parked on an MCP call leaves it input_required and idle with nothing pending, its end's outcome stopped (main's stop)", { timeout: 120_000, skip: "waits on reopen-stopped (route-1, unlanded): a person's stop writes the run's outcome 'stopped' and reads input_required/idle; main's stop leaves the outcome null" }, async (t) => {
+test("a person's stop of a run parked on an MCP call leaves it input_required and idle with nothing pending, its end's outcome stopped (main's stop)", { timeout: 120_000, skip: "#2136 (reopen-stopped): a person's stop writes the run's outcome 'stopped' and reads input_required/idle; main's stop leaves the outcome null" }, async (t) => {
   const { server, answer, fake, extra, content } = await parkingServer(t, "pi");
   const { api } = server;
   const runId = await started(api, "stopped-literal-pi", ["mcp:fake/add"], content, { extra });
