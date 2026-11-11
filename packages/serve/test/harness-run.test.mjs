@@ -284,8 +284,7 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): web_fetch and web_search on claude-agent and codex make no host call on the runner
-  test.skip(`web_fetch runs on ${harness} as a host tool: the definition saves with no warning, its run is not refused, and it reads the page through the guarded fetch`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: the definition saves with no warning, its run is not refused, and it reads the page through the guarded fetch`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB });
     const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["web_fetch"] }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -298,8 +297,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /"title":"Public page".*"via":"direct"/s, "web_fetch's Page, read through the guarded fetch");
   });
 
-  // SKIP (follow-up #2078): web_fetch and web_search on claude-agent and codex make no host call on the runner
-  test.skip(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
@@ -318,8 +316,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_fetch").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_fetch"]);
   });
 
-  // SKIP (follow-up #2078): web_fetch and web_search on claude-agent and codex make no host call on the runner
-  test.skip(`web_search runs on ${harness} as a host tool where Parallel is picked: the run is handed Parallel's key and searches through Parallel`, { timeout: 60_000 }, async (t) => {
+  test(`web_search runs on ${harness} as a host tool where Parallel is picked: the run is handed Parallel's key and searches through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxParallel: FAUX_PARALLEL });
@@ -340,8 +337,7 @@ for (const harness of ["claude-agent", "codex"]) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): monid_run on claude-agent and codex never reaches monid on the runner
-  test.skip(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the key from the run's pipe, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the key from the run's pipe, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
@@ -730,8 +726,7 @@ test.skip("a read refused outside the run names the path it was given, as given,
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): a cancel while a host web_search through Parallel is out: the search never reaches Parallel on the runner
-  test.skip(`a ${harness} run cancelled while its host web_search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known`, { timeout: 90_000 }, async (t) => {
+  test(`a ${harness} run cancelled while its host web_search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known`, { timeout: 90_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     // The faux Parallel answers the search after 2 s, so the cancel lands while the host tool's call is under way.
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:2000" });
