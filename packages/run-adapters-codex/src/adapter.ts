@@ -12,7 +12,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
