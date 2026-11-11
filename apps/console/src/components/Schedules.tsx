@@ -1,6 +1,7 @@
 import { ArrowLeft, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
+import { CronLine, ZoneLine } from "@/components/SchedulePicker";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -335,7 +336,6 @@ function Field({ label, field, issue, hint, children }: { label: string; field: 
 /** An empty cap field's placeholder: the picked agent's own default cap as served (definition.max_cost_usd), which an
  *  empty field takes; none when the agent has none, never a made-up example. */
 const capPlaceholder = (agentCap: number | undefined) => (agentCap !== undefined ? `${dollars(agentCap)}, the agent's default` : undefined);
-const ZONES: string[] = typeof (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf === "function" ? (Intl as unknown as { supportedValuesOf: (key: string) => string[] }).supportedValuesOf("timeZone") : [];
 
 /** Every agent, a page at a time, for the agent picker. */
 async function allAgents(v2: Client): Promise<Agent[]> {
@@ -422,7 +422,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
             ))}
           </div>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><Input name="cron" value={draft.cron} onChange={(e) => set("cron")(e.target.value)} placeholder="30 1 * * *" /></Field>}
+            {draft.kind === "cron" && <Field label="Cron line" field="source.cron" issue={issues["source.cron"]} hint="Minute, hour, day of month, month, day of week."><CronLine name="cron" value={draft.cron} onChange={set("cron")} placeholder="30 1 * * *" /></Field>}
             {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><Input name="at" type="datetime-local" step={60} value={draft.at} onChange={(e) => pickAt(e.target.value)} /></Field>}
             {draft.kind === "every" && (
               // The label names the amount; the unit beside it has its own id and its own name ("Unit").
@@ -436,12 +436,11 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
             )}
             {draft.kind === "cron" && (
               <Field label="Time zone" field="source.timezone" issue={issues["source.timezone"]} hint="The zone the cron line runs in.">
-                <Input name="timezone" list="schedule-zones" value={draft.timezone} onChange={(e) => set("timezone")(e.target.value)} />
+                <ZoneLine name="timezone" value={draft.timezone} onChange={set("timezone")} />
               </Field>
             )}
             {draft.kind === "every" && <Field label="Starting, your time (optional)" field="source.start_at" issue={issues["source.start_at"]} hint={startInstant ? `= ${utcWhen(startInstant)}` : undefined}><Input name="startAt" type="datetime-local" step={60} value={draft.startAt} onChange={(e) => set("startAt")(e.target.value)} /></Field>}
           </div>
-          {ZONES.length > 0 && <datalist id="schedule-zones">{ZONES.map((z) => <option key={z} value={z} />)}</datalist>}
           {restarts && <p className="mt-3 text-small text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>

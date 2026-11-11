@@ -371,8 +371,8 @@ describe("applying a template", () => {
       ...REVIEWER, name: "market-monitor", display_name: "Market monitor", mcp: [], secrets: [],
       parameters: {
         competitors: { type: "string", required: true, description: "the companies to watch" },
-        cron: { type: "string", default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week)" },
-        timezone: { type: "string", default: "UTC", description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York)" },
+        cron: { type: "string", required: false, default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week)" },
+        timezone: { type: "string", required: false, default: "UTC", description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York)" },
       },
       triggers: [{ name: "weekly-digest", source: { kind: "schedule", cron: "${parameters.cron}", timezone: "${parameters.timezone}" }, target: { kind: "start_run", input: { content: "Scheduled weekly run." } } }],
     };

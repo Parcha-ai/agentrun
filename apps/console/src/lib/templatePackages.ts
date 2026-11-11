@@ -1,5 +1,6 @@
 import { dollars } from "./format";
 import type { FieldIssue } from "./client";
+import { browserZone } from "./schedules";
 import type { TemplateView } from "./v2";
 
 // The server's templates (GET /v2/templates), as the Templates page reads them. (lib/templates.ts is Mission Control's
@@ -59,10 +60,37 @@ export function parametersOf(t: TemplateView, text: ParameterText): Record<strin
   return out;
 }
 
+/** The parameters a schedule trigger of the template reads its cron line and its time zone from, as its served source names
+ *  them whole (`cron: "${parameters.cron}"`): the Apply form takes those as a schedule, not as plain text. A parameter that is
+ *  not a string, or is not one of the template's, is not one. */
+export function scheduleParamsOf(t: TemplateView): { cron: ReadonlySet<string>; timezone: ReadonlySet<string> } {
+  const cron = new Set<string>();
+  const timezone = new Set<string>();
+  const named = (value: unknown): string | undefined => {
+    const key = typeof value === "string" ? /^\$\{parameters\.([A-Za-z0-9_]+)\}$/.exec(value)?.[1] : undefined;
+    return key !== undefined && Object.hasOwn(t.parameters, key) && t.parameters[key]!.type === "string" ? key : undefined;
+  };
+  for (const trigger of t.triggers as unknown[]) {
+    const source = (trigger as { source?: { kind?: unknown; cron?: unknown; timezone?: unknown } } | null)?.source;
+    if (source?.kind !== "schedule") continue;
+    const c = named(source.cron);
+    const z = named(source.timezone);
+    if (c !== undefined) cron.add(c);
+    if (z !== undefined) timezone.add(z);
+  }
+  return { cron, timezone };
+}
+
 /** The parameters form as it opens: each boolean at its served default ("true"/"false"), unticked with none; text and
- *  numbers empty (their default is shown as a hint, and the server applies it when the field is left out). */
+ *  numbers empty (their default is shown as a hint, and the server applies it when the field is left out). A schedule's cron
+ *  line starts at its default, so its words show what it will do, and its time zone at the browser's, where the owner reads
+ *  the clock. */
 export function startValues(t: TemplateView): ParameterText {
-  return Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]) => (p.type === "boolean" && typeof p.default === "boolean" ? [[key, String(p.default)]] : [])));
+  const values: ParameterText = Object.fromEntries(Object.entries(t.parameters).flatMap(([key, p]) => (p.type === "boolean" && typeof p.default === "boolean" ? [[key, String(p.default)]] : [])));
+  const { cron, timezone } = scheduleParamsOf(t);
+  for (const key of cron) if (typeof t.parameters[key]!.default === "string") values[key] = t.parameters[key]!.default as string;
+  for (const key of timezone) values[key] = browserZone();
+  return values;
 }
 
 /** The gate names the owner ticked, in the template's order: the consent an apply sends (`grants`), nothing else. */

@@ -3,6 +3,7 @@ import { Picker } from "@/components/ui/picker";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { SecretOnce } from "@/components/Schedules";
+import { CronLine, ZoneLine } from "@/components/SchedulePicker";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -11,7 +12,7 @@ import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { hookUrlOf } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
-import { choicesOf, grantsOf, issuesAt, needsOf, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, startValues, templateHash, titleOf } from "@/lib/templatePackages";
+import { choicesOf, grantsOf, issuesAt, needsOf, paramIssueWords, paramLabel, parametersOf, paramValid, type ParameterText, scheduleParamsOf, startValues, templateHash, titleOf } from "@/lib/templatePackages";
 import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void };
@@ -121,6 +122,8 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
     } finally { setApplying(false); }
   };
   const params = Object.entries(t.parameters);
+  // The parameters a schedule trigger reads its cron line and time zone from: taken as a schedule, the cron line in words.
+  const schedule = scheduleParamsOf(t);
   // Issues the form has no place for (a trigger's, an override's) show above the button, in the server's words.
   const placed = (i: FieldIssue) => /^(parameters|secrets|mcp)\./.test(i.field) || /^grants\.\d+$/.test(i.field);
   if (made) {
@@ -185,6 +188,10 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                       options={[{ value: "", label: p.required ? "Choose one" : p.default !== undefined ? `${String(p.default)} (default)` : "None chosen" }, ...choicesOf(p)!.map((c) => ({ value: c, label: c }))]} />
                   : p.type === "boolean"
                   ? <input type="checkbox" className="size-4 accent-primary" checked={values[key] === "true"} onChange={(e) => setParam(key, e.target.checked ? "true" : "false")} />
+                  : schedule.cron.has(key)
+                  ? <CronLine name={key} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)} />
+                  : schedule.timezone.has(key)
+                  ? <ZoneLine name={key} value={values[key] ?? ""} onChange={(v) => setParam(key, v)} required={p.required} />
                   : <Input type={p.type === "string" ? "text" : "number"} step={p.type === "integer" ? 1 : "any"} value={values[key] ?? ""} required={p.required} placeholder={p.default === undefined ? undefined : String(p.default)}
                       onChange={(e) => setParam(key, e.target.value)} />}
               </label>
