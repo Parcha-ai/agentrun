@@ -127,10 +127,15 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         // reports it ("500 {...}"), never this route's envelope around it.
         const sendError = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
-        // Messages blocks are numbered as sent; a thinking block of pi-ai's is not sent (it carries no signature here).
+        // Messages blocks are numbered as sent. A thinking block is sent too, so the model's reasoning reaches the run's
+        // record as a Timeline row; its text goes through the run's one redactor, so a held key the model quoted in its
+        // thinking is cut before pi's session journals it, not only at read. It carries no signature here, which the bridge
+        // back (contextOf) drops from a later turn's request, so none is needed and the cut thinking is never read as context.
         const blockOf = new Map<number, number>();
         const sentJson = new Set<number>();
         let blocks = 0;
+        // The thinking of the block being streamed, gathered so its whole text is redacted at once (its deltas are not sent).
+        let thinking = "";
         const open = (at: number | undefined) => {
           const index = blocks++;
           blockOf.set(at ?? -1, index);
@@ -140,6 +145,18 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
           for await (const event of asText ? [] : events) {
             const at = event.contentIndex;
             if (event.type === "text_start") send({ type: "content_block_start", index: open(at), content_block: { type: "text", text: "" } });
+            else if (event.type === "thinking_start") {
+              thinking = "";
+              send({ type: "content_block_start", index: open(at), content_block: { type: "thinking", thinking: "", signature: "" } });
+            } else if (event.type === "thinking_delta") thinking += event.delta ?? "";
+            else if (event.type === "thinking_end") {
+              // The whole thinking at its end, through the run's one redactor, in one delta: a held key the model quoted is
+              // cut before pi's session journals it even where it spans two deltas (a cut per delta could miss a key split
+              // across them).
+              const index = blockOf.get(at ?? -1);
+              send({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: redact(thinking) } });
+              send({ type: "content_block_stop", index });
+            }
             else if (event.type === "text_delta") send({ type: "content_block_delta", index: blockOf.get(at ?? -1), delta: { type: "text_delta", text: event.delta ?? "" } });
             else if (event.type === "toolcall_start") {
               const call = event.partial?.content?.[at ?? -1];

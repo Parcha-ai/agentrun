@@ -106,7 +106,7 @@ test("the route sends the model's thinking in Messages shape, its text cut by th
   // A held key the model quotes in its thinking is cut at write (the route's redactor), so it never reaches pi's session
   // to be journaled, not only cut by the renderer at read. The route's fetch is where a bridged model's blocks become
   // Messages.
-  const SECRET = `not-a-secret-thinking-${randomBytes(6).toString("hex")}`;
+  const SECRET = `not-a-secret-${randomBytes(6).toString("hex")}`;
   const redact = (text) => text.replaceAll(SECRET, "[redacted]");
   const route = await routeOf(undefined, { AGENTRUN_SERVE_FAUX: FAUX }, undefined, undefined, undefined, redact);
   const response = await route.fetch(`${route.provider.origin}/v1/messages`, {
