@@ -90,7 +90,8 @@ export type FauxAction =
 
 /** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
  *  would add it to the body: filed with its text, for a test to see. */
-export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
+/** `answered`: a request whose reply asks for calls came back (its `until` let go), so its calls are the model's to run. */
+export const FAUX_RECORDS = { request: "faux.request", answered: "faux.answered", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. */
@@ -168,11 +169,14 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
           : "submit" in action ? [{ name: "submit", args: { value: action.submit }, callId: `${spec.key}:${index}` }] : [];
       // The calls the session's last request asked for that never started (no intent, no answer): the gate parked them, or
       // the process ended before they ran. A recovered turn runs them first, as a real CLI's resume runs the calls left
-      // dangling in its transcript; a turn settled or a new one sent leaves them.
+      // dangling in its transcript; a turn settled or a new one sent leaves them. Only once that request was answered
+      // (FAUX_RECORDS.answered): one cut off before its reply came (held at its `until`) asked for nothing yet, so none of
+      // its calls runs on the recovery: the turn goes on with the script's next request, as a cut request's always has.
       const begun = new Set(records.filter((r) => r.kind === FAUX_RECORDS.call || r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
+      const answered = new Set(records.filter((r) => r.kind === FAUX_RECORDS.answered).map((r) => (r.data as { index: number }).index));
       // Each keeps its action's resultWhen: its outcome is told only once that file exists, as on its first try.
       const resultWhenOf = (action: FauxAction | undefined): string | undefined => (action && "resultWhen" in action && typeof action.resultWhen === "string" ? action.resultWhen : undefined);
-      let dangling = state === "open_turn" ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)).map((call) => ({ ...call, resultWhen: resultWhenOf(script[cursor - 1]) })) : [];
+      let dangling = state === "open_turn" && answered.has(cursor - 1) ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)).map((call) => ({ ...call, resultWhen: resultWhenOf(script[cursor - 1]) })) : [];
       /** What the session has been sent, as a model would be prompted with it. */
       const prompt = records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { text: string }).text);
       let ending: { promise: Promise<{ status: TurnStatus; error?: string }>; resolve: (end: { status: TurnStatus; error?: string }) => void } | undefined;
@@ -276,6 +280,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             }
             // Held in flight, admitted and not answered, until the file it waits for exists (or the turn is stopped).
             if ("until" in action && typeof action.until === "string") await untilExists(action.until, signal);
+            // Its reply is in: the calls it asks for are the model's now, and a recovered turn runs any left unstarted.
+            if (callsOf(action, index).length) await append(FAUX_RECORDS.answered, { index });
             const tokens = "tokens" in action && action.tokens ? action.tokens : { input: 10, output: 5 };
             const usd = action.usd === undefined ? 0.001 : action.usd;
             const book = () => io.models.afterRequest({ ...tokens, usd }, ticket || undefined, { end: "answered", usd });
