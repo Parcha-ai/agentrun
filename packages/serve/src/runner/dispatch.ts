@@ -89,7 +89,14 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
       }
       replayed();
     })();
-    if (earlyStop) void inner.stop(earlyStop);
+    // The buffered stop, not awaited here (start() returns the inner loop's end): an inner stop that throws is said in
+    // the log, never an unhandled rejection, which would end the runner process and every run it holds.
+    if (earlyStop) {
+      inner.stop(earlyStop).catch((error: unknown) => {
+        const text = (error as Error)?.message ?? String(error);
+        console.warn(`[runner] run ${claim.runId}: its stop failed: ${loopDeps.redact ? loopDeps.redact(text) : text}`);
+      });
+    }
     return end;
   }
 
