@@ -579,6 +579,8 @@ class ArchilWorkspace implements Workspace {
             // Archil's plan takes no network policy: nothing ran, so the command runs again with the network open.
             if (!(error instanceof ArchilEgressRefused)) throw error;
             this.#egressOpen = error.message;
+            // The caller gave up while Archil answered: the command it no longer waits for is not started now.
+            if (signal?.aborted) throw abortError(signal);
           }
         }
         read ??= await archilExec(this.#disk, job);

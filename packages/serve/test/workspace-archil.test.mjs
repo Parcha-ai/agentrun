@@ -308,6 +308,24 @@ test("archil: a plan that takes no network policy (403 network_plan_required) ru
   assert.equal((await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 })).stderr, "");
 });
 
+test("archil: an exec cancelled while Archil refuses its network policy is not started with the network open", async () => {
+  const disk = new FakeArchilDisk();
+  let answer;
+  disk.refuseNetwork = { ...PLAN_REFUSAL, answered: new Promise((resolve) => { answer = resolve; }) };
+  const workspace = archilWorkspace(disk, ROOT);
+  const controller = new AbortController();
+  const cancelled = workspace.exec(["sh", "-c", "echo ran"], { env: ENV, timeoutMs: 10_000, network: "deny", signal: controller.signal });
+  while (disk.calls.filter((call) => call.op === "exec").length === 0) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(cancelled, (error) => error.name === "AbortError");
+  answer();
+  // The queue's next exec runs after the cancelled one has settled: by then a fallback would have been sent.
+  const next = await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.match(next.stderr, /^agentrun: this command ran with the network open\./, "the refusal is still remembered");
+  assert.deepEqual(execNetworks(disk), [DENY, undefined], "the cancelled command was never sent again; only the next one ran");
+  assert.deepEqual(disk.calls.filter((call) => call.op === "exec").map((call) => call.command.includes("'echo ran'")), [true, false]);
+});
+
 test("archil: a 403 that names no network (a refused key, the exec allowance spent) still fails the exec, in words, and runs nothing", async () => {
   const disk = new FakeArchilDisk();
   disk.refuseNetwork = { status: 403, code: "Forbidden", message: "exec allowance spent" };

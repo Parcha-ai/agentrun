@@ -108,7 +108,8 @@ export class FakeArchilDisk {
   /** The most characters of stdout an exec's answer carries, when set (as a platform's answer limit would cut it). */
   answerLimit = undefined;
   /** When set, an exec sent with a network policy is refused, nothing run, as a plan without network policies refuses it:
-   *  { status, code, message } (Archil's code for it, per its plan docs: 403 network_plan_required). */
+   *  { status, code, message } (Archil's code for it, per its plan docs: 403 network_plan_required), answered once
+   *  `answered` (a promise, when given) settles. */
   refuseNetwork = undefined;
   /** The paths each running exec holds. */
   #held = new Set();
@@ -327,7 +328,8 @@ export class FakeArchilDisk {
   async exec(request) {
     this.#record({ op: "exec", mounts: { ...request.mounts }, checkoutPaths: request.checkoutPaths, queueMs: request.queueMs, image: request.image, network: request.network, command: request.command });
     if (request.network !== undefined && this.refuseNetwork !== undefined) {
-      const { status, code, message } = this.refuseNetwork;
+      const { status, code, message, answered } = this.refuseNetwork;
+      if (answered) await answered;
       throw new FakeDiskError(status, code, message);
     }
     const mounts = Object.entries(request.mounts ?? {});
