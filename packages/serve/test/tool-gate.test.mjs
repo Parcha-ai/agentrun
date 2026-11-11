@@ -289,7 +289,13 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
   const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
   try {
     for (const run of runs) {
-      const row = await store.runs.get(run.runId);
+      // The view reads input_required as the park lands; the runner lets go of its claim just after: polled, to a deadline.
+      let row;
+      for (const until = Date.now() + 15_000; ; await sleep(50)) {
+        row = await store.runs.get(run.runId);
+        if (row.state === "parked" && row.runner === null) break;
+        assert.ok(Date.now() < until, `${run.harness}: parked with its claim let go within 15 s: ${JSON.stringify(row)}`);
+      }
       assert.deepEqual([row.state, row.runner], ["parked", null], `${run.harness}: parked, its claim let go`);
       assert.equal((await api("GET", `/runs/${run.runId}`)).body.status, "input_required", `${run.harness} still parked`);
     }
