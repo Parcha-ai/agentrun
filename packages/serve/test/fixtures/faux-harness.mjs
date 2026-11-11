@@ -62,7 +62,7 @@ export function grown(k, { miss = false } = {}) {
   return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, tokens, usd };
 }
 
-export function script(spec) {
+export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
   const given = spec.tools.find((tool) => tool.name === "learned_workflow");
@@ -105,11 +105,10 @@ export function script(spec) {
   if (/Comment, then write\./.test(text)) return [{ say: "I'll write note.md.", usd: 0.001 }, { call: "write", args: { path: "note.md", content: "noted" }, usd: 0.001 }, { say: "Wrote note.md.", usd: 0.001 }];
   // Reads outside the run: a path up out of its directory, and an absolute one elsewhere, both refused.
   if (/Read outside the run\./.test(text)) return [{ call: "read", args: { path: "../../.token" }, usd: 0.001 }, { call: "read", args: { path: "/etc/hostname" }, usd: 0.001 }, { say: "Read none.", usd: 0.001 }];
-  // As the Claude CLI sends a path: absolute, under its working directory, which is the run's work/ (the run's
-  // process runs with --dir <run dir>); then one outside the run's directory, which the tool refuses.
+  // As the Claude CLI sends a path: absolute, under its working directory (the session's cwd, which the run's file tools
+  // take as its folder); then one outside the run's directory, which the tool refuses.
   if (/Write by the absolute path\./.test(text)) {
-    const runDir = process.argv[process.argv.indexOf("--dir") + 1];
-    return [{ call: "write", args: { path: `${runDir}/work/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
+    return [{ call: "write", args: { path: `${session.cwd}/hello.md`, content: "hello" }, usd: 0.001 }, { call: "write", args: { path: "/elsewhere/away.md", content: "x" }, usd: 0.001 }, { say: "Wrote hello.md.", usd: 0.001 }];
   }
   // The same two calls, each ending before its request is paid, as with Claude Code, whose cost comes in after its
   // response: each result is stored before the answer that holds its call.
