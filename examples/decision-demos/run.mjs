@@ -65,6 +65,9 @@ const token = `demo_${randomBytes(24).toString("base64url")}`;
 const data = opts.data ? resolve(opts.data) : mkdtempSync(join(tmpdir(), "dwf-usecases-"));
 // No box unless the caller names one: unset, AGENTRUN_BOXES turns Docker on where it answers (boxes.ts).
 const env = { ...process.env, AGENTRUN_BOXES: process.env.AGENTRUN_BOXES ?? "none", AGENTRUN_TOKEN: token, AGENTRUN_ACCOUNTS: "0", AGENTRUN_LOG: "quiet" };
+// The demo drives agents and workflows and hands out the console's link, so its server is never the API-only profile
+// (AGENTRUN_API_ONLY in this shell would refuse those routes and print no Open line, which the wait below needs).
+delete env.AGENTRUN_API_ONLY;
 // The fakes reach a run only through startServe's options (the server takes no test hook from its environment), so a
 // faux server runs in-process, through serve's smoke launcher; a live one is the CLI.
 const FAUX = { fauxJev: "jev.mjs", fauxParallel: "parallel.mjs", fauxOpenrouter: "openrouter.mjs", fauxWeb: "web.mjs" };
