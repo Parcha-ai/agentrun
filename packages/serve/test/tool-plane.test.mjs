@@ -12,7 +12,7 @@ import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, rec
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, launchOf, scratch, serve, withEnv } from "./support.mjs";
 import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
@@ -295,8 +295,7 @@ test("a kept plane at a later launch: as it was, but Parallel with its key gone 
   assert.deepEqual(recheckPlane(plane, {}), { ...plane, web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY" });
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
+test("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
   withEnv(t, { PARALLEL_API_KEY: "not-a-secret" }, ["AGENT_MODEL", "AGENT_MODEL_BASE_URL"]);
   const { api, data } = await serve(t);
   const flow = answerFlow();
@@ -304,11 +303,11 @@ test.skip("a workflow's model node naming web_search, its revision listing no to
   const made = await api("POST", "/agents", flowAgent("finder", flow, { tool_settings: { web_search: {} } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual([made.body.definition.tools, made.body.definition.tool_settings], [[], undefined], "nothing listed; an empty setting is none");
-  const planeOfRun = async (id) => JSON.parse(await readFile(join(runDir(data, id), "serve.json"), "utf8")).tool_plane;
+  const planeOfRun = async (id) => launchOf(data, id)?.plane;
   const ran = async () => {
     const started = await api("POST", "/agents/finder/runs", { input: { question: "What is six times seven?" } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    // Saved before its process started, so it is there when the start answers; the run then keeps it.
+    // Saved with the run, so it is there when the start answers; the run then keeps it.
     const pinned = await planeOfRun(started.body.run_id);
     await follow(api, started.body.run_id, ["completed"]);
     assert.deepEqual(await planeOfRun(started.body.run_id), pinned, "kept as it was saved before the launch");
@@ -319,7 +318,7 @@ test.skip("a workflow's model node naming web_search, its revision listing no to
   assert.deepEqual(await ran(), { web_search: "exa-keyless" }, "keyless Exa picked: keyless, the key held or not");
 });
 
-// SKIP (follow-up #2078): a run does not keep the tools its first launch resolved on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test.skip("a run keeps the tools its first launch resolved: a PUT between its launches changes the next run's, never its own", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
   const files = { parallel: join(dir, "parallel.jsonl"), web: join(dir, "dialled.txt") };

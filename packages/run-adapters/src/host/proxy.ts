@@ -94,10 +94,11 @@ export interface ProviderPolicy {
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
-  /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
-   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Undefined: the body has
-   *  no input bound the policy can state (a hosted tool that reads pages into the input), so `inputTokensMax` is
-   *  undefined, never 0 or the body's bytes alone. Absent: none. */
+  /** The input tokens the provider bills for the body `apply` returned beyond its bytes: a prompt it adds itself, such as
+   *  a tool-use system prompt, and each image at what it is billed as in place of the bytes its data takes in the body
+   *  (`providerInputOverhead`), which can make it less than 0. Added to the body's bytes for `inputTokensMax`; the sum
+   *  below 0 is no bound (unmeasured). Undefined: the body has no input bound the policy can state (a hosted tool that
+   *  reads pages into the input), so `inputTokensMax` is undefined, never 0 or the body's bytes alone. Absent: none. */
   serverInputOverhead?(body: Record<string, unknown>): number | undefined;
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
@@ -512,6 +513,10 @@ export interface ModelProxyOptions {
   hooks: ModelProxyHooks;
   /** The session's model, as the runner names it to `beforeRequest`. The policy fixes the body's model. */
   model: string;
+  /** This proxy's route among the session's, told to `beforeRequest` with each request (ModelRequest.route) so the host
+   *  prices it at this proxy's price: a proxy beside the session's for another tier's model names its tier. Absent: the
+   *  session's own. */
+  route?: string;
   /** The provider's base: its origin and, for a gateway that serves the API under a path, that path
    *  (`https://api.example.com`, `https://gateway.example/api`). A route's path is appended to it. A base with userinfo, a
    *  query or a fragment is refused, so the key goes only where the base reads. */
@@ -758,8 +763,11 @@ export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, un
     // never 0, and no failure to report. Anything else that is not a count (null, a throw) is reported, and unmeasured too.
     const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
     if (overhead === undefined) return undefined;
-    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
-    return Buffer.byteLength(sent, "utf8") + overhead;
+    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead)) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
+    // Below 0 only by images' data the body carries (counted at what they are billed as instead): never past the bytes.
+    const bound = Buffer.byteLength(sent, "utf8") + overhead;
+    if (bound < 0) throw new Error(`the policy counted ${-overhead} more bytes as billed apart than the body's ${Buffer.byteLength(sent, "utf8")}`);
+    return bound;
   } catch (error) {
     say(`model proxy (${policy.id}): the policy could not say what the provider adds to the body's input; its input is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     return undefined;
@@ -992,6 +1000,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(host === undefined ? {} : { host }),
+        ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
