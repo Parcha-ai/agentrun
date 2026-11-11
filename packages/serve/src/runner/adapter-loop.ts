@@ -227,6 +227,9 @@ export interface RunLedger {
    *  pause): its pause is journaled at once, as a refused request's is (pauseAtCap), and the run's next request is refused
    *  in its words, so the run parks there with the cap's figures. A take-over's refusal pauses nothing: it is not called. */
   pause(refusal: Refusal): Promise<void>;
+  /** The store's flush (what the runner's flush before a side effect runs): a record a tool writes during its call that
+   *  must be on disk before the call's next step leaves the box (a browser session's open, before its vendor is asked). */
+  flush(): Promise<void>;
 }
 
 export interface AdapterLoopOptions {
@@ -725,7 +728,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!session.steer) return { refused: "this harness takes no steer mid-turn" };
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    const taken = gate.expect(writesSubmission(requestId), { take: [command.id] });
+    // A person's answer to the question the last turn ended on (a parked ask's, its run claimed again by it): the row's
+    // waiting summary goes in its commit, as an in-claim wait's answer clears it. Left until the end commit, the answer's
+    // turn reads running, held and "Waiting for your reply", and the server tells run.needs_input for that ask again.
+    const taken = gate.expect(writesSubmission(requestId), { take: [command.id], ...(askedLast ? { run: { summary: null } } : {}) });
     // A seal while the steer is placed fails it before it is awaited: handled here.
     taken.catch(() => undefined);
     const theGate = gate;
@@ -823,6 +829,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           pause: async (refusal) => {
             await pauseFor?.(refusal);
           },
+          flush: () => deps.flush(),
         };
         // A phase of the host's: queued until the root exists (written in its creating commit, above), else written at once.
         const phasing = harness;
