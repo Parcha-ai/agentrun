@@ -22,7 +22,7 @@
     "test": "node --test 'test/*.test.mjs'"
   },
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "repository": {
     "type": "git",

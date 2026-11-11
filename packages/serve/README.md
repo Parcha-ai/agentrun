@@ -9,7 +9,7 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 ## Quick start (no key, no network)
 
-Node 24.11 or later. In a checkout of this repository:
+Node 24.22.3 or later. In a checkout of this repository:
 
 ```sh
 npm ci --ignore-scripts && npm run build

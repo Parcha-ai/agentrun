@@ -45,7 +45,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
       - name: Install OIDC-capable npm
         run: npm install --global npm@11.21.0 --ignore-scripts
       - name: The tagged commit passed CI on main
@@ -154,7 +154,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
