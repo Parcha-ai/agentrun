@@ -16,7 +16,7 @@ export interface DispatchDeps {
   /** The run's launch row (store.runs.launch): its body names the harness. It throws (StoreLaunchMissing) when the run
    *  was not started with one, which fails the run in words. */
   launchOf(runId: string): Promise<{ readonly body: unknown }>;
-  /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the switch may
+  /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the resolver may
    *  read the run's revision — a workflow revision runs on the workflow loop whatever its harness name), or undefined when
    *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; a built-in
    *  learning run names "learning"; the CLI harnesses name their own. May be async (the revision read). */

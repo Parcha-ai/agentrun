@@ -219,7 +219,7 @@ test("codex with Codex not installed in the data, or not its pinned build: the r
   assert.doesNotMatch(missing, /npx -p|npm install /);
   // Installed, but not the pinned build: the adapter's own words, with the line that installs it into the data.
   await linkHarnesses(data);
-  const unpinned = async () => ({ ...codex, verifyCodex: () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); } });
+  const unpinned = async () => ({ ...codex, verifyCodexAsync: async () => { throw new codex.CodexPinMismatch("version", codex.CODEX_VERSION, "0.0.1", "/x/codex"); } });
   const off = await reason(unpinned);
   assert.match(off, /is not the pinned build/);
   assert.ok(off.includes(line) && !off.includes(codex.CODEX_INSTALL), off);
@@ -229,7 +229,7 @@ test("codex with Codex not installed in the data, or not its pinned build: the r
 
 test("demo: run from npx, a missing OpenCode says the npx line that starts this same AgentRun with it, on this server's store, keeping the other harnesses here", async () => {
   const opencode = await import("../dist/harness-opencode/index.js");
-  const absent = async () => ({ ...opencode, verifyOpenCode: () => { throw new opencode.OpenCodeNotInstalled("no binary for this platform"); } });
+  const absent = async () => ({ ...opencode, verifyOpenCodeAsync: async () => { throw new opencode.OpenCodeNotInstalled("no binary for this platform"); } });
   const needs = { model: { provider: "openai", modelId: "gpt-5.4-mini" }, models: { getModel: () => undefined } };
   const store = `${HOME_DIR}/store`;
   const reason = await adapters.opencodeOf({ AGENTRUN_SERVE_DATA: store }, needs, absent, true).then(() => assert.fail("refused"), (error) => (assert.ok(error instanceof HarnessUnavailable, String(error)), error.message));
