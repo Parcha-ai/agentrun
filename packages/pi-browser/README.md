@@ -76,7 +76,7 @@ It prints the page's accessibility tree, the same text `snapshot` gives a model:
 
 ## Demos
 
-Three runnable demos live in `examples/` in the repository. They are not in the npm package. Build once with `npm ci && npm run build`, then run one from the repository root. Each needs Chrome or Chromium (`CHROME_PATH` names it) except where it says otherwise.
+Two runnable demos live in `examples/` in the repository. They are not in the npm package. Build once with `npm ci && npm run build`, then run one from the repository root. Each needs Chrome or Chromium (`CHROME_PATH` names it) except where it says otherwise.
 
 | Demo | Run | What it shows |
 |---|---|---|

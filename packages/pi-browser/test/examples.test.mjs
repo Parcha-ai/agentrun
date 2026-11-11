@@ -23,7 +23,7 @@ test("the README's Demos section names every example and every example it names 
 });
 
 test("an example is a runnable demo of 40 lines or fewer, never a placeholder", () => {
-  assert.ok(listed().length >= 3);
+  assert.ok(listed().length >= 2);
   for (const name of listed()) {
     const text = fs.readFileSync(path.join(EXAMPLES, name), "utf8");
     assert.ok(text.split("\n").length <= 41, `${name} is over 40 lines`);
