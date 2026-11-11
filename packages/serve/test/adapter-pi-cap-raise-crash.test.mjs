@@ -28,7 +28,8 @@ const RAISED = 5;
 const FOLLOW_UP = cap.followUpOf(RAISED).text;
 const isFollowUp = (write) => write.type === "submission" && String(write.value?.requestId ?? "").startsWith("agentrun:raise:");
 
-/** `journal` whose commits stop for good at `point`: "after", every commit once the follow-up's own landed. `stopped` resolves when it stops; `release()` lets the held commit fail, at the test's end. */
+/** `journal` whose commits stop for good at `point`: "submission" stops the follow-up's own commit, "after" every commit
+ *  once that one landed. `stopped` resolves when it stops; `release()` lets the held commit fail, at the test's end. */
 function stoppingAt(point) {
   let said = () => {};
   const stopped = new Promise((resolve) => (said = resolve));
@@ -43,7 +44,7 @@ function stoppingAt(point) {
         if (key !== "commit" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
         return async (batches, receive, context) => {
           const followUp = batches.some((batch) => batch.some(isFollowUp));
-          if (point === "after" && landed) {
+          if ((point === "submission" && followUp) || (point === "after" && landed)) {
             said();
             return held;
           }
@@ -116,9 +117,7 @@ async function crashedRaise(t, point, { short = false } = {}) {
 
 const followUpsIn = (body) => JSON.stringify(body.messages ?? []).split(FOLLOW_UP).length - 1;
 
-// The case whose runner is lost before its follow-up's submission landed is deleted (flaky: red on #2254 and #2255 CI,
-// green on re-run; its race is tl-jobs'). The case after the submission landed stays.
-for (const [point, words] of [["after", "after its follow-up's submission landed, before that turn's request left"]]) {
+for (const [point, words] of [["submission", "before its follow-up's submission landed"], ["after", "after its follow-up's submission landed, before that turn's request left"]]) {
   test(`a raised run whose runner is lost ${words}: the next claim sends the follow-up once, and the run ends with it answered`, async (t) => {
     const w = await crashedRaise(t, point);
     assert.equal(w.row.summary, null, `ended with no words: ${JSON.stringify(w.row)}`);
