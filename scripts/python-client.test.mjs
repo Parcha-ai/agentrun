@@ -107,13 +107,15 @@ test('the Python module is made of the projection: snake_case methods by resourc
 test('a learned item\'s `retired` keeps one TypedDict name on every response, its new `host` form among its values, never a numbered union (#2444)', () => {
   const text = readFileSync(GENERATED, 'utf8');
   for (const name of ['GetAgentLearningResponseNotesItemsItemRetired', 'GetAgentLearningResponseSkillsItemRetired', 'GetAgentLearningResponseWorkflowsItemRetired', 'ListLearningNotesResponseItemsItemRetired']) {
-    // A TypedDict with an optional key is `class X(_XRequired, total=False)`: its required keys on the base.
-    const block = (cls) => { const at = text.indexOf(`class ${cls}(`); return at < 0 ? '' : text.slice(at, text.indexOf('\nclass ', at + 1)); };
-    const own = block(name);
-    assert.ok(own, `${name} is a TypedDict of its own name`);
-    assert.match(own, /total=False/, `${name}: why is optional`);
-    assert.match(own, /why: Literal\["unreadable"\]/, `${name} has why`);
-    assert.match(block(`_${name}Required`), /by: Literal\[[^\]]*"host"/, `${name} takes by "host"`);
+    // Two optional keys, one of them a Python keyword (`from`): its required and optional keys are two functional
+    // TypedDicts (`_XRequired = TypedDict(...)`, `_XOptional = TypedDict(..., total=False)`) and X a class of both.
+    const line = (base) => text.split('\n').find((l) => l.startsWith(`${base} = TypedDict(`)) ?? '';
+    assert.ok(text.includes(`class ${name}(_${name}Required, _${name}Optional):`), `${name} is a TypedDict of its own name`);
+    assert.match(line(`_${name}Required`), /"by": "Literal\[[^\]]*\\"host\\"/, `${name} takes by "host"`);
+    const optional = line(`_${name}Optional`);
+    assert.match(optional, /total=False\)$/, `${name}: from and why are optional`);
+    assert.match(optional, /"why": "Literal\[\\"unreadable\\"\]"/, `${name} has why`);
+    assert.match(optional, /"from": "Literal\[\\"active\\", \\"pending\\"\]"/, `${name} has from`);
   }
   assert.doesNotMatch(text, /ItemRetired\d/, 'no numbered Retired type');
 });

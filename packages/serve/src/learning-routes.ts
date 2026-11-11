@@ -15,6 +15,7 @@
 // was read at; a later page is read at that main while this server still holds its snapshot, else as the first page of
 // main now. A text that leaves holding one of the host's secrets as they are now (a value made secret after it was
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
+import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
@@ -25,7 +26,7 @@ import { isObject } from "./validate.js";
 import type { Workspace } from "./workspace/index.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf } from "./run-launch.js";
-import { runLearningEnd } from "./store-reads/learning.js";
+import { type LearnedUse, runLearningEnd } from "./store-reads/learning.js";
 import type { Store } from "./store/store.js";
 
 /** The agent view's first pages, and the most a page holds. */
@@ -360,7 +361,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string> }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -444,9 +445,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated } = await input.draftTools();
+              const { tools, gated, ask } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, {}, ask)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {
@@ -519,7 +520,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
  *  settled: the one shape, read from the one store (store-reads/learning.ts
  *  runLearningOverStore). */
-export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean }, shown: Shown, secrets: readonly string[]) {
+export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean; readonly used?: LearnedUse }, shown: Shown, secrets: readonly string[]) {
   const { learning } = input;
   const { state, reason, at, verdict, problems, merged, cost_usd, tokens, pending } = learning;
   return {
@@ -538,6 +539,12 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     // The grade's alone: the end-of-run turn's cost is in the run's own totals.
     cost_usd: { grade: cost_usd?.grade ?? null },
     tokens: { grade: tokens?.grade ?? null },
+    // What the job did with the learned skills and workflows it was offered (store-reads/learning.ts learnedUseOf), apart
+    // from the skills and workflows it learned (notesView's), each name cut of the host's secrets as a note's is.
+    used: {
+      skills: (input.used?.skills ?? []).map(({ name, read }) => ({ name: shown.name(name), read })),
+      workflows: (input.used?.workflows ?? []).map(({ name, calls, failed }) => ({ name: shown.name(name), calls, failed })),
+    },
   };
 }
 
