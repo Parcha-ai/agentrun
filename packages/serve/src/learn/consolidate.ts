@@ -99,7 +99,7 @@ type Learned = { readonly skills: readonly { readonly name: string }[]; readonly
 
 /** Each skill and its draft: partners are a skill and a draft of the same name, or a draft whose README names the skill
  *  as a word. */
-function partnersOf(learned: Learned): { skill: string; workflow: string }[] {
+export function partnersOf(learned: Learned): { skill: string; workflow: string }[] {
   const named = (readme: string, skill: string) => new RegExp(`(^|[^A-Za-z0-9-])${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9-]|$)`, "i").test(readme);
   return learned.skills.flatMap((skill) => learned.workflows.filter((workflow) => workflow.name === skill.name || named(workflow.readme, skill.name)).map((workflow) => ({ skill: skill.name, workflow: workflow.name })));
 }

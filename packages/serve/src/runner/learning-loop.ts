@@ -16,14 +16,14 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { GRADE_CAPS, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { besideCost, besideRoom, GRADE_CAPS, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
 import { mergedNote, parseNoteFile, ruleOf } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace, SKILLS_DIR, WORKFLOWS_DIR } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
 import { notKept, SAME_NOTE, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
-import { changedLast, clustersOf, clustersWithin, consolidatePrompt, heldToClusters, rankOf } from "../learn/consolidate.js";
+import { changedLast, clustersOf, clustersWithin, consolidatePrompt, heldToClusters, partnersOf, rankOf } from "../learn/consolidate.js";
 import type { ConsolidationMain } from "../learn/commit.js";
 import { KINDS } from "./journal-kinds.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
@@ -141,6 +141,28 @@ export type CheckedAnswer = { readonly state: "proposed"; readonly proposal: Kep
 type ConsolidationData = { readonly proposal: KeptProposal; readonly left: readonly Problem[]; readonly stayActive: readonly string[]; readonly usd: number | null; readonly beside?: readonly NoteText[] };
 
 const ROOT = ROOT_CONVERSATION_ID;
+
+/** A skill's or a draft's key file: its SKILL.md, or its workflow.json. */
+const keyFileOf = ({ kind, name }: { readonly kind: "skill" | "workflow"; readonly name: string }): string => (kind === "skill" ? `${SKILLS_DIR}/${name}/SKILL.md` : `${WORKFLOWS_DIR}/${name}/workflow.json`);
+
+/** On consolidation's read of main: the companions of a side (`target`), every partner of it (partnersOf) as main holds
+ *  it, a draft's workflow.json and README.md, a skill's SKILL.md, less any in `written`. */
+const companionsOn = (main: { readonly skills: readonly { readonly name: string; readonly text: string }[]; readonly workflows: readonly { readonly name: string; readonly json: string; readonly readme: string }[] }, partners: readonly { readonly skill: string; readonly workflow: string }[]) =>
+  (target: { readonly kind: "skill" | "workflow"; readonly name: string }, written: ReadonlySet<string>): NoteText[] =>
+    partners.filter((pair) => pair[target.kind] === target.name).flatMap((pair): NoteText[] => {
+      if (target.kind === "workflow") {
+        const skill = main.skills.find(({ name }) => name === pair.skill);
+        return skill ? [{ file: keyFileOf({ kind: "skill", name: skill.name }), text: skill.text }] : [];
+      }
+      const workflow = main.workflows.find(({ name }) => name === pair.workflow);
+      return workflow ? [{ file: keyFileOf({ kind: "workflow", name: workflow.name }), text: workflow.json }, { file: `${WORKFLOWS_DIR}/${workflow.name}/README.md`, text: workflow.readme }] : [];
+    }).filter(({ file }) => !written.has(file));
+
+/** The notes a new note supersedes, by its front matter; none for one that does not parse. */
+const parseNoteFileOr = ({ file, text }: { readonly file: string; readonly text: string }): { supersedes: readonly string[] } => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? { supersedes: [] } : note;
+};
 
 /** The journal's learning entries' data (journal-kinds.ts learningGraded, learningDropped, learningMerged), as the reader
  *  of a run's learning end reads them (store-reads/learning.ts). What a grade spent: its dollars and tokens, each null when
@@ -569,11 +591,36 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               const changed = changedLast(main.changes, pair.skill, pair.workflow) ?? pair.changed;
               return changed === "both" ? [] : [{ skill, workflow, changed }];
             });
-            if (!clusters.length && !pairs.length) return nothing(said.empty);
+            // What the grader reads beside a rewrite: every partner of the side the model rewrites (the one that did not
+            // change last), as main holds it. A rewrite is asked about only when all of its partners fit beside it, in
+            // the count the grade holds (GRADE_CAPS.beside) and in the room its prompt leaves (besideRoom): never one
+            // shown or pinned in part, and never a paid request whose grade could not be made.
+            const partners = partnersOf({ skills: main.skills, workflows: main.workflows });
+            const companionsOf = companionsOn(main, partners);
+            const active = notes.filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description }));
+            const room = besideRoom({ ...(job.instructions ? { instructions: job.instructions } : {}), active, superseded: clusters.flat().map(({ file }) => ({ file, text: texts.get(file)! })), newNotes: clusters.length });
+            const chosen = new Map<string, NoteText>();
+            const leftOut: Problem[] = [];
+            const fits = new Set<string>();
+            for (const { skill, workflow, changed } of pairs) {
+              const target = changed === "skill" ? { kind: "workflow" as const, name: workflow.name } : { kind: "skill" as const, name: skill.name };
+              const key = `${target.kind}/${target.name}`;
+              if (fits.has(key) || leftOut.some(({ path }) => path === keyFileOf(target))) continue;
+              const all = companionsOf(target, new Set());
+              const next = new Map([...chosen, ...all.map((one): [string, NoteText] => [one.file, one])]);
+              if (next.size <= GRADE_CAPS.beside && besideCost([...next.values()]) <= room) {
+                for (const [file, one] of next) chosen.set(file, one);
+                fits.add(key);
+              } else {
+                leftOut.push({ rule: "consolidate", path: keyFileOf(target), detail: `left out of this consolidation: the ${all.length} files of its partners do not fit beside it in the grade (at most ${GRADE_CAPS.beside} files, and the room its prompt leaves)` });
+              }
+            }
+            const asking = pairs.filter(({ skill, workflow, changed }) => fits.has(changed === "skill" ? `workflow/${workflow.name}` : `skill/${skill.name}`));
+            if (!clusters.length && !asking.length) return leftOut.length ? nothing(said.stale(leftOut as never), leftOut) : nothing(said.empty);
             const prompt = consolidatePrompt({
               ...(job.instructions ? { instructions: job.instructions } : {}),
               clusters: clusters.map((cluster) => cluster.map((note) => ({ file: note.file, text: texts.get(note.file)!, ...counts(note.file) }))),
-              pairs,
+              pairs: asking,
             });
             let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
             try {
@@ -597,24 +644,38 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               const note = parseNoteFile(file, text);
               return Array.isArray(note) ? [] : [{ file, text, supersedes: note.supersedes }];
             });
-            const held = heldToClusters(replacements, checked.proposal.files ?? [], clusters.map((cluster) => cluster.map(({ file }) => file)), pairs.map(({ skill, workflow }) => ({ skill: skill.name, workflow: workflow.name })));
+            const held = heldToClusters(replacements, checked.proposal.files ?? [], clusters.map((cluster) => cluster.map(({ file }) => file)), asking.map(({ skill, workflow }) => ({ skill: skill.name, workflow: workflow.name })));
             const keptFiles = new Set(held.files);
-            const proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: main.seed };
-            const left = [...(checked.left ?? []), ...held.problems];
+            let proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), seed: main.seed };
+            const left = [...leftOut, ...(checked.left ?? []), ...held.problems];
             if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
             // A pair the answer wrote one side of (the other given back unchanged, which the checks take out): the other
             // side as main holds it goes to the grader beside it, so it can check both describe the same steps.
-            const writes = new Set((proposal.files ?? []).map(({ file }) => file));
-            // Each companion once (a draft paired with two skills, or a skill with two drafts, is one file each), and no
-            // more than the grader's prompt holds beside (GRADE_CAPS.beside): the merge pins the ones the grader read.
+            // Each side the answer writes (it may rewrite the one that changed last instead): its partners it does not write
+            // go to the grader beside it, as main holds them, each once, and the merge pins them. A written side whose
+            // partners do not all fit (the count, the room the actual proposal leaves) is left out, never shown in part.
+            let files = proposal.files ?? [];
+            const writes = new Set(files.map(({ file }) => file));
+            const actual = besideRoom({ ...(job.instructions ? { instructions: job.instructions } : {}), active, superseded: proposal.notes.flatMap((n) => parseNoteFileOr(n).supersedes).map((file) => ({ file, text: texts.get(file) ?? "" })), newNotes: proposal.notes.length, files });
             const companions = new Map<string, NoteText>();
-            for (const { skill, workflow } of pairs) {
-              const [skillFile, json, readme] = [`${SKILLS_DIR}/${skill.name}/SKILL.md`, `${WORKFLOWS_DIR}/${workflow.name}/workflow.json`, `${WORKFLOWS_DIR}/${workflow.name}/README.md`];
-              const [s, w] = [writes.has(skillFile), writes.has(json)];
-              if (s === w) continue;
-              const other: NoteText[] = s ? [{ file: json, text: workflow.json }, { file: readme, text: workflow.readme }] : [{ file: skillFile, text: skill.text }];
-              if (other.some(({ file }) => companions.has(file)) || companions.size + other.length > GRADE_CAPS.beside) continue;
-              for (const one of other) companions.set(one.file, one);
+            const written = [...new Set(files.flatMap(({ file }) => {
+              const place = learnedPlace(file);
+              return place && place.kind !== "readme" ? [`${place.kind}/${place.name}`] : place ? [`workflow/${place.name}`] : [];
+            }))];
+            for (const key of written) {
+              const [kind, name] = key.split("/") as ["skill" | "workflow", string];
+              const others = companionsOf({ kind, name }, writes);
+              const next = new Map([...companions, ...others.map((one): [string, NoteText] => [one.file, one])]);
+              if (next.size <= GRADE_CAPS.beside && besideCost([...next.values()]) <= actual) for (const [file, one] of next) companions.set(file, one);
+              else {
+                const prefix = `${kind === "skill" ? SKILLS_DIR : WORKFLOWS_DIR}/${name}/`;
+                files = files.filter(({ file }) => !file.startsWith(prefix));
+                left.push({ rule: "consolidate", path: keyFileOf({ kind, name }), detail: `left out of this consolidation: the files of its partners do not fit beside it in the grade (at most ${GRADE_CAPS.beside} files, and the room its prompt leaves)` });
+              }
+            }
+            if (files.length !== (proposal.files ?? []).length) {
+              proposal = { notes: proposal.notes, ...(files.length ? { files } : {}), seed: main.seed };
+              if (!proposal.notes.length && !files.length) return nothing(said.stale(left as never), left);
             }
             const beside = [...companions.values()];
             made = { proposal, left, stayActive: held.stayActive, usd: asked, ...(beside.length ? { beside } : {}) };

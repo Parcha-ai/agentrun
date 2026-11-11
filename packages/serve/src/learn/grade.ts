@@ -217,6 +217,36 @@ function learnedFilesOf(files: readonly NoteText[] | undefined): NoteText[] {
   return [...files];
 }
 
+/** What one fenced text adds to the grader's prompt beside the text itself, under `label` (fence, in promptWithin):
+ *  its begin and end lines with the fence token, and the line breaks between it and the next. */
+const fenceCost = (label: string): number => `----- begin ${"0".repeat(16)}: ${label} -----\n`.length + 1 + `----- end ${"0".repeat(16)} -----`.length + 2;
+/** The grader's prompt's fixed text (its rubric, the consolidation rule, its headings and its verdict's terms), measured
+ *  once on a prompt holding one small note and nothing else. */
+let fixedLength: number | undefined;
+const fixedText = (): number => (fixedLength ??= gradePrompt({ run: "r", active: [], superseded: [], proposed: [{ file: "a.md", text: "---\nname: a\ndescription: a\ntype: feedback\n---\na\n" }], consolidation: true }).length);
+/** Each heading and line a section the fixed text leaves out adds when present (the skill and draft's, beside's). */
+const SECTION_LINES = 1_000;
+
+/** What `files` (GradeInput `beside`) add to the grader's prompt: each text with its fence. */
+export const besideCost = (files: readonly NoteText[]): number => files.reduce((sum, { file, text }) => sum + text.length + fenceCost(`${file}, active`), 0);
+
+/** How much the grader's prompt for a consolidation leaves for its companions (besideCost) under GRADE_CAPS.prompt,
+ *  counted by the caps gradePrompt holds every part to: the agent's instructions (to GRADE_CAPS.instructions), each
+ *  active note's index line (to GRADE_CAPS.indexLine), the notes it supersedes whole, `newNotes` new notes at the note
+ *  cap, and `files`, the skill and draft it writes; before its answer, the most one writes (a skill and a draft at the
+ *  file cap, with a README at its own). A consolidation asks nothing whose companions this leaves no room for, so its
+ *  grade's prompt never passes its cap after the paid request. */
+export function besideRoom(known: { readonly instructions?: string; readonly active: readonly IndexEntry[]; readonly superseded: readonly NoteText[]; readonly newNotes: number; readonly files?: readonly NoteText[] }): number {
+  const instructions = Math.min(known.instructions?.length ?? 0, GRADE_CAPS.instructions) + fenceCost("the agent's standing instructions");
+  const index = known.active.reduce((sum, entry) => sum + Math.min(indexLine(entry).length, GRADE_CAPS.indexLine) + 1, 0);
+  const superseded = known.superseded.reduce((sum, { file, text }) => sum + text.length + fenceCost(`${file}, active`), 0);
+  const notes = known.newNotes * (CAPS.note + fenceCost(`${"x".repeat(64)}.md, new`));
+  const files = known.files
+    ? known.files.reduce((sum, { file, text }) => sum + text.length + fenceCost(`${file}, new`), 0)
+    : 2 * (CAPS.file + fenceCost(`workflows/${"x".repeat(64)}/workflow.json, new`)) + CAPS.readme + fenceCost(`workflows/${"x".repeat(64)}/README.md, new`);
+  return GRADE_CAPS.prompt - fixedText() - SECTION_LINES - instructions - index - superseded - notes - files;
+}
+
 /** The skills' and drafts' files given beside a proposal (the other side of a pair it writes one side of): each a
  *  learned file's path, named once, within its file's cap, a draft's workflow.json with its README.md, and at most
  *  GRADE_CAPS.beside of them. Context, never a write: a draft may pair with several skills, so no write's count cap. */

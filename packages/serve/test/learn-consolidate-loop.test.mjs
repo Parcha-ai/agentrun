@@ -37,12 +37,13 @@ const DRAFT = { v: 2, name: "find-policies", schemas: { Page: { type: "object", 
 
 /** A store, a learning folder holding `notes` (file to text) as a person committed them, and an agent; `before` runs on
  *  the folder first. */
-async function world(t, notes = FILES, before) {
+async function world(t, notes = FILES, before, { instructions } = {}) {
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
   const data = mkdtempSync(join(tmpdir(), "learn-consolidate-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  await agentWithRevision(store);
+  if (instructions) await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions } });
+  else await agentWithRevision(store);
   await seedOf(data, "agent-1");
   const onFolder = async (fn) => {
     const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
@@ -435,8 +436,10 @@ test("a rewrite whose companions fit the count but not the grade prompt's room (
   const filler = Object.fromEntries(Array.from({ length: 186 }, (_, i) => [`fact-${i}.md`, note(`Fact ${wordsOf(`name ${i}`, 3)}`, wordsOf(`desc ${i}`, 32), `${wordsOf(`body ${i}`, 20)}.\n`)]));
   const rule = "Match each invoice total to its ledger entry before reconciling";
   const cluster = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`invoice-${i}.md`, note(`invoice rule ${i}`, rule, `${rule}, case ${i}. ${"Keep the ledger and the invoice side by side while you match them. ".repeat(55)}\n`)]));
-  // A draft paired with 3 skills near the file cap: 3 files beside it, within the count, over the room.
-  const big = (name) => ({ path: `skills/${name}/SKILL.md`, text: `---\nname: ${name}\ndescription: Use ${name} for a store's refund policy\n---\n${"1. Read the refund policy page and quote it.\n".repeat(340)}` });
+  // A draft paired with 4 skills near the file cap: 4 files beside it, within the count, over the room the agent's
+  // long instructions, the full index and the cluster leave.
+  const big = (name) => ({ path: `skills/${name}/SKILL.md`, text: `---\nname: ${name}\ndescription: Use ${name} for a store's refund policy\n---\n${"1. Read the refund policy page and quote it.\n".repeat(360)}` });
+  const instructions = `${"Answer each case from the store's own pages, and say where each figure came from. ".repeat(190)}`;
   const w = await world(t, {}, async (onFolder) => {
     for (const [i, batch] of [Object.entries(filler), Object.entries(cluster)].entries()) {
       for (let at = 0; at < batch.length; at += 30) {
@@ -444,12 +447,12 @@ test("a rewrite whose companions fit the count but not the grade prompt's room (
         assert.equal(made.ok, true, JSON.stringify(made));
       }
     }
-    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [big("refund-a"), big("refund-b"), big("refund-c"), { path: "workflows/refunds/workflow.json", text: JSON.stringify({ ...DRAFT, name: "refunds" }) }, { path: "workflows/refunds/README.md", text: "---\nname: refunds\ndescription: Runs refund-a, refund-b and refund-c\n---\n" }] }));
+    const made = await onFolder((ws) => learningCommit(ws, { kind: "merge", runId: "run-old", reason: "learned a job", graded: {}, files: [big("refund-a"), big("refund-b"), big("refund-c"), big("refund-d"), { path: "workflows/refunds/workflow.json", text: JSON.stringify({ ...DRAFT, name: "refunds" }) }, { path: "workflows/refunds/README.md", text: "---\nname: refunds\ndescription: Runs refund-a, refund-b, refund-c and refund-d\n---\n" }] }));
     assert.equal(made.ok, true, JSON.stringify(made));
-  });
+  }, { instructions });
   // The skills changed last: the draft is the side to rewrite, with all 3 skills beside it.
-  assert.equal((await mergeOn(w, "run-skills", ["refund-a", "refund-b", "refund-c"].map((name) => ({ ...big(name), text: big(name).text.replace("quote it", "quote it whole") })))).ok, true);
-  const pairs = ["refund-a", "refund-b", "refund-c"].map((skill) => ({ skill, workflow: "refunds", changed: "skill" }));
+  assert.equal((await mergeOn(w, "run-skills", ["refund-a", "refund-b", "refund-c", "refund-d"].map((name) => ({ ...big(name), text: big(name).text.replace("quote it", "quote it whole") })))).ok, true);
+  const pairs = ["refund-a", "refund-b", "refund-c", "refund-d"].map((skill) => ({ skill, workflow: "refunds", changed: "skill" }));
   const { entries, asks } = await consolidate(w, replaceAsked, { pairs });
   // The cluster is still asked about; the draft is not.
   assert.ok(asks.length >= 1, "the cluster is asked about");
