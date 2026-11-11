@@ -14,9 +14,9 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const LINE = "Deny stops this tool only. The agent can still reach the web with other tools it has, such as browser, bash or web_search: deny those too to keep it offline.";
 const ALL = ["allow", "ask", "deny"];
 const GATES = toolGates([
-  { name: "web_fetch", available: true, permission: "deny", default_permission: "allow", permissions: ALL },
-  { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL },
-  { name: "bash", available: true, permission: "ask", default_permission: "allow", permissions: ALL },
+  { name: "web_fetch", available: true, permission: "deny", default_permission: "allow", permissions: ALL, harnesses: ["pi"] },
+  { name: "read", available: true, permission: "allow", default_permission: "allow", permissions: ALL, harnesses: ["pi", "claude-agent", "codex", "opencode"] },
+  { name: "bash", available: true, permission: "ask", default_permission: "allow", permissions: ALL, harnesses: ["pi"] },
 ]);
 
 function table(settings: Record<string, { permission: string }>) {
@@ -38,7 +38,7 @@ describe("the tools table beside a deny", () => {
   });
 
   it("says it once a tool's permission is deny by its default too, and not once it is set to allow", () => {
-    const denied = toolGates([{ name: "web_search", available: true, permission: "deny", default_permission: "deny", permissions: ALL }]);
+    const denied = toolGates([{ name: "web_search", available: true, permission: "deny", default_permission: "deny", permissions: ALL, harnesses: ["pi"] }]);
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(ToolTable, { label: "Tool settings", rows: toolRows([], denied), settings: {}, fallbackOf: () => "", resolvesOf: () => null, issues: {}, onEdit: () => {} })));
