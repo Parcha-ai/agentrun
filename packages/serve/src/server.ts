@@ -3132,6 +3132,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A store still busy past a request's wait is home_busy, whichever read or write met it.
       const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
       if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      // A busy store is answered home_busy, retryable; its log names who held it (the store's holderNamed), once a wait ran out.
+      else if (storeBusy(error)) process.stderr.write(`agentrun-serve: ${req.method ?? "GET"} ${(req.url ?? "/").split("?")[0]} answered home_busy: ${(error as Error).stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;

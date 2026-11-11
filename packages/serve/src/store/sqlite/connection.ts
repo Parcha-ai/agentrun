@@ -15,6 +15,29 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
 
+/** The interactive transactions open in this process, on any of its connections: each with where it was opened and when
+ *  it began. A transaction's StoreDeadline, and a begin's StoreBusy, name them in their stack (never their message, which
+ *  an answer may carry), so a log says who held the store: the deadline's own transaction, or another of this process's
+ *  (an in-process runner's) holding the lock a begin waited on. */
+const OPEN = new Set<{ readonly opened: Error; readonly began: number }>();
+
+/** `opened`'s frames: where a transaction was asked for, without the Error line itself. */
+const framesOf = (opened: Error): string => (opened.stack ?? "").split("\n").slice(1).join("\n");
+
+/** `error` with its stack naming who held the store: `opened` (its own transaction's opener, when it has one), how late
+ *  its timer fired (`lateMs`: this process's event loop held that long), and every other transaction open in this
+ *  process with its age. */
+export function holderNamed<E extends Error>(error: E, { opened, lateMs }: { opened?: Error; lateMs?: number } = {}): E {
+  const lines: string[] = [];
+  if (opened) lines.push(`  the transaction was opened at:\n${framesOf(opened)}`);
+  if (lateMs !== undefined && lateMs >= 1_000) lines.push(`  its deadline's timer fired ${lateMs} ms late: this process's event loop was held that long, with the transaction open`);
+  const now = Date.now();
+  const others = [...OPEN].filter((open) => open.opened !== opened);
+  if (others.length) lines.push(`  other transactions open in this process:\n${others.map((open) => `  open ${now - open.began} ms, opened at:\n${framesOf(open.opened)}`).join("\n")}`);
+  if (lines.length) error.stack = `${error.stack ?? `${error.name}: ${error.message}`}\n${lines.join("\n")}`;
+  return error;
+}
+
 /** A value SQLite takes or gives back (Chord's SqliteValue). */
 export type SqliteValue = null | number | bigint | string | Uint8Array;
 /** Chord's SqliteExecutor: what a database and a transaction handle both do. */
@@ -280,6 +303,8 @@ export class Connection implements SqliteDatabase, StoreConnection {
   transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS, fromCall = false }: TransactionOptions = {}): Promise<T> {
     // `fromCall`: the deadline's end, counted from now (the queue's wait inside it); else counted from the begin.
     const until = fromCall ? Date.now() + deadlineMs : undefined;
+    // Where it was asked for: a deadline or a busy begin names it (holderNamed).
+    const opened = new Error("a store transaction");
     // Set when its deadline ran out while it still waited in the queue: its turn then begins nothing.
     let gaveUp = false;
     let started = false;
@@ -293,14 +318,17 @@ export class Connection implements SqliteDatabase, StoreConnection {
       try {
         await this.#send({ op: "begin", full, ...(read ? { read } : {}), ...(busyMs !== undefined ? { busyMs } : {}) });
       } catch (error) {
-        if (error instanceof StoreBusy && busyMs !== undefined && busyMs < this.#busyTimeoutMs) throw new StoreDeadline(deadlineMs);
-        throw error;
+        if (error instanceof StoreBusy && busyMs !== undefined && busyMs < this.#busyTimeoutMs) throw holderNamed(new StoreDeadline(deadlineMs), { opened });
+        throw error instanceof StoreBusy ? holderNamed(error, { opened }) : error;
       }
+      const open = { opened, began: Date.now() };
+      OPEN.add(open);
       let live = true;
       let timer: NodeJS.Timeout | undefined;
       const left = until !== undefined ? Math.max(0, until - Date.now()) : deadlineMs;
+      const due = Date.now() + left;
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new StoreDeadline(deadlineMs)), left);
+        timer = setTimeout(() => reject(holderNamed(new StoreDeadline(deadlineMs), { opened, lateMs: Date.now() - due })), left);
       });
       let value: T;
       try {
@@ -313,6 +341,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
       } catch (error) {
         live = false;
         clearTimeout(timer);
+        OPEN.delete(open);
         try {
           await this.#send({ op: "rollback" });
         } catch (rollback) {
@@ -324,6 +353,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
       }
       live = false;
       clearTimeout(timer);
+      OPEN.delete(open);
       // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
       if (until !== undefined && Date.now() >= until) {
         await this.#send({ op: "rollback" });
