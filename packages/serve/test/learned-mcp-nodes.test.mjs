@@ -12,7 +12,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, call, clientOwnerSession, follow, serve as serveOf, withEnv } from "./support.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
-import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
+import { LEARNED_ASK_CARD_BYTES, learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { git, resnap } from "./learn-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -136,6 +136,17 @@ test("a workflow with an MCP node set to deny is refused without asking, even wh
   assert.equal(last.status, "completed", `refused, never put to a person: ${last.status}`);
   assert.match(`${learnedResult(rows)?.text ?? ""} ${learnedResult(rows)?.tool_result_preview ?? ""}`, /was not run: .*mcp:fake\/add.*deny/s);
   assert.equal(calls(fake).length, 0, "nothing was sent");
+});
+
+test("a learned call's card leads with its MCP fields and names every ask-gated tool; a list past the card's bound doesn't fit, so the gate refuses the call rather than hide a tool", () => {
+  const few = ["mcp:fake/add", "mcp:fake/paid"];
+  assert.deepEqual(Object.keys(learnedAskShown(few)), ["mcp_arguments", "mcp_calls"], "the arguments' note first, then the tools");
+  assert.deepEqual(learnedAskShown(few).mcp_calls, few);
+  assert.equal(learnedAskFits(few), true);
+  // Enough tools that their names alone pass the card's preview bound.
+  const many = Array.from({ length: 120 }, (_, i) => `mcp:server-${i}/tool-with-a-long-name-${i}`);
+  assert.ok(Buffer.byteLength(JSON.stringify(learnedAskShown(many))) > LEARNED_ASK_CARD_BYTES);
+  assert.equal(learnedAskFits(many), false, "too many to show: refused, never approved unseen");
 });
 
 /** Run `runId`'s pending approval of `tool`, once it waits on one: a call other than `after`'s (an earlier card the run

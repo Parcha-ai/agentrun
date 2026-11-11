@@ -36,7 +36,7 @@ import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } fro
 import { layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { LEARNED_MCP_ARGUMENTS, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
+import { learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpTools, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
@@ -244,10 +244,13 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     const refused = (why: string) => ({ deny: `The learned workflow ${String((call.args as { name?: unknown }).name)} was not run: ${why}` });
     const denied = tools.find((tool) => gate.policy(tool) === "deny");
     if (denied) return refused(deniedText(denied, undefined, gate.denyFrom(denied)));
-    const asked = tools.find((tool) => gate.policy(tool) === "ask");
+    const asks = tools.filter((tool) => gate.policy(tool) === "ask");
     // An ask no one can answer (the server's accounts off) is refused at once in the gate's words, never parked.
-    if (asked && !approvers) return refused(noApproverText(asked, "no"));
-    return asked ? "ask" : decision;
+    if (asks.length && !approvers) return refused(noApproverText(asks[0]!, "no"));
+    // A card that could not name every MCP tool the person would approve (past its preview's bound) is never shown: the
+    // call is refused, so no allow covers a tool its approver did not see.
+    if (asks.length && !learnedAskFits(asks)) return refused(`its approval card can't name all ${asks.length} MCP tools it would call that are set to ask: set some of them to allow or deny for this agent.`);
+    return asks.length ? "ask" : decision;
   };
   /** The MCP tools the learned workflow a learned_workflow call names can call; none for another call or workflow. */
   const mcpOf = async (args: unknown): Promise<string[]> => {
@@ -262,7 +265,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   const askedFor = async (tool: string, args: unknown): Promise<Record<string, unknown> | undefined> => {
     if (tool !== LEARNED_WORKFLOW_TOOL) return undefined;
     const asks = (await mcpOf(args)).filter((one) => gate.policy(one) === "ask");
-    return asks.length ? { mcp_calls: asks, mcp_arguments: LEARNED_MCP_ARGUMENTS } : undefined;
+    return asks.length ? learnedAskShown(asks) : undefined;
   };
   return Object.assign(decide, { askedAs: (tool: string) => gate.askedAs(tool), askedFor, permissions, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows) });
 }
