@@ -212,23 +212,26 @@ test("the learning/ refusal on a server whose routes include the learning API na
 
 test("the save check follows where a run's shell is: in Mode 1 an agent with no computer is refused bash, pointing at a sandbox computer; in Mode 2 it saves with bash (Archil's exec runs it) and is refused a background tool in words", async (t) => {
   // The server alone: these are saves, and no run starts.
-  const { api, data } = await serve(t, { runner: false });
+  const { api } = await serve(t, { runner: false });
   const runner = { mode: "runner" };
   const mode1 = await api("POST", "/agents", { definition: agent("shell-1", { tools: ["read", "bash"], place: runner }).definition });
   assert.equal(mode1.status, 422, JSON.stringify(mode1.body));
   assert.ok(issueAt(mode1.body, "definition.tools[1]").message.startsWith(`bash: ${SHELL_NOTES.none} This agent's place is the runner`), issueAt(mode1.body, "definition.tools[1]").message);
-  // Mode 2: the server's Archil settings saved (only their row: saving an agent reaches no disk).
-  const own = await openSqliteStore({ dataDir: data, role: "server" });
+  // Mode 2: a server on data whose Archil settings are saved (only their row: saving an agent reaches no disk). The store's
+  // one connection is the one-server lock, so the row is saved before that server starts.
+  const archilData = join(await scratch(t), "agents");
+  const own = await openSqliteStore({ dataDir: archilData, role: "server" });
   try {
     await saveArchilSettings(own, { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.example.com" });
   } finally {
     await own.close();
   }
-  const bash = await api("POST", "/agents", { definition: agent("shell-2", { tools: ["read", "bash"], place: runner }).definition });
+  const { api: api2 } = await serve(t, { runner: false, data: archilData });
+  const bash = await api2("POST", "/agents", { definition: agent("shell-2", { tools: ["read", "bash"], place: runner }).definition });
   assert.equal(bash.status, 201, `bash runs on Archil's exec: ${JSON.stringify(bash.body)}`);
-  const unnamed = await api("POST", "/agents", { definition: agent("shell-2-unnamed", { tools: ["bash"] }).definition });
+  const unnamed = await api2("POST", "/agents", { definition: agent("shell-2-unnamed", { tools: ["bash"] }).definition });
   assert.equal(unnamed.status, 201, `with no place too: ${JSON.stringify(unnamed.body)}`);
-  const background = await api("POST", "/agents", { definition: agent("shell-2-bg", { tools: ["read", "bash", "bash_background"], place: runner }).definition });
+  const background = await api2("POST", "/agents", { definition: agent("shell-2-bg", { tools: ["read", "bash", "bash_background"], place: runner }).definition });
   assert.equal(background.status, 422, JSON.stringify(background.body));
   assert.deepEqual(issueAt(background.body, "definition.tools[2]"), {
     field: "definition.tools[2]",
