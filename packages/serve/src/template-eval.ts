@@ -13,8 +13,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, cpSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Compile } from "typebox/schema";
 import { parseDocument } from "yaml";
+import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
 import { MCP_SERVER_NAME } from "./mcp-probe.js";
@@ -217,13 +217,9 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
       } catch {
         return bad(`${file}: ${path} is not JSON`), undefined;
       }
-      try {
-        const validator = Compile(schema as Parameters<typeof Compile>[0]);
-        const validate: Validate = (value) => validator.Errors(value)[1].map((e) => `${e.instancePath || "/"} ${e.message}`);
-        return { file, type, schema: path, validate };
-      } catch (error) {
-        return bad(`${file}: ${path} does not compile as a JSON Schema: ${(error as Error).message}`), undefined;
-      }
+      const compiled = schemaCheck(schema);
+      if ("why" in compiled) return bad(`${file}: ${path} ${compiled.why}`), undefined;
+      return { file, type, schema: path, validate: compiled.check };
     }
   }
   return undefined;
@@ -335,33 +331,6 @@ export type RunRecord = {
   files: string[];
 };
 export type Verdict = { pass: boolean; reason: string; cost_usd?: number | null; run_id?: string };
-
-/** The text of the last fenced `json` block in `text` (```json or a longer fence, ~~~ too), or undefined. */
-export function lastJsonBlock(text: string): string | undefined {
-  const lines = text.split(/\r?\n/);
-  let found: string | undefined;
-  for (let i = 0; i < lines.length; i++) {
-    const open = /^ {0,3}(`{3,}|~{3,})\s*json\s*$/i.exec(lines[i]!);
-    if (!open) continue;
-    const fence = open[1]!;
-    const end = lines.findIndex((line, j) => j > i && new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`).test(line));
-    if (end < 0) break;
-    found = lines.slice(i + 1, end).join("\n");
-    i = end;
-  }
-  return found;
-}
-
-/** The answer's last fenced json block, parsed, or why there is none. */
-function answerJson(answer: string): { value: unknown } | { why: string } {
-  const block = lastJsonBlock(answer);
-  if (block === undefined) return { why: "the answer has no fenced json block" };
-  try {
-    return { value: JSON.parse(block) };
-  } catch (error) {
-    return { why: `the answer's last json block is not JSON: ${(error as Error).message}` };
-  }
-}
 
 /** The text a grader with a `target` reads: that field of the answer's JSON (a string as it is, anything else as JSON). */
 function targetOf(answer: string, target: string): { text: string } | { why: string } {

@@ -556,6 +556,9 @@ test("market-monitor's schedule comes from its parameters: Monday 08:00 UTC by d
   const plain = await apply({});
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.deepEqual(await sourceOf(plain), { kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" });
+  // Its digest schema is the agent's output schema (#2145): each completed run's checked digest is its result.output.
+  const monitor = readPackages().find((p) => p.name === "market-monitor");
+  assert.deepEqual((await api("GET", `/agents/${plain.body.agent_id}`)).body.definition.output_schema, monitor.outputSchema);
   const own = await apply({ cron: "30 9 * * 2", timezone: "Europe/Madrid" });
   assert.equal(own.status, 201, JSON.stringify(own.body));
   assert.deepEqual(await sourceOf(own), { kind: "schedule", cron: "30 9 * * 2", timezone: "Europe/Madrid" });
