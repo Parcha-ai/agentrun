@@ -50,7 +50,7 @@ import { imageWaitWords } from "../workspace/computer-deps.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, hostToolCtxOf, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, webHostTools, webToolNames } from "./adapter-run-spec.js";
 import { signInReads } from "../sign-ins-store.js";
-import { claimSecrets, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, learnedDecisionKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -343,6 +343,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   if (webNames.length || learns) {
     // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
     const toolEnv: NodeJS.ProcessEnv = { ...claimed };
+    // The decision keys its learned workflows' typed questions need, as the pi spec reads them (claim-secrets.ts
+    // learnedDecisionKeys): onto this copy alone, never the CLI's own environment or its model's (cliRunEnv, above), and
+    // held by the redactors as the claim's keys are.
+    if (learns) {
+      const learnedKeys = await learnedDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, workflows, (provider) => gate.permissions.policy(provider) !== "deny");
+      for (const redact of new Set([held, cut])) holdClaimed(redact, learnedKeys);
+      Object.assign(toolEnv, learnedKeys);
+    }
     handedKeys = runnerSecrets(toolEnv);
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
