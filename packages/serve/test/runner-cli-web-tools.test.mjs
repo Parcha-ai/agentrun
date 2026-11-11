@@ -9,7 +9,7 @@
 // codex's own tool bridges do (bridged, below). Through the real loop: startRunner over createDispatchLoop and the CLI
 // spec (cliRunSpecFromLaunch), on a real store; no sleeps, no port races.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,6 +35,7 @@ const { saveToolSettings } = await import("../dist/tool-plane.js");
 const { writeApprovers } = await import("../dist/server-approvers.js");
 const { entriesOf } = await import("../dist/runner/loop.js");
 const { runMetrics } = await import("../dist/runner/metrics.js");
+const { scratchFolder } = await import("../dist/workspace/paths.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -163,14 +164,17 @@ async function webRun(t, harness, { toolSettings, serverSettings, approvers } = 
   for (const key of await sessions.keys()) for (const record of await sessions.read(key)) records.push({ key, ...record });
   // What the run's end metrics read of its record (its root conversation), as the spec's end patch reads it.
   const recorded = runMetrics(await entriesOf(journal, ROOT_CONVERSATION_ID, ctx), {}).costUsd;
-  return { row, sent, timeline, view, records, recorded, refused };
+  return { row, sent, timeline, view, records, recorded, refused, scratch: scratchFolder(dir, "agent-1", RUN) };
 }
 
 for (const harness of Object.keys(HARNESSES)) {
   test(`a ${harness} run granted web_fetch calls it: Parallel asked once, booked once on the run's one ledger, its tool_use and tool_result rows on the timeline`, { timeout: 90_000 }, async (t) => {
-    const { row, sent, timeline, view, records, recorded, refused } = await webRun(t, harness);
+    const { row, sent, timeline, view, records, recorded, refused, scratch } = await webRun(t, harness);
     assert.equal(row.state, "ended", `the run ended: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
     assert.deepEqual(refused, [], "the run's gate allowed every call");
+    // The CLI's scratch folder (its working directory and private files) is swept when its claim ends (#2166): the release
+    // follows the end's commit, so it is waited for.
+    await until(() => !existsSync(scratch), `the run's scratch folder swept at its claim's end: ${scratch}`, 10_000);
     // The network: one extract of the page, on the claim's key.
     assert.deepEqual(sent, [{ path: "/v1/extract", key: fake("parallel"), urls: [PAGE] }], "Parallel asked once, for the page, on the claim's key");
     // The timeline: the call and its result, the page read.

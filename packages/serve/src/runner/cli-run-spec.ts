@@ -13,7 +13,7 @@
 // Shared with the pi spec: the run's Workspace and its uploaded files, a sandbox run's computer, the kernel registry's
 // hands on them (runTools), the gate from the store's tool settings, the system prompt (environment line, instructions
 // with what the agent learned and its skills, effort guidance), the first message, the end's metrics and the release.
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -134,6 +134,21 @@ function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: No
   return out;
 }
 
+/** A claim's private folder removed, then each of `parents` in order while it is empty: one another claim of the run has
+ *  laid things in since (a follow-up's) stays, with what is in it. */
+export async function sweepScratch(dir: string, parents: readonly string[]): Promise<void> {
+  await rm(dir, { recursive: true, force: true });
+  for (const parent of parents) {
+    try {
+      await rmdir(parent);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
 /**
  * One claimed CLI run's AdapterRunSpec, built from its launch record and its revision.
  *
@@ -221,13 +236,23 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   );
   holds.hold({ computer });
 
-  // The CLI works in the run's scratch folder on this machine (its working directory, swept at the run's end), its own
-  // files (home, state) in a private folder inside it, never on the run's disk. The scratch is an alias of the run's
-  // folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and any
-  // other absolute path is refused (workspace/paths.ts portPath).
+  // The CLI works in the run's scratch folder on this machine (its working directory), its own files (home, state, the
+  // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
+  // run's folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and
+  // any other absolute path is refused (workspace/paths.ts portPath).
+  // The private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is in it:
+  // the next claim, here or on another runner, lays its own, its harness's session coming back from the run's journal.
+  // Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its release follows the
+  // run's end commit) never has the next claim's folder swept from under it.
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
-  const dir = join(scratch, "harness");
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const harnesses = join(scratch, "harness");
+  const dir = join(harnesses, String(claim.epoch));
+  holds.hold({ scratch: { sweep: () => sweepScratch(dir, [harnesses, scratch]) } });
+  // Made again once if a parent went as it was made (the last claim's sweep removing the then empty scratch folder).
+  await mkdir(dir, { recursive: true, mode: 0o700 }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+  });
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
