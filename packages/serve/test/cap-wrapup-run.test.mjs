@@ -12,6 +12,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { journalRecords } from "../dist/runner/journal-reader.js";
 import { agent, follow, letGo, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -40,17 +42,29 @@ const noteRequests = (data, runId) => {
 const said = (rows) => rows.filter((row) => row.kind === "user_message" || (row.kind === "phase" && row.summary?.startsWith("AgentRun:"))).map((row) => row.text);
 const WORDS = /^AgentRun: (?:About \$\d+(?:\.\d\d)? left of this run's budget: finish now with your answer|This run's budget is about \$\d+(?:\.\d\d)?, enough for little work: answer as soon as you can)\.$/;
 const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "phase" && WORDS.test(row.summary ?? ""));
+/** The run's journal entries, from the one store (a runner writes them as it goes: nothing to let go first). */
+const journalOf = async (store, runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
+/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), from the run's journal in the store. */
+const storeNotesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => entry.data.text);
+/** The words inside a request's reminder (the proxy places the note in the last user text, in a <system-reminder>). */
+const reminderIn = (text) => /<system-reminder>([\s\S]*?)(?:<\/system-reminder>|$)/.exec(text)?.[1] ?? text;
+/** Until the run's runner has let it go (its claim released). */
+const released = async (store, runId) => {
+  for (let i = 0; (await store.runs.get(runId))?.runner; i++) {
+    assert.ok(i < 300, "the runner lets the run go");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
 /** The run's root entries, read once its process has let it go. */
 const entries = (data, runId) => {
   const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true });
   try { return db.prepare("SELECT record FROM entries ORDER BY rowid").all().map((row) => JSON.parse(String(row.record))); } finally { db.close(); }
 };
 
-// SKIP (follow-up #2080): a pi run near its cap pauses at the cap instead of being told to finish and answering under it.
-test.skip("pi: near its cap the model is told once, in the request it is sent, to finish; it answers, the turn ends under the cap, one row says so, and the transcript never holds the note", { timeout: 180_000 }, async (t) => {
+test("pi: near its cap the model is told once, in the request it is sent, to finish; it answers, the turn ends under the cap, one row says so, and the transcript never holds the note", { timeout: 180_000 }, async (t) => {
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
-  const { api, data } = await serve(t, { faux: WRAPUP });
+  const { api, store } = await serve(t, { faux: WRAPUP });
   assert.equal((await api("POST", "/agents", agent("wrap", { instructions: "Write the pages.", tools: ["write"] }))).status, 201);
   const started = await api("POST", "/agents/wrap/runs", { input: { content: "go" }, max_cost_usd: 0.5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -66,19 +80,16 @@ test.skip("pi: near its cap the model is told once, in the request it is sent, t
   assert.equal(rows[0].text, WRAP_UP_FIRST("$0.50"), "told at step 0, in its words");
   const seen = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.note);
   assert.equal(seen.length, 1, "the model saw the note in one request");
-  assert.equal(`AgentRun: ${seen[0].note.replace(/^<system-reminder>|<\/system-reminder>$/g, "")}`, rows[0].summary, "the words it saw are the row's");
-  await letGo(data, runId);
-  assert.ok(!entries(data, runId).some((entry) => JSON.stringify(entry.model ?? []).includes("run's budget")), "no entry of pi's transcript holds it");
+  // The proxy places the note in the request's last user text, inside its reminder: the words between the tags are the row's.
+  assert.equal(`AgentRun: ${reminderIn(seen[0].note)}`, rows[0].summary, "the words it saw are the row's");
+  assert.ok(!(await journalOf(store, runId)).some((entry) => JSON.stringify(entry.model ?? []).includes("run's budget")), "no entry of pi's transcript holds it");
 });
 
-// SKIP (follow-up #2080): a pi run near its cap pauses at the cap instead of sending the final-answer request that carries the wrap-up note.
-test.skip("pi: the final-answer request that carries the note is the run's last: no further request is sent, live or after a restart that comes after the answer", { timeout: 240_000 }, async (t) => {
-  const dir = await scratch(t);
-  const calls = join(dir, "calls.jsonl");
+test("pi: the final-answer request that carries the note is the run's last: no further request is sent, live or after a restart that comes after the answer", { timeout: 240_000 }, async (t) => {
+  const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
-  const data = join(dir, "agents");
-  let stopFirst;
-  const { api } = await serve({ after: (stop) => void (stopFirst = stop) }, { faux: WRAPUP, data });
+  const first = await serve(t, { faux: WRAPUP });
+  const { api, store } = first;
   assert.equal((await api("POST", "/agents", agent("wrap-last", { instructions: "Write the pages.", tools: ["write"] }))).status, 201);
   const runId = (await api("POST", "/agents/wrap-last/runs", { input: { content: "go" }, max_cost_usd: 0.5 })).body.run_id;
   await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 150_000 });
@@ -87,13 +98,13 @@ test.skip("pi: the final-answer request that carries the note is the run's last:
   const answered = requests();
   assert.ok(answered.at(-1).note, "the run's last request carried the note: its answer ended the turn");
   // Live: whatever would follow the answer (a queued steer runs one more request after a request with no tool call,
-  // pi-agent-core's loop) has had its chance.
-  await letGo(data, runId);
+  // pi-agent-core's loop) has had its chance, its runner having let the run go.
+  await released(store, runId);
   await new Promise((resolve) => setTimeout(resolve, 3_000));
   assert.equal(requests().length, answered.length, "no request after the answer");
   // After a restart: a server started again on the same data reads the run whole, and sends nothing for it.
-  await stopFirst();
-  const again = await serve(t, { faux: WRAPUP, data });
+  await first.close();
+  const again = await serve(t, { faux: WRAPUP, data: first.data });
   await new Promise((resolve) => setTimeout(resolve, 3_000));
   assert.equal((await again.api("GET", `/runs/${runId}`)).body.status, "completed");
   assert.equal(requests().length, answered.length, "none after the restart either");
@@ -256,9 +267,8 @@ test.skip("claude-agent on the faux harness: at step 0, with no previous request
   assert.deepEqual(notesOf(data, runId), rows);
 });
 
-// SKIP (follow-up #2078): the run stays paused at its cap after the raise: a raise does not resume it on the runner
-test.skip("claude-agent on the faux harness: paused at its cap, let go and raised, the first request after the raise, in the process the raise opens, is told when it alone is due by its least: the least of the request being taken, never of one admitted in an earlier process", { timeout: 180_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
+test("claude-agent on the faux harness: paused at its cap, let go and raised, the first request after the raise, in the process the raise opens, is told when it alone is due by its least: the least of the request being taken, never of one admitted in an earlier process", { timeout: 180_000 }, async (t) => {
+  const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
   assert.equal((await api("POST", "/agents", agent("raised-least", { harness: "claude-agent", instructions: "Make two requests needing 10,240 output tokens." }))).status, 201);
   // $0.50: under the first request's least ($1.024 at $100 a million output), so the run pauses at it, nothing spent.
   const runId = (await api("POST", "/agents/raised-least/runs", { input: { content: "go" }, max_cost_usd: 0.5 })).body.run_id;
@@ -270,8 +280,8 @@ test.skip("claude-agent on the faux harness: paused at its cap, let go and raise
   assert.equal(raised.status, 200, JSON.stringify(raised.body));
   await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
   assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$1.50")], "the first request after the raise is told, in the budget's words: nothing priced, $1.50 left, under 2 x its own least ($1.024)");
-  await letGo(data, runId);
-  assert.deepEqual(notesOf(data, runId), [WRAP_UP_FIRST("$1.50")]);
+  // The faux harness's own record of the note it took into a request, in the run's journal: once, those words.
+  assert.deepEqual(await storeNotesOf(store, runId), [WRAP_UP_FIRST("$1.50")]);
 });
 
 // SKIP (follow-up #2078): the cap's wrap-up note is not told or recorded as before on the runner

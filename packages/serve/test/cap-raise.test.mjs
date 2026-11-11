@@ -42,10 +42,12 @@ test("a run paused at its cap, its cap raised, goes on: one follow-up turn in th
   assert.deepEqual(followUps, [raised.body.message_id], `the one follow-up's submission is under the id the answer named: ${JSON.stringify(submissions.map((s) => Object.keys(s)))}`);
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.pending, run.cost.cap_usd], ["completed", null, null, 1], JSON.stringify(run));
-  // The server's line after the person's message, as the server's row ("AgentRun: …"), never as the person's.
-  assert.deepEqual(said(rows).slice(0, 2), ["Write one.md", CONTINUE("$1")], JSON.stringify(said(rows)));
+  // The server's line after the person's message, as the server's row ("AgentRun: …"), never as the person's; then the
+  // wrap-up's, told once in the follow-up's request.
+  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")], JSON.stringify(said(rows)));
   assert.ok(!rows.some((row) => row.kind === "user_message" && row.text === CONTINUE("$1")), "the follow-up is never the person's message");
-  assert.equal(run.result.final_answer, "On The cap was raised to $1; continue the task.: done.");
+  // The faux model answers on its request's last user text: the follow-up, the note inside that request's body after it.
+  assert.equal(run.result.final_answer, `On ${CONTINUE("$1")}<system-reminder>${WRAP_UP_FIRST("$1")}</system-reminder>: done.`);
   // The claim that took the raise admitted the follow-up's request at the raise: the cap holds its least, $0.1024, over the
   // launch's $0.05, so a gate still reading the launch's cap in that claim would refuse it and pause the run again
   // (Manuel's beta.32 run read $0.001 there). One cap park in its journal, the first, and the run completed.
@@ -162,8 +164,8 @@ test("two raises of a paused run at once (a retry) resume it once: both answered
   assert.match(String(answers[0].body.message_id), /^agentrun:raise:/, JSON.stringify(answers[0].body));
   assert.equal(answers[0].body.message_id, answers[1].body.message_id, "the same follow-up");
   const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 60_000 });
-  // One follow-up, the server's. (The wrap-up told in its request after it comes with the cap's note on the runner, #2080.)
-  assert.deepEqual(said(rows).slice(0, 2), ["Write one.md", CONTINUE("$1")], JSON.stringify(said(rows)));
+  // One follow-up, the server's, then the wrap-up told in its request.
+  assert.deepEqual(said(rows), ["Write one.md", CONTINUE("$1"), WRAP_UP_FIRST("$1")], JSON.stringify(said(rows)));
   assert.equal(said(rows).filter((line) => line === CONTINUE("$1")).length, 1, "one follow-up");
   assert.equal((await view(api, runId)).status, "completed");
 });
@@ -261,8 +263,8 @@ for (const harness of ["pi", "claude-agent"]) {
     const { rows } = await follow(api, run_id, ENDED, { deadlineMs: 60_000 });
     assert.equal((await view(api, run_id)).status, "completed");
     assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: go"], "the person's one message");
-    // The server's first row is the raise's follow-up. (The wrap-up told in its request after it: #2080, with the cap's note.)
-    assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary?.startsWith("AgentRun:")).map((r) => [r.summary, r.text]).slice(0, 1), [[`AgentRun: ${CONTINUE("$1")}`, CONTINUE("$1")]], "the server's row: the raise's follow-up");
+    // Told at step 0: pi in the follow-up's request, in the budget's words.
+    assert.deepEqual(rows.filter((r) => r.kind === "phase" && r.summary?.startsWith("AgentRun:")).map((r) => [r.summary, r.text]), [[`AgentRun: ${CONTINUE("$1")}`, CONTINUE("$1")], [`AgentRun: ${WRAP_UP_FIRST("$1")}`, WRAP_UP_FIRST("$1")]], "the server's rows: the raise's follow-up, then the wrap-up told in its request");
   });
 }
 
