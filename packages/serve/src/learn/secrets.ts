@@ -1,3 +1,5 @@
+import { posix } from "node:path";
+
 const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
 const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
 const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
@@ -70,7 +72,7 @@ export const PRINT_MAX = 4096;
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
  *  any case, base64, a hex identifier in it folded) and each secret-shaped run replaced by "[redacted]": what the
  *  checker prints never holds a secret, wherever it was found, a file's name included, each value as a path names it too
- *  (pathSpelling) and as a URL's path writes it (percentForms). Every form is found in `text` as given, and overlapping
+ *  (pathSpellings) and as a URL's path writes it (percentForms). Every form is found in `text` as given, and overlapping
  *  finds are redacted as one, so
  *  one value never hides part of another from the search. A text
  *  that still holds a value or a shape after that (a form not found as it stands: percent encoded, split by whitespace,
@@ -88,12 +90,12 @@ export function redactSecrets(text: string, values: readonly string[], max = PRI
     ...SHAPES.flatMap(([, pattern]) => spans(text, pattern)),
   ];
   const unfolded = cutAt(text, found);
-  if (valueMatcher(given, { fold: false })(unfolded) || secretShapes(unfolded).length > 0) return "[redacted]";
+  if (spelledMatcher(given, false)(unfolded) || secretShapes(unfolded).length > 0) return "[redacted]";
   // Then the folded finds cut in place, and the fold-aware check over what is left, always: a folded value split by
   // whitespace or percent-encoded has no span here, but the matcher's squeezed and decoded views still see it.
   const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
   const out = folds.length ? cutAt(text, [...found, ...folds]) : unfolded;
-  return valueMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
+  return spelledMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
@@ -136,29 +138,55 @@ function percentDecode(text: string, plusIsSpace: boolean): string {
 }
 
 const asJson = (value: string) => JSON.stringify(value).slice(1, -1);
-/** `value` as a path names it, when that differs: a tool that resolves a path the model wrote (pi's read) collapses each
- *  run of "/" to one, drops each "." segment ("/./", a leading "./") and a leading and a trailing "/", and its error
- *  names that path, so a held value holding "//" (a random base64 key does, now and then) or "/./" comes back so. A
- *  "/../" is not resolved: it drops the segment before it, and what is left is no longer the value. Only a spelling
- *  still long enough to be a secret is listed. */
-const pathSpelling = (value: string): string[] => {
+/** A path with each run of "/" collapsed to one, each "." segment dropped ("/./", a leading "./") and a leading and a
+ *  trailing "/" dropped, as a resolver writes it. */
+const tidied = (value: string): string => {
   let path = value;
   for (let before = ""; before !== path; ) {
     before = path;
     path = path.replace(/\/{2,}/g, "/").replace(/\/\.(?=\/|$)/g, "").replace(/^\.\//, "").replace(/^\//, "").replace(/\/$/, "");
   }
-  return path !== value && longEnough(path) ? [path] : [];
+  return path;
 };
 
-/** `value` as a URL's path writes it, percent-encoded, when that differs: each byte encodeURIComponent encodes, its hex
- *  in upper case as it writes it and in lower case as some encoders do. Cut in place where found as it stands; any other
- *  encoding is still found by the matcher's decoded views, and the text is then cut whole. */
-const percentForms = (value: string): string[] => {
-  const upper = encodeURIComponent(value);
-  return upper === value ? [] : [...new Set([upper, upper.replace(/%[0-9A-F]{2}/g, (byte) => byte.toLowerCase())])];
+/** `value` as a path names it, each spelling that differs from it and is still long enough to be a secret. A tool that
+ *  resolves a path the model wrote (pi's read) names the path it resolved in its error, so a held value comes back as
+ *  the resolver writes it:
+ *  - tidied: each run of "/" collapsed to one, each "." segment dropped, a leading and a trailing "/" dropped (a random
+ *    base64 key holds "//" now and then);
+ *  - its ".." segments resolved as posix.normalize resolves them ("a/x/../b" is "a/b": what is left is still the
+ *    value's own text, and a piece of a secret is a secret);
+ *  - each leading ".." consumed, one at a time: the path the model wrote may hold a folder before the value
+ *    ("notes/../<value>"), which the leading ".." takes, so "../K" comes back as "K", and "../../K" as "../K" or "K". */
+const pathSpellings = (value: string): string[] => {
+  const tidy = tidied(value);
+  const out = new Set<string>([tidy]);
+  for (let resolved = tidied(posix.normalize(tidy)); ; ) {
+    out.add(resolved);
+    const next = tidied(resolved.replace(/^\.\.(?:\/|$)/, ""));
+    if (next === resolved) break;
+    resolved = next;
+  }
+  out.delete(value);
+  return [...out].filter(longEnough);
 };
-/** Each held value, then its path spelling when it has one: every form a cut or the guard derives, derived of both. */
-const withPathSpellings = (values: readonly string[]): string[] => values.flatMap((value) => [value, ...pathSpelling(value)]);
+
+/** `value` as a URL's path writes it, percent-encoded, when that differs: as encodeURIComponent writes it, its hex in
+ *  upper case and in lower case as some encoders do, and as encodeURI writes it (it keeps "/", "+" and "="). Cut in
+ *  place where found as it stands; any other encoding is still found by the matcher's decoded views, and the text is
+ *  then cut whole. A text neither can encode (a lone surrogate) has no such form. */
+const percentForms = (value: string): string[] => {
+  let forms: string[];
+  try {
+    const upper = encodeURIComponent(value);
+    forms = [upper, upper.replace(/%[0-9A-F]{2}/g, (byte) => byte.toLowerCase()), encodeURI(value)];
+  } catch {
+    return [];
+  }
+  return [...new Set(forms)].filter((form) => form !== value);
+};
+/** Each held value, then its path spellings: every form a cut or the guard derives, derived of each. */
+const withPathSpellings = (values: readonly string[]): string[] => [...new Set(values.flatMap((value) => [value, ...pathSpellings(value)]))];
 
 /** The separators a hex identifier is written with: a UUID's dashes, and the underscores, colons and dots of others. */
 const SEPARATORS = /[-_:.]/g;
@@ -199,7 +227,12 @@ const longEnough = (value: string) => [...value].length >= MIN_SECRET;
  *  shorter than MIN_SECRET are left out. `fold: false`, the matcher without the folded needles (redactSecrets' first
  *  whole-text check). */
 export function valueMatcher(values: readonly string[], { fold = true }: { fold?: boolean } = {}): (text: string) => boolean {
-  const needles = withPathSpellings(values).filter(longEnough).map(needlesOf).map((n) => (fold ? n : { ...n, folded: [] }));
+  return spelledMatcher(withPathSpellings(values), fold);
+}
+
+/** valueMatcher over values already given with their path spellings (redactSecrets'), each spelled once. */
+function spelledMatcher(spelled: readonly string[], fold = true): (text: string) => boolean {
+  const needles = spelled.filter(longEnough).map(needlesOf).map((n) => (fold ? n : { ...n, folded: [] }));
   if (!needles.length) return () => false;
   return (text) => {
     const views = [...new Set([squeeze(text), squeeze(percentDecode(text, false)), squeeze(percentDecode(text, true))])];

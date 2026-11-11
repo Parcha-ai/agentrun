@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { timelineReducer } from "../dist/timeline/index.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 

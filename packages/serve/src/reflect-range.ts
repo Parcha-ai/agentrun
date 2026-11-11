@@ -2,7 +2,7 @@
 // labelled as the host's (labelled), and whether a run is in its turn now (reflecting). The runner's learning end
 // (runner/learning-end.ts), the store's reads (store-reads/journal.ts) and the store-backed view (store-view.ts) read
 // a run's turn by it; the tool gate names who sent it (TurnOrigin).
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { TimelineEvent } from "./timeline/index.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { said } from "./learning-words.js";
 import type { Status } from "./run-view.js";

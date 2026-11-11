@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { sessionProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
-import { CALL_REFUSED } from "@parcha/pi-durable-agent/timeline";
+import { CALL_REFUSED } from "../../timeline/index.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {

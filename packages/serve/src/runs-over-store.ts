@@ -10,8 +10,8 @@
 // is the run view's to read from the journal (the server's view layer, run-view.ts). These writers take it as `RunMoment`
 // and never recompute it; the coarse facts a row already holds (its state, its launch cap) they read from the store.
 import { randomBytes } from "node:crypto";
-import type { Revision } from "@parcha/pi-durable-agent";
-import type { MessageOrigin } from "@parcha/pi-durable-agent/timeline";
+import type { Revision } from "./agent-rows.js";
+import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
@@ -232,62 +232,66 @@ async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<
   return row && { decision: row.kind === "approve" ? "allow" : "deny", at: row.id };
 }
 
-/** The stop or cancel that withdraws the answer row `before` (with none given: any answer written now). The runner reads a
- *  run's rows in order and stops at a stop: a row after an untaken one is never acted on. Once the runner has taken the
- *  stop, its stopped end has refused every row left behind it, the answer's too. Either way the answer never runs. Read
- *  from one read of the run's rows: an untaken stop or cancel written before `before`, else (the end already written) the
- *  answer row's own refusal, said by the stop or cancel before it. */
-async function endingAhead(store: RunsStore, runId: string, before = Number.POSITIVE_INFINITY): Promise<"stop" | "cancel" | undefined> {
-  const rows = await store.commands(runId, 0);
-  const endings = rows.filter((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before);
-  const untaken = endings.find((command) => command.takenAt === null);
-  if (untaken) return untaken.kind as "stop" | "cancel";
-  const answer = rows.find((command) => command.id === before);
-  const last = endings.at(-1);
-  if (answer?.refused != null && last) return last.kind as "stop" | "cancel";
-  return undefined;
+/** How a stop or cancel written to run `runId` before `before` (a command id; absent, any) answers every call still waiting:
+ *  the runner reads commands in the order they were written, so it applies the stop first and withdraws (or, on a cancel,
+ *  cancels) the call, and refuses every answer written after it. An answer written then is told so at once, the same 409
+ *  the call's withdrawal gives, never 204 for a call that will not run. Read by the rows' order, so a stop that lands
+ *  between this read and the answer's write is caught once the answer is written (approve). Untaken rows only, unless
+ *  `taken` (a run already final: the end its runner applied). */
+async function endBefore(store: RunsStore, runId: string, { before = Number.POSITIVE_INFINITY, taken = false }: { before?: number; taken?: boolean } = {}): Promise<{ decision: "withdrawn" | "canceled" } | undefined> {
+  // The first: the runner applies the first stop or cancel it reads and stops reading there.
+  const row = (await store.commands(runId, 0)).find((command) => (command.kind === "stop" || command.kind === "cancel") && command.id < before && command.refused === null && (taken || command.takenAt === null));
+  return row && { decision: row.kind === "cancel" ? "canceled" : "withdrawn" };
 }
-
-/** The refusal of an answer that a stop or cancel written before it withdrew: its call never runs. */
-const withdrawnBy = (id: string, ending: "stop" | "cancel"): ApiError => alreadyAnswered(id, ending === "cancel" ? "canceled" : "withdrawn");
 
 /** A person's answer to the tool call `id` that waits for approval (tool-gate.ts): an approve or deny command row the run's
  *  runner reads and acts on. The first answer wins from the moment it is written, before the runner takes it — the same one
  *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
  *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
- *  person's words, carried on the command for the run's gate. An answer behind a stop or cancel the runner has not taken
- *  yet would never run (the runner stops at that row, and the stopped end refuses what follows): it is 409, withdrawn (or
- *  canceled with its run), whether the stop was there before it or its write landed just after the stop's. */
+ *  person's words, carried on the command for the run's gate. */
 export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
   const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
     if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
-  const taken = moment.answeredApprovals?.[id];
-  if (taken) return settle(taken);
-  const sent = await sentAnswer(store, moment.id, id);
-  if (sent) {
-    const ending = await endingAhead(store, moment.id, sent.at);
-    if (ending) throw withdrawnBy(id, ending);
-    return settle(sent);
+  const answered = moment.answeredApprovals?.[id];
+  if (answered) return settle(answered);
+  const given = await sentAnswer(store, moment.id, id);
+  if (given) {
+    // The answer written before (this one's retry, or another) sits behind a stop or cancel the runner has not taken yet:
+    // it never runs, so it is told as any answer behind that stop is, never settled as taken.
+    const behind = await endBefore(store, moment.id, { before: given.at });
+    if (behind) throw alreadyAnswered(id, behind.decision);
+    return settle(given);
   }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
-  const before = await endingAhead(store, moment.id);
-  if (before) throw withdrawnBy(id, before);
+  const ending = await endBefore(store, moment.id);
+  if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
-  let written: number;
+  let sent: { id: number };
   try {
-    written = (await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body })).id;
+    sent = await sendCommand(store, moment.id, { kind: decision === "allow" ? "approve" : "deny", body });
   } catch (error) {
+    // The run went final since it was read (its runner took a stop or a cancel, or it ended): its calls were answered by
+    // that end, so the answer is told how, never a 500.
+    if (error instanceof RunFinal) {
+      const end = await endBefore(store, moment.id, { taken: true });
+      throw alreadyAnswered(id, end?.decision ?? "withdrawn", end === undefined);
+    }
     const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
     if (!won) throw error;
-    const ending = await endingAhead(store, moment.id, won.at);
-    if (ending) throw withdrawnBy(id, ending);
     return settle(won);
   }
-  // A stop written between the check above and this write is read first, or its stopped end has already refused this
-  // answer: it never runs.
-  const ending = await endingAhead(store, moment.id, written);
-  if (ending) throw withdrawnBy(id, ending);
+  // A stop or cancel written between the read above and this answer comes first in the runner's order: the answer will be
+  // refused at that end, so the person is told now.
+  const raced = await endBefore(store, moment.id, { before: sent.id });
+  if (raced) throw alreadyAnswered(id, raced.decision);
+  // That stop's end may already be written by this read: its runner took the stop and refused this answer in the same
+  // commit. Read the answer back: refused behind a stop or cancel, it never runs either.
+  const mine = (await store.commands(moment.id, 0)).find((command) => command.id === sent.id);
+  if (mine?.refused != null) {
+    const end = await endBefore(store, moment.id, { before: sent.id, taken: true });
+    if (end) throw alreadyAnswered(id, end.decision);
+  }
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
