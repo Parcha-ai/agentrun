@@ -362,3 +362,205 @@ test("a run without the decision provider's stored key fails: the provider the r
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "failed", `the run fails without the Parallel key: ${JSON.stringify(row)}`);
 });
+
+// ---- The cases the run's old in-process cap mechanism (budget.ts writeRaisedCap/raiseFinishes, decision-cap.ts
+// cappedDecisions) checked at its unit, here on the runner: a raise on a capped run, a raise finishing its pause, a
+// decision at its cap, the catalog down mid-run, and a map's items under one cap.
+
+/** A decision price that is its request fee alone: the hold is exactly `usd`. */
+const feeOnly = (usd) => priceOf({ promptUsd: 0, completionUsd: 0, requestUsd: usd, maxCompletionTokens: 4_096 });
+
+/** The run's budget entries (its pauses at the cap), oldest first, and its row once `done` holds and no runner has it. */
+async function settledAt(server, store, done) {
+  const row = await waitRow(server, (r) => r.runner === null && done(r));
+  return { row, budgets: await rootEntries(store, KINDS.budget) };
+}
+
+/** Waits until the command `id` is taken or refused, and returns its row. */
+async function commandSettled(server, id, ms = 20_000) {
+  const from = Date.now();
+  for (;;) {
+    const row = (await server.commands("run-1", id - 1)).find((one) => one.id === id);
+    if (row && (row.takenAt !== null || row.refused !== null)) return row;
+    if (Date.now() - from > ms) return row;
+    await sleep(20);
+  }
+}
+
+test("a raise too small for the decision it parked at sends the run on, and the decision, judged again at the raised cap, parks it anew: its pause names the raised cap, never the old one", async (t) => {
+  const decider = fauxOpenrouter({ price: feeOnly(10), costUsd: null });
+  const { server, store } = await worldWith(t, { capUsd: 1, decider });
+  const first = await settledAt(server, store, (r) => r.state === "parked");
+  assert.deepEqual([first.row.state, first.budgets.length, first.budgets[0]?.pending.cap_usd], ["parked", 1, 1], JSON.stringify(first));
+
+  // $2 is above the $1 cap still refused but under the $10 the decision needs.
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const again = await settledAt(server, store, (r) => r.state === "parked" && r.epoch > first.row.epoch);
+  assert.equal(again.row.state, "parked", `the decision, judged again at $2, parks the run anew: ${JSON.stringify(again.row)}`);
+  const pending = again.budgets.at(-1)?.pending;
+  assert.deepEqual([pending?.cap_usd, pending?.needs_usd], [2, 10], `the pause stands at the raised cap: ${JSON.stringify(again.budgets)}`);
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([view.status, view.pending?.kind, view.pending?.cap_usd], ["input_required", "budget", 2], `the person sees the pause at $2: ${JSON.stringify(view.pending)}`);
+  assert.equal(again.row.costUsd ?? 0, 0, "nothing was sent or booked");
+});
+
+test("a raise finishes a pause only above the cap still refused: the same raise again, or one under it, leaves the run parked where it stands; one past the need resumes it to its end with the pause gone", async (t) => {
+  let asked = 0;
+  const decider = fauxOpenrouter({ price: feeOnly(10), costUsd: null, record: () => (asked += 1) });
+  const { server, store } = await worldWith(t, { capUsd: 1, decider });
+  const first = await settledAt(server, store, (r) => r.state === "parked");
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const at2 = await settledAt(server, store, (r) => r.state === "parked" && r.epoch > first.row.epoch);
+  assert.equal(at2.budgets.at(-1)?.pending.cap_usd, 2, JSON.stringify(at2.budgets));
+
+  // The raise the run already has, again: a retry of the last, which resumed the pause before this one; it opens nothing.
+  const same = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const sameRow = await commandSettled(server, same.id);
+  assert.ok(sameRow && (sameRow.takenAt !== null || sameRow.refused !== null), `the same raise again is answered: ${JSON.stringify(sameRow)}`);
+  // One under the cap the run has: refused in the cap's words.
+  const under = await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 1.5 } });
+  const underRow = await commandSettled(server, under.id);
+  assert.match(underRow?.refused ?? "", /only raised/, `a raise under the cap is refused: ${JSON.stringify(underRow)}`);
+  const still = await settledAt(server, store, (r) => r.state === "parked");
+  assert.deepEqual([still.row.state, still.budgets.at(-1)?.pending.cap_usd, still.row.costUsd ?? 0, asked], ["parked", 2, 0, 0], `the run stands parked at its $2 pause, nothing sent: ${JSON.stringify(still)}`);
+  const parkedView = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.deepEqual([parkedView.pending?.kind, parkedView.pending?.cap_usd], ["budget", 2], `its pause still shows at $2: ${JSON.stringify(parkedView.pending)}`);
+
+  // Past the need: the pause is finished, the decision sent once, and the run ends with no pause to show.
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 20 } });
+  const ended = await waitRow(server, (r) => r.state === "ended" && r.runner === null);
+  assert.equal(ended.state, "ended", JSON.stringify(ended));
+  assert.deepEqual([asked, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], [1, 10], "the decision sent once, booked at its $10 hold");
+  const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
+  assert.equal(view.pending, null, `no pause once it ended: ${JSON.stringify(view.pending)}`);
+});
+
+test("a decision at its cap: a hold that is exactly the room left is sent and booked; one a hair over it parks the run unsent", async (t) => {
+  await t.test("exactly the room", async (t) => {
+    let asked = 0;
+    const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: null, record: () => (asked += 1) });
+    const { server } = await worldWith(t, { capUsd: 0.4, decider });
+    const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+    assert.deepEqual([row.state, asked, Math.round((row.costUsd ?? 0) * 1e9) / 1e9], ["ended", 1, 0.4], JSON.stringify(row));
+  });
+  await t.test("a hair over", async (t) => {
+    let asked = 0;
+    const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: null, record: () => (asked += 1) });
+    const { server, store } = await worldWith(t, { capUsd: 0.3999, decider });
+    const parked = await settledAt(server, store, (r) => r.state === "parked");
+    assert.deepEqual([parked.row.state, asked, parked.budgets[0]?.pending.cap_usd, parked.budgets[0]?.pending.needs_usd], ["parked", 0, 0.3999, 0.4], JSON.stringify(parked));
+  });
+});
+
+test("OpenRouter's catalog down for a moment mid-run under a cap: the price is read again and the decision is sent, never stopped by the cap", async (t) => {
+  let down = 1;
+  let reads = 0;
+  let asked = 0;
+  const decider = { ...fauxOpenrouter({ price: feeOnly(0.01), costUsd: null, record: () => (asked += 1) }), priceOf: async () => { reads += 1; if (down-- > 0) throw new Error("catalog 503"); return feeOnly(0.01); } };
+  const { server } = await worldWith(t, { capUsd: 1, decider });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.deepEqual([row.state, asked, reads], ["ended", 1, 2], `read again, then sent: ${JSON.stringify(row)}`);
+});
+
+test("OpenRouter's catalog unreadable for good mid-run under a cap (down, or a 200 with no list of models): the decision is never sent and its node fails, never a stop of the cap's", async (t) => {
+  const { openrouterProvider } = await import("@parcha/agentrun-decisions");
+  for (const [name, answer] of [["down", () => new Response("upstream", { status: 503 })], ["no list", () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })]]) {
+    await t.test(name, async (t) => {
+      let calls = 0;
+      const real = openrouterProvider({ apiKey: `not-a-secret-${"openrouter"}`, fetch: async () => ((calls += 1), answer()) });
+      let asked = 0;
+      const decider = { ...fauxOpenrouter({ price: feeOnly(0.01), costUsd: null, record: () => (asked += 1) }), priceOf: (model) => real.priceOf(model) };
+      const { server, store } = await worldWith(t, { capUsd: 1, decider });
+      const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+      assert.equal(row.state, "failed", JSON.stringify(row));
+      assert.equal(asked, 0, "the decision was never sent");
+      assert.ok(calls >= 2, `the catalog was read again before the decision failed: ${calls}`);
+      assert.doesNotMatch(String(row.error ?? row.summary ?? ""), /spend_cap_reached|out of budget/, `a catalog outage is no stop of the cap's: ${JSON.stringify(row)}`);
+      assert.equal((await rootEntries(store, KINDS.budget)).length, 0, "nothing parked");
+    });
+  }
+});
+
+/** A map of two documents, each judged once (two decisions under one cap, at paths of their own). */
+const mapFlow = () => ({
+  v: 2, name: "mapped",
+  schemas: {
+    In: { type: "object", required: ["docs"], properties: { docs: { type: "array", items: { type: "string" } } } },
+    Verdict: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+    Out: { type: "object", required: ["count"], properties: { count: { type: "integer" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Out", path: "result" },
+  root: { node: "chain", steps: [
+    { node: "map", label: "each", itemsPath: "docs", as: "verdicts", resultPath: "verdict", maxConcurrency: 2,
+      body: { node: "judge", label: "ask", provider: "openrouter", model: "openai/gpt-6-sol", state: { doc: "{item}" }, out: "Verdict", as: "verdict" } },
+    { node: "code", label: "result", code: "(s) => ({ result: { count: s.verdicts.length } })" },
+  ] },
+});
+
+test("a map's two decisions under one cap with room for one: the run parks once at the item that does not fit, one raise sends it on, and each item is answered and booked once", async (t) => {
+  const asked = [];
+  const decider = fauxOpenrouter({ price: feeOnly(0.4), costUsd: 0.4, record: (request) => asked.push(request.state?.doc) });
+  const { server, store } = await worldWith(t, { capUsd: 0.5, flow: mapFlow(), input: { docs: ["first", "second"] }, decider });
+  const parked = await settledAt(server, store, (r) => r.state === "parked" || r.state === "ended" || r.state === "failed");
+  assert.equal(parked.row.state, "parked", `one item does not fit beside the other: ${JSON.stringify(parked)}`);
+  assert.equal(parked.budgets.length, 1, `one pause: ${JSON.stringify(parked.budgets)}`);
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 2 } });
+  const ended = await waitRow(server, (r) => (r.state === "ended" || r.state === "failed") && r.runner === null);
+  assert.equal(ended.state, "ended", `the raise sends the run on to its end, never to a review: ${JSON.stringify(ended)}`);
+  assert.deepEqual([...asked].sort(), ["first", "second"], `each item asked once: ${JSON.stringify(asked)}`);
+  assert.ok(Math.abs((ended.costUsd ?? 0) - 0.8) < 1e-9, `each item booked once: ${ended.costUsd}`);
+});
+
+test("a decision's hold is kept only once the driver has admitted its request: a runner that dies at its first write after pricing a decision never leaves a hold the next claim counts beside asking the decision again", async (t) => {
+  // The stores' clock is real time plus `skew`, so the dead runner's claim is run out by moving it, never by waiting.
+  let skew = 0;
+  const now = () => Date.now() + skew;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-dec-crash-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
+  const real = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const second = await openSqliteStore({ dataDir: dir, role: "runner", now });
+  const runners = [];
+  t.after(async () => {
+    for (const runner of runners) await runner.close().catch(() => {});
+    for (const store of [real, second, server]) await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  // Runner A's store: once the decision is priced (armed), the next flush lands and then A dies there, before anything is
+  // sent: what that flush made durable (a hold, the driver's admission, or both) is what runner B finds.
+  let armed = false;
+  let died = false;
+  let diedNow;
+  const dead = new Promise((resolve) => (diedNow = resolve));
+  const store = new Proxy(real, { get(target, key) {
+    if (key === "flush") return async (...args) => {
+      await target.flush(...args);
+      if (!armed || died) return;
+      died = true;
+      runners[0].kill();
+      diedNow();
+      await new Promise(() => {});
+    };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const asked = [];
+  const base = fauxOpenrouter({ price: feeOnly(0.4), costUsd: 0.4, record: (request) => asked.push(request) });
+  const decider = { ...base, priceOf: async (model) => { if (!died) armed = true; return base.priceOf(model); } };
+  const providers = { providers: { openrouter: decider }, default: "openrouter" };
+  await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: askFlow() } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, max_cost_usd: 1 } });
+  runners.push(startRunner({ store, createLoop: createWorkflowLoop(workflowSpecOf({ store, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-a", ...TIMING }));
+  await dead;
+  assert.equal(asked.length, 0, "runner A died before the decision was sent");
+  // Runner A's claim runs out; runner B takes the run over.
+  skew += TIMING.leaseMs + 60_000;
+  runners.push(startRunner({ store: second, createLoop: createWorkflowLoop(workflowSpecOf({ store: second, providerOf: idleModelProvider(), decisionProvidersOf: () => providers })), name: "runner-b", ...TIMING }));
+  const ended = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  // Runner A's write made the request admitted (runner B never asks it again: the driver escalates it, asked and never
+  // answered) or it did not (runner B asks it once). Either way the run counts it once at most: a hold kept before the
+  // admission would be counted cut beside runner B's own, $0.80 for one $0.40 decision.
+  assert.ok(asked.length <= 1, `asked at most once: ${asked.length}`);
+  assert.ok((ended.costUsd ?? 0) <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
+  if (asked.length === 1) assert.deepEqual([ended.state, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], ["ended", 0.4], `asked by runner B, booked at what it charged: ${JSON.stringify(ended)}`);
+});
