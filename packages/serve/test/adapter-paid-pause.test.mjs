@@ -113,6 +113,7 @@ test("a refused paid call's pending pause is kept on the run's root, and a claim
   assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.budget, data: {} }, { kind: KINDS.raise, data: {} }]), undefined, "its pause landed: nothing to restore");
   assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.end, data: {} }]), undefined, "the run ended after it");
   assert.equal(pendingPauseOf([{ kind: "pi.user" }]), undefined, "none kept");
+  assert.equal(pendingPauseOf([{ kind: KINDS.pausePending, data: refusal }, { kind: KINDS.personAsked, data: { callId: "c2" } }]), undefined, "the turn ended on a question after it: the refusal is spent, the person's answer no retry of the call");
   // And the refusal is on the root as the call is refused: the run held as above, its root read meanwhile.
   let answeredNow;
   const answeredYet = new Promise((resolve) => (answeredNow = resolve));
@@ -140,6 +141,37 @@ test("a refused paid call's pending pause is kept on the run's root, and a claim
     },
   });
   assert.match(kept?.refuse ?? "", /could cost up to \$0\.001/, `the refusal kept on the root before the call's result: ${JSON.stringify(kept)}`);
+});
+
+test("a refused paid call's pause, landing at the next request, counts what a call beside it settled since: the budget card's spend is the run's then", async (t) => {
+  // Two paid calls in one round: "dear" is refused for room at once ($0.001 past a $0.0005 cap, nothing spent yet); "cheap"
+  // starts a moment later, fits ($0.0003) and settles. The pause lands at the model's next request, after both.
+  const fee = (name, usd) => ({ name, tool: "web_search", by: "parallel", usd, basis: "a test's price" });
+  const tried = async (name, usd) => {
+    try {
+      return `sent (${(await paidRequest(fee(name, usd), async () => new Response("{}", { status: 200 }))).status})`;
+    } catch (error) {
+      return String(error?.message ?? error);
+    }
+  };
+  const answered = {};
+  const script = [{ calls: [{ call: "dear" }, { call: "cheap" }] }, { say: "done" }];
+  const tools = {
+    dear: { name: "dear", replaySafe: false, run: async () => (answered.dear = await tried("dear", 0.001)) },
+    cheap: { name: "cheap", replaySafe: false, run: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return (answered.cheap = await tried("cheap", 0.0003));
+    } },
+  };
+  const specOf = (sent) => async (claim, run) => piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, sent) })(claim, run);
+  const run = await capRun(t, { script, specOf, cap: { capUsd: 0.0005, park: (r) => cap.parkOf(r, 0.0005), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf }, runCap: { capUsd: () => 0.0005, modelOf: () => FREE } });
+  assert.match(answered.dear ?? "", /could cost up to \$0\.001/, `dear refused: ${JSON.stringify(answered)}`);
+  assert.equal(answered.cheap, "sent (200)", "cheap sent and settled");
+  assert.equal(run.row.state, "parked");
+  const budgets = await rootEntries(run.server, "agentrun.budget");
+  assert.equal(budgets.length, 1, JSON.stringify(budgets));
+  assert.equal(budgets[0].pending.spent_usd, 0.0003, `the card counts cheap's charge, settled after dear's refusal: ${JSON.stringify(budgets[0])}`);
+  assert.match(budgets[0].words, /the next step, dear, could cost up to \$0\.001/, "in the refused call's words");
 });
 
 test("a priced MCP call the run's cap has no room for parks the run at its next request with the cap's figures, nothing sent", async (t) => {
