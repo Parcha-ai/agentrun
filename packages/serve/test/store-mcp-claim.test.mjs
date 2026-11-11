@@ -22,7 +22,7 @@ const { sealMcpCredential } = await import("../dist/store/index.js");
 const { Fenced, MCP_REFRESH_LEASE_MS } = await import("../dist/store/store.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
-const { UNUSABLE } = await import("../dist/mcp-servers.js");
+const { UNUSABLE } = await import("../dist/mcp-probe.js");
 
 const LEASE = 60_000;
 const KEY = randomBytes(32);
@@ -244,8 +244,7 @@ test("M9: fresh() run again on a resume refreshes a token that expired since the
 });
 
 test("M18: a token given with no expiry is taken to last an hour; a resume past that assumed hour refreshes it", async (t) => {
-  // Mirrors the file registry's old headersForRun case (mcp-oauth.test.mjs, before the cut): the runner now owns a run's
-  // token refresh, so the UNKNOWN_EXPIRY_MS rule is pinned here. A set with no expires_at is treated as obtained_at + an
+  // The runner owns a run's token refresh, so the UNKNOWN_EXPIRY_MS rule is pinned here. A set with no expires_at is treated as obtained_at + an
   // hour: inside the hour it is used as is, past it the expired token is refreshed (awaited). Pins the hour from both sides.
   let now = T0;
   const oauth = await startFakeOAuth({ clients: { "runner-test": "s3" } });

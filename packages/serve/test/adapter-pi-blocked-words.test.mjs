@@ -13,6 +13,7 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { deniedText, refusedText } = await import("../dist/tool-gate.js");
+const { timelineOf } = await import("@parcha/pi-durable-agent/timeline");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -62,4 +63,13 @@ test("a call a person denied reaches the model in main's words with their reason
   const result = lastToolResult(w.requests);
   assert.equal(result.text, refusedText("asked", "not on a Friday"), `main's words for a call a person denied: ${JSON.stringify(result.blocks)}`);
   assert.equal(result.isError, true, "an error result");
+});
+
+test("a call of a tool set to deny reads refused on the run's Timeline, naming its path, never as a call that ran and failed", async (t) => {
+  const w = await gatedRun(t, [{ call: "read", args: { path: "deny.md" } }, { say: "done" }], (call) => (call.tool === "read" ? "deny" : "allow"));
+  const ended = await w.settled("ended");
+  const { entries } = await journalRecords(w.server.journal({ runId: "run-1", runner: "reader", epoch: ended.epoch, until: 0, from: ended.state }), BACKGROUND_CONTEXT);
+  const rows = timelineOf(entries, { settled: true });
+  const shown = rows.filter((row) => row.kind === "tool_use" || row.kind === "tool_result").map((row) => [row.kind, row.summary]);
+  assert.deepEqual(shown, [["tool_use", "Refused: read deny.md"], ["tool_result", `Refused: read deny.md: ${deniedText("read")}`]], JSON.stringify(shown));
 });

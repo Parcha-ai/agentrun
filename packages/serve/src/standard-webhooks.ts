@@ -8,7 +8,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 export const HOOK_TOLERANCE_S = 300;
 /** The fewest bytes a verification key may have (the spec's secrets are 24 to 64; this server makes 32): a shorter one,
  *  an empty one above all, signs nothing. It is the floor for keys a request is verified with alone: a sealed setting
- *  that is such a key declares `minBytes: MIN_KEY_BYTES` (sealed-settings.ts); a token that is no HMAC key (a bot's)
+ *  that is such a key declares `minBytes: MIN_KEY_BYTES` (sealed-settings-store.ts); a token that is no HMAC key (a bot's)
  *  sets its own floor, or none. */
 export const MIN_KEY_BYTES = 24;
 /** A webhook-id: printable ASCII with no space, as the spec's `msg_...` ids are; it goes into a firing's key and history. */

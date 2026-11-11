@@ -245,7 +245,15 @@ export interface SessionIO {
    *  runs nothing; a park holds the call, writing nothing, until the session's signal is aborted (the run parks on a
    *  person). Absent: every call runs. */
   gate?(call: GateCall, context?: unknown): Promise<GateAnswer>;
+  /** A tool the adapter adds of its own (read_skill_file over the session's skills), made the host's: its calls go the
+   *  way the host's own tools' do (the run's record of the call and its result, which its Timeline shows, the rule before
+   *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
+   *  keeps no record of calls, and the tool runs as it is. */
+  hostTool?(tool: HostTool): HostTool;
 }
+
+/** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */
+export const hostedTool = (io: Pick<SessionIO, "hostTool">, tool: HostTool): HostTool => (io.hostTool ? io.hostTool(tool) : tool);
 
 /** A call as the host's gate is asked about it. */
 export interface GateCall {
