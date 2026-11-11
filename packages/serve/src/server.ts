@@ -1117,7 +1117,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
     return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
   };
-  const computerReady = async (setting: { kind: string; provider?: string }) =>
+  const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
     computerReadiness(setting, (await folderModeOf(store)()) === "disk" ? 2 : 1, claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
   // Where a run's shell is, read before anything starts by the claim's own rule (runShellOf) on the registry the claim

@@ -27,10 +27,13 @@ import { SHELL_NOTES } from "./workspace/resolve-computer.js";
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
+/** A revision's computer setting: a kind, its provider, and a sandbox's GPUs (computer-setting.ts). */
+export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
+
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: { kind: string; provider?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; place?: { mode: string; box?: string }; computer?: RevisionComputer; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" }
   | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; place?: { mode: string; box?: string }; unnamed?: true; toolSettings?: ToolSettingsMap; approvals?: "never" };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
@@ -84,7 +87,7 @@ export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
  *  over its computer setting, in the server's mode): "none" refuses every bash-family tool; "local" (Archil's serverless
  *  exec, Mode 2) allows bash and refuses the background tools; "computer" (a desktop whose provider mounts the folder)
  *  allows them all. None given: "none". */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady, shell = "none" }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: { kind: string; provider?: string }) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shell?: ShellPlace } = {}): Promise<Blocker[]> {
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, boxes = [], offers, mcp, decisionPrice, computerReady, shell = "none" }: { capped?: boolean; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shell?: ShellPlace } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
