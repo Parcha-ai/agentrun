@@ -9,7 +9,7 @@ const REFUND = note("name: Refund policy path\ndescription: Shopify stores keep 
 test("a note's front matter: name, description and type, active when it has no status, and its body after", () => {
   assert.deepEqual(format.parseNoteFile("refund-policy-path.md", REFUND), {
     file: "refund-policy-path.md", name: "Refund policy path", description: "Shopify stores keep their policies at /policies/", type: "reference",
-    status: "active", origin: "run", superseded_by: null, supersedes: [], keys: ["name", "description", "type"], body: "Open /policies/ first.\n",
+    status: "active", origin: "run", superseded_by: null, supersedes: [], retired_from: null, keys: ["name", "description", "type"], body: "Open /policies/ first.\n",
   });
   const old = format.parseNoteFile("old.md", note('name: "Old: quoted"\ndescription: \'single\'\ntype: feedback\nstatus: superseded\nsuperseded_by: refund-policy-path.md\nsupersedes: [x.md, "y.md"]\nsource: elsewhere'));
   assert.deepEqual([old.name, old.description, old.status, old.superseded_by, old.supersedes], ["Old: quoted", "single", "superseded", "refund-policy-path.md", ["x.md", "y.md"]], "quotes are cut, and a key it does not know is left alone");

@@ -33,7 +33,8 @@ const NOTES_PAGE = 50;
 const LOG_PAGE = 20;
 const PAGE_MAX = 200;
 /** What a retire adds to a note, on top of the note cap a retired note may fill (learn/notes.ts retire). */
-const RETIRED_LINE = Buffer.byteLength("status: retired\n");
+/** What a retire adds to a note: its status line and the status it took it from (the longer of the two). */
+const RETIRED_LINE = Buffer.byteLength("status: retired\nretired_from: pending\n");
 
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
@@ -473,7 +474,7 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
           const retired = parseNoteFile(file, text);
           if (Array.isArray(retired)) throw refused(retired.map((detail) => printable({ rule: "note", path: file, detail }, input.refuse)));
           const size = Buffer.byteLength(text);
-          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status line a retire adds` }, input.refuse)]);
+          if (size > CAPS.note + RETIRED_LINE) throw refused([printable({ rule: "too_large", path: file, detail: `${size} bytes as retired; the cap is ${CAPS.note}, and the status lines a retire adds` }, input.refuse)]);
         }
         if (current && text === current.text) return { result: { status: 200, file, text, etag: etagOf(current.oid) } };
         const after = learned ? [...notes.values()] : [...[...notes.values()].filter((note) => note.file !== file && !also.has(note.file)), parseNoteFile(file, text!) as LearnedNote, ...[...also].map(([old, marked]) => parseNoteFile(old, marked) as LearnedNote)];

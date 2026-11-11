@@ -538,9 +538,9 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   process.env.AGENT_MODEL_API_KEY = value;
   const { api } = await serve(t, { data });
   const etag = async (file) => (await api("GET", `${files}/${file}`)).headers.get("etag");
-  // The note at the cap retires, its status line on top of the cap.
+  // The note at the cap retires, its status lines (status, and the status it was retired from) on top of the cap.
   const capped = await api("POST", `${files}/full.md/retire`, undefined, { "if-match": await etag("full.md") });
-  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4112], JSON.stringify(capped.body).slice(0, 200));
+  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4096 + Buffer.byteLength("status: retired\nretired_from: active\n")], JSON.stringify(capped.body).slice(0, 200));
   // The note holding the value made secret retires: out of the index, its answer and the log cut of the value.
   const vault = await api("POST", `${files}/vault.md/retire`, undefined, { "if-match": await etag("vault.md") });
   assert.equal(vault.status, 200, JSON.stringify(vault.body));
