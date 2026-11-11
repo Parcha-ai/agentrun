@@ -58,8 +58,15 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)", network: "an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply" });
   assert.equal(kindOf(view, "sandbox").offered, true);
+  // What this server's allow-list means for each provider, from its declared network (the computer package's NETWORK):
+  // none for Docker, which takes the list; words for a computer with no network, and for one on the vendor's own.
+  const networkOf = (kind, id) => providerOf(view, kind, id).network;
+  assert.deepEqual(
+    [networkOf("sandbox", "docker"), networkOf("sandbox", "daytona"), networkOf("sandbox", "modal"), networkOf("sandbox", "e2b"), networkOf("desktop", "orgo"), networkOf("browser", "kernel")],
+    [undefined, "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "no network, so this server's allow-list isn't offered", "an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply"],
+  );
 });
 
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
@@ -97,7 +104,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: 7 }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type");
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true }, "the shared secret shape: set, where from, when changed; never a value");
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, network: "an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply" }, "the shared secret shape: set, where from, when changed; never a value");
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");
@@ -130,6 +137,31 @@ test("a provider's test opens its saved keys, makes it with them through compute
   await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b", BROWSERBASE_PROJECT_ID: "good-p" });
   assert.equal((await routes.test("browserbase")).ok, false, "a provider with no module here is not tested");
   assert.equal(await routes.test("nope"), undefined);
+});
+
+test("a provider's test answer that quotes the saved key in another form (base64 in an auth header, hex) comes back with no form of it, failed or ok", async (t) => {
+  const sealKey = randomBytes(32);
+  const { store } = await storeOn(t);
+  const KEY = "fake-test-key";
+  const forms = [Buffer.from(KEY).toString("base64"), Buffer.from(KEY).toString("hex")];
+  // A vendor that echoes the key it was made with in the forms testConnection's plain cut does not know.
+  let answer = "refused";
+  const echoing = (options) => ({
+    async testConnection() {
+      const said = `Authorization: Basic ${Buffer.from(options.apiKey).toString("base64")} (key id ${Buffer.from(options.apiKey).toString("hex")})`;
+      return answer === "ok" ? { ok: true, value: { detail: `2 computers for ${said}` } } : { ok: false, error: { code: "unauthorized", message: `401 ${said}` } };
+    },
+  });
+  const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: { e2b: echoing }, tools, mode: "local" });
+  await routes.saveKeys("e2b", { E2B_API_KEY: KEY });
+  const refused = await routes.test("e2b");
+  assert.equal(refused.ok, false);
+  assert.match(refused.why, /^E2B refused the saved key: check E2B_API_KEY in Settings → Computers\./, "the plain words stay");
+  for (const form of [KEY, ...forms]) assert.ok(!refused.why.includes(form), `no ${form} in the why: ${refused.why}`);
+  answer = "ok";
+  const ok = await routes.test("e2b");
+  assert.equal(ok.ok, true);
+  for (const form of [KEY, ...forms]) assert.ok(!ok.detail.includes(form), `no ${form} in the detail: ${ok.detail}`);
 });
 
 test("the claim's options: computer_unavailable with the refusal's words, else the provider's create() options from its saved keys", async (t) => {
@@ -172,4 +204,26 @@ test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "docker" }), undefined);
+});
+
+test("a sandbox provider's GPUs show on GET /v2/computers as its configuration declares them, with why a run here cannot have them; the claim holds a sandbox's gpu to them in checkGpu's words", async (t) => {
+  const { routes } = await setup(t, { mode: "disk" });
+  const view = await routes.view();
+  const daytona = providerOf(view, "sandbox", "daytona").gpu;
+  assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.why], [["H100", "H200", "RTX-PRO-6000", "RTX-4090", "RTX-5090", "MI355X"], 8, true, true, "earth", { cpus: 16, memoryMb: 196608, diskMb: 524288 }, undefined]);
+  const modal = providerOf(view, "sandbox", "modal").gpu;
+  assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, []]);
+  assert.match(modal.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which Modal's GPU computers have not proven");
+  assert.equal(providerOf(view, "sandbox", "docker").gpu, undefined, "Docker declares no GPU");
+  assert.equal(providerOf(view, "desktop", "e2b").gpu, undefined, "only a sandbox takes GPUs");
+
+  await routes.saveKeys("daytona", { DAYTONA_API_KEY: "good-d" });
+  await routes.saveKeys("modal", { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" });
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), undefined);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), "Daytona can't give this agent's computer its GPUs: gpu.type \"T4\" is not one this provider offers: H100, H200, RTX-PRO-6000, RTX-4090, RTX-5090, MI355X (Settings → Computers)");
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 9 } }), /gpu.count 9 is not a whole number from 1 to 8/);
+  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), /^Modal can't give this agent's computer its GPUs: a GPU computer here takes no archil mount: it is not proven/);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU is as before");
+  const local = (await setup(t)).routes;
+  assert.match(await local.claimRefusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^Docker can't give this agent's computer its GPUs: this provider offers no GPU/);
 });
