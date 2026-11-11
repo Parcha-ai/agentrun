@@ -6,7 +6,7 @@
 // The input's origin keeps its fail-safe on read (#1856): a run started by a trigger keeps an origin only when it names
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
-import { type MessageOrigin, originOf } from "@parcha/pi-durable-agent/timeline";
+import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";

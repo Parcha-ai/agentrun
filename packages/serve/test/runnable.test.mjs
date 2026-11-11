@@ -6,7 +6,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openStore } from "@parcha/pi-durable-agent";
 import { commitAgent, createAgent, getAgent, setCurrentRevision } from "../dist/agents-store.js";
 import { startServe } from "../dist/index.js";
 import { checkDefinitionBody } from "../dist/validate.js";
@@ -111,23 +110,6 @@ test("a workflow whose tier has no model on this host saves with a warning", asy
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.workflow", "not_set_up_here"]]);
   assert.match(saved.body.warnings[0].message, /fast tier/);
-});
-
-// SKIP (follow-up #2078): it plants a store an earlier version wrote, which this version refuses at start
-test.skip("a revision saved before these checks is refused at its run with the same reasons (409)", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const store = openStore(data);
-  try {
-    const { id } = store.createAgent({ name: "old", id: "old" });
-    await store.commitRevision(id, { kind: "agentic", instructions: "Answer.", tools: ["read", "bash"] }, { setCurrent: true });
-  } finally {
-    store.close();
-  }
-  const server = await startServe({ data, port: 0, faux: new URL("./fixtures/faux-model.mjs", import.meta.url).pathname });
-  t.after(() => server.close());
-  const run = await client(server.baseUrl, server.token)("POST", "/agents/old/runs", { input: { content: "hi" } });
-  assert.deepEqual([run.status, run.body.error.code, run.body.error.details.unbound], [409, "agent_not_runnable", ["bash"]]);
-  assert.match(run.body.error.message, /bash/);
 });
 
 test("a save whose checks run while another request changes the current revision is held to its If-Match: 412, never a stale 200", async (t) => {

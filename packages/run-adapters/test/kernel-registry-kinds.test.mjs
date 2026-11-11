@@ -1,12 +1,11 @@
-// The kernel registry's computer kinds: a run whose computer is a desktop, a phone or a browser sees the host tools of
-// its shell plus that kind's tools, in a fixed order, and nothing else. Desktop and phone tools run on the hands' narrow
-// ports (screen, input, phone), with images back in the answer's images; the browser kind's definitions are the host's
-// (pi-browser's contracts, passed in, never copied here) with the host's executors. A kind tool the run does not have
-// is refused in words that name the setting; a def with no executor is refused when the registry is built.
+// The kernel registry's computer kinds: a run whose computer is a desktop or a phone sees the host tools of its shell
+// plus that kind's tools, in a fixed order, and nothing else. Desktop and phone tools run on the hands' narrow ports
+// (screen, input, phone), with images back in the answer's images. A kind tool the run does not have is refused in
+// words that name the setting. A browser computer is no kind of the registry's: its tools are the host's browser tool's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capabilityToolDefs, createRegistry, hostToolDefs, NEEDS_A_COMPUTER, PHONE_TREE_MAX_CHARS, PHONE_TREE_MAX_NODES } from "@parcha/agentrun-kernel/kernel";
-import { fakeBrowser, fakeInput, fakePhone, fakeScreen, PNG, refusal } from "./registry-ports.mjs";
+import { CAPABILITY_KINDS, capabilityToolDefs, createRegistry, hostToolDefs, NEEDS_A_COMPUTER, PHONE_TREE_MAX_CHARS, PHONE_TREE_MAX_NODES } from "@parcha/agentrun-kernel/kernel";
+import { fakeInput, fakePhone, fakeScreen, PNG, refusal } from "./registry-ports.mjs";
 import { localHands } from "./registry-support.mjs";
 
 const answer = (text) => async () => ({ text });
@@ -15,25 +14,14 @@ const LOCAL = ["read", "write", "edit", "bash"];
 const HANDOFF = "computer_request_handoff";
 const DESKTOP = ["desktop_screen", "desktop_input", HANDOFF];
 const PHONE = ["phone_screen", "phone_tree", "phone_tap", "phone_swipe", "phone_type", "phone_key", "phone_apps", "phone_open", HANDOFF];
-/** A browser's contracts as a host passes them (pi-browser's ToolContract shape); the registry keeps their words as given. */
-const CONTRACTS = Object.freeze([
-  { name: "snapshot", label: "Browser: snapshot", description: "The page's tree.", parameters: { type: "object", properties: {} }, effect: "read", replay: "safe" },
-  { name: "run", label: "Browser: run", description: "Act on the page.", parameters: { type: "object", properties: { code: { type: "string" } } }, effect: "effect", replay: "unsafe" },
-]);
-const BROWSER = CONTRACTS.map((contract) => contract.name);
-const browserExecutors = (seen = []) => Object.fromEntries(BROWSER.map((name) => [name, async (args, call) => {
-  const session = await call.hands.browser.connect();
-  await session.send(`Fake.${name}`, args);
-  seen.push(name);
-  return { text: `${name} ran` };
-}]));
 const handsWith = (ports) => ({ ...localHands().hands, ...ports });
 const words = (tool, kind) => `${tool} needs a ${kind} computer: set this agent's computer to ${kind} (Settings → Computers).`;
 
 test("a kind's tools follow the host tools, in a fixed order whatever order the kinds are given in", () => {
-  const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser", "phone", "desktop"], executors: { ...injected, browser: browserExecutors() }, browserTools: CONTRACTS });
+  assert.deepEqual(CAPABILITY_KINDS, ["desktop", "phone"], "a browser is no kind of the registry's");
+  const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["phone", "desktop"], executors: injected });
   // The hand-over both kinds have is listed once, with the desktop's.
-  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...DESKTOP, ...PHONE.filter((name) => name !== HANDOFF), ...BROWSER]);
+  assert.deepEqual(registry.list().map((def) => def.name), [...LOCAL, ...DESKTOP, ...PHONE.filter((name) => name !== HANDOFF)]);
   // No kinds: today's rows, unchanged.
   assert.deepEqual(createRegistry({ maxExecS: 600, shell: "local", executors: injected }).list(), hostToolDefs({ maxExecS: 600, shell: "local" }));
 });
@@ -56,22 +44,7 @@ test("each kind's definitions: its own gate names and settings key; a read is re
   }
 });
 
-test("the browser kind's definitions are the host's contracts, their words and schemas as given (the same objects), held to the setting browser", () => {
-  const browser = capabilityToolDefs("browser", { browserTools: CONTRACTS });
-  assert.deepEqual(browser.map((def) => [def.name, def.gateName, def.settingsKey, def.replaySafe]), [["snapshot", "host:browser/snapshot", "browser", true], ["run", "host:browser/run", "browser", false]]);
-  for (const [i, def] of browser.entries()) {
-    assert.equal(def.description, CONTRACTS[i].description);
-    assert.equal(def.parameters, CONTRACTS[i].parameters, "the contract's own schema object, not a copy");
-  }
-  assert.throws(() => capabilityToolDefs("browser"), /the browser's definitions are pi-browser's BROWSER_TOOLS, which the host passes as browserTools/);
-  assert.throws(() => createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser"], executors: { ...injected, browser: browserExecutors() } }), /browserTools/);
-});
-
-test("a kind's def with no executor is refused when the registry is built, naming the tool", () => {
-  const { run: _run, ...partial } = browserExecutors();
-  assert.throws(() => createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser"], executors: { ...injected, browser: partial }, browserTools: CONTRACTS }), /no executor for run/);
-  assert.throws(() => createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser"], executors: injected, browserTools: CONTRACTS }), /no executor for snapshot/);
-  // desktop and phone run on the kernel's own executors, over the hands' ports.
+test("desktop and phone run on the kernel's own executors, over the hands' ports: the host gives none of them", () => {
   assert.doesNotThrow(() => createRegistry({ maxExecS: 600, shell: "none", kinds: ["desktop", "phone"], executors: injected }));
 });
 
@@ -183,21 +156,11 @@ test("phone_tree's answer is bounded: past PHONE_TREE_MAX_NODES nodes, or PHONE_
   assert.equal(text.split("\n").at(-1), `${100 - shown} more nodes not shown.`);
 });
 
-test("the browser kind's tools run on the host's executors, which reach the browser through the hands' CDP connect", async () => {
-  const browser = fakeBrowser();
-  const seen = [];
-  const registry = createRegistry({ maxExecS: 600, shell: "local", kinds: ["browser"], executors: { ...injected, browser: browserExecutors(seen) }, browserTools: CONTRACTS });
-  const said = await registry.invoke("snapshot", { includeIframes: false }, { hands: handsWith({ browser }) });
-  assert.equal(said.text, "snapshot ran");
-  assert.deepEqual(browser.calls, [["connect"], ["send", "Fake.snapshot", { includeIframes: false }]]);
-});
-
 test("a kind tool the run does not have is refused in words naming the setting, and a port the hands lack says the same", async () => {
-  const local = createRegistry({ maxExecS: 600, shell: "local", executors: injected, browserTools: CONTRACTS });
+  const local = createRegistry({ maxExecS: 600, shell: "local", executors: injected });
   const { hands } = localHands();
   assert.equal((await local.invoke("desktop_screen", {}, { hands })).error, words("desktop_screen", "desktop"));
   assert.equal((await local.invoke("phone_tap", { x: 1, y: 1 }, { hands })).error, words("phone_tap", "phone"));
-  assert.equal((await local.invoke("snapshot", {}, { hands })).error, words("snapshot", "browser"));
   assert.equal((await local.invoke("nothing_here", {}, { hands })).error, "there is no host tool nothing_here in this run");
   // Built with the kind, called on hands with no such port (the computer lacks it): the same words, and nothing runs.
   const desktop = createRegistry({ maxExecS: 600, shell: "local", kinds: ["desktop", "phone"], executors: injected });
