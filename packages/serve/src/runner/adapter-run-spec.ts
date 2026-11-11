@@ -174,9 +174,15 @@ export function capModelOf(route: ModelRoute): CapModel {
 }
 
 /** A tier's route, one per model in a run (model.ts gatewayPrices: a model two tiers share takes one price): a tier on the
- *  run's own model, or on an earlier tier's, takes that route (`earlier`, the run's own first), so the proxy's booking and
- *  the cap, which prices a request by its model id, read one price for it. */
-export const oneRoutePerModel = (at: ModelRoute, earlier: readonly ModelRoute[]): ModelRoute => earlier.find((other) => other.model === at.model) ?? at;
+ *  run's own model, or on an earlier tier's, on the same provider, takes that route (`earlier`, the run's own first), so the
+ *  proxy's booking and the cap, which prices a request by its model id, read one price for it. A tier whose model id is an
+ *  earlier route's on another provider has no route here (`why`): the cap could not tell their prices apart. */
+export function oneRoutePerModel(at: ModelRoute, earlier: readonly ModelRoute[]): ModelRoute | { why: string } {
+  const same = earlier.find((other) => other.model === at.model);
+  if (!same) return at;
+  if (same.vendor === at.vendor) return same;
+  return { why: `its model ${at.model} on ${at.vendor ?? "its provider"} has the id of this run's model on ${same.vendor ?? "another provider"}, and the run's cap prices a request by its model's id alone.` };
+}
 
 /** A tier's route as the pi adapter takes it (PiAdapterOptions.tiers): the route's own fields. */
 export const tierRouteOf = (route: ModelRoute): TierRoute => ({
@@ -422,7 +428,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     const tierEnv = withModelKeys(deps.env, { ...(await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env })), ...toolEnv });
     for (const tier of SUBAGENT_TIERS) {
       try {
-        tierRoutes.set(tier, oneRoutePerModel(await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut), [route, ...tierRoutes.values()]));
+        const at = oneRoutePerModel(await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut), [route, ...tierRoutes.values()]);
+        if ("why" in at) tierWhy.set(tier, at.why);
+        else tierRoutes.set(tier, at);
       } catch (error) {
         tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
       }

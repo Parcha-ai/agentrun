@@ -220,4 +220,7 @@ test("a tier on the run's own model takes the run's route and price, so the cap 
   const fast = await routeOf(undefined, env, "fast", PI_WIRES);
   assert.equal(oneRoutePerModel(fast, [own]), fast, "a tier on a model of its own keeps its route and price");
   assert.equal(oneRoutePerModel({ ...fast }, [own, fast]), fast, "a second tier on that model takes the first's");
+  // The same id on another provider is no route of the run's: the cap, which prices by id, could not tell them apart.
+  const elsewhere = oneRoutePerModel({ ...strong, vendor: "another" }, [own]);
+  assert.match(elsewhere.why ?? "", /has the id of this run's model on .*the run's cap prices a request by its model's id alone/, JSON.stringify(elsewhere));
 });
