@@ -184,10 +184,13 @@ test("claude-agent's native skills reach the adapter as serve gives them, and an
 
 test("each adapter harness's check of skills is its own package's skillProblems, by its table entry (packageSkillCheck); none where a package has no check of its own (each package is a dependency of serve, so it is never missing)", async () => {
   const [{ packageSkillCheck }, { builtinHarness }, claude, codex, opencode] = await Promise.all([import("../dist/adapters.js"), import("../dist/harness-table.js"), import("@parcha/agentrun-harness-claude"), import("@parcha/agentrun-harness-codex"), import("../dist/harness-opencode/index.js")]);
-  for (const [id, pkg] of [["claude-agent", claude], ["codex", codex], ["opencode", opencode]]) {
-    assert.equal(typeof pkg.skillProblems, "function", `${id}'s package has a check of its own`);
-    assert.equal(await builtinHarness(id).skillCheck(), pkg.skillProblems, `${id}'s entry: its own package's function, not a copy`);
-  }
+  for (const [id, pkg] of [["claude-agent", claude], ["codex", codex], ["opencode", opencode]]) assert.equal(typeof pkg.skillProblems, "function", `${id}'s package has a check of its own`);
+  for (const [id, pkg] of [["claude-agent", claude], ["codex", codex]]) assert.equal(await builtinHarness(id).skillCheck(), pkg.skillProblems, `${id}'s entry: its own package's function, not a copy`);
+  // OpenCode is handed each SKILL.md as servedSkill writes it (opencodeOf): its entry checks that served form with its
+  // package's own function.
+  const check = await builtinHarness("opencode").skillCheck();
+  const one = [{ name: "cite", files: { "SKILL.md": "---\nname: cite\ndescription: How to cite\n---\nCite.\n" } }];
+  assert.deepEqual(check(one), opencode.skillProblems(one));
   assert.equal(builtinHarness("pi").skillCheck, undefined, "pi loads no skills itself: its prompt keeps them");
   assert.equal(await packageSkillCheck(async () => ({ ...claude, skillProblems: undefined })), undefined, "a package with no check of its own: none");
 });
@@ -302,4 +305,18 @@ test("npx is told by where serve's files are: under npm's _npx cache, not a proj
   assert.equal(startedByNpx("/work/app/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a project's install");
   assert.equal(startedByNpx("/work/_npx-notes/node_modules/@parcha/agentrun-serve/dist/adapters.js"), false, "a directory merely named like it");
   assert.equal(startedByNpx(), false, "this checkout's build");
+});
+
+test("OpenCode's skills are checked as it is handed them: a skill set at its 1 MiB limit as written, which servedSkill's quotes put past it, is refused by the check, so systemOf never hands it on to grow past the limit in opencodeOf", async () => {
+  const [{ builtinHarness }, { servedSkill }, { SKILL_BYTES }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/learn/skills.js"), import("@parcha/agentrun-kernel")]);
+  const check = await builtinHarness("opencode").skillCheck();
+  const head = "---\nname: big\ndescription: A large reference\n---\n";
+  const at = [{ name: "big", files: { "SKILL.md": head + "x".repeat(SKILL_BYTES - Buffer.byteLength(head)) } }];
+  assert.equal(Buffer.byteLength(at[0].files["SKILL.md"]), SKILL_BYTES, "at the limit as written");
+  assert.ok(Buffer.byteLength(servedSkill(at[0].files["SKILL.md"])) > SKILL_BYTES, "past it as served");
+  assert.match(check(at).join("\n"), /more than 1048576/, "refused as served");
+  // One that fits as served is taken.
+  const under = [{ name: "big", files: { "SKILL.md": head + "x".repeat(SKILL_BYTES - Buffer.byteLength(servedSkill(head))) } }];
+  assert.ok(Buffer.byteLength(servedSkill(under[0].files["SKILL.md"])) <= SKILL_BYTES);
+  assert.deepEqual(check(under), []);
 });

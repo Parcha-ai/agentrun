@@ -635,6 +635,14 @@ export function meterFiguresIn(storeFile: string): Meters & { known: { tokens: n
   return readRunDbSync(storeFile, false, (db) => meterFiguresFrom(db.prepare("SELECT conversation_id AS conversation, record FROM entries ORDER BY rowid").all().map((row) => ({ conversation: Number(row.conversation), entry: JSON.parse(String(row.record)) as EntryLike }))));
 }
 
+/** A browser charge's record on the run's root when the run books its money on the runner's one ledger (browser-cost.ts
+ *  browserSpend's `paid`): the same record a browser TOOL_COST is, for what the browser's process holds and the seconds
+ *  it was for, under a kind no cost reads. The charge's money is the ledger's paid step alone, which the cap counts and
+ *  the run's cost (adapter-run-spec.ts endPatch), its timeline and its meters (store-reads/journal.ts withPaidCosts) read,
+ *  as every paid tool's on the runner: a TOOL_COST beside it would count the same charge twice. Its seconds are the
+ *  browser_time meter's (meterFiguresFrom). */
+export const BROWSER_CHARGED = "agentrun.browser_charged";
+
 /** meterFiguresIn's figures from a run's entries by conversation, in log order: the one computation, shared by
  *  meterFiguresIn (reading a settled run's own database) and the one-store reader (store-reads/cap.ts metersOverStore, over
  *  A's journal). Only where the entries come from changes; the figures do not (the money-parity rule), as spentFrom is to
@@ -651,6 +659,9 @@ export function meterFiguresFrom(rows: readonly { conversation: number; entry: E
   const known = { tokens: 0, browser: 0, others: 0 };
   for (const { entry } of rows) {
     const data = (entry.data ?? {}) as Record<string, unknown>;
+    // On the runner a browser charge's money reaches here from the run's ledger (a TOOL_COST of tool "browser", with no
+    // seconds) and its seconds from its record on the root: each counted once.
+    if (entry.kind === BROWSER_CHARGED && data.tool === "browser") browser.seconds += figureOf(data.seconds) ?? 0;
     if (entry.kind === TOOL_STARTED) marks.add(data.call);
     else if (entry.kind === TOOL_COST) marks.delete(data.call), charges.push(figureOf(data.usd));
     if (entry.kind === TOOL_COST && data.tool !== "browser") others.push(figureOf(data.usd)), (known.others += figureOf(data.usd) ?? 0);
