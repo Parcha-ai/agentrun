@@ -902,9 +902,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Who wrote it, when the person did not (a trigger's message that reopened the run): its input is that origin's.
       const by = originOf((command.body as { origin?: unknown } | null)?.origin);
       // A run a person stopped before its first input was sent (a stop during a harness's first-use install): its session
-      // is new, and the person's message is the run's first input, under the first input's id, never after the input
-      // they stopped.
-      const sendId = theSession.state === "new" ? INPUT_REQUEST : requestId;
+      // is new. A stop then means "don't start yet", never "forget what I asked": the run's first turn is one request
+      // carrying the original input and then the person's message, under the first input's id. The original input is
+      // never sent, or answered, as a turn of its own.
+      const first = theSession.state === "new" ? specNow : undefined;
+      const sendId = first ? INPUT_REQUEST : requestId;
+      const content = first ? `${first.input}\n\n${text}` : text;
       // The row is taken only once the session holds the prompt: pi's in its submission's commit; a CLI's (whose harness
       // writes no submission) in the record's follow-up entry, written right after the send, as sendAfterTurn takes its
       // row. A runner lost between the send and that entry leaves the row untaken, so the next claim sends it again: a
@@ -914,7 +917,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
-        await theSession.send(text, { id: sendId, ...(by ? { origin: by } : {}) });
+        await theSession.send(content, { id: sendId, ...(by ? { origin: by } : {}) });
+        // A CLI's record: the original input as its writer's (the launch's origin, else the person's), then the message.
+        if (first) {
+          if (first.inputOrigin) await theRecord?.input(first.input, first.inputOrigin);
+          else await theRecord?.person(first.input);
+        }
         await theRecord?.followUp(text, requestId, by);
       })();
       reopen.placed?.();

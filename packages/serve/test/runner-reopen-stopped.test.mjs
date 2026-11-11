@@ -205,7 +205,7 @@ test("a run with a desktop: a person's stop then a message reopens it, the stopp
   assert.ok(JSON.stringify(origin.requests[2].messages).includes("Third question."), "the third request is the second message's turn");
 });
 
-test("a person's stop while the run waits on its harness's install, then a message: the message is the run's first input, and the input the person stopped is never sent", { timeout: 120_000 }, async (t) => {
+test("a person's stop while the run waits on its harness's install, then a message: one request, its first turn, carries the original input and then the message; the input is never sent as a turn of its own", { timeout: 120_000 }, async (t) => {
   const { server, origin } = await runner(t, [], ["Answer to the message.", "Never asked."], { stopInSpec: true });
   await until(async () => (await server.runs.get(RUN)).runner !== null, "the run is claimed, its spec waiting");
   await sendCommand(server, RUN, { kind: "stop", body: {} });
@@ -216,7 +216,8 @@ test("a person's stop while the run waits on its harness's install, then a messa
   await settled(server, "ended");
   assert.equal(origin.requests.length, 1, `one turn, the message's: ${origin.requests.length} requests: ${JSON.stringify(origin.requests.map((body) => body.messages)).slice(0, 600)}`);
   const asked = JSON.stringify(origin.requests[0].messages);
-  assert.ok(asked.includes("Do this instead.") && !asked.includes("First question."), `the message, never the stopped input: ${asked.slice(0, 400)}`);
+  // A stop during the install means "don't start yet", not "forget what I asked": the task, then the message.
+  assert.ok(asked.includes("First question.") && asked.includes("Do this instead.") && asked.indexOf("First question.") < asked.indexOf("Do this instead."), `the original input, then the message, in the one request: ${asked.slice(0, 400)}`);
 });
 
 test("a cancel ends the run for good: it reads cancelled, and a message is refused with nothing written", { timeout: 120_000 }, async (t) => {
