@@ -81,8 +81,8 @@ export {
 	type RestReply,
 	type UrlStore,
 } from "./browser.js";
-// Local Chrome's provider class is on its file's subpath (@parcha/agentrun-computer/local), as every provider's is;
-// the Chrome helpers it runs on are not a provider and stay here.
+// Local Chrome's provider class is on its provider id's subpath (@parcha/agentrun-computer/local-chrome), as every
+// provider's is; the Chrome helpers it runs on are not a provider and stay here.
 export { CHROME_ENV, CHROME_FLAGS, checkChrome, chromeFence, findChrome, killTree, NO_CHROME } from "./chrome.js";
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
 export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";

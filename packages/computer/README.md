@@ -2138,7 +2138,7 @@ The `local-chrome` provider (Local Chrome, `local.ts`) is a computer of kind `br
 on the machine AgentRun runs on. No vendor, no key, nothing billed.
 
 ```ts
-import { LocalBrowserProvider } from "@parcha/agentrun-computer/local";
+import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 
 const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
 const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });

@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
-import { LocalBrowserProvider } from "@parcha/agentrun-computer/local";
+import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
