@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { CONTRADICTED_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
 import { mergedNote, parseNoteFile } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
 import { learnedPlace } from "../learn/skills.js";
@@ -281,8 +281,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               // An answer the host cannot read is asked once more, as the server's grade did.
               if (verdict.reason === UNREADABLE_REASON && !verdict.items.length) verdict = parseVerdict(await ask(), items);
               // One that kept every item and said no merge contradicts itself: asked once more, the contradiction named. A
-              // second contradiction stands as no merge, said in the host's words (learning-words.ts notKept).
-              else if (verdict.reason === CONTRADICTED_REASON) verdict = parseVerdict(await ask(CONTRADICTION_ASK), items);
+              // second contradiction stands as no merge, said in the host's words as twice (learning-words.ts notKept); a
+              // contradiction after an unreadable answer is one, and is said so.
+              else if (verdict.reason === CONTRADICTED_REASON) {
+                const again = parseVerdict(await ask(CONTRADICTION_ASK), items);
+                verdict = again.reason === CONTRADICTED_REASON ? { ...again, reason: CONTRADICTED_TWICE_REASON } : again;
+              }
             } catch (error) {
               // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
               spend = usd;

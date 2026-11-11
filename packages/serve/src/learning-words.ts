@@ -7,7 +7,7 @@
 // secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
 // words are made of (`learned`, `verdict`), and each read says them again (wordsOf): every part cut of the host's
 // secrets as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
-import { CAPS, CONTRADICTED_REASON, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
+import { CAPS, CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
 import type { LearnedFile, Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
@@ -94,7 +94,8 @@ export const STOPPED = {
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
   noReview: "the review of the new notes gave no answer",
   unread: "the review of the new notes gave an answer that could not be read",
-  contradicted: "the review of the new notes contradicted itself twice: it kept them and said not to",
+  contradicted: "the review of the new notes contradicted itself: it kept them and said not to",
+  contradictedTwice: "the review of the new notes contradicted itself twice: it kept them and said not to",
 } as const;
 
 /** A run's learning, in words, by where it stands. */
@@ -170,9 +171,9 @@ const learnedWords = (file: string): string | undefined => {
  *  secrets: a name is the run's to choose. */
 export function notKept(verdict: Pick<Verdict, "reason" | "items">, lost: readonly Pick<LearnedFile, "file">[] = []): string {
   const dropped = verdict.items.find((item) => !item.keep);
-  // A grade that contradicted itself (it kept every item and said no merge, twice) is said as such: never its own reason,
-  // which may say the items can be kept.
-  const said_ = dropped?.why ? said.grader(dropped.why) : verdict.reason === CONTRADICTED_REASON ? said.stopped(STOPPED.contradicted) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+  // A grade that contradicted itself (it kept every item and said no merge: once, or again when asked again) is said as
+  // such: never its own reason, which may say the items can be kept.
+  const said_ = dropped?.why ? said.grader(dropped.why) : verdict.reason === CONTRADICTED_TWICE_REASON ? said.stopped(STOPPED.contradictedTwice) : verdict.reason === CONTRADICTED_REASON ? said.stopped(STOPPED.contradicted) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
   const subject = dropped?.why ? learnedWords(dropped.file) : undefined;
   const others = [...new Set(lost.flatMap(({ file }) => learnedWords(file) ?? []))].filter((words) => words !== subject);
   if (!subject && !others.length) return said_;
