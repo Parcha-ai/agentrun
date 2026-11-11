@@ -514,8 +514,8 @@ export function parseVerdict(text: unknown, proposed: readonly NoteText[] | read
   const items: VerdictItem[] = [];
   for (const item of answer.items as unknown[]) {
     if (!isObject(item) || typeof item.file !== "string" || typeof item.why !== "string") return UNREADABLE;
-    // The decision, keep, pending or drop; an answer in the older shape gives `keep` alone.
-    const decided = item.decision === undefined ? (typeof item.keep === "boolean" ? (item.keep ? "keep" : "drop") : undefined) : item.decision;
+    // The decision, keep, pending or drop, as the prompt asks it: an item without one is no verdict.
+    const decided = item.decision;
     if (decided !== "keep" && decided !== "pending" && decided !== "drop") return UNREADABLE;
     const origin = item.origin ?? "run";
     if (origin !== "you" && origin !== "run") return UNREADABLE;
