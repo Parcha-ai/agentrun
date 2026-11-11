@@ -146,6 +146,9 @@ export function operationsOf(doc) {
         // It writes a secret (the document marks a field of its body x-agentrun-secret, or the operation whole): the CLI,
         // which holds only the token, has no command for it; the clients keep its method.
         writesSecret: op['x-agentrun-secret'] === true || marksSecret(doc, op.requestBody),
+        // It works only from the owner's browser (the document marks it x-agentrun-browser-only, with why): an MCP
+        // sign-in's start, whose callback needs the cookie its answer sets there. No command and no client method.
+        browserOnly: typeof op['x-agentrun-browser-only'] === 'string',
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
           properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), ...(deref(doc, property)?.const !== undefined ? { const: deref(doc, property).const } : {}), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
@@ -260,7 +263,7 @@ export function commandsOf(ops, map) {
   const entries = [];
   for (const op of ops) {
     // An operation that writes a secret has no command: the CLI holds only the token, which the server refuses on it.
-    if (op.unsupported || op.writesSecret || map.omit[op.operationId] !== undefined) continue;
+    if (op.unsupported || op.browserOnly || op.writesSecret || map.omit[op.operationId] !== undefined) continue;
     const flag = (p) => ({ name: p.name, ...(flagType(p) ?? { type: 'string' }), required: p.required, description: p.description });
     const query = op.parameters.filter((p) => p.in === 'query').map(flag);
     const taken = new Set([...GLOBAL_FLAGS, ...query.map((q) => flagOf(q.name))]);

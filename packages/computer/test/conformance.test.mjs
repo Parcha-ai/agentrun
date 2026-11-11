@@ -57,7 +57,7 @@ test("a case that passes is pass; one that throws is fail, with what it found as
 	assert.equal(report.provider, "fake");
 	assert.equal(report.providerVersion, "1.0.0");
 	assert.equal(report.image, IMAGE);
-	assert.deepEqual(report.daemon, { version: "1.0.0", os: "linux", arch: "amd64" });
+	assert.deepEqual(report.daemons, [{ computer: "fake-1", role: "shared", version: "1.0.0", os: "linux", arch: "amd64" }]);
 	assert.deepEqual(
 		report.results.map(({ id, level, group }) => [id, level, group]),
 		[
@@ -193,7 +193,7 @@ test("when no computer can be made, every case that needs one fails with create'
 	});
 	assert.deepEqual(statuses(report), { "health.ping": "fail", "provider.check": "pass" });
 	assert.match(reasons(report)["health.ping"], /no computer: create was refused: no capacity in this region/);
-	assert.equal(report.daemon, null);
+	assert.deepEqual(report.daemons, []);
 	assert.equal(report.core, "fail");
 });
 
@@ -319,8 +319,9 @@ test("the CLI's --json prints the report object; a Core failure exits 1", async 
 	const code = await main(["--provider", "./fixtures/fake-provider.mjs", "--json", "--image", "alpine:3.20"], { stdout: out, cwd: HERE, cases });
 	assert.equal(code, 1);
 	const report = JSON.parse(out.text());
-	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemon", "daemonMode", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
-	assert.deepEqual([report.kind, report.daemonMode, report.daemon], ["linux", "pid1", { version: "1.0.0", os: "linux", arch: "amd64" }]);
+	assert.deepEqual(Object.keys(report).sort(), ["cleanup", "core", "daemonMode", "daemons", "image", "kind", "provider", "providerVersion", "results", "undeclared"]);
+	assert.deepEqual([report.kind, report.daemonMode, report.daemons], ["linux", "pid1", [{ computer: report.daemons[0]?.computer, role: "shared", version: "1.0.0", os: "linux", arch: "amd64" }]]);
+	assert.match(report.daemons[0].computer, /./);
 	assert.equal(report.provider, "fake-module");
 	assert.equal(report.image, "alpine:3.20");
 	assert.equal(report.core, "fail");
@@ -853,7 +854,7 @@ test("the provider cases compare a computer by its id and name, so a create that
 	assert.deepEqual(statuses(report), { "provider.attach": "pass", "provider.list": "pass", "provider.janitor": "pass" }, JSON.stringify(reasons(report)));
 });
 
-test("the notes create returns are in the report, each naming its computer, and the text report prints every one", async () => {
+test("the notes create returns are in the report, each naming its computer and its role, and the text report prints every one", async () => {
 	const note = "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443";
 	const { provider, made } = fakeComputers({ notes: [note] });
 	const report = await runConformance(provider, {
@@ -862,11 +863,11 @@ test("the notes create returns are in the report, each naming its computer, and 
 	});
 	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
 	assert.equal(made.length, 2, "the run's computer and the case's");
-	const names = made.map(({ name }) => name);
-	assert.deepEqual(report.computerNotes, names.map((computer) => ({ computer, note })), "one entry per note, naming the computer that recorded it");
+	const named = made.map(({ name }, i) => ({ computer: name, role: i === 0 ? "shared" : "provider.fresh" }));
+	assert.deepEqual(report.computerNotes, named.map((one) => ({ ...one, note })), "one entry per note, naming the computer that recorded it and its role");
 	assert.deepEqual(JSON.parse(JSON.stringify(report)).computerNotes, report.computerNotes, "the same in --json's report object");
 	const lines = formatReport(report).trimEnd().split("\n");
-	for (const computer of names) assert.ok(lines.includes(`note ${computer}: ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
+	for (const { computer, role } of named) assert.ok(lines.includes(`note ${computer} (${role}): ${note}`), `${computer}'s note in:\n${lines.join("\n")}`);
 	assert.match(lines.at(-1), /^core PASS 2\/2/, "the verdict stays last");
 	const quiet = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
 	assert.equal(Object.hasOwn(quiet, "computerNotes"), false, "no notes, no field");
@@ -882,7 +883,43 @@ test("the CLI's --json carries the notes create returned", async () => {
 	assert.equal(report.computerNotes[0].note, "network: none; accepted with no answer (no bytes came back): 1.1.1.1:443");
 	const text = sink();
 	assert.equal(await main(["--provider", "./fixtures/accept-first-provider.mjs"], { stdout: text, cwd: HERE, cases: [pass("health.ping")] }), 0);
-	assert.match(text.text(), /^note \S+: network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
+	assert.match(text.text(), /^note \S+ \(shared\): network: none; accepted with no answer \(no bytes came back\): 1\.1\.1\.1:443$/m);
+});
+
+test("each computer's daemon is in the report under its own name and role, with its own fence: the first hello is not taken for the run's", async () => {
+	// The run's computer holds its programs behind a plain network namespace; the case's (a GPU computer on a runtime
+	// where root may not make one) behind one in a user namespace of its own. The report keeps both apart.
+	const fake = fakeComputers({ notes: ["fence: userns-netns"] });
+	const fences = { "fake-1": "netns", "fake-2": "userns-netns" };
+	const provider = {
+		...fake.provider,
+		connect: async (ref) => {
+			const connected = await fake.provider.connect(ref);
+			return connected.ok ? { ok: true, value: { ...connected.value, hello: { ...connected.value.hello, fence: fences[ref.name] } } } : connected;
+		},
+	};
+	const report = await runConformance(provider, {
+		image: IMAGE,
+		cases: [
+			pass("health.ping", { run: async (t) => void (await t.connect()) }),
+			pass("gpu.present", { group: "gpu", computer: "none", run: async (t) => void (await t.connect(await t.create())) }),
+		],
+	});
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	const daemon = { version: "1.0.0", os: "linux", arch: "amd64" };
+	assert.deepEqual(report.daemons, [
+		{ computer: "fake-1", role: "shared", ...daemon, fence: "netns" },
+		{ computer: "fake-2", role: "gpu.present", ...daemon, fence: "userns-netns" },
+	], "one entry per computer, its role and fence its own; a second hello of the run's computer adds none");
+	assert.deepEqual(report.computerNotes.map(({ computer, role }) => [computer, role]), [["fake-1", "shared"], ["fake-2", "gpu.present"]]);
+	const lines = formatReport(report).trimEnd().split("\n");
+	assert.equal(lines[0], "computer conformance · fake · linux, daemon pid1 · computerd 1.0.0 linux/amd64");
+	assert.ok(lines.includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64 · fence netns"), lines.join("\n"));
+	assert.ok(lines.includes("daemon fake-2 (gpu.present): computerd 1.0.0 linux/amd64 · fence userns-netns"), lines.join("\n"));
+	assert.ok(lines.includes("note fake-2 (gpu.present): fence: userns-netns"), lines.join("\n"));
+	const plain = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
+	assert.deepEqual(plain.daemons.map((one) => Object.hasOwn(one, "fence")), [false], "no fence in hello, none in the report");
+	assert.ok(formatReport(plain).split("\n").includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64"));
 });
 
 test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {

@@ -6,7 +6,7 @@
 // back after a drop is served under a new id, so one id never names two seqs. The usage row is the one exception: it is
 // the run's running total, its time the latest entry's, so it is always the last row, and moves to the end (a new seq,
 // as a change) when a row is served after it.
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { TimelineEvent } from "./timeline/index.js";
 
 export type Row = TimelineEvent & { seq: number };
 

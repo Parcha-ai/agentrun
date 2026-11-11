@@ -5,8 +5,8 @@
 // anywhere on the way, even one pointing inside the root, is refused), only regular files and directories are read, and a
 // file with a second hard link is refused, since it could be one of this server's own files linked in.
 import { closeSync, constants, openSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
-import { access, type FileHandle, lstat, readdir, unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { access, type FileHandle, lstat, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { Confinement } from "./confine.js";
 
 /** Why a path under work/ is not read: it is missing, a link is on the way (or is the entry), it is not a regular file,
@@ -96,16 +96,6 @@ export async function openWorkFile(work: string, rel: string): Promise<{ handle:
   }
 }
 
-/** `rel` under `work` as text, read as `openWorkFile` reads it. */
-export async function readWorkText(work: string, rel: string): Promise<string> {
-  const { handle } = await openWorkFile(work, rel);
-  try {
-    return await handle.readFile("utf8");
-  } finally {
-    await handle.close();
-  }
-}
-
 /** `rel` under `work`, its bytes, read as `openWorkFile` reads it; refused ("over_cap") when larger than `maxBytes`. */
 export async function readWorkBytes(work: string, rel: string, { maxBytes }: { maxBytes: number }): Promise<Buffer> {
   const { handle, stats } = await openWorkFile(work, rel);
@@ -192,56 +182,6 @@ export async function walkWork(work: string, visit: (path: string, stats: Stats,
     }
   };
   await into("", 0);
-}
-
-/** A write's or a removal's failure that is a refusal: a link on the way (the confinement's refusal), a directory that
- *  is missing or this server may not enter, or a file where a directory is on the way (a directory where the file is).
- *  Any other failure, a full disk say, is thrown as it is. */
-const REFUSALS: Readonly<Record<string, RefusedReason>> = { permission_denied: "link", ELOOP: "link", ENOENT: "missing", EACCES: "unreadable", ENOTDIR: "not_regular", EISDIR: "not_regular" };
-const refusing = (rel: string) => (error: unknown): never => {
-  const reason = error instanceof WorkRefused ? error.reason : REFUSALS[(error as NodeJS.ErrnoException)?.code ?? ""];
-  throw reason ? new WorkRefused(rel, reason) : error;
-};
-
-/** Pins the directory holding `rel` under `work` for writing, every directory on the way reached through no link (and,
- *  with `parents`, made when missing). Close the pin. */
-async function pinForWrite(work: string, rel: string, parents: boolean) {
-  if (!writesHeld()) throw new WorkRefused(rel, "unheld");
-  const { real, confinement } = confinementOf(work);
-  const abs = join(real, rel);
-  const refuse = refusing(rel);
-  // Checked before the walk makes any directory, so none is made through a link.
-  const { canonical } = await confinement.locate(abs, rel, "write", false).catch(refuse);
-  if (canonical !== abs) throw new WorkRefused(rel, "link");
-  // Whether the walk is to make a directory (the file's own is missing).
-  const making = parents && !(await lstat(dirname(abs)).catch(() => null));
-  const pin = await confinement.pinEntry(abs, rel, { access: "write", follow: false, parents }).catch(refuse);
-  if (pin.canonical !== abs) {
-    await pin.close();
-    throw new WorkRefused(rel, "link");
-  }
-  return { pin, refuse, real, making };
-}
-
-/** What is at the pinned entry, by lstat: nothing (undefined), else a regular file, or refused. */
-async function entryOf(pin: { entry: string }, refuse: (error: unknown) => never, rel: string): Promise<Stats | undefined> {
-  const stats = await lstat(pin.entry).catch((error) => ((error as NodeJS.ErrnoException)?.code === "ENOENT" ? undefined : refuse(error)));
-  if (stats && !stats.isFile()) throw new WorkRefused(rel, stats.isSymbolicLink() ? "link" : "not_regular");
-  return stats;
-}
-
-
-/** Removes the regular file `rel` under `work`, reached through no link: refused when it is missing, a link, or not a
- *  regular file. A directory it leaves empty stays. */
-export async function removeWorkFile(work: string, rel: string): Promise<void> {
-  const { pin, refuse } = await pinForWrite(work, rel, false);
-  try {
-    if (!(await entryOf(pin, refuse, rel))) throw new WorkRefused(rel, "missing");
-    // unlink never follows the name it removes: a link swapped in after the check is removed, not its target.
-    await unlink(pin.entry).catch(refuse);
-  } finally {
-    await pin.close();
-  }
 }
 
 /** Throws unless the kernel refuses a hard link to a file the linker cannot write (fs.protected_hardlinks = 1): with a

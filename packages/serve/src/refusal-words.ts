@@ -27,7 +27,8 @@ export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "s
 };
 /** A workflow model node's tool set to ask: a model node cannot wait for a person's approval (the gate parks no workflow
  *  call), so the call is refused unrun and the model reads why (tool-gate.ts RunGate, on main and on the runner). */
-export const modelNodeAskText = (tool: string): string => `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; it was not run.`;
+export const modelNodeAskText = (tool: string, ran: "no" | "unknown" = "no"): string =>
+  `This ${tool} call needs a person's approval, which a workflow's model node cannot wait for; ${ran === "no" ? "it was not run." : `it was not run again. ${RAN_UNKNOWN}`}`;
 /** A workflow call node's tool set to ask: a call node cannot wait for a person's approval, so it is refused unrun
  *  (main's per-run process and the runner's workflow spec, the same words). */
 export const callNodeAskText = (tool: string): string => `This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`;
