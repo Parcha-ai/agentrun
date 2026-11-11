@@ -12,7 +12,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const run = (trigger: string): Run => ({
-  run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b", agent_id: "triage", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle",
+  run_id: "01a1a88f-5f5c-7ce4-a912-fb765b62e88b", place: { mode: "runner" }, agent_id: "triage", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle",
   title: "Qualify the lead.", created_at: "2026-11-05T09:30:01Z", ended_at: "2026-11-05T09:31:00Z", result: null, error: null, cost: null, archived_at: null,
   trigger: { id: trigger, firing_key: "fir_1" },
 } as unknown as Run);
