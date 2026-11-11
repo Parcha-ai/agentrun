@@ -135,3 +135,20 @@ test("past 25 KB of budget, the room kept for the rest's lines is only what is s
   const served = choice.whole.length * 600 + choice.lines.length * 250;
   assert.ok(choice.lines.length * 250 <= INDEX_BYTES && served <= budget, JSON.stringify({ whole: choice.whole.length, lines: choice.lines.length, served }));
 });
+
+test("whole notes demoted to lines to fit the budget never take the rule lines past what the index serves: the final section holds at most INDEX_LINES lines within INDEX_BYTES (#2274 review)", async () => {
+  const { INDEX_BYTES, INDEX_LINES } = await import("../dist/learn/notes.js");
+  const seed = topical(230);
+  // A selector at the cap already: 200 lines (the most), and 20 notes whole that the budget cannot hold, so the section
+  // demotes them to lines.
+  const select = (candidates) => ({ whole: candidates.notes.slice(0, 20).map(({ note }) => note), index: false, lines: candidates.notes.slice(20, 20 + INDEX_LINES).map(({ note }) => note) });
+  const { section, given } = learnedParts(seed, { budget: 30_000, read: true, shown: secretsShown([]), select, run: { input: { content: "x" } } });
+  const lines = section.split("\n").filter((line) => line.startsWith("- "));
+  assert.ok(lines.length <= INDEX_LINES, `${lines.length} rule lines, the most is ${INDEX_LINES}`);
+  const bytes = lines.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+  assert.ok(bytes <= INDEX_BYTES, `${bytes} bytes of rule lines, the most is ${INDEX_BYTES}`);
+  assert.ok(Buffer.byteLength(section) <= 30_000, `the section fits its budget: ${Buffer.byteLength(section)}`);
+  // Given: just the notes the section serves, whole or by a line.
+  const whole = (section.match(/^## /gm) ?? []).length;
+  assert.equal(given.length, whole + lines.length);
+});
