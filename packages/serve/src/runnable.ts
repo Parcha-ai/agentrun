@@ -26,8 +26,9 @@ import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
-/** A revision's computer setting: a kind, its provider, and a sandbox's GPUs (computer-setting.ts). */
-export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
+/** A revision's computer setting: a kind, its provider, the image it starts from, and a sandbox's GPUs
+ *  (computer-setting.ts). */
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } };
 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */

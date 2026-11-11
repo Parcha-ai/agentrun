@@ -283,6 +283,14 @@ function replyTo(context, faux) {
     if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
     return faux.message("");
   }
+  // Holds its first answer until the first file exists, and the answer to the person's first message until the second
+  // does: a later message lands while that second turn works.
+  const twice = /Hold twice, until (\S+) and then (\S+)\./.exec(first);
+  if (twice) {
+    if (users.length === 1) return untilExists(twice[1]).then(() => faux.message("Answer 1."));
+    if (users.length === 2) return untilExists(twice[2]).then(() => faux.message("Answer 2."));
+    return faux.message("Answer 3.");
+  }
   // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
   // answered in a run of its own.
   const held = /Hold the answer until (\S+)\./.exec(first)?.[1];

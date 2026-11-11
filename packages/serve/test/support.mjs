@@ -528,6 +528,14 @@ async function raisedReadsQueued(baseUrl, token, path) {
   assert.ok(!(run?.status === "input_required" && run?.pending === null), `PATCH ${path} resumed the run, which then reads input_required with no pending: ${JSON.stringify(run)}`);
 }
 
+/** `call`'s answer, which must have `status`: one that does not fails saying its body (its code and message), so a red
+ *  names why the server refused, not only the number. */
+export async function answered(call, status) {
+  const answer = await call;
+  assert.equal(answer.status, status, `${answer.status}: ${JSON.stringify(answer.body)}`);
+  return answer;
+}
+
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
 
 /** A workflow of one model node: `answer` extracts `{answer: number}` from the input's `question`. */

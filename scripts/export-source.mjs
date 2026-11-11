@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MACHINE_PATH } from './machine-path.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arguments_ = process.argv.slice(2);
@@ -148,8 +149,8 @@ function excluded(path, file) {
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
 }
 const forbidden = [
-  // A /home/ or /Users/ right after a route parameter (`{name}`, not `${...}`) is an API route template (/agents/{agent_id}/home/files/{path}).
-  ['machine_path', /(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
+  // The one machine-path rule, shared with verify-packages.mjs (machine-path.mjs says what it takes and what it leaves).
+  ['machine_path', MACHINE_PATH],
   // No leading host group: it made the scan quadratic on a long run of host characters, and only the match's presence is used.
   ['internal_domain', /(?:code\.run|northflank\.com|ts\.net)\b/i],
   ['private_key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
