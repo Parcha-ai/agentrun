@@ -116,7 +116,7 @@ test("the runner claims by memory too: on 512 MB, whose 384 MB for runs holds on
   assert.equal(caps.limits.max_concurrent_runs, 3, "the count alone (pi's, the smallest run) would take three");
   assert.equal(Object.fromEntries(caps.harnesses.map((h) => [h.id, h.max_concurrent_runs]))["claude-agent"], 1);
   const go = join(data, "go");
-  assert.equal((await api("POST", "/agents", agent("heavy", { harness: "claude-agent", instructions: `Wait for ${go} before the answer.` }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("heavy", { harness: "claude-agent", instructions: `Answer once ${go} exists.` }))).status, 201);
   const first = await api("POST", "/agents/heavy/runs", { input: { content: "hi" } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
   await follow(api, first.body.run_id, ["working"], { deadlineMs: 55_000 });

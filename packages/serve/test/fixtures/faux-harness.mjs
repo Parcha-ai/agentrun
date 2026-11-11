@@ -265,6 +265,10 @@ export function script(spec) {
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
   const chat = /Wait for (\S+), then answer the chat\./.exec(text)?.[1];
   if (chat) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(chat) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }, { end: true, usd: 0.001 }, { say: "Answered the chat.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  // One answer whose request is admitted and held in flight until `<file>` exists, in this process (the faux adapter's
+  // `until` polls for it): the run works the while, and ends on its own once the file is there.
+  const answerOnce = /Answer once (\S+) exists\./.exec(text)?.[1];
+  if (answerOnce) return [{ say: "Answered.", usd: 0.002, until: answerOnce }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
   // A run's end read from its turn's end, not from its rows (turn-record.test.mjs).
