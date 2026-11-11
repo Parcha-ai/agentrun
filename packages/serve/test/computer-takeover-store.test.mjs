@@ -16,8 +16,10 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openSqliteStore } from "../dist/store/index.js";
+import { Connection } from "../dist/store/sqlite/connection.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { STEADY_LEASE } from "./runner-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { computerRoute, computerViewOf } = await import("../dist/computer-routes.js");
@@ -30,7 +32,10 @@ const { ApiError } = await import("../dist/errors.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// A steady lease: no case here loses its runner on purpose, and a person's take holds the run for seconds, so a short
+// lease lets a loaded machine's stall lapse the claim mid-take (the run resumes on a fresh hold and the hand-back is never
+// said).
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 15_000;
 const OWNER = { ownerSession: true, token: false, accounts: true };
 after(closeOpenSessions);
@@ -73,14 +78,58 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     await server.close();
     server = await openSqliteStore({ dataDir: dir, role: "server" });
   };
+  /** The run's claim lapses now, as the store reads a lease that ran out: its claimed_until in the past, written on the
+   *  store's file through a connection of its own (store/sqlite/connection.ts). */
+  const lapse = async () => {
+    const db = await Connection.open(join(dir, "store.sqlite"));
+    try {
+      await db.run("UPDATE runs SET claimed_until = 1 WHERE id = 'run-1'");
+    } finally {
+      await db.close();
+    }
+  };
   /** The run's phase rows, as its Timeline shows them. */
   const rows = async () => (await runTimeline(server, "run-1", ctx)).map((row) => row.summary);
   /** The run's computer.hold entries' states, in order. */
   const holdEntries = async () => (await runEntries(server, "run-1", ctx)).filter((entry) => entry.kind === "computer.hold" && entry.data?.state).map((entry) => entry.data.state);
-  const begin = async (loop) => {
+  /** A runner on the data directory, running `loop`: `runner-a` on TIMING unless `options` say otherwise. */
+  const begin = async (loop, options = {}) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
-    runners.push(startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING }));
+    const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING, ...options });
+    runners.push(runner);
+    return runner;
+  };
+  /** The run on a runner whose computer, as computerForClaim makes it, is a new one with each claim: a hold of its own
+   *  per claim (`holds`, in claim order), its release recorded (`releases`). The agent looks once (its first look waits in
+   *  the shot until `letGo`) and then answers in plain text. `options`: the runner's (its name, its lease). */
+  const startPerClaim = async (options = {}) => {
+    const holds = [];
+    const releases = [];
+    let shotStarted;
+    const inShot = new Promise((resolve) => (shotStarted = resolve));
+    let letGo;
+    const released = new Promise((resolve) => (letGo = resolve));
+    const loopOf = () => createAdapterLoop(async (claim, run) => {
+      const hold = computerHold();
+      holds.push(hold);
+      const ends = [];
+      hold.on((event) => event.type === "state" && event.ended && ends.push(event.ended));
+      const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+      const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+      const base = await piAdapterSpec({ script: [{ call: "look" }, { say: "done" }], tools: { look }, hooks: quiet })(claim, run);
+      return {
+        ...base, agentId: "agent-1", computer: { kind: "desktop", hold },
+        release: async () => {
+          releases.push({ claim: holds.indexOf(hold) + 1, state: hold.state(), ends: [...ends] });
+          hold.close();
+          await base.release?.();
+        },
+      };
+    });
+    const first = await begin(loopOf(), options);
+    await inShot;
+    return { holds, releases, letGo, first, hold: { state: () => holds.at(-1).state() }, second: (more = {}) => begin(loopOf(), { ...options, ...more }) };
   };
   /** The run on a runner: its first look at the screen waits inside the shot until `letGo`; with `second`, its second look
    *  waits too, until `letGoSecond`. */
@@ -132,7 +181,13 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
       };
     }));
     await inShot;
-    return { hold, letGo, releases, ends };
+    // The run's end commits its row (ended, no runner) before the loop's teardown lets the desktop go, so a read of the
+    // ended row is no sign the release ran: wait for the release itself.
+    const whenReleased = async () => {
+      await eventually(() => releases.length > 0);
+      return releases;
+    };
+    return { hold, letGo, releases, ends, whenReleased };
   };
   /** The run on a runner, its agent asking for the person on its desktop (computer_request_handoff's port, Hands.handoff):
    *  its tool's result is the answer's outcome. */
@@ -176,7 +231,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     if (row.state !== "running" && row.state !== "queued") return { over: row };
     return (await check()) && { running: row };
   }, what);
-  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
+  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startPerClaim, lapse, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
 }
 
 test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, and the Timeline says both at their own times", async (t) => {
@@ -364,7 +419,7 @@ async function heldWhileAnswering(world, run) {
   await world.until(async () => (await world.hold()) === "person", "the person holds the desktop once the look ended");
 }
 
-test("the agent answers while the person holds its desktop: the run waits for the hand-back, saying why on the Timeline, and only then ends and lets the desktop go (#2134)", async (t) => {
+test("the agent answers while the person holds its desktop: the run waits for the hand-back, saying why on the Timeline, and only then ends and lets the desktop go (#2134)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -376,25 +431,25 @@ test("the agent answers while the person holds its desktop: the run waits for th
 
   await world.route("handBackRunComputer");
   await world.ended();
-  assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }], "let go once, after the hand-back");
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }], "let go once, after the hand-back");
   const said = await world.rows();
   const [took, waiting, gave] = [said.indexOf(words.taken), said.indexOf(words.ending), said.indexOf(words.ended.given)];
   assert.ok(took >= 0 && waiting > took && gave > waiting, `the Timeline says the take, the wait, then the hand-back:\n${said.join("\n")}`);
 });
 
-test("a forgotten take-over does not hold the run forever: the hold's idle bound gives the desktop back, and the run ends (#2134)", async (t) => {
+test("a forgotten take-over does not hold the run forever: the hold's idle bound gives the desktop back, and the run ends (#2134)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding({ idleMs: 1_500 });
   await heldWhileAnswering(world, run);
   await world.ended();
-  assert.deepEqual(run.releases, [{ state: "agent", ends: ["idle"] }], "let go once the idle bound gave the desktop back, never under the person's hand");
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["idle"] }],"let go once the idle bound gave the desktop back, never under the person's hand");
   const said = await world.rows();
   const words = holdWords("desktop");
   const [waiting, idle] = [said.indexOf(words.ending), said.indexOf(words.ended.idle)];
   assert.ok(idle >= 0 && (waiting < 0 || idle > waiting), `the Timeline says the desktop went back for no input, after any wait:\n${said.join("\n")}`);
 });
 
-test("a stop while the run waits for the hand-back ends it stopped at once, and the desktop's take ends released (#2134)", async (t) => {
+test("a stop while the run waits for the hand-back ends it stopped at once, and the desktop's take ends released (#2134)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -407,11 +462,11 @@ test("a stop while the run waits for the hand-back ends it stopped at once, and 
     return now.state !== "running" && now.runner === null && now;
   }, "the run's stop");
   assert.equal(row.state, "stopped", JSON.stringify({ state: row.state, summary: row.summary }));
-  assert.deepEqual(run.releases, [{ state: "person", ends: [] }], "the stop lets the desktop go with the person's take in force");
+  assert.deepEqual(await run.whenReleased(), [{ state: "person", ends: [] }],"the stop lets the desktop go with the person's take in force");
   assert.deepEqual(run.ends, ["released"], "the release ends the take released");
 });
 
-test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", async (t) => {
+test("a message while the run waits for the hand-back is not placed, so no turn starts that the run's end would cut (#2134 review)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   const run = await world.startEnding();
   await heldWhileAnswering(world, run);
@@ -425,10 +480,10 @@ test("a message while the run waits for the hand-back is not placed, so no turn 
   assert.equal(row.state, "ended");
   const left = (await world.server().commands("run-1", 0)).find((command) => command.id === message.id);
   assert.equal(left.refused, "the run ended before this command was taken", "the message was left for the end, no turn placed for it");
-  assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }]);
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }]);
 });
 
-test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", async (t) => {
+test("a take-over after the hand-back, while the run's end-of-run step runs, is refused in words, and the release never cuts a take (#2134 review)", { timeout: 120_000 }, async (t) => {
   const world = await setup(t);
   let stepStarted;
   const inStep = new Promise((resolve) => (stepStarted = resolve));
@@ -451,5 +506,43 @@ test("a take-over after the hand-back, while the run's end-of-run step runs, is 
   assert.equal(run.hold.state(), "agent", "nothing was taken");
   finishStep();
   await world.ended();
-  assert.deepEqual(run.releases, [{ state: "agent", ends: ["given"] }], "released once, with the agent driving: no take was cut");
+  assert.deepEqual(await run.whenReleased(), [{ state: "agent", ends: ["given"] }], "released once,with the agent driving: no take was cut");
 });
+
+/** The person's take while the agent answers, then the run's claim lost by its runner (`how`: "crash", the runner
+ *  killed, nothing of it released or written; "lapse", its lease run out while it lives, so it finds the claim gone
+ *  and lets its computer go) and taken by another runner, whose start lets the earlier claim's computer go. */
+async function takeThenLoseClaim(world, how) {
+  // Both runners on a long lease: the lapse is forced through the store, never waited for, and no stall of this
+  // process loses a claim on its own.
+  const run = await world.startPerClaim({ leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 200 });
+  await heldWhileAnswering(world, run);
+  const words = holdWords("desktop");
+  const seen = await world.runningUntil(async () => (await world.rows()).includes(words.ending), "the run says it waits for the hand-back");
+  assert.ok(seen.running, `the run waits for the hand-back: ${seen.over?.state}`);
+  const take = (await runEntries(world.server(), "run-1", ctx)).findLast((entry) => entry.kind === "computer.hold" && entry.data?.state === "person")?.data.take;
+  if (how === "crash") run.first.kill();
+  await world.lapse();
+  await run.second({ name: "runner-b" });
+  return { run, take, words };
+}
+
+for (const how of ["crash", "lapse"]) {
+  test(`a ${how} of the runner that held the run during a take: the next claim's computer is a new one, so the take ends released, once, and the person reads why on the Timeline; the run goes on with the agent and ends, and a hand-back of that take is refused in words (#2134)`, async (t) => {
+    const world = await setup(t);
+    const { run, take, words } = await takeThenLoseClaim(world, how);
+    const row = await world.ended();
+    assert.equal(row.state, "ended", "the run went on with the agent, and its answer ended it");
+    const ends = (await runEntries(world.server(), "run-1", ctx)).filter((entry) => entry.kind === "computer.hold" && entry.data?.ended);
+    assert.deepEqual(ends.map((entry) => [entry.data.take, entry.data.ended]), [[take, "released"]], "the take ended released, once");
+    const said = await world.rows();
+    assert.equal(said.filter((summary) => summary === words.ended.released).length, 1, `the Timeline says why, once:\n${said.join("\n")}`);
+    assert.ok(said.indexOf(words.ended.released) > said.indexOf(words.taken), "after the take");
+    assert.equal(await world.hold(), "agent");
+    assert.equal(run.holds[1].state(), "agent", "the new computer is the agent's");
+    const second = run.releases.filter((release) => release.claim === 2);
+    assert.deepEqual(second, [{ claim: 2, state: "agent", ends: [] }], "the second claim lets its own computer go at the run's end, with nothing taken on it");
+    const handBack = await world.answer("handBackRunComputer");
+    assert.equal(handBack.status, 409, JSON.stringify(handBack));
+  });
+}

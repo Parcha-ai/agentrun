@@ -128,19 +128,20 @@ test("a parked write that was allowed shows no Saved row: the outcome row says i
   assert.equal(readFor(rows, "w1").after[1]?.summary, "AgentRun: write ran once you allowed it; its result went to the agent");
 });
 
-test("a person's message that declined a waiting call is their own row, their words whole, after the outcome", async (t) => {
+test("a person's message that declined a waiting call is their own row, their words redacted, between the approval row and the outcome", async (t) => {
   const said = `use the cached copy instead, not ${HELD}`;
   const store = await runWith(t, [fetchCall("c1", { approved: false, note: said, by: "message" }, { text: `The user denied this web_fetch call. Reason: ${said}`, isError: true })]);
   const rows = await timelineOverStore(store, "run-1", deps);
-  const { after } = readFor(rows, "c1");
-  assert.deepEqual([after[0]?.summary.split(":")[0], after[1]?.summary], ["Declined by your message", "AgentRun: Your message declined web_fetch."]);
+  assert.equal(readFor(rows, "c1").after[0]?.summary.split(":")[0], "Declined by your message");
   const persons = rows.filter((row) => row.kind === "user_message");
   assert.equal(persons.length, 2, JSON.stringify(rows.map((r) => [r.kind, r.summary])));
   assert.equal(persons[0].text, "Fetch it.");
   assert.ok(persons[1].text.startsWith("use the cached copy instead, not "), persons[1].text);
   assert.equal(persons[1]?.summary?.startsWith("You: use the cached copy instead, not "), true, persons[1]?.summary);
   assert.equal(JSON.stringify(persons[1]).includes(HELD.slice(0, 12)), false, "their words go through the run's redactor");
-  assert.ok(rows.indexOf(persons[1]) > rows.indexOf(after[1]), "after the outcome");
+  const ask = rows.findIndex((row) => row.kind === "tool_approval_requested");
+  const outcome = rows.findIndex((row) => row.summary === "AgentRun: Your message declined web_fetch.");
+  assert.ok(ask < rows.indexOf(persons[1]) && rows.indexOf(persons[1]) < outcome, "between the approval row and the outcome");
 });
 
 test("served across reads, a call's approval row moves below the call's result once it ran: held, held, your approval, the outcome", () => {
