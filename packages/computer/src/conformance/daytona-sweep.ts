@@ -4,17 +4,21 @@
 //   node packages/computer/dist/conformance/daytona-sweep.js --after <file>
 //
 // --before records the id of every sandbox carrying agentrun.computer=1 into <file>. --after lists them again, deletes
-// (release delete) every one whose id is not in <file>, then reads each of those back with GET /sandbox/{id} until
-// Daytona answers 404, up to 60 s each, and prints one JSON line, {"swept":n,"notFound":m,"stillThere":[ids]}: swept is
-// every sandbox it found that was not there before, and notFound + stillThere.length = swept. A sandbox in <file> is
-// never touched: no call names it. Exit 0 when every swept sandbox reads back 404, 1 when one is still there, 2 on a
-// usage error, a before file it cannot read, a missing key or a listing Daytona refused (nothing is deleted then).
+// (release delete) every one whose id is not in <file> and that carries a conformance run's label (agentrun.conformance,
+// RUN_LABEL), then reads each of those back with GET /sandbox/{id} until Daytona answers 404, up to 60 s each, and
+// prints one JSON line, {"swept":n,"notFound":m,"stillThere":[ids],"leftAlone":k}: swept is every conformance sandbox
+// it found that was not there before, notFound + stillThere.length = swept, and leftAlone counts the new labelled
+// sandboxes with no conformance label, which another user of the account made during the run (a server's computers):
+// never touched. A sandbox in <file> is never touched either: no call names it. Exit 0 when every swept sandbox reads
+// back 404, 1 when one is still there, 2 on a usage error, a before file it cannot read, a missing key or a listing
+// Daytona refused (nothing is deleted then).
 import { readFileSync, writeFileSync } from "node:fs";
 import type { DaytonaProviderOptions } from "../daytona.js";
 import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
 import { waitUntil } from "../wait.js";
 import { createProvider } from "./daytona.js";
+import { RUN_LABEL } from "./runner.js";
 
 /** A stream as main writes to it: done is called once the text is handed on. */
 export interface Writer {
@@ -36,8 +40,9 @@ export interface SweepIo {
 
 const USAGE = `usage: node packages/computer/dist/conformance/daytona-sweep.js --before <file> | --after <file>
   --before <file>  record the id of every sandbox carrying ${COMPUTER_LABEL}=1 into <file>
-  --after <file>   delete every sandbox carrying ${COMPUTER_LABEL}=1 whose id is not in <file>, read each back until
-                   Daytona answers 404 (up to 60 s each), and print {"swept":n,"notFound":m,"stillThere":[ids]}
+  --after <file>   delete every sandbox carrying ${COMPUTER_LABEL}=1 and ${RUN_LABEL} whose id is not in <file>, read
+                   each back until Daytona answers 404 (up to 60 s each), and print
+                   {"swept":n,"notFound":m,"stillThere":[ids],"leftAlone":k}; a new one with no ${RUN_LABEL} is left alone
   settings: COMPUTER_DAYTONA_API_KEY (required) and COMPUTER_DAYTONA_API_URL, as the conformance module reads them
 exit: 0 every swept sandbox is gone, 1 one is still there, 2 usage error, unreadable before file, no key, or a refused listing`;
 
@@ -104,7 +109,10 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		return 0;
 	}
 	const known = before;
-	const fresh = [...new Map(listed.value.filter((sb) => !known.has(sb.id)).map((sb) => [sb.id, sb])).values()];
+	const added = [...new Map(listed.value.filter((sb) => !known.has(sb.id)).map((sb) => [sb.id, sb])).values()];
+	// Only a conformance run's computers: one another user of the account made during the run is not this sweep's.
+	const fresh = added.filter((sb) => Object.hasOwn(sb.labels, RUN_LABEL));
+	const leftAlone = added.length - fresh.length;
 	for (const sb of fresh) {
 		const released = await provider.release({ id: sb.id, name: sb.name ?? "" }, "delete");
 		if (!released.ok) await write(stderr, `${sb.id} (${sb.name ?? "no name"}) was not deleted: ${released.error.message}\n`);
@@ -129,7 +137,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		}),
 	);
 	const stillThere = fresh.filter((_, i) => !gone[i]).map((sb) => sb.id);
-	await write(stdout, `${JSON.stringify({ swept: fresh.length, notFound: fresh.length - stillThere.length, stillThere })}\n`);
+	await write(stdout, `${JSON.stringify({ swept: fresh.length, notFound: fresh.length - stillThere.length, stillThere, leftAlone })}\n`);
 	return stillThere.length === 0 ? 0 : 1;
 }
 

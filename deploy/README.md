@@ -36,6 +36,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | yes | yes | The runner makes a run's model requests; the server checks a run's model can run before it starts it. |
+| `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes alone, for a server behind its caller's backend: the console, sign-in, setup, settings, MCP, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
 port. A runner listens on nothing.
@@ -94,6 +95,10 @@ AGENTRUN_STORE_URL=postgres://agentrun:<the same password>@postgres:5432/agentru
 
 then `docker compose --profile pg up -d`. The server and runners do not wait for it: one that cannot reach its store yet
 exits and is started again.
+
+On a database you run yourself, the store's role needs no `CREATE` on the database when the schema is made ahead of time
+and given to it (`CREATE SCHEMA agentrun AUTHORIZATION <role>`, or the name in `AGENTRUN_STORE_SCHEMA`): the server
+migrates a schema its role owns.
 
 **Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
 it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with

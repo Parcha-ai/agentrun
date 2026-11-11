@@ -12,7 +12,6 @@
 // (newAgentPlace). A revision that names no place resolves the same way at each run (defaultPlaceOf): this server's
 // default_place, so where docker is there now it runs in the Docker box, and the runner where it is not. A workflow, and a
 // revision with a tool the box refuses, run on the runner.
-import { join } from "node:path";
 import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer, VM_PROVIDER } from "./boxes.js";
 import { type InputIssue, sentence } from "./errors.js";
 
@@ -115,11 +114,6 @@ const stated = ({ state, network, network_reason, ...offer }: BoxOffer): BoxOffe
 /** A run's place: its revision's, else the place a revision that names none resolves to here (`fallback`: defaultPlaceOf). */
 export const resolvePlace = (revision: Place | undefined, fallback: Place): Place => revision ?? fallback;
 
-/** The place a run kept (its serve.json), or runner for a run kept before runs had one. */
-export function storedPlace(value: unknown): Place {
-  if (!isObject(value) || value.mode !== "sandbox" || !listed(BOX_IDS, value.box)) return { mode: "runner" };
-  return { mode: "sandbox", box: value.box as BoxId };
-}
 
 /** Where a box has the run's work/ (bound, or seeded), and where its tools start: the same in every box. */
 export const BOX_WORK = "/workspace";
@@ -127,10 +121,7 @@ export const BOX_WORK = "/workspace";
 /** The boxes that cannot bind a run's work/, being on another machine: its work/ is seeded at the box's making and
  *  pulled back (run-box.ts). */
 export const REMOTE_BOXES: readonly BoxId[] = ["daytona", VM_PROVIDER.id];
-export const remotePlace = (place: Place): boolean => place.mode === "sandbox" && REMOTE_BOXES.includes(place.box);
 
-/** The run's work/ as its agent's tools see it: on the runner, `<runDir>/work`; in any box, BOX_WORK. */
-export const agentWorkDir = (runDir: string, place: Place): string => (place.mode === "runner" ? join(runDir, "work") : BOX_WORK);
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const listed = (options: readonly string[], value: unknown): boolean => typeof value === "string" && options.includes(value);
