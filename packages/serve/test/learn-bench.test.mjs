@@ -133,3 +133,17 @@ test("a run with unmetered requests is left out of the tokens metrics, and count
   const all = metricsOf([partial], true);
   assert.deepEqual([all.tokens_per_run, all.tokens_per_pass, all.tokens_known_steps, all.tokens_unmetered_steps], [null, null, 0, 1], "only unmetered runs: unknown, not low");
 });
+
+test("a job's filled pins are set on the server before its apply, as the template eval sets them", async () => {
+  const { readPackage } = await import("../dist/templates.js");
+  const pkg = readPackage(join(serve, "templates", "release-notes"));
+  const puts = [];
+  const api = async (method, path, body) => {
+    if (method === "GET" && path === "/settings/tools") return { status: 200, body: {}, headers: new Headers() };
+    if (method === "PUT" && path === "/settings/tools") return (puts.push(body), { status: 200, body, headers: new Headers() });
+    return { status: 404, body: null, headers: new Headers() };
+  };
+  await bench.serverPins(api, pkg, { parameters: { repo: "example/shop" }, grants: [] });
+  assert.equal(puts.length, 1, "one write of the server's tool settings");
+  assert.ok(Object.values(puts[0]).some((setting) => setting.pin), JSON.stringify(puts[0]));
+});
