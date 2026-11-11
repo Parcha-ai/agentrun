@@ -59,3 +59,12 @@ test("bookedSpend counts a request the booking holds no answer for yet (no runne
   const answered = [...entries, e(7, 5, "runner.turn", { turn: 2, usd: 0.001, bookedUsd: 0.001, usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, rule: "answered" })];
   assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, unpriced: 0, requests: 2, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 } });
 });
+
+test("an agent run's end cost counts its decisions beside its model requests and paid tool calls, and stays unknown when any part is (LS-07)", async () => {
+  const { runEndCost } = await import("../dist/runner/metrics.js");
+  assert.equal(runEndCost({ model: 0.01, paid: 0.002, decisions: 0.00003 }), 0.01 + 0.002 + 0.00003, "a run that spent on a decision shows it in its row cost");
+  assert.equal(runEndCost({ model: 0.01, paid: 0, decisions: null }), null, "a decision of unknown cost leaves the run's unknown");
+  assert.equal(runEndCost({ model: null, paid: 0, decisions: 0.001 }), null);
+  assert.equal(runEndCost({ model: 0.01, paid: null, decisions: 0 }), null);
+  assert.equal(runEndCost({ model: 0, paid: 0, decisions: 0 }), 0);
+});

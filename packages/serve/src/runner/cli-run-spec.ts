@@ -56,7 +56,7 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, runMetrics } from "./metrics.js";
+import { bookedSpend, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -411,10 +411,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
       const { metrics } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
       const costUsd = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model").usd;
-      // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
-      // session, are the run's cost too, as the pi spec's.
-      const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
-      const total = costUsd === null || paid === null ? null : costUsd + paid;
+      // Its paid tool calls (a Parallel extract or search, a monid call) and its decisions (a learned workflow's decision
+      // nodes, LS-07), booked on the run's one ledger in their own sessions, are the run's cost too, as the pi spec's.
+      const total = runEndCost({ model: costUsd, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: run.ledger?.decisions ? run.ledger.decisions.spentUsd() : 0 });
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with

@@ -51,6 +51,13 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   return { usd: unpriced ? null : known, known, unpriced, requests, tokens };
 }
 
+/** An agent run's cost as its end commit stores it: its model requests' (`model`), its paid tool calls' (`paid`, the
+ *  run's ledger.paid) and its decisions' (`decisions`, the run's ledger.decisions: a learned workflow's decision nodes,
+ *  LS-07), summed; null (unknown) when any of them is. Never a known figure that leaves an unknown part out. */
+export function runEndCost(parts: { readonly model: number | null; readonly paid: number | null; readonly decisions: number | null }): number | null {
+  return parts.model === null || parts.paid === null || parts.decisions === null ? null : parts.model + parts.paid + parts.decisions;
+}
+
 /** A run's metrics as the end commit writes them (the StoredMetrics JSON on the run row): the timeline's count, with the
  *  effort the run ran at and, on a harness other than pi, the model its revision named. */
 export type RunMetricsStored = RunMetrics & { effort?: string; model?: string };
