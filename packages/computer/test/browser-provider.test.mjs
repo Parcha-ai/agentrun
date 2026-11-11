@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { coreGroups, GROUPS, KIND_SHAPES, kindRefusals } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { providerFor, providerIds, providerModule } from "../dist/providers.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, ECHO, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 
@@ -189,7 +190,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const connection = value(await provider.connect(ref), "connect");
 		assert.match(connection.cdp.url, /^wss:\/\/.*SECRET/, "the vendor's own signed URL");
 		assert.equal(fake.dialed.length, 0, "connect dials nothing: the URL is the driver's to dial");
-		assert.deepEqual(connection.hello, { version: provider.version, os: "linux", kind: "browser", arch: "unknown", groups: vendor.capabilities.groups });
+		assert.deepEqual(connection.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "linux", kind: "browser", arch: "unknown", groups: vendor.capabilities.groups });
 		assert.deepEqual(value(await connection.client.call("hello", { client: "test" }), "hello"), connection.hello);
 		assert.deepEqual(value(await connection.client.call("ping", {}), "ping"), {});
 		const exec = await connection.client.call("exec.run", { argv: ["true"], timeoutMs: 1000 });

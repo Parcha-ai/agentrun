@@ -1493,8 +1493,13 @@ asked by default.
 - **A call** goes to the pinned URL alone, the 2026-07-28 revision first and a 2025-era server through its
   `initialize`; on 2026-07-28 each `x-mcp-header` parameter of the pinned tool is sent as its `Mcp-Param-*` header. No
   redirect is followed, at most 4 MiB is read, and it may take 120 s. The
-  model reads the text blocks joined; past 60,000 characters, or with blocks that are not text, the whole answer is
-  filed under the run's `evidence/mcp/<server>/` and the text says where. A tool's own error (`isError`) reaches the
+  model reads the text blocks and embedded text resources joined (GitHub's `get_file_contents` answers a file as one);
+  past 60,000 characters it reads the answer's first lines, whole, and the rest is filed under the run's
+  `evidence/mcp/<server>/` as lines (JSON laid out a value a line, its indent capped at 32 levels, and filed as
+  written when the layout would pass twice its size and 64 KiB; a line past 10,000 characters broken), the text
+  naming the file and the `read` offset that goes on, so a run with `read` and no shell pages through it. With blocks
+  that are neither (an image, a blob), the whole answer is filed there as JSON and the text says where. On pi, every
+  host tool's answer reaches the model whole within the host's result bound, as each CLI harness is told. A tool's own error (`isError`) reaches the
   model as its error. A refused credential (401, 403) reads "the MCP server <name> refused its credential (its sign-in
   expired or was revoked, or its key changed): sign in again in Settings → MCP servers, or update its credential
   there"; another failure names the server and the HTTP status, never a header. A stop, or a
@@ -1623,7 +1628,7 @@ a restart drives again finds its run. A firing's key stays bound to that run: wh
 run up, the firing reads `failed` ("The server stopped while setting up the run.") with that run's id, it never fires
 again, the next firing goes ahead, and `POST /v2/triggers/{id}/fire` is how a person tries it again. While the trigger's last run is active (working, or waiting on a person), a firing
 is `skipped`, with why (a webhook trigger with `accept` or `max_active_runs` is the exception: [each event it
-takes](#webhook-triggers) starts its own run); a full server (`429`) keeps it due and tries again. Times missed while the server was down are
+takes](#webhook-triggers) starts its own run); a firing over the run limit starts its run `queued`, and one the server can't take now (busy or unavailable) stays due and is tried again. Times missed while the server was down are
 one `missed` firing with their count, and the schedule goes on from now; the latest of them still fires, once, when it is
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
@@ -1719,15 +1724,15 @@ conditions holding. A verified delivery no rule takes (GitHub's `ping` among the
 `accept`, every verified request fires, as before. A trigger holds at most 20 rules, each at most 20 conditions and 20
 actions; an `in` lists at most 20 values of at most 1024 characters of JSON each, a pointer is at most 512 characters,
 and an event, an action or a prefix at most 200. A trigger with `accept` starts a run for each event it takes, its last
-run active or not, since the events it takes are each their own work (a review per pull request); the server's run
-limit still holds: a start it refuses (`429`) keeps the firing due and tries it again, and past 20 firings due a new
-delivery answers `429`. This holds for every firing of such a trigger, a run now (`POST /v2/triggers/{id}/fire`)
-included. Runs start in the order their events came while the server has room; while one firing waits to be tried
-again after a `429`, a later one can start first.
+run active or not, since the events it takes are each their own work (a review per pull request); the run limit still
+holds on the runner: a run past it waits `queued`. A start the server can't take now keeps the firing due and tries it
+again, and past 20 firings due a new delivery answers `429`. This holds for every firing of such a trigger, a run now
+(`POST /v2/triggers/{id}/fire`) included. Runs start in the order their events came; while one firing waits to be
+tried again, a later one can start first.
 
-Such a trigger can take every run this server has room for, starving other triggers and the runs people start. Give it
-`max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and is tried
-again, as at a full server, and is never skipped. It counts the runs this trigger started while they work, kept apart
+Such a trigger can fill the runner's places and the queue behind them, starving other triggers and the runs people
+start. Give it `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and
+is tried again, and is never skipped. It counts the runs this trigger started while they work, kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
 opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
 webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
@@ -2691,6 +2696,9 @@ session (spent before any process could hold it). A session whose release is nev
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
 last charges booked before its process exits.
 
+A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
+AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
+
 Under a cap, whatever cannot be priced is refused, never passed as $0, and the run ends `failed` with
 `spend_cap_reached`, since no cap would send it:
 
@@ -2992,7 +3000,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Test
 
 ```sh
-npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-disk -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
+npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
 npm test -w @parcha/agentrun-serve
 ```
 

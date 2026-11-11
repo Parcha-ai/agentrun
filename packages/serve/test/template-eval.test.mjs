@@ -171,6 +171,17 @@ test("a fake MCP server answers from its fixture and records each call; tool_use
   assert.match(graderOf(mismatch.runs[0], "updated.md").reason, /^0 calls of mcp:crm\/update_contact with \{"id":"8"\}; the grader expects exactly 1$/);
 });
 
+test("an MCP answer too long to read whole is filed where read pages through it to its end, in a run with no shell", { timeout: 600_000 }, async () => {
+  // The hosted shape (support.mjs: no box), so the run has read and its MCP tools and no shell: the answer's start names
+  // the file and the offset to go on from, and read's pages each name the next, through pi's bound on a tool's output.
+  const one = await caseOf("mcp-filed");
+  assert.equal(one.pass, true, JSON.stringify(one, null, 1));
+  const [run] = one.runs;
+  assert.equal(run.status, "completed");
+  assert.match(graderOf(run, "end.md").reason, /matches/, "the record's last line was read");
+  assert.match(graderOf(run, "read.md").reason, /^\d+ calls? of read/);
+});
+
 test("a background shell call keeps its own name in the grading record, as the gate's request does: never counted as bash", () => {
   const rows = [
     { kind: "tool_use", tool_use_id: "1", tool_name: "bash_background", tool_input_preview: "sleep 1" },
@@ -212,8 +223,8 @@ test("a case passes only when every run passes: one failing run of two fails it"
   assert.notEqual(one.runs[0].agent_id, one.runs[1].agent_id, "each run its own agent");
   const report = await eval_();
   assert.equal(report.pass, false);
-  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["asks", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-match", true], ["mcp-mismatch", false]]);
-  assert.equal(report.passed, 5);
+  assert.deepEqual(report.cases.map((c) => [c.name, c.pass]), [["all-fail", false], ["all-pass", true], ["asks", true], ["flaky", false], ["held", true], ["learned", true], ["mcp-filed", true], ["mcp-match", true], ["mcp-mismatch", false]]);
+  assert.equal(report.passed, 6);
   assert.equal(report.cost_usd.total, Math.round((report.cost_usd.runs + report.cost_usd.graders) * 1e6) / 1e6);
   assert.equal(report.cost_usd.unknown, 0);
 });
