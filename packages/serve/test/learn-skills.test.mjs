@@ -100,6 +100,33 @@ test("accounts off, an ask-set MCP tool is not offered and a draft using it is r
   assert.deepEqual([denied.tools, denied.gated], [[], { "mcp:linear/create_issue": "deny" }]);
 });
 
+// #2424: a learned_workflow call whose MCP tools set to ask don't all fit on its approval card (learnedAskFits) is refused
+// at the gate. At learn time the same rule, #2424's own, refuses such a draft in the gate's words, so none is kept that
+// every call would refuse; one whose ask-set tools fit is offered and passes.
+const LONG = (i) => `mcp:linear/create_issue_with_a_rather_long_descriptive_name_${String(i).padStart(2, "0")}`;
+const manyCalls = (n) => {
+  const doc = JSON.parse(richWorkflow());
+  doc.root.steps.splice(1, 1, ...Array.from({ length: n }, (_, i) => ({ ...mcpCall(LONG(i), `Call ${i}`), as: `page${i}` })));
+  return JSON.stringify(doc);
+};
+test("a draft whose MCP tools set to ask would not all fit on its learned call's approval card is refused at learn time in the gate's words; one whose do is offered and passes", async () => {
+  const { learnedAskFits } = await import("../dist/learned-workflow.js");
+  const { permissionOf } = await import("../dist/tool-gate.js");
+  const granted = Array.from({ length: 40 }, (_, i) => LONG(i));
+  const offered = tools.learnedDraftTools(granted, (name) => permissionOf(name, {}, {}, "ask"), undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual(offered.asked, granted, "every one is offered because it asks");
+  assert.equal(learnedAskFits(granted.slice(0, 40)), false, "40 of them do not fit");
+  const ask = { asked: offered.asked, fits: learnedAskFits };
+  const crowded = check(draft(manyCalls(40)), { tools: offered.tools, gated: offered.gated, ask });
+  assert.ok(crowded.problems.some((p) => p.rule === "workflow" && /its approval card can't name all 40 MCP tools it would call that are set to ask: set some of them to allow or deny for this agent\./.test(p.detail)), JSON.stringify(crowded.problems));
+  const few = check(draft(manyCalls(3)), { tools: offered.tools, gated: offered.gated, ask });
+  assert.deepEqual([few.ok, few.problems], [true, []]);
+  // Set to allow, a tool is no ask: forty allowed tools are no card at all.
+  const allowed = tools.learnedDraftTools(granted, () => "allow", undefined, undefined, { mcp: true, approvers: true });
+  assert.deepEqual(allowed.asked, []);
+  assert.equal(check(draft(manyCalls(40)), { tools: allowed.tools, gated: allowed.gated, ask: { asked: allowed.asked, fits: learnedAskFits } }).ok, true);
+});
+
 test("a draft whose call node runs an MCP tool passes when the agent may run it; one it was not granted is refused as workflow, and one its gate denies is refused in the gate's words", () => {
   const offered = ["web_fetch", "mcp:linear/create_issue"];
   assert.deepEqual(check(draft(withCall(mcpCall("mcp:linear/create_issue"))), { tools: offered }), { ok: true, problems: [], notes: [] });
