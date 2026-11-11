@@ -124,3 +124,12 @@ test("the active and pending items follow the notes' pages", async () => {
   assert.deepEqual(Object.keys(got.notes).sort(), ["n1.md", "n3.md"]);
   assert.deepEqual(got.pending, ["n2.md"]);
 });
+
+test("a run with unmetered requests is left out of the tokens metrics, and counted apart", () => {
+  const metered = (id, pass) => step(id, "repeat", [["a.md", pass]], { tokens: { input: 900, cache_read: 0, cache_write: 0, output: 100, requests: 2, unmetered: 0 } });
+  const partial = step("03", "repeat", [["a.md", true]], { tokens: { input: 50, cache_read: 0, cache_write: 0, output: 10, requests: 3, unmetered: 2 } });
+  const m = metricsOf([metered("01", true), metered("02", false), partial], true);
+  assert.deepEqual([m.tokens_per_run, m.tokens_per_pass, m.tokens_known_steps, m.tokens_unmetered_steps], [1000, 2000, 2, 1], "the partial run's low count is in neither figure");
+  const all = metricsOf([partial], true);
+  assert.deepEqual([all.tokens_per_run, all.tokens_per_pass, all.tokens_known_steps, all.tokens_unmetered_steps], [null, null, 0, 1], "only unmetered runs: unknown, not low");
+});
