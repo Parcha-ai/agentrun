@@ -7,6 +7,7 @@
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
+import { hostMemory, neverFits } from "../host.js";
 import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
@@ -19,6 +20,11 @@ import type { GraderRoute } from "./learning-ask.js";
 import type { LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
+
+/** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). */
+export class NeverFits extends Error {
+  override name = "NeverFits";
+}
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
@@ -62,6 +68,12 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
     const runner = resolveHarness(harness);
     if (runner) {
+      // A run this host's memory never holds (host.ts neverFits: one run of its harness is more than the host has for runs)
+      // fails at its claim, in the words a start of it is refused in here (harness.ts harnessOffers): a run another host
+      // started, or one left before this host's memory shrank. Claimed alone (runner.ts claimByMemory), it would run past
+      // the host's memory and its OOM kill would take every run on it.
+      const tooBig = neverFits(harness, hostMemory());
+      if (tooBig) throw new NeverFits(tooBig);
       // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
       // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
       // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a

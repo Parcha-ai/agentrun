@@ -748,6 +748,28 @@ export function startRunner(options: RunnerOptions): Runner {
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
 
+  /** The untaken stop or cancel row each of `going` ends on (endingRow: a cancel before a stop), past its cursor, by run id:
+   *  the close's one read of their rows (store.commandsOf). A read that fails is said, and those runs are released for a
+   *  shutdown as before: their rows stay untaken, for the next claim. */
+  const closingEnds = async (going: readonly Held[]): Promise<Map<string, Command>> => {
+    const ends = new Map<string, Command>();
+    if (going.length === 0) return ends;
+    // A delivery in flight finishes first: it may be handing on that same row.
+    await Promise.all(going.map((held) => held.inFlight?.catch(() => undefined)));
+    const still = going.filter((held) => !held.stopping && !held.ending && !held.fence.lost);
+    if (still.length === 0) return ends;
+    try {
+      const rows = await store.commandsOf(still.map((held) => ({ runId: held.claim.runId, after: held.cursor })));
+      for (const held of still) {
+        const end = endingRow((rows.get(held.claim.runId) ?? []).filter((row) => row.takenAt === null));
+        if (end) ends.set(held.claim.runId, end);
+      }
+    } catch (error) {
+      for (const held of still) emit({ type: "error", runId: held.claim.runId, step: "commands", message: message(error) });
+    }
+    return ends;
+  };
+
   const stopTimers = () => {
     clearTimeout(pollTimer);
     clearTimeout(commandTimer);
@@ -778,11 +800,21 @@ export function startRunner(options: RunnerOptions): Runner {
       draining = false;
       clearTimeout(commandTimer);
       const live = [...runs.values()].filter((held) => !held.fence.lost);
+      // A stop or cancel a person sent before the close is the run's end, never a resume: one no delivery has handed on
+      // yet (the command poll's tick had not come) is read here, once, for every run still going, and stops its loop as
+      // its delivery would. Its end is in the store when the close is done, and the next start never resumes the turn.
+      const ends = await closingEnds(live.filter((held) => !held.ending && !held.stopping));
       for (const held of live) {
-        if (!held.ending) {
-          stopLoop(held, { kind: "shutdown" });
-          held.abort.abort(new Error("the runner is closing"));
+        if (held.ending) continue;
+        const end = ends.get(held.claim.runId);
+        if (end && !held.stopping) {
+          held.cursor = Math.max(held.cursor, end.id);
+          stopLoop(held, { kind: "command", commandId: end.id, ...(end.kind === "cancel" ? { cancel: true as const } : {}) });
         }
+        // A loop a stop or cancel already stops writes that end: it is never cut for the close.
+        if (held.stopping) continue;
+        stopLoop(held, { kind: "shutdown" });
+        held.abort.abort(new Error("the runner is closing"));
       }
       // Claims are renewed while the loops stop; a loop that never stops is given up when its claim would run out.
       let timeout: NodeJS.Timeout | undefined;
