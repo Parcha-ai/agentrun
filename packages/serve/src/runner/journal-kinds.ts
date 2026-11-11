@@ -124,6 +124,15 @@ export interface RaiseData {
   readonly takes: readonly number[];
 }
 
+/** The cap a run is held to now, from its journal: its newest raise's (a KINDS.raise entry above 0), else its launch's;
+ *  none for a run launched with no cap. The one figure every reader of the run's cap takes: each request's admission
+ *  (adapter-loop.ts capNow), the run's view, and its end-of-run look back (learning-end.ts). */
+export function capNowOf(launchCapUsd: number | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[]): number | undefined {
+  if (launchCapUsd === undefined) return undefined;
+  const raised = entries.findLast((entry) => entry.kind === KINDS.raise && typeof (entry.data as { capUsd?: unknown } | undefined)?.capUsd === "number" && (entry.data as RaiseData).capUsd > 0);
+  return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
+}
+
 /** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
  *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
 export interface BudgetData {
