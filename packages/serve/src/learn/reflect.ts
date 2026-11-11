@@ -5,6 +5,7 @@
 // wrote during the task counts. The same on every harness: every model writes markdown, and no tool is needed.
 import { CAPS } from "./check.js";
 import { INDEX_FILE, INDEX_LINES } from "./notes.js";
+import { SKILL_NAME } from "./skills.js";
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
 const UNSEEN = /[\p{Cc}\p{Cf}]/u;
@@ -15,18 +16,27 @@ export const NOTE_BLOCK = "note";
  *  with four backticks so a ``` line inside does not close it. */
 export const SKILL_BLOCK = "skill";
 export const WORKFLOW_BLOCK = "workflow";
+/** How many earlier runs of an agent a learned skill has been given to before the host asks for its job as a workflow
+ *  draft (`draftFor`): a run proposes one only when it thinks to, and few do. */
+export const DRAFT_AFTER_RUNS = 3;
 /** A tool's name as the prompt may print it. */
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
  *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
- *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[] }): string {
-  const { dir, active, tools = [] } = options;
+ *  call nodes may run (tools.ts learnedWorkflowTools): none when not given. Its model nodes name none. `draftFor`, the
+ *  learned skills the run was given that have served DRAFT_AFTER_RUNS earlier runs with no learned workflow of their
+ *  name: the prompt gains one line asking for that job as a workflow draft. None when not given. `described`, with a
+ *  draft asked for: what each of `tools` takes and gives a call node, in the server's own words (tools.ts ToolEntry
+ *  summary), said under the ask, one line each (at most DESCRIBED_MAX characters, unseen characters and line breaks made
+ *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. */
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[] }): string {
+  const { dir, active, tools = [], draftFor = [], described = [] } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !TOOL_NAME.test(tool))) throw new Error("each tool must be a tool's name");
+  if (!Array.isArray(draftFor) || draftFor.some((name) => typeof name !== "string" || !SKILL_NAME.test(name))) throw new Error("each skill a draft is asked for must be a skill's name");
   const left = Math.max(0, INDEX_LINES - active);
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
@@ -81,6 +91,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "skill. A note holds its own lesson: never repeat another note's rule in it, so a retired rule stays retired.",
     "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
     "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
+    ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
     "",
     `A skill is how to do the job, step by step, as a SKILL.md: front matter with its \`name\` (lowercase letters, digits`,
     "and single dashes) and a `description` of when to use it, then the steps. Open its block with four backticks, so a",
@@ -110,6 +121,28 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     "````",
   ].join("\n");
 }
+
+/** The most of one tool's words the draft ask's description gives it. */
+const DESCRIBED_MAX = 600;
+/** What each of `tools` takes and gives a call node, from `described` (a tool's name and its words), one line each, under
+ *  a line that says so; none when no tool of `tools` is described. */
+const describedLines = (described: readonly { readonly name: string; readonly does: string }[], tools: readonly string[]): string[] => {
+  const lines = tools.flatMap((name) => {
+    const does = described.find((one) => one.name === name)?.does;
+    if (typeof does !== "string") return [];
+    const flat = does.replace(new RegExp(UNSEEN.source, "gu"), " ").replace(/\s+/g, " ").trim().slice(0, DESCRIBED_MAX).trim();
+    return flat ? [`- \`${name}\`: ${flat}`] : [];
+  });
+  return lines.length ? ["What each tool a call node may run takes and gives:", ...lines] : [];
+};
+
+/** The one line that asks for a workflow draft of a skill's job, by the skill's name. */
+const draftAsk = (names: readonly string[]): string => {
+  const listed = names.map((name) => `\`${name}\``).join(", ");
+  return names.length === 1
+    ? `Your skill ${listed} has now served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep its job as a workflow draft named \`${names[0]}\`, its steps as nodes, if the job runs end to end as model and tool-call steps.`
+    : `Your skills ${listed} have each served ${DRAFT_AFTER_RUNS} or more runs: this time, also keep one of their jobs as a workflow draft named like its skill, its steps as nodes, if the job runs end to end as model and tool-call steps.`;
+};
 
 /** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
  *  parseReflection's), and the whole answer again in the format. */
@@ -163,11 +196,14 @@ const exampleDraft = (fetches: boolean) =>
 
 /** A skill's or a workflow draft's block: the name its block gives, and its text whole. */
 export type LearnedBlock = { readonly name: string; readonly text: string };
+/** One block of an answer, by its kind and the name (a note's file) it gives. */
+export type BlockRef = { readonly kind: typeof NOTE_BLOCK | typeof SKILL_BLOCK | typeof WORKFLOW_BLOCK; readonly name: string };
 /** What an end-of-run turn's answer proposes: each note's file name and whole text, and each skill's and workflow
- *  draft's name and text (only when it gives one), as the answer gives them; `empty` when it gives none; `unparsed`
+ *  draft's name and text (only when it gives one), as the answer gives them, and `order`, every block of every kind in
+ *  the order the answer gave them (a count cap counts in it: learn/check.ts); `empty` when it gives none; `unparsed`
  *  when it tries and not in the format, with why. */
 export type Reflection =
-  | { readonly ok: true; readonly notes: readonly { readonly file: string; readonly text: string }[]; readonly skills?: readonly LearnedBlock[]; readonly workflows?: readonly LearnedBlock[] }
+  | { readonly ok: true; readonly notes: readonly { readonly file: string; readonly text: string }[]; readonly skills?: readonly LearnedBlock[]; readonly workflows?: readonly LearnedBlock[]; readonly order: readonly BlockRef[] }
   | { readonly ok: false; readonly reason: "empty" }
   | { readonly ok: false; readonly reason: "unparsed"; readonly detail: string };
 
@@ -208,6 +244,7 @@ export function parseReflection(answer: unknown): Reflection {
   if (answer.length > ANSWER_MAX) return { ok: false, reason: "unparsed", detail: `the answer is over ${ANSWER_MAX} characters` };
   const lines = answer.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Record<string, { name: string; text: string }[]> = { [NOTE_BLOCK]: [], [SKILL_BLOCK]: [], [WORKFLOW_BLOCK]: [] };
+  const order: BlockRef[] = [];
   /** The first skill or draft opened in three backticks, outside every block: what the answer tried, when it holds no other. */
   let shortFenced: string | undefined;
   for (let i = 0; i < lines.length; i++) {
@@ -235,13 +272,16 @@ export function parseReflection(answer: unknown): Reflection {
     // The same block given again word for word is that block once; another under the same name is ambiguous.
     const given = blocks[open.kind]!.find((block) => block.name === name);
     if (given && given.text !== text) return { ok: false, reason: "unparsed", detail: open.kind === NOTE_BLOCK ? "two of the answer's notes have one file name" : `two of the answer's ${open.kind}s have one name` };
-    if (!given) blocks[open.kind]!.push({ name, text });
+    if (!given) {
+      blocks[open.kind]!.push({ name, text });
+      order.push({ kind: open.kind as BlockRef["kind"], name });
+    }
     i = end;
   }
   const notes = blocks[NOTE_BLOCK]!.map(({ name, text }) => ({ file: name, text }));
   const skills = blocks[SKILL_BLOCK]!;
   const workflows = blocks[WORKFLOW_BLOCK]!;
-  if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}) };
+  if (notes.length || skills.length || workflows.length) return { ok: true, notes, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), order };
   // A skill or a draft opened in the fence a note may use: it tried, in the wrong fence (its front matter, if any, is no
   // loose note).
   if (shortFenced) return { ok: false, reason: "unparsed", detail: `a ${shortFenced}'s block must open with four backticks: \`\`\`\`${shortFenced} <name>` };

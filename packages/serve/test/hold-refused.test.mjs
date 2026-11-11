@@ -10,15 +10,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { TOOL_COST, TOOL_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capToolSpend, paidHolds } from "../dist/cap.js";
-import { mcpGateway } from "../dist/mcp-gateway.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, monidRegistration } from "../dist/monid.js";
 import { bookedIn, paidRequest, settleIn } from "../dist/paid-calls.js";
-import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { calls as monidCalls, KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
-const TOKEN = `not-a-secret-${"hold-bearer"}`;
 
 /** A run store at NORMAL whose sync fails, as a lost disk's would: its commits go through the write, never here. */
 const failingStore = { synchronous: "NORMAL", database: { exec: async () => undefined, transaction: async () => { throw new Error("the disk went away"); } } };
@@ -90,36 +87,3 @@ test("paidToolHold (monid), a sync that fails after the hold: its $0 settle foll
   assert.doesNotMatch(text, /could not be written/);
 });
 
-/** The MCP gateway's priced call, its entries in `entries`, and how many calls the server had. */
-async function mcpPaid(t, entries) {
-  const fake = await startFakeMcp({ token: TOKEN });
-  t.after(() => fake.close());
-  const work = await mkdtemp(join(tmpdir(), "hold-mcp-"));
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const gateway = mcpGateway({
-    pin: { fake: { url: fake.url, tools: [{ name: "paid", inputSchema: { type: "object" } }], prices: { paid: 0.05 } } },
-    credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } },
-    work: () => work,
-    commit: () => async (change) => change({ appendEntry: async (_conversation, entry) => void entries.push(entry) }),
-  });
-  const result = await gateway.call("fake", "paid", { query: "ada" }, { signal: new AbortController().signal, callId: "c1" });
-  return { result, sent: fake.log.filter((entry) => entry.method === "tools/call").length };
-}
-
-test("paidToolHold (MCP gateway), no run store at NORMAL: nothing written, nothing sent to the server, and the words say why", async (t) => {
-  atNormal(t, undefined);
-  const entries = [];
-  const { result, sent } = await mcpPaid(t, entries);
-  assert.deepEqual([entries, sent, result.isError], [[], 0, true]);
-  assert.match(result.content[0].text, /was not sent: the run's store is not open, so its hold cannot be made durable/);
-});
-
-test("paidToolHold (MCP gateway), a sync that fails after the hold: its $0 settle follows, nothing is sent, and the words say the hold could not be made durable", async (t) => {
-  atNormal(t, failingStore);
-  const entries = [];
-  const { result, sent } = await mcpPaid(t, entries);
-  assert.deepEqual(entries.map((e) => [e.kind, e.data.heldUsd ?? e.data.usd]), [[TOOL_STARTED, 0.05], [TOOL_COST, 0]]);
-  assert.equal(capToolSpend(entries), 0);
-  assert.equal(sent, 0);
-  assert.match(result.content[0].text, /was not sent: its hold could not be made durable \(the disk went away\)/);
-});

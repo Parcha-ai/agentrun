@@ -320,19 +320,20 @@ test("the installed redirect records an installation only with the install state
 });
 
 test("a key whose last line is short shows nothing of itself where the server's secrets are cut: the whole key and every line are listed, the short one too", async (t) => {
-  const { openServerSecrets } = await import("../dist/server-secrets.js");
-  const { SealedSettings } = await import("../dist/sealed-settings.js");
+  const { openServerSecretsOverStore } = await import("../dist/server-secrets-store.js");
   const { redactedAnswer } = await import("../dist/key-refusal.js");
   const { github } = await import("../dist/trigger-github.js");
   const { scratch } = await import("./support.mjs");
+  const { storeOn } = await import("./store-helpers.mjs");
   const { randomBytes } = await import("node:crypto");
   const data = await scratch(t);
+  const { store } = await storeOn(t);
   const key = randomBytes(32);
   const kind = ["RSA", "PRIVATE", "KEY-----"].join(" ");
   const lines = [randomBytes(48).toString("base64"), randomBytes(48).toString("base64"), "Zq7=="];
   const pem = `-----BEGIN ${kind}\n${lines.join("\n")}\n-----END ${kind}\n`;
-  new SealedSettings(data, "github", github.settings, key, () => {}).set("server", "private_key", pem);
-  const { secrets } = openServerSecrets(data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, [github]);
+  const { secrets, settings } = await openServerSecretsOverStore(store, data, { AGENTRUN_SEAL_KEY: key.toString("base64") }, [github]);
+  await settings.get("github").set("server", "private_key", pem);
   const held = secrets.values();
   for (const line of lines) assert.ok(held.includes(line), `listed: ${line}`);
   const shown = redactedAnswer(`the run printed: ${pem} and ended`, held);

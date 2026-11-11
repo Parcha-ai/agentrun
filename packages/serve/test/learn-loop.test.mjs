@@ -7,12 +7,12 @@
 // every list: run 1 learned the note (its read of it failed: it was not there yet), and run 2 used it (its read of
 // MEMORY.md is no note's).
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { answerWith, note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, KEEPS, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, reflectRows, repoOf, SWITCH_TODO, savedOf, settled, started, turnOf, wholeIn } from "./learn-support.mjs";
-import { runDir, scratch, serve } from "./support.mjs";
+import { copyOf, ended, git, KEEPS, keptProposal, LEARN, learnedIn, learner, NOTHING_YET, onMain, learningRows, made, mergesOf, pinOf, reflectRows, repoOf, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
+import { scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FILE = "check-units.md";
@@ -27,9 +27,10 @@ const readsOf = (rows, path) => {
 };
 
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it whole under # Learned and finds it in .learning/`, { timeout: 180_000, skip: SWITCH_TODO }, async (t) => {
+  test(`on ${harness}, with no write tool, run 1 learns and run 2 knows, on a data directory whose path holds a space: the end-of-run turn, which names .learning/ relative to the run's work, answers with a note that is checked, graded and merged, MEMORY.md on main lists it, and run 2 reads it whole under # Learned and finds it in .learning/`, { timeout: 180_000 }, async (t) => {
     const data = join(await scratch(t), "learning data", "agents");
-    const { api } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(LEARN), data });
+    const server = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(LEARN), data });
+    const { api } = server;
     const id = `loop-${harness}`;
     await made(api, learner(id, { harness, tools: ["read"], instructions: `Say your prompt.\nRead: ${JSON.stringify(READS)}`, plan: [[FILE, NOTE]], once: true }));
 
@@ -63,7 +64,7 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(!first.rows.some((row) => /The task is done|Your notes from earlier runs/.test(`${row.summary ?? ""}\n${row.text ?? ""}`)), "no row shows the prompt");
     assert.ok(!turn.some((row) => row.kind === "tool_use"), "it used no tool");
     assert.ok(turn.some((row) => row.kind === "text_block" && row.text.startsWith(`\`\`\`note ${FILE}\n`)), "it answered with the note");
-    assert.equal(turnOf(data, one).answer, answerWith([[FILE, NOTE]]), "the answer whole, kept as the run settled");
+    assert.equal((await keptProposal(server, one)).turn.answer, answerWith([[FILE, NOTE]]), "the answer whole, kept as the run settled");
     assert.equal(first.rows.filter((row) => row.kind === "final_answer").length, 1, "the job's answer is the run's only answer row");
 
     // What the merge left: one host commit on main naming the run, with the note, and MEMORY.md built from it.
@@ -93,9 +94,9 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.ok(section.includes("## Check units (check-units.md)\n\nConvert every amount to one unit before comparing\n\nAmounts in one answer came in cents and in dollars."), section);
     assert.ok(!section.includes(LINE), "every note is whole, so the index adds nothing");
     assert.equal(readFileSync(join(copyOf(data, two), FILE), "utf8"), onMain(NOTE), "the note was in run 2's .learning/");
-    assert.equal(JSON.parse(readFileSync(join(runDir(data, two), "learning.json"), "utf8")).seed, main);
+    assert.equal((await pinOf(server, two)).seed, main, "its launch's learning start is the merge");
     // It used the note, read as the job's first call: the note by its name, MEMORY.md (read too) no note at all. In its
-    // view, and in every list, as serve.json keeps it.
+    // view, and in every list.
     assert.deepEqual([readsOf(second.rows, READS[0]), readsOf(second.rows, READS[1])], [["success"], ["success"]], "run 2 read both");
     const read = [{ file: FILE, name: "Check units" }];
     assert.deepEqual(second.view.learning.read, read);
@@ -103,12 +104,11 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     const whole2 = (await api("GET", `/runs/${two}/learning`)).body;
     assert.deepEqual([whole2.read, whole2.given, "learned" in whole2], [read, read, false], "the run's learning whole says the same");
     for (const path of ["/runs", `/agents/${id}/runs`]) assert.deepEqual((await api("GET", path)).body.runs.find((run) => run.run_id === two).learning, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", given: read, read }, path);
-    assert.deepEqual([(await savedOf(data, two)).learning.read, (await savedOf(data, two)).learning.given], [read, read], "kept in serve.json as the run settled");
     // It learned nothing new: its turn added nothing, and main did not move.
     settled(second.view, second.rows, "dropped", "empty");
     assert.equal("learned" in second.view.learning, false, "run 2 learned nothing");
     assert.equal(git(repo, ["rev-parse", "main"]), main);
     assert.equal(learningRows(second.rows).length, 1);
-    assert.equal(existsSync(join(runDir(data, two), "learning-proposal.json")), false, "nothing was proposed");
+    assert.equal((await keptProposal(server, two)).proposal.state, "dropped", "nothing was proposed");
   });
 }
