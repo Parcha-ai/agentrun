@@ -11,8 +11,8 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_LATER, APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, restores, type Retired, isPending, NO_VERSION, type NoteProblem, originOf, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, seenVersion, shownImpact, took, TYPE_HINT, typeLabel,
-  counted, type LearnedItem, learnedItems, statusFile,
+  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, restores, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
+  counted, type LearnedItem, statusFile,
 } from "@/lib/learning";
 import type { Places } from "@/lib/place";
 import { cn } from "@/lib/utils";
@@ -83,9 +83,9 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
   const waiting = all.filter(isPending);
-  // The skills and the workflows it learned (a newer server's), each listed whole.
-  const skills = learnedItems(view?.skills);
-  const workflows = learnedItems(view?.workflows);
+  // The skills and the workflows it learned.
+  const skills = view?.skills ?? [];
+  const workflows = view?.workflows ?? [];
   // Whether this caller approves from the console, read once a note, a skill or a workflow waits: until the server
   // says so, no Approve.
   const [approves, setApproves] = useState<Approval | undefined>(undefined);
@@ -93,7 +93,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   useEffect(() => {
     if (!anyWaiting || approves !== undefined) return;
     let live = true;
-    Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(approval(c)); }, () => { if (live) setApproves("later"); });
+    Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(approval(c)); }, () => { if (live) setApproves("password"); });
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
@@ -262,7 +262,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
   ];
   const learning = learningCost(impact);
   const basis = [`Medians of ${runsWord(b.runs)} before its first note and ${runsWord(a.runs)} that started from its notes.`,
-    ...(typeof a.cost_runs === "number" && typeof b.cost_runs === "number" ? [`Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`] : [])].join(" ");
+    `Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`].join(" ");
   return (
     <section className="border" aria-label={impactWords(impact)}>
       <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-4 py-3">
@@ -361,10 +361,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
     const words = (text: string) => <p className="text-small text-destructive-text" role="alert">{text}</p>;
     setApproving(true); setSaid(null);
     try {
-      const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
-      if (seen.kind === "changed") { setSaid(words(`${CHANGED} Reload the tab to see the newest version.`)); setApproving(false); return; }
-      if (seen.kind === "unknown") { setSaid(words(NO_VERSION)); setApproving(false); return; }
-      await v2.approveNote(agentId, note.file, seen.etag);
+      await v2.approveNote(agentId, note.file, note.etag);
     } catch (e) {
       setApproving(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, "the note", "The note was not approved.")} className="" />);
@@ -394,11 +391,11 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 break-words text-prose font-semibold leading-snug">{note.name}</h3>
             <Chip>{typeLabel(note.type)}</Chip>
-            {originOf(note) === "you" && <Chip tone="muted">From you</Chip>}
+            {note.origin === "you" && <Chip tone="muted">From you</Chip>}
             {saved && <span className="caps text-micro text-success-text" role="status">{saved}</span>}
           </div>
           <p className="mt-1 text-body text-muted-foreground">{note.description}</p>
-          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-label text-muted-foreground">{approves === "password" ? APPROVE_SIGN_IN : APPROVE_LATER}</p>}
+          {waits && approves === "password" && <p className="mt-2 font-mono text-label text-muted-foreground">{APPROVE_SIGN_IN}</p>}
         </div>
         {!readOnly && !retiring && (
           <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
@@ -417,13 +414,7 @@ function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged,
         <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Given to {runsWord(note.runs.given)}</span>
         {note.runs.read > 0 && <span className="flex items-center gap-1.5"><BookOpen className="size-3" aria-hidden />Read in {runsWord(note.runs.read)}</span>}
       </footer>
-      {retiring && <RetireConfirm name={note.name} kind="note" retire={async () => {
-        const seen = await seenVersion(note, () => v2.readNote(agentId, note.file));
-        if (seen.kind === "changed") return `${CHANGED} Reload the tab to see the newest version.`;
-        if (seen.kind === "unknown") return NO_VERSION;
-        await v2.retireNote(agentId, note.file, seen.etag);
-        return null;
-      }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
+      {retiring && <RetireConfirm name={note.name} kind="note" retire={() => v2.retireNote(agentId, note.file, note.etag)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
 }
@@ -486,7 +477,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
             {waits && <Chip tone="warning"><Hourglass className="size-3" aria-hidden />Waits for your OK</Chip>}
           </div>
           {item.description && <p className="mt-1 text-body text-muted-foreground">{item.description}</p>}
-          {waits && (approves === "later" || approves === "password") && <p className="mt-2 font-mono text-label text-muted-foreground">{approves === "password" ? APPROVE_SIGN_IN : APPROVE_LATER}</p>}
+          {waits && approves === "password" && <p className="mt-2 font-mono text-label text-muted-foreground">{APPROVE_SIGN_IN}</p>}
         </div>
         <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
           {!readOnly && !retiring && <>
@@ -506,7 +497,7 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
         {lastChangeLine(item.last_change) && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />{lastChangeLine(item.last_change)}</span>}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
-      {retiring && <RetireConfirm name={item.name} kind={kind} retire={async () => { await v2.retireNote(agentId, statusFile(item), version); return null; }} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
+      {retiring && <RetireConfirm name={item.name} kind={kind} retire={() => v2.retireNote(agentId, statusFile(item), version)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
     </article>
   );
 }
@@ -557,10 +548,9 @@ const RETIRES: Record<"note" | "skill" | "workflow", string> = {
 };
 
 /** Retire, after a confirm in place as the run header's cancel is: "Yes, retire" takes the focus, so Enter retires,
- *  and Esc or Keep keeps it. `retire` makes it on the version the card showed, and answers why it did not, or null: a
- *  note changed since is never retired unseen (seenVersion), it says so instead, and one the server names no version of
- *  is not retired either. A 412, made on a version changed since, says so in the same words. */
-function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "note" | "skill" | "workflow"; retire: () => Promise<string | null>; onDone: (retired: boolean) => void | Promise<void> }) {
+ *  and Esc or Keep keeps it. `retire` makes it on the version the card showed. A 412, made on a version changed since,
+ *  says so. */
+function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "note" | "skill" | "workflow"; retire: () => Promise<unknown>; onDone: (retired: boolean) => void | Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -569,8 +559,7 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
   const go = async () => {
     setBusy(true); setSaid(null);
     try {
-      const not = await retire();
-      if (not !== null) { setBusy(false); setSaid(words(not)); return; }
+      await retire();
     } catch (e) {
       setBusy(false);
       setSaid(e instanceof ClientError && noteSaveError(e).kind === "conflict" ? words(`${CHANGED} Reload the tab to see the newest version.`) : <ProblemCard problem={failed(e, `the ${kind}`, `The ${kind} was not retired.`)} className="" />);
@@ -629,43 +618,30 @@ function RestoreConfirm({ name, kind, from, restore, onChanged, onDone }: { name
   );
 }
 
-/** A note to edit (`file`, opened on the version its card showed: `seen`) or a new one: name, description and type as
- *  fields, the body as markdown. ⌘/Ctrl+Enter saves anywhere in it and Enter saves in a one-line field; Esc cancels. A
- *  note that changed since the card showed it opens on its newest version, and says so. One that changes while it is
- *  open is not written over: the save is refused, the newest version loads, and the edit stays below to copy. A note
- *  the server names no version of is never saved (no empty If-Match). */
+/** A note to edit (`file`, opened on the text and version its card showed: `seen`) or a new one: name, description and
+ *  type as fields, the body as markdown. ⌘/Ctrl+Enter saves anywhere in it and Enter saves in a one-line field; Esc
+ *  cancels. One that changes while it is open is not written over: the save is refused, the newest version loads, and
+ *  the edit stays below to copy. A note read back without its version is never saved (no empty If-Match). */
 function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone }: { title: string; v2: Client; agentId: string; file?: string; seen?: LearningNote; taken?: string[]; onDone: (saved: boolean) => void }) {
-  const [parts, setParts] = useState<NoteParts | null>(file ? null : { name: "", description: "", type: "feedback", body: "\n", rest: [] });
-  const [etag, setEtag] = useState<string | null>(null);
+  const [parts, setParts] = useState<NoteParts>(seen ? noteParts(seen.text) : { name: "", description: "", type: "feedback", body: "\n", rest: [] });
+  const [etag, setEtag] = useState<string | null>(seen?.etag ?? null);
   const [readError, setReadError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<NoteProblem[]>([]);
   const [trouble, setTrouble] = useState<unknown>(null);
   const [taken, setTaken] = useState(false);
   const [stale, setStale] = useState<string | null>(null);
-  const [moved, setMoved] = useState(false);
   const first = useRef<HTMLInputElement>(null);
   /** The note as the server has it now. */
   const reload = async () => {
     if (!file) return;
     try { const n = await v2.readNote(agentId, file); setParts(noteParts(n.note)); setEtag(n.etag); setReadError(null); } catch (e) { setReadError(e ?? new Error("unknown")); }
   };
-  /** The note as its card showed it, or its newest version, said so, when it changed since. */
-  const open = async () => {
-    if (!file || !seen) return reload();
-    try {
-      const v = await seenVersion(seen, () => v2.readNote(agentId, file));
-      if (v.kind === "same") { setParts(noteParts(v.text)); setEtag(v.etag); }
-      else if (v.kind === "changed") { setParts(noteParts(v.now.note)); setEtag(v.now.etag); setMoved(true); }
-      else { setParts(noteParts(seen.text)); setEtag(null); }
-    } catch (e) { setReadError(e ?? new Error("unknown")); }
-  };
-  useEffect(() => { void open(); }, [file]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (parts) first.current?.focus(); }, [parts === null]); // eslint-disable-line react-hooks/exhaustive-deps
-  const set = (p: Partial<NoteParts>) => setParts((x) => (x ? { ...x, ...p } : x));
-  const ready = !!parts && parts.name.trim() !== "" && parts.description.trim() !== "" && !busy;
+  useEffect(() => { first.current?.focus(); }, []);
+  const set = (p: Partial<NoteParts>) => setParts((x) => ({ ...x, ...p }));
+  const ready = parts.name.trim() !== "" && parts.description.trim() !== "" && !busy;
   const save = async () => {
-    if (!parts || !ready) return;
+    if (!ready) return;
     setTrouble(null); setProblems([]); setTaken(false);
     if (file && !etag) { setTrouble(NO_VERSION); return; }
     setBusy(true);
@@ -677,7 +653,7 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
       setBusy(false);
       const p = e instanceof ClientError ? noteSaveError(e, !file) : null;
       // Someone, or a run, changed it since it was opened: show the newest, keep this edit to copy.
-      if (p?.kind === "conflict") { setStale(text); setMoved(false); await reload(); }
+      if (p?.kind === "conflict") { setStale(text); await reload(); }
       else if (p?.kind === "refused") setProblems(p.problems);
       else if (p?.kind === "taken") setTaken(true);
       else setTrouble(e ?? new Error("unknown"));
@@ -693,57 +669,48 @@ function NoteEditor({ title, v2, agentId, file, seen, taken: names = [], onDone 
         <h3 className="caps text-label font-semibold">{title}</h3>
         <span className="ml-auto hidden font-mono text-label text-muted-foreground sm:inline"><kbd>{MAC ? "⌘" : "Ctrl"}+Enter</kbd> save · <kbd>Esc</kbd> cancel</span>
       </div>
-      {readError !== null && <ProblemCard problem={problem(readError, "the note")} onRetry={() => { setReadError(null); void open(); }} className="m-5" />}
-      {!parts && readError === null && <div className="space-y-3 p-5" role="status" aria-label="Loading the note"><div aria-hidden className="h-9 bg-muted motion-safe:animate-pulse" /><div aria-hidden className="h-24 bg-muted/70 motion-safe:animate-pulse" /></div>}
-      {parts && (
-        <div className="space-y-4 px-5 py-4">
-          {moved && !stale && (
-            <div className="border border-warning/50 bg-warning/10 px-4 py-3 text-body" role="status">
-              <p className="flex items-center gap-2 font-semibold"><TriangleAlert className="size-4 text-warning-text" aria-hidden />Changed since you opened it</p>
-              <p className="mt-1 text-muted-foreground">This is the newest version, not the one the card showed.</p>
-            </div>
-          )}
-          {stale && (
-            <div className="border border-warning/50 bg-warning/10 px-4 py-3 text-body" role="alert">
-              <p className="flex items-center gap-2 font-semibold"><TriangleAlert className="size-4 text-warning-text" aria-hidden />Changed since you opened it</p>
-              <p className="mt-1 text-muted-foreground">This is the newest version. Your edit wasn't saved; it's below to copy.</p>
-              <details className="mt-2"><summary className="caps cursor-pointer text-label text-muted-foreground hover:text-foreground">Your edit</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words border bg-background p-3 font-mono text-small">{stale}</pre></details>
-            </div>
-          )}
-          <label className="block"><span className="caps mb-1.5 block text-label font-semibold">Name</span>
-            <Input ref={first} value={parts.name} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Try /policies/refund-policy first" /></label>
-          <label className="block"><span className="caps mb-1.5 block text-label font-semibold">Description</span>
-            <span className="-mt-0.5 mb-1.5 block text-small text-muted-foreground">One line: what the next run sees before it opens the note.</span>
-            <Input value={parts.description} onChange={(e) => set({ description: e.target.value })} placeholder="When it applies, and what to do" /></label>
-          <fieldset>
-            <legend className="caps mb-1.5 text-label font-semibold">Type</legend>
-            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Type">
-              {NOTE_TYPES.map((t) => (
-                <label key={t} className={cn("caps cursor-pointer border px-3 py-1.5 text-label", parts.type === t ? "border-foreground" : "text-muted-foreground hover:text-foreground")} title={t}>
-                  <input type="radio" name={`type-${file ?? "new"}`} className="sr-only" checked={parts.type === t} onChange={() => set({ type: t })} />{typeLabel(t)}
-                </label>
-              ))}
-            </div>
-            <p className="mt-1.5 text-small text-muted-foreground">{TYPE_HINT[parts.type]}</p>
-          </fieldset>
-          <label className="block"><span className="caps mb-1.5 block text-label font-semibold">Note</span>
-            <Textarea value={parts.body.replace(/^\n/, "")} onChange={(e) => set({ body: `\n${e.target.value}` })} rows={7} placeholder="What to do, and why. Markdown." className="resize-y leading-[1.65]" /></label>
-          {problems.length > 0 && (
-            <div className="border border-destructive/50 bg-destructive/5 px-4 py-3 text-body" role="alert">
-              <p className="font-semibold text-destructive-text">Not saved: the note doesn't pass the checks.</p>
-              <ul className="mt-1 list-disc space-y-0.5 pl-5">{problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul>
-            </div>
-          )}
-          {taken && <p className="text-body text-destructive-text" role="alert">Not saved: a note by this name exists already. Change its name.</p>}
-          {trouble === NO_VERSION ? <p className="text-body text-destructive-text" role="alert">Not saved: {NO_VERSION}</p>
-            : trouble !== null && <ProblemCard problem={failed(trouble, "the note", "The note was not saved.")} className="" />}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="solid" onClick={() => void save()} disabled={!ready}>{busy ? "Saving" : file ? "Save" : "Add note"}</Button>
-            <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Cancel</Button>
-            {!file && parts.name.trim() && <span className="ml-auto font-mono text-label text-muted-foreground">{fileFor(parts.name, names)}</span>}
+      {readError !== null && <ProblemCard problem={problem(readError, "the note")} onRetry={() => { setReadError(null); void reload(); }} className="m-5" />}
+      <div className="space-y-4 px-5 py-4">
+        {stale && (
+          <div className="border border-warning/50 bg-warning/10 px-4 py-3 text-body" role="alert">
+            <p className="flex items-center gap-2 font-semibold"><TriangleAlert className="size-4 text-warning-text" aria-hidden />Changed since you opened it</p>
+            <p className="mt-1 text-muted-foreground">This is the newest version. Your edit wasn't saved; it's below to copy.</p>
+            <details className="mt-2"><summary className="caps cursor-pointer text-label text-muted-foreground hover:text-foreground">Your edit</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words border bg-background p-3 font-mono text-small">{stale}</pre></details>
           </div>
+        )}
+        <label className="block"><span className="caps mb-1.5 block text-label font-semibold">Name</span>
+          <Input ref={first} value={parts.name} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Try /policies/refund-policy first" /></label>
+        <label className="block"><span className="caps mb-1.5 block text-label font-semibold">Description</span>
+          <span className="-mt-0.5 mb-1.5 block text-small text-muted-foreground">One line: what the next run sees before it opens the note.</span>
+          <Input value={parts.description} onChange={(e) => set({ description: e.target.value })} placeholder="When it applies, and what to do" /></label>
+        <fieldset>
+          <legend className="caps mb-1.5 text-label font-semibold">Type</legend>
+          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Type">
+            {NOTE_TYPES.map((t) => (
+              <label key={t} className={cn("caps cursor-pointer border px-3 py-1.5 text-label", parts.type === t ? "border-foreground" : "text-muted-foreground hover:text-foreground")} title={t}>
+                <input type="radio" name={`type-${file ?? "new"}`} className="sr-only" checked={parts.type === t} onChange={() => set({ type: t })} />{typeLabel(t)}
+              </label>
+            ))}
+          </div>
+          <p className="mt-1.5 text-small text-muted-foreground">{TYPE_HINT[parts.type]}</p>
+        </fieldset>
+        <label className="block"><span className="caps mb-1.5 block text-label font-semibold">Note</span>
+          <Textarea value={parts.body.replace(/^\n/, "")} onChange={(e) => set({ body: `\n${e.target.value}` })} rows={7} placeholder="What to do, and why. Markdown." className="resize-y leading-[1.65]" /></label>
+        {problems.length > 0 && (
+          <div className="border border-destructive/50 bg-destructive/5 px-4 py-3 text-body" role="alert">
+            <p className="font-semibold text-destructive-text">Not saved: the note doesn't pass the checks.</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">{problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul>
+          </div>
+        )}
+        {taken && <p className="text-body text-destructive-text" role="alert">Not saved: a note by this name exists already. Change its name.</p>}
+        {trouble === NO_VERSION ? <p className="text-body text-destructive-text" role="alert">Not saved: {NO_VERSION}</p>
+          : trouble !== null && <ProblemCard problem={failed(trouble, "the note", "The note was not saved.")} className="" />}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="solid" onClick={() => void save()} disabled={!ready}>{busy ? "Saving" : file ? "Save" : "Add note"}</Button>
+          <Button size="sm" variant="ghost" onClick={() => onDone(false)} disabled={busy}>Cancel</Button>
+          {!file && parts.name.trim() && <span className="ml-auto font-mono text-label text-muted-foreground">{fileFor(parts.name, names)}</span>}
         </div>
-      )}
+      </div>
     </section>
   );
 }

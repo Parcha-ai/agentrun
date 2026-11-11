@@ -1,10 +1,9 @@
 // The MCP registry and OAuth sign-ins in flight, in the one store (store.mcp, store.mcpOauth), sealed with the store's one
 // rule (store/seal.ts): the registry row's credential under AAD mcp_servers|<name>|sealed with the url
 // origin inside the plaintext, and a pending sign-in's secret parts (the PKCE verifier and the OAuth client, with its
-// secret) under AAD mcp_oauth_pending|<state>|sealed. The
-// store-backed replacement for mcp-servers.ts's file store and mcp-oauth.ts's in-memory pending map; the cut wires these
-// into McpServers / McpSignIns, which keep their SDK tool-probe, validation and sign-in flow. The store never opens a
-// credential; only this process (and a runner) does, with the seal key.
+// secret) under AAD mcp_oauth_pending|<state>|sealed. McpServersOverStore (mcp-servers-store.ts) and McpSignIns
+// (mcp-oauth.ts) keep the SDK tool-probe, validation and sign-in flow over these. The store never opens a credential;
+// only this process (and a runner) does, with the seal key.
 import {
   type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpServerRow, type McpServerWrite, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
