@@ -6,6 +6,7 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
+import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
@@ -15,6 +16,7 @@ import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
+import { vendorNetworkOnly } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -88,6 +90,14 @@ export const NO_NETWORK_WORDS = "no network, so this server's allow-list isn't o
 /** A computer on the vendor's own network: open, which this server's allow-list doesn't reach. */
 export const VENDOR_NETWORK_WORDS = "the vendor's own network; this server's allow-list doesn't apply";
 
+/** A computer on the vendor's own network where this server's AGENTRUN_BOX_ALLOW is none: a run of it is refused at its start
+ *  and at its claim (resolve-computer.ts noNetworkRefusal), so Settings says so and never offers it. */
+export const VENDOR_NETWORK_REFUSED_WORDS = `the vendor's own network, which this server refuses: its ${BOX_ALLOW_ENV} is none`;
+
+/** Why a provider whose computers run only on the vendor's own network is not ready where this server has no network. */
+const noNetworkWhy = (provider: ProviderEntry): string =>
+  `${provider.label} runs only on the vendor's own network, and this server's ${BOX_ALLOW_ENV} is none (no network): pick a computer that runs with no network, or set ${BOX_ALLOW_ENV} to a host list`;
+
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone or "open" alone; none where the allow-list applies (Docker), or nothing is declared. */
 export function networkWords(network: readonly string[] | undefined): string | undefined {
@@ -146,18 +156,24 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const slots = kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
     const metas = new Map((await keyMetaOf(store, slots, env)).map((meta) => [meta.name, meta]));
     const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
+    // Under this server's AGENTRUN_BOX_ALLOW none, a computer that runs only on the vendor's own network is refused at a
+    // run's start and its claim (resolve-computer.ts noNetworkRefusal), so it is never ready here, whatever its keys.
+    const refusedOpen = (provider: ProviderEntry): boolean => boxAllowOf(env as NodeJS.ProcessEnv) === "none" && vendorNetworkOnly(provider.network);
+    const unusable = (kind: ComputerKind, provider: ProviderEntry): string | undefined => modeRefusal(kind, provider, mode) ?? (refusedOpen(provider) ? noNetworkWhy(provider) : undefined);
     return {
       kinds: COMPUTER_KINDS.map((kind): KindView => {
         const spec = kinds.SETTING_KINDS[kind];
         const serving = kinds.PROVIDERS.filter((provider) => provider.kinds.includes(kind));
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
-          const why = modeRefusal(kind, provider, mode) ?? (missing.length ? keysWhy(provider, missing) : undefined);
-          const network = networkWords(provider.network);
+          const why = unusable(kind, provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const network = refusedOpen(provider) ? VENDOR_NETWORK_REFUSED_WORDS : networkWords(provider.network);
           return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}) };
         });
-        const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
-        const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
+        const offered = kind === "none" || serving.some((provider) => unusable(kind, provider) === undefined);
+        const why = offered ? undefined
+          : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer runs only on the vendor's own network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
+          : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
         return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers };
       }),
     };
