@@ -174,9 +174,10 @@ docker compose logs agentrun | grep Open
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
 shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
-This `compose.yaml` doesn't pass `AGENTRUN_SEAL_KEY` to the server yet (#2164), so the server keeps its seal key inside
-the container, outside `/data`: recreating the container loses every saved key and sign-in. Until that's fixed, use
-[`deploy/compose.yaml`](../../deploy/README.md), which requires the key, or don't recreate the container.
+This `compose.yaml` passes `AGENTRUN_SEAL_KEY` from the `.env` to the server and refuses to start without it, so the key that
+seals every saved key, MCP credential and sign-in is kept outside the container and the data volume. Keep that `.env`
+line. A store whose secrets were sealed with another key refuses to start, and the server never makes a new key over
+sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
@@ -2346,7 +2347,7 @@ left out: 2 sessions still being written: they come in next time
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
      not replayed. A cancelled run cannot: a message to it is `409 not_continuable`, and its `next_action` is to start a
      new run of the agent.
-   - A workflow revision runs on the workflow loop, which drives the DSL's durable workflow task on the run's journal
+   - A workflow revision runs on the workflow loop, which drives the server's durable workflow task (src/workflow/task.ts) on the run's journal
      (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`, `report`) on the run's model, with the file
      tools each node names, and its typed questions on Jev or Parallel ([decision workflows](#decision-workflows)). A
      workflow that needs code or a tool call this host does not run is not saved here (`422`). The run is `queued`

@@ -101,14 +101,6 @@ export interface FakeAnthropic {
 
 let toolSeq = 0;
 
-/** The last user message's text (its string content, or its text blocks), without tool results. */
-export function lastUserText(r: Pick<FakeRequest, 'messages'>): string {
-  const m = [...r.messages].reverse().find((x) => x.role === 'user');
-  if (!m) return '';
-  if (typeof m.content === 'string') return m.content;
-  return m.content.filter((b) => b.type === 'text').map((b) => String(b.text)).join('\n');
-}
-
 /** Why `messages` breaks the Messages API's structure, or undefined when it doesn't. */
 export function structureProblem(all: unknown): string | undefined {
   if (!Array.isArray(all) || all.length === 0) return 'messages: at least one message is required';

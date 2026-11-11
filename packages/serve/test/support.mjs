@@ -21,6 +21,7 @@ import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
+import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
@@ -288,7 +289,7 @@ export async function triggerStore(of) {
  *  (memory-claim.ts runnerMemory), as the CLI's runner does; a run past either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, runnerTiming, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, harnessLocks, runnerTiming, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -335,7 +336,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   let runner;
   let beats = 0;
   try {
-    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
+    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
@@ -345,7 +346,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
       memory: runnerMemory(store),
       onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
-      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too.
+      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. The
+      // locks of a test's fake registry, the server's harnessLocks seam: a claim's first-use install takes the same.
       createLoop: (deps) => {
         const loop = createLoop(deps);
         loops.push(loop);
@@ -364,6 +366,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
         for (const fail of frozen.splice(0)) fail(new Error("the runner died"));
         await Promise.all(loops.map((loop) => loop.stop({ kind: "shutdown" }).catch(() => {})));
       } else await runner.close().catch(() => {});
+      // As the CLI's runner closes: a first-use install its claims let go of has stopped (its npm ended) first.
+      await claimInstallsStopped();
       await opened.close().catch(() => {});
       seal.release();
     },

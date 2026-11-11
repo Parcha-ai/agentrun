@@ -462,6 +462,8 @@ export interface Agents {
   /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
    *  run. */
   byExternal(ref: string): Promise<AgentRow | undefined>;
+  /** Whether the agent already has the revision that maps `version` of its owning system (one row looked up, no bodies read). */
+  hasExternalVersion(agentId: string, version: string): Promise<boolean>;
   list(options?: { archived?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a

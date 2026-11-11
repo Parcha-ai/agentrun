@@ -1,0 +1,157 @@
+// Read-only views of a run's durable file, synchronously and without the Harness: a document by its address, a
+// journal as `documentStore` wrote it, and the route decisions a frozen snapshot holds. A reader that only looks at
+// what ran (the run card, a tail that inherits what a run decided) uses them; the Harness stays the only writer. The
+// readers take the store file itself (pi-durable's SQLite file, wherever the host keeps it), never a directory.
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import { apply } from "@earendil-works/chord/delta";
+import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
+import { decisionKey } from "./decisions.js";
+import { effectKey } from "./store.js";
+import { walHasCommit } from "./wal.js";
+
+type Database = import("node:sqlite").DatabaseSync;
+type Json = any;
+
+/** A journal read back from the file: what `documentStore` keeps under one key. */
+export type JournalView = {
+  binding: string; inputs: Record<string, string> | null; generation: number; revision: number; state: Json;
+  notes: RecoveryNote[]; effects: RecoveryEffect[];
+};
+type DriverRecord = { binding: string | null; inputs: Record<string, string> | null; generation: number; revision: number; state: Json; notes: RecoveryNote[]; effects: string[] };
+
+/** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
+ *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
+/** `immutable`: a file nothing writes again. `unlocked`: a file a process may hold under an exclusive lock with its WAL
+ *  in heap (a run's own, written as pi-durable-disk's exclusive profile writes it): read with no locking (`vfs=unix-none`)
+ *  and an exclusive locking mode, the WAL read into heap, so the read neither waits on the writer nor makes a -shm. */
+export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
+
+/** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
+ *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
+export function withDurableFile<T>(file: string, read: (db: Database) => T, options: DurableReadOptions = {}): T | null {
+  if (!fs.existsSync(file)) return null;
+  const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+  for (let attempt = 1; ; attempt++) {
+    // Unlocked, a WAL with no verified commit yet is never opened (wal.ts): SQLite's lock-free reader recovers no frame
+    // from it and removes it at its close, under a writer that may still be writing its first transaction there. Then
+    // the database file is whole: immutable, and its read kept only when the file did not change during it (a run's
+    // process wrote and its checkpoint landed meanwhile), else dropped and made again.
+    const walFrames = options.unlocked && walHasCommit(`${file}-wal`);
+    const alone = options.unlocked && !walFrames;
+    const before = alone ? fileMark(file) : undefined;
+    const at = options.immutable || alone ? `${pathToFileURL(file).href}?mode=ro&immutable=1` : options.unlocked ? `${pathToFileURL(file).href}?mode=ro&vfs=unix-none` : file;
+    const db = new DatabaseSync(at, { readOnly: true, timeout: 5000 });
+    let result: T;
+    try {
+      if (options.unlocked && walFrames) db.exec("PRAGMA locking_mode = EXCLUSIVE");
+      db.exec("BEGIN");
+      result = read(db);
+    } finally { db.close(); }
+    if (!alone || fileMark(file) === before) return result;
+    if (attempt >= 3) throw new Error(`the run's store ${file} changed during each of ${attempt} reads`);
+  }
+}
+
+/** What says store `file` changed: its inode, size and modification time, and its header's file change counter and page
+ *  count (bytes 24 to 31). A checkpoint writes the file, so its time and size move even where WAL mode leaves the counter. */
+function fileMark(file: string): string {
+  const at = fs.statSync(file, { bigint: true });
+  const header = Buffer.alloc(8);
+  const fd = fs.openSync(file, "r");
+  try { fs.readSync(fd, header, 0, 8, 24); } finally { fs.closeSync(fd); }
+  return `${at.ino}:${at.size}:${at.mtimeNs}:${header.toString("hex")}`;
+}
+
+/** A document's value: its latest base with every later delta applied, as the storage materializes it. */
+function revisionsOf(db: Database, id: number): Record<string, unknown> | undefined {
+  const base = db.prepare("SELECT seq, content FROM document_revisions WHERE document_id = ? AND kind = 'base' ORDER BY seq DESC LIMIT 1").get(id) as { seq: number; content: string } | undefined;
+  if (!base) return undefined;
+  let value = JSON.parse(base.content);
+  for (const delta of db.prepare("SELECT content FROM document_revisions WHERE document_id = ? AND seq > ? ORDER BY seq").all(id, base.seq) as Array<{ content: string }>) {
+    value = apply(value, JSON.parse(delta.content));
+  }
+  return value;
+}
+
+/** The row of a Session document. `key` names a family member; a singleton has none. */
+function sessionDocId(db: Database, kind: string, key?: string): number | undefined {
+  const row = db.prepare("SELECT id FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = ? AND key_value = ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1")
+    .get(JSON.stringify(kind), key === undefined ? 0 : 1, JSON.stringify(key ?? "")) as { id?: number } | undefined;
+  return row?.id;
+}
+
+/** A Session document's current value. `key` names a family member; a singleton has none. */
+function sessionDoc(db: Database, kind: string, key?: string): Record<string, unknown> | undefined {
+  const id = sessionDocId(db, kind, key);
+  return id === undefined ? undefined : revisionsOf(db, id);
+}
+
+/** The ids of the effects the map items of `table` own (the keyed layout's `maps`: `{ <map path>: { items, ... } }`), each
+ *  item's own nested maps included, read as the driver reads them back: item `i` of a map is its record at
+ *  `<map path>/items/<i>`, for every item the map started. */
+function itemEffects(db: Database, key: string, table: unknown, into: string[]): void {
+  if (!table || typeof table !== "object" || Array.isArray(table)) return;
+  for (const [mapPath, entry] of Object.entries(table as Record<string, { items?: unknown } | null>)) {
+    const started = entry?.items;
+    if (typeof started !== "number" || !Number.isSafeInteger(started)) continue;
+    for (let index = 0; index < started; index += 1) {
+      const item = sessionDoc(db, "agentrun.items", effectKey(key, `${mapPath}/items/${index}`)) as { effects?: unknown; maps?: unknown } | undefined;
+      if (!item) continue;
+      if (Array.isArray(item.effects)) for (const id of item.effects) if (typeof id === "string") into.push(id);
+      itemEffects(db, key, item.maps, into);
+    }
+  }
+}
+
+/** A Session document of the run's store `file`, read-only; undefined when the file or the document is absent. */
+export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string, options: DurableReadOptions = {}): T | undefined {
+  return (withDurableFile(file, (db) => sessionDoc(db, kind, key), options) ?? undefined) as T | undefined;
+}
+
+/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order, in whichever form the store holds: the single
+ *  document's `receipts` list, or the keyed documents (one row each, in the order of their keys). A reader that folds decisions from the
+ *  store uses this and not `durableDoc(file, "agentrun.decisions").receipts`, which is nothing in the keyed form. */
+export function durableDecisions(file: string, options: DurableReadOptions = {}): Array<Record<string, unknown>> {
+  return withDurableFile(file, (db) => {
+    const single = sessionDoc(db, "agentrun.decisions") as { receipts?: unknown } | undefined;
+    if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
+    const count = (sessionDoc(db, "agentrun.decisions.count") as { count?: unknown } | undefined)?.count;
+    const rows: Array<Record<string, unknown>> = [];
+    if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
+    return rows;
+  }, options) ?? [];
+}
+
+/** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
+ *  such journal or none has bound it. `effects` are every effect the journal admitted, once each, in the order they were
+ *  admitted, in either layout: in the keyed one (`agentrun.frozen_run.v4`) the effects a map item owns, nested maps
+ *  included, are listed by that item's record, not the driver's, and are read from there. `state` is the driver's own
+ *  record: in the keyed layout what lies in each map item stays in the item's record. */
+export function readJournal(file: string, key: string, options: DurableReadOptions = {}): JournalView | undefined {
+  return withDurableFile(file, (db): JournalView | undefined => {
+    const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
+    if (!doc || doc.binding === null) return undefined;
+    // The driver's record lists the effects no map item owns; in the keyed layout each item's record lists its own. All of
+    // them, once each, in the order they were admitted: an effect's document is created by its admission, and a document's
+    // row is numbered when it is created (a later checkpoint folds its revisions, never its row).
+    const ids = [...doc.effects];
+    itemEffects(db, key, (doc.state as { maps?: unknown } | null)?.maps, ids);
+    const admitted = new Map<string, number>();
+    for (const id of new Set(ids)) admitted.set(id, sessionDocId(db, "agentrun.effects", effectKey(key, id)) ?? Number.MAX_SAFE_INTEGER);
+    // A stable sort: an id whose document is missing keeps its place in the listing, after every admitted one.
+    const effects = [...admitted.keys()].sort((a, b) => admitted.get(a)! - admitted.get(b)!).map((id) => {
+      const e = sessionDoc(db, "agentrun.effects", effectKey(key, id)) as (Omit<RecoveryEffect, "id"> & { intent?: { tool: string; argsHash: string } }) | undefined;
+      return { id, name: e?.name ?? "", argsHash: e?.argsHash ?? "", status: e?.status ?? "unknown", session: e?.session ?? null, result: e?.result ?? null, ...(e?.intent ? { intent: e.intent } : {}), ...(e?.args !== undefined ? { args: e.args } : {}), ...(Array.isArray((e as { calls?: unknown })?.calls) ? { calls: (e as { calls: unknown[] }).calls } : {}) } as RecoveryEffect;
+    });
+    return { binding: doc.binding, inputs: doc.inputs, generation: doc.generation, revision: doc.revision, state: doc.state, notes: doc.notes, effects };
+  }, options) ?? undefined;
+}
+
+/** Every committed route decision a frozen snapshot holds (each judge's answer, whole), by execution path. Empty for a
+ *  state that is no snapshot. */
+export function committedRoutes(state: unknown): Record<string, Json> {
+  const routes = (state as { pin?: { routes?: Record<string, Json> } } | null)?.pin?.routes;
+  return routes && typeof routes === "object" && !Array.isArray(routes) ? { ...routes } : {};
+}

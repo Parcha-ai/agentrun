@@ -30,7 +30,7 @@ export { type RunComputer, type RunHold, runTools, type RunTools, withKindTools 
 export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
-  type ResolvedComputer, runShellOf, shellPlaceOf, type StartedComputer,
+  type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export {

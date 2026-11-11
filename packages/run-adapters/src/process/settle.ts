@@ -7,7 +7,7 @@ export interface SettleOptions {
   /** Placed prompts and follow-ups the harness's CLI never recorded (its own record, as the session keeps it): carried,
    *  as a pending one is. */
   readonly unsent?: readonly string[];
-  /** The submission of a host's own prompt (a follow-up's, `FollowUpTarget.settleOpenTurn`'s `opening`): withdrawn
+  /** The submission of a host's own prompt (`AdapterSession.settleOpenTurn`'s `opening`): withdrawn
    *  while pending, never carried, and the only one withdrawn. */
   readonly host?: string;
 }
@@ -32,8 +32,8 @@ export async function settleTurn(drive: Drive, options: SettleOptions = {}): Pro
     if (id === options.host || !state.placed.has(id) || (submission?.kind !== "prompt" && submission?.kind !== "followUp")) continue;
     await drive.submit({ id: `withdraw:${id}`, kind: "withdraw", target: id, carry: true, unsent: true });
   }
-  // A follow-up's settle names its own prompt (`host`): that one is withdrawn and never carried, and the rest is left
-  // as it is (kernel/follow-up.ts). A person's stop withdraws every prompt pending.
+  // A host's settle of its own prompt names it (`host`): that one is withdrawn and never carried, and the rest is left
+  // as it is. A person's stop withdraws every prompt pending.
   const pending = pendingSubmissions(drive.state()).filter((s) => options.host === undefined || s.id === options.host);
   for (const submission of pending) {
     // A prompt or follow-up the person stopped stays in the conversation: its text is carried into the next one
