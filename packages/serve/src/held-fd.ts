@@ -1,8 +1,7 @@
 // A descriptor this process hands out by number, as `/proc/self/fd/<n>`, is closed by its owner's close() only, never by a
-// collection. A FileHandle the collector finds unreachable is closed, and its number is then free for the next
-// open: a path built on it names whatever that open is. While a seed waits, the run reaches its claim directory only
-// through the pending open, and the start mark's keeper writes through the directory's path on a thread of its own, so
-// whether this thread can still reach the handle says nothing about whether its number is still in use.
+// collection. A FileHandle the collector finds unreachable is closed, and its number is then free for the next open: a
+// path built on it names whatever that open is. The confinement (confine.ts) reaches a pinned directory through that path,
+// so each handle it names is held here until it is closed.
 import type { EventEmitter } from "node:events";
 import type { FileHandle } from "node:fs/promises";
 

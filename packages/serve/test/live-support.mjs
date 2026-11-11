@@ -1,50 +1,37 @@
 // What the live view's tests share: a store in a data directory of its own with one queued run, a runner running pi
 // through the adapter (runner/adapter-loop.ts, runner/adapters/pi.ts) whose scripted origin plays a script, and the run's
 // stream from the store (live/stream.ts, watchRun), collected batch by batch.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, defineTool, Harness, hook, MemoryStorage, ToolTask } from "@earendil-works/pi-durable";
-import { watchEvents } from "@parcha/pi-durable-disk/internals";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { suiteTools } from "../dist/runner/conformance/harness.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
-import { scriptedModel } from "./faux-pi-model.mjs";
 import { STEADY_LEASE } from "./runner-support.mjs";
 
 /** The input a B run's loop sends (conformance-pi-adapter's piAdapterSpec) and its request id (runner/loop.ts). */
 export const INPUT = "Follow the script.";
 
-/** The door's stream for `script` (what serve reads today): pi-durable-disk's watchEvents on a Harness that runs the
- *  script with the suite's read tool, attached before the input is sent, until the run ended and the input settled. */
-export async function doorStream(script, options = {}) {
-  const { models, model } = scriptedModel(script);
-  const read = defineTool({
-    name: "read", description: "The suite's read tool.", parameters: { type: "object", properties: {} }, replay: "safe",
-    execute: async () => ({ output: [{ type: "text", text: "read" }] }),
-  });
-  // `options.deny`: the gate refuses every call before its intent (pi's beforeTool block), so none runs.
-  const hooks = options.deny ? [hook(ToolTask, { beforeTool: async (call) => ({ block: `Permission denied: ${call.name} is set to deny.` }) })] : [];
-  const kernel = defineExtension({ name: "agentrun-kernel", tools: [read], hooks });
-  const registry = createRegistry();
-  registry.install(kernel);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
-  try {
-    const root = await harness.root(ctx, { agent: { model, extensions: [kernel] } });
-    const stream = await watchEvents(harness, root.id, ctx);
-    const got = collect(stream);
-    const input = await root.submit({ type: "input", content: INPUT, requestId: "agentrun:input" }, ctx);
-    await input.wait(ctx);
-    await harness.waitForIdle(ctx);
-    await until(() => settled(got.types()), "the door's run_end and the input's settlement");
-    await stream.stop();
-    return { snapshot: stream.snapshot, events: got.events() };
-  } finally {
-    await harness.close(ctx);
-  }
+/** The door's stream as it was recorded (pi-durable-disk's watchEvents, the old per-run process's GET /events) for the
+ *  script [read, then say "done"] with the suite's read tool: fixtures/door-one-input.json as the run went, and
+ *  fixtures/door-denied-call.json with every call denied before its intent. The recordings outlive the door's code. */
+export const SCRIPT = [{ call: "read" }, { say: "done" }];
+export const recorded = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8"));
+
+/** What a recording keeps of an event: its type and the fields that say what happened, none that vary run to run. */
+export function envelope(event) {
+  const role = event.message?.role ?? event.entry?.model?.[0]?.role;
+  return {
+    type: event.type,
+    ...(role ? { role } : {}),
+    ...(event.toolName ? { tool: event.toolName } : {}),
+    ...(event.type === "submission" ? { status: event.record?.status } : {}),
+  };
 }
+
+/** A recording's events as shape() says a stream's: the type, and the role for a message event. */
+export const recordedShape = (events) => events.map((event) => (event.role ? `${event.type}:${event.role}` : event.type));
 
 /** A stream's run is over: run_end, and the input's settlement (its second submission event). */
 export const settled = (types) => types.includes("run_end") && types.filter((type) => type === "submission").length >= 2;

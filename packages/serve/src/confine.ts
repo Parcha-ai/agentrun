@@ -1,8 +1,7 @@
-// Containment of the in-process file operations. pi's read, write and edit run in the loop's process with host
-// fs calls and no containment, so an agent can name `../store/run.sqlite` or `../commands` and corrupt
-// its own durable store or claim; a sandbox that confines commands (an app's own) does not cover them. Every path an operation names is
-// resolved to the file the kernel would reach (symlinks followed, a missing tail kept) and refused unless it lies in the
-// workspace, or, for reads, in a read-only root.
+// Containment of serve's own reads and writes of a folder it was handed (workspace.ts: a run's work/, an agent's home).
+// The folder's files are written by whatever ran there, so a name in it may be a link to the server's own files. Every
+// path an operation names is resolved to the file the kernel would reach (symlinks followed, a missing tail kept) and
+// refused unless it lies in the folder, or, for reads, in a read-only root.
 //
 // The check alone is a check-then-use: a command running next to the tool can swap a component for a symlink between the
 // check and the open. So the operation never walks the path again. The resolved path is opened one component at a time

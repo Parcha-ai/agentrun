@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { link, mkdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
+import { confineHooks } from "../dist/confine.js";
 import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
 
