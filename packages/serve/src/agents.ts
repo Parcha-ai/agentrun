@@ -3,6 +3,7 @@
 import { AgentHomeError } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
 import { isObject } from "./validate.js";
+import { StoreBusy, StoreDeadline } from "./store/index.js";
 
 /** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the database. */
 export const sqliteBusy = (error: unknown) => isObject(error) && error.code === "ERR_SQLITE_ERROR" && typeof error.errcode === "number" && [5, 6].includes(error.errcode & 0xff);
@@ -29,9 +30,21 @@ export async function whenFree<T>(act: () => T | Promise<T>, delaysMs: readonly 
   }
 }
 
-/** A store another writer holds: SQLite's busy or locked, or the agent home's own `busy` (a home held past its deadline, or a
- *  store a stopped writer left mid-write). Every answer of the server maps it the same way: home_busy. */
-export const storeBusy = (error: unknown) => sqliteBusy(error) || (error instanceof AgentHomeError && error.code === "busy");
+/** A store another writer holds: SQLite's busy or locked, the agent home's own `busy` (a home held past its deadline, or a
+ *  store a stopped writer left mid-write), the one store's lock held past its busy wait (StoreBusy), or a transaction of
+ *  the one store rolled back at its deadline (StoreDeadline). Nothing of the request's write was kept, so it may be sent
+ *  again: every answer of the server maps it the same way, home_busy (answerOf). */
+export const storeBusy = (error: unknown) =>
+  sqliteBusy(error) || (error instanceof AgentHomeError && error.code === "busy") || error instanceof StoreBusy || error instanceof StoreDeadline;
 
 /** The answer to a request the agent store stayed busy for. */
 export const homeBusy = () => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
+
+/** What a request's error answers, over HTTP and through an MCP tool alike (server.ts, mcp.ts dispatch): an ApiError as
+ *  it is; a busy store home_busy (409, retryable), never 500; anything else internal, its message kept. */
+export const answerOf = (error: unknown): ApiError =>
+  error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
+
+/** Whether a request's error goes to the server's log: every fault the server did not answer on purpose. A busy wait
+ *  is not one; a transaction past its deadline is (something held the store that long). */
+export const logged = (error: unknown): boolean => !(error instanceof ApiError) && (!storeBusy(error) || error instanceof StoreDeadline);

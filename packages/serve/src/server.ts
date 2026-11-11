@@ -67,17 +67,12 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, StoreDeadline, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
-/** A busy store, and the home_busy answer it maps to (agents.ts homeBusy's words), for a read or write that
- *  meets the one store under load. */
-/** A store busy past a request's wait, or a write of the request's still open at its deadline (rolled back, nothing of
- *  it written): either way the request may be sent again. */
-const storeBusy = (error: unknown): boolean => error instanceof StoreBusy || error instanceof StoreDeadline;
-const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
@@ -3124,10 +3119,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
       if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
       // A store still busy past a request's wait, or a write still open at its deadline, is home_busy, whichever read or
-      // write met it: the request may be sent again, never a 500.
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      // A write past its deadline is said in the log, as any fault is: a busy store is not one.
-      if (!(error instanceof ApiError) && !(error instanceof StoreBusy)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      // write met it: the request may be sent again, never a 500 (agents.ts answerOf, as an MCP tool's call answers).
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;

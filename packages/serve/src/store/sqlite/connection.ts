@@ -14,9 +14,41 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
-/** How late a transaction's deadline timer may fire before the lateness counts as the process held up by other work,
- *  given back to the transaction (Connection.transaction). */
+/** How often an open transaction's deadline looks at the process's event loop, and how far past its look a look may
+ *  come before the gap counts as the process held up (runnableDeadline). */
+const TICK_MS = 50;
 const STALL_MS = 50;
+
+/** Calls `expire` once `ms` of the time this process could run have passed, counted from now on the monotonic clock
+ *  (performance.now: the host's clock set forward or back is never counted). A look every TICK_MS measures the event
+ *  loop: a gap more than STALL_MS past its look was the process held up by other work (a harness binary hashed, a
+ *  command run synchronously, the machine holding the process), wherever in the transaction it fell, before its
+ *  deadline or across it, and is not counted. A wait of the transaction's own (a call awaited inside it) leaves the
+ *  loop free, so it counts in full and is refused on time. Answers its clear. */
+function runnableDeadline(ms: number, expire: () => void): () => void {
+  const start = performance.now();
+  let last = start;
+  let held = 0;
+  const look = () => {
+    const now = performance.now();
+    const gap = now - last - TICK_MS;
+    if (gap > STALL_MS) held += gap;
+    last = now;
+    return now;
+  };
+  const ticks = setInterval(look, TICK_MS);
+  let timer: NodeJS.Timeout | undefined;
+  const check = () => {
+    const left = ms - (look() - start - held);
+    if (left <= 0) return expire();
+    timer = setTimeout(check, Math.ceil(left));
+  };
+  timer = setTimeout(check, ms);
+  return () => {
+    clearInterval(ticks);
+    clearTimeout(timer);
+  };
+}
 
 /** A value SQLite takes or gives back (Chord's SqliteValue). */
 export type SqliteValue = null | number | bigint | string | Uint8Array;
@@ -300,22 +332,16 @@ export class Connection implements SqliteDatabase, StoreConnection {
         throw error;
       }
       let live = true;
-      let timer: NodeJS.Timeout | undefined;
-      const left = until !== undefined ? Math.max(0, until - Date.now()) : deadlineMs;
+      let clear = () => {};
       const deadline = new Promise<never>((_, reject) => {
-        // Counted from its begin, the deadline is the time this process could run: its timer fired late when other work
-        // held the event loop (a harness binary hashed, or a command run synchronously), and a statement answered
-        // meanwhile waits behind the timer. That time was no statement's, so the deadline moves by it, and the
-        // transaction ends as its own work does. Counted from its call (a lease's), it stays the wall clock's.
-        const arm = (ms: number) => {
-          const due = Date.now() + ms;
-          timer = setTimeout(() => {
-            const late = Date.now() - due;
-            if (until === undefined && late >= STALL_MS) return arm(late);
-            reject(new StoreDeadline(deadlineMs));
-          }, ms);
-        };
-        arm(left);
+        const expire = () => reject(new StoreDeadline(deadlineMs));
+        // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
+        // it. Counted from its begin, it is the time this process could run (runnableDeadline): while other work held
+        // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
+        if (until !== undefined) {
+          const timer = setTimeout(expire, Math.max(0, until - Date.now()));
+          clear = () => clearTimeout(timer);
+        } else clear = runnableDeadline(deadlineMs, expire);
       });
       let value: T;
       try {
@@ -327,7 +353,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
         value = await Promise.race([running, deadline]);
       } catch (error) {
         live = false;
-        clearTimeout(timer);
+        clear();
         try {
           await this.#send({ op: "rollback" });
         } catch (rollback) {
@@ -338,7 +364,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
         throw error;
       }
       live = false;
-      clearTimeout(timer);
+      clear();
       // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
       if (until !== undefined && Date.now() >= until) {
         await this.#send({ op: "rollback" });

@@ -59,3 +59,19 @@ test("an agent's create whose own write runs past its deadline is answered home_
   // Asked again, it is made.
   assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
 });
+
+test("an MCP client's agents_create whose write runs past its deadline is refused home_busy, retryable, as the route answers it, never internal", { timeout: 60_000 }, async (t) => {
+  const server = await serve(t, { runner: false });
+  const seam = nextCreate(t, { deadlineMs: 200, inside: () => sleep(800) });
+  const res = await fetch(`${server.baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${server.token}` },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agents_create", arguments: { id: "slow-tool", name: "Slow", instructions: "Answer." } } }),
+  });
+  assert.equal(res.status, 200);
+  const { result } = await res.json();
+  assert.ok(seam.used(), "the create's transaction ran under the seam");
+  assert.equal(result.isError, true, JSON.stringify(result));
+  assert.deepEqual([result.structuredContent.error.code, result.structuredContent.error.retryable], ["home_busy", true], JSON.stringify(result));
+  assert.equal((await server.api("GET", "/agents/slow-tool")).status, 404, "nothing of it was written");
+});
