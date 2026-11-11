@@ -214,11 +214,18 @@ export function checkProposal(input: CheckInput): ProposalCheck {
   const problems: Problem[] = [];
   const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, values));
   const given = input.changes.filter((change) => change.path !== INDEX_FILE);
-  // Each count cap names the items past it, in the order the answer gave them, so they alone are left out (propose.ts)
-  // and the rest is kept. The changed paths past CAPS.changes are named unread.
-  for (const change of given.slice(CAPS.changes)) add("too_many_files", `${given.length} changed paths; the cap is ${CAPS.changes} a run, and this one, past it, was not read`, change.path);
-  const changes = given.slice(0, CAPS.changes);
   const refused = valueMatcher(values);
+  // Each count cap names the items past it, in the order the answer gave them, so they alone are left out (propose.ts)
+  // and the rest is kept. The changed paths past CAPS.changes are named unread; but what refuses the whole answer by its
+  // path alone (a path outside what a run may write, a deletion, a name holding a secret) is read on every path first,
+  // past the cap too, so the cap never turns a whole refusal into one item left out.
+  for (const change of given.slice(CAPS.changes)) {
+    nameScanned(change.path, refused, add);
+    if (!learnedPlace(change.path) && (change.path.includes("/") || !change.path.endsWith(".md"))) add("outside", OUTSIDE, change.path);
+    else if (change.status === "deleted") add("deleted", "a run never deletes a note, a skill or a workflow", change.path);
+    add("too_many_files", `${given.length} changed paths; the cap is ${CAPS.changes} a run, and this one, past it, was not read`, change.path);
+  }
+  const changes = given.slice(0, CAPS.changes);
   const base = new Set(input.base.files);
   const notes: ProposedNote[] = [];
   const skills: string[] = [];

@@ -107,3 +107,10 @@ test("the changed-path cap counts the answer's items in the order it gave them: 
   assert.deepEqual(left.filter(([rule]) => rule === "too_many_files"), [["too_many_files", `n${CAPS.changes - 1}.md`]]);
   assert.equal(left.some(([, path]) => path.startsWith("skills/")), false, JSON.stringify(left));
 });
+
+test("a path outside what a run may write refuses the whole answer, past the changed-path cap too", async (t) => {
+  const outside = block("../outside.md", note({ name: "Out", description: "Outside" }));
+  const result = await proposed(t, [...notes(CAPS.changes), outside].join("\n\n"));
+  assert.equal(result.state, "dropped", JSON.stringify(result).slice(0, 400));
+  assert.ok(result.problems.some(({ rule, path }) => rule === "outside" && path === "../outside.md"), JSON.stringify(result.problems.filter(({ rule }) => rule !== "too_many_notes")));
+});
