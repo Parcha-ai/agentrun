@@ -34,8 +34,8 @@ import { lstat, readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { SKILL_BYTES } from "@parcha/agentrun-kernel";
 import { bm25, queryOf } from "./learn/relevance.js";
-import { type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, redactSecrets, secretShapes, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
-import { FolderBusy, learningInit, type LearningFolder, learningWorkspace, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
+import { decodedStrings, type DraftDryRun, frontMatter, INDEX_BYTES, INDEX_FILE, INDEX_LINES, type LearnedNote, learnedStatus, loadedIndex, NOTE_FILE, parseNoteFile, type Problem, learnedSecretShapes, redactLearned, servedSkill, servedSkills, SKILLS_DIR, valueMatcher, type Verdict, WORKFLOW_NAME, WORKFLOWS_DIR } from "./learn/index.js";
+import { learningInit, type LearningFolder, learningWorkspace, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { readSeed as readFolderSeed } from "./learn/seed-check.js";
 import { agentFolderOf, serialBy, writeDurable } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
@@ -130,7 +130,7 @@ export type Shown = { text: (text: string) => string; name: (name: string) => st
 /** What a name holding a secret reads: learn/secrets.ts redactSecrets' mark, the name's whole, never a part of it. */
 const REDACTED = "[redacted]";
 /** The host's secrets as a reader cuts them: a text holding a value or a shape is cut of it (whole when long:
- *  learn/secrets.ts redactSecrets), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
+ *  learn/secrets.ts redactLearned, a bank's numbers too), and a file's name holding one reads REDACTED whole, not a name of the folder's (its
  *  route still answers the real name, to a caller who knows it); any other text or name is shown as it is. A text served
  *  has no loopback address, the address alone (key-refusal.ts withoutLoopbackAddresses, the pattern a run's words share,
  *  run-view.ts shownOf): the host's own, never a person's; a run error's `url:` tail is no rule of a note's, a patch's or a
@@ -138,8 +138,10 @@ const REDACTED = "[redacted]";
  *  # Learned section, server.ts's learning start), where an address on the run's own machine is the note's to give. */
 export function secretsShown(values: readonly string[], { local = false }: { local?: boolean } = {}): Shown {
   const matches = valueMatcher(values);
-  const holds = (text: string) => matches(text) || secretShapes(text).length > 0;
-  const cut = (text: string) => (holds(text) ? redactSecrets(text, values) : text);
+  // Every shape learning refuses, a bank's numbers beside their words too (learnedSecretShapes): a name or a text refused
+  // for one never shows it here, though a run's own view may show its user an account number.
+  const holds = (text: string) => matches(text) || learnedSecretShapes(text).length > 0;
+  const cut = (text: string) => (holds(text) ? redactLearned(text, values) : text);
   return { holds, text: local ? cut : (text) => withoutLoopbackAddresses(cut(text)), name: (name) => (holds(name) ? REDACTED : name) };
 }
 
@@ -200,10 +202,6 @@ export const learningView = (learning: Learning, shown: Shown, settled: boolean)
 /** A learning's `reason` as it is served: one of its words as the server writes them, read back from a kept row, which is
  *  untrusted, so cut of the host's secrets as every text is. */
 export const reasonShown = (reason: Learning["reason"] | undefined, shown: Shown): Learning["reason"] => (typeof reason === "string" ? (shown.text(reason) as Learning["reason"]) : (reason ?? null));
-/** A run's learning as a list shows it: its state and reason, its detail cut of the host's secrets and then short (at
- *  most LIST_DETAIL characters, so a secret is never cut in half and shown), and the notes it read and learned
- *  (notesView); never its time. */
-export const shortLearning = (learning: Learning | null, shown: Shown, settled: boolean) => (learning ? shortOf(learningView(learning, shown, settled)) : null);
 /** A run's learning as its view shows it, in short for a list: all of it but its time, its detail cut short. */
 export function shortOf<T extends { state: LearningState; reason: LearningReason | null; detail: string | null; at: string }>({ state, reason, detail, at: _, ...notes }: T) {
   return { state, reason, detail: detail === null ? null : short(detail, LIST_DETAIL), ...notes };
@@ -742,6 +740,10 @@ export async function chooseSkills(work: Workspace, seed: Seed, own: readonly st
   return { taken, left };
 }
 
+/** Whether a learned workflow's decoded strings (decodedStrings) hold a host secret, or can't be read past the bound:
+ *  either way it is never chosen. */
+const readsHeld = (decoded: string[] | "too_deep", shown: Shown): boolean => decoded === "too_deep" || decoded.some(shown.holds);
+
 /** Which of `seed`'s learned workflows a run may run (its `learned_workflow` tool), in the seed's order: each while its
  *  line (workflowLine) fits what is left of the tool's description budget (LEARNED_WORKFLOWS_BUDGET). One that does not,
  *  or holds a host secret (`shown`), is left out and named in `left`, but for one whose name is itself a secret, never
@@ -751,7 +753,8 @@ export function chooseWorkflows(seed: Seed, shown: Shown): { flows: LearnedWorkf
   const left: string[] = [];
   let room = LEARNED_WORKFLOWS_BUDGET;
   for (const flow of seed.workflows ?? []) {
-    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name)) {
+    // Its JSON read as JSON reads it too (decodedStrings: its escapes decoded, as its learned call's run reads it).
+    if (shown.holds(flow.workflow) || shown.holds(flow.description) || shown.holds(flow.name) || readsHeld(decodedStrings(flow.workflow), shown)) {
       // Named, but for a name that is itself a secret.
       if (!shown.holds(flow.name)) left.push(flow.name);
       continue;
@@ -880,13 +883,3 @@ export async function withLearned(runDir: string, given: Workspace | string, ins
   };
 }
 
-/** The learned workflows a run's pin names, as its directory keeps them (LEARNED_WORKFLOWS_FILE): none when the pin
- *  names none. A file that is not the list the pin names throws. */
-export async function pinnedWorkflows(runDir: string, pin: Pin | undefined): Promise<LearnedWorkflow[]> {
-  const names = pin?.workflows ?? [];
-  if (!names.length) return [];
-  const kept = JSON.parse(await readFile(join(runDir, LEARNED_WORKFLOWS_FILE), "utf8")) as unknown;
-  const ok = (entry: unknown): entry is LearnedWorkflow => isObject(entry) && typeof entry.name === "string" && typeof entry.description === "string" && typeof entry.workflow === "string";
-  if (!Array.isArray(kept) || !kept.every(ok) || kept.map(({ name }) => name).join("\n") !== names.join("\n")) throw new Error(`the run's ${LEARNED_WORKFLOWS_FILE} is not the workflows its pin names`);
-  return kept;
-}
