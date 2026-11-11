@@ -608,7 +608,7 @@ test("dockerLimitsOf reads each setting's form, and refuses what the Docker prov
   }
   assert.deepEqual(dockerLimitsOf({ AGENTRUN_BOX_PIDS: " 256 " }), { pids: 256 }, "trimmed");
   const refusedBy = (name, value) => (error) => error.message.startsWith(`${name} ${JSON.stringify(value)} is refused by the Docker provider: `);
-  for (const [name, value] of [["AGENTRUN_BOX_CPUS", "two"], ["AGENTRUN_BOX_CPUS", "1e3"], ["AGENTRUN_BOX_CPUS", "-1"], ["AGENTRUN_BOX_MEMORY", "4gb"], ["AGENTRUN_BOX_MEMORY", "4096"], ["AGENTRUN_BOX_PIDS", "1.5"], ["AGENTRUN_BOX_PIDS", "4194305"]]) {
+  for (const [name, value] of [["AGENTRUN_BOX_CPUS", "two"], ["AGENTRUN_BOX_CPUS", "1000000000000000000"],["AGENTRUN_BOX_CPUS", "1e3"], ["AGENTRUN_BOX_CPUS", "-1"], ["AGENTRUN_BOX_MEMORY", "4gb"], ["AGENTRUN_BOX_MEMORY", "4096"], ["AGENTRUN_BOX_PIDS", "1.5"], ["AGENTRUN_BOX_PIDS", "4194305"]]) {
     assert.throws(() => dockerLimitsOf({ [name]: value }), refusedBy(name, value), `${name}=${value}`);
   }
 });
