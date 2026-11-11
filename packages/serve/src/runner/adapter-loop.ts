@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
+import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
 import { endedOnTurnEndingTool, HOST_PHASE, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
@@ -30,7 +30,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, overCapOf, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { portModels, type PortModels } from "../port-models.js";
 
 /** The run's cap as its spec gives it: the kernel runCap's options but its sessions, which the loop's are. */
@@ -309,11 +309,12 @@ export function bookingOfAnswer(records: readonly SessionRecord[], given: Readon
   let usd: number | null | undefined;
   for (const record of records) {
     if (record.kind !== RUNNER_RECORDS.turn) continue;
-    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown };
+    const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown };
     if (typeof turn.turn !== "number" || given.has(turn.turn)) continue;
     turns.push(turn.turn);
     if (side.has(turn.turn)) continue;
-    const figure = turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
+    // An answer with no price of its own is unknown, never the hold it was booked at for the cap (answeredUnpriced).
+    const figure = answeredUnpriced(turn) ? null : turn.bookedUsd !== undefined ? turn.bookedUsd : turn.usd;
     usd = usd !== null && typeof figure === "number" && Number.isFinite(figure) ? (usd ?? 0) + figure : null;
   }
   return { turns, usd };
@@ -1085,8 +1086,31 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let pausedAtRefusal = false;
         /** A paid call's refusal that pauses the run (ledger.pause): the run's next request is refused in its words. */
         let pendingPause: Refusal | undefined;
+        /** How the run ends once its booked spend passed its cap (the kernel's overCapEnd, main's run end): every session's
+         *  booked spend summed, as the cap reads it; the bound, its model session's requests' since the cost last fit, so a
+         *  cache miss within that bound pauses the run at its next request instead. Undefined while it fits, with no cap, or
+         *  with a spend unknown. */
+        const overCap = async (): Promise<string | undefined> => {
+          // A run whose spec gives no cap (no runCap, or no cap's rule) has none to pass.
+          if (!spec.cap || !spec.runCap) return undefined;
+          const cap = capNow();
+          if (cap === undefined) return undefined;
+          let others = 0;
+          for (const key of await sessions.keys()) {
+            if (key === spec.session.key) continue;
+            const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
+            if (spent === null) return undefined;
+            others += spent;
+          }
+          // Its model session read as the cap reads it (the kernel's overCapOf: a request cut by a crash at its hold plus its
+          // bound, and that bound kept, so a possible cache miss pauses the run, never fails it).
+          return overCapOf(await sessions.read(spec.session.key), others, cap);
+        };
         const beforeRequest: BeforeRequest = async (request) => {
-          const answer = pendingPause ?? (await theCap().before(request));
+          // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
+          // whatever else would pause it (a paid call's refusal, pendingPause).
+          const over = await overCap();
+          const answer = over ? { refuse: over, forGood: true } : (pendingPause ?? (await theCap().before(request)));
           if (answer && "refuse" in answer) {
             refused = answer;
             await pauseAt(answer);
@@ -1133,6 +1157,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // provider may have billed it, so it is booked once, as cut, at its hold and bound, and told as any answered request
         // is, before this claim sends anything (the harness runner's bookCut, main's cut booking).
         await booking.bookCut();
+        // A paid tool call an earlier claim admitted and never saw settled is booked the same way, cut, at its hold, its
+        // charge unknown: it may have run and been charged before the claim was lost. Its session opens only for a paid call
+        // of this claim, and a replay the gate refuses makes none, so it is opened here for the cut alone, never read as free.
+        const toolsAtOpen = sessionSpendOf(await sessions.read(TOOL_SESSION));
+        if (spec.runCap && toolsAtOpen.turns.some((turn) => !toolsAtOpen.answered.has(turn))) await paidOf();
         const gateOf = preIntentGate(spec, hooks);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context, now) : undefined;
@@ -1442,7 +1471,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await harness.waitForIdle(context);
           const settledEntries = await entriesOf(gate.journal, root.id, context);
           const cutOff = restartLimited(settledEntries);
+          // A turn whose booked spend passed the run's cap ends the run failed in the cap's words (overCap), its crossing
+          // answer booked: main's end of a run over its cap, before any pause (a question to the person, a cap refusal).
+          await bookingsSettled();
+          const over = cutOff ? undefined : await overCap();
           if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
+          else if (over) data = { state: "failed", summary: over };
           else if (outcome.status !== "completed" && refused) {
             // A turn the host's check refused: what that does to the run is the cap's rule (parkOf), as on main. A refusal a
             // raise could fix parks the run on a raise; one no raise could fix (or a check with no cap) fails it, in the
@@ -1515,6 +1549,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
         if (step.kind === "stopped") return await writeEnd(harness, root, gate, { state: "stopped", summary: endedBy(stopReason?.kind === "command" ? stopReason.cancel : undefined) }, [step.commandId], await cutRows(claim, spec, "stopped-looking"));
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
+        // The end-of-run turn is one more paid answer: one that passed the cap ends the run in the cap's words (overCap,
+        // read again once its booking settled), as a job's answer that passed it does, never completed. An end already
+        // failed keeps its own words.
+        if (data.state !== "failed") {
+          await bookingsSettled();
+          const overAtEnd = await overCap();
+          if (overAtEnd) data = { state: "failed", summary: overAtEnd };
+        }
         return await writeEnd(harness, root, gate, data, [], step.also, failedWith);
       }
     } catch (error) {

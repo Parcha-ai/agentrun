@@ -43,6 +43,7 @@ import {
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
+import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { type EndData, KINDS } from "./runner/journal-kinds.js";
@@ -111,8 +112,14 @@ function servedOnce(store: Store, runId: string, input: string, values: readonly
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's. */
 const answerOf = (rows: readonly TimelineEvent[]): string | null => rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
 
-/** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). */
-const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => ({ code: "run_failed", message: summary ?? "The run failed.", retryable: false });
+/** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). A run
+ *  its cap ended once its cost passed it (the kernel's overCapEnd) is code spend_cap_reached, its message the words after
+ *  the code, as main served it; every other failure is run_failed. */
+const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
+  const over = overCapMessage(summary);
+  if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
+  return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
+};
 
 /** An escalated run's review from its row: its summary is the reason (the store keeps no kind or node apart). */
 type SavedReview = { kind: string | null; node: string | null; reason: string };
