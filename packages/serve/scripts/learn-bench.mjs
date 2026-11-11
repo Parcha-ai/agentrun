@@ -283,15 +283,16 @@ export async function timelineRows(api, runId) {
 }
 
 /** One grader's verdict on a step's `record`: a deterministic one checked here; an llm one not graded when the run did
- *  not finish (`graded` false) or when its grader run fails (the step is kept, and says why). */
+ *  not finish (`graded` false) or when its grader run fails (the step is kept, and says why). A check not graded is
+ *  `ungraded`: it fails its step, but it is no verdict, so it never counts as a wrong keep (metricsOf). */
 export async function gradeOne(ctx, grader, kase, record, servers, graded) {
   const head = { grader: grader.file, type: grader.type };
   if (grader.type !== "llm") return { ...head, cost_usd: null, ...TE.gradeDeterministic(grader, record, servers) };
-  if (!graded) return { ...head, pass: false, reason: "not graded: the run did not finish", cost_usd: null };
+  if (!graded) return { ...head, pass: false, ungraded: true, reason: "not graded: the run did not finish", cost_usd: null };
   try {
     return { ...head, ...(await gradeLlm(ctx, TE.graderInput(grader, kase.input, record))) };
   } catch (error) {
-    return { ...head, pass: false, reason: `not graded: ${String(error?.message ?? error).slice(0, 400)}`, cost_usd: null };
+    return { ...head, pass: false, ungraded: true, reason: `not graded: ${String(error?.message ?? error).slice(0, 400)}`, cost_usd: null };
   }
 }
 
@@ -400,7 +401,7 @@ async function filesOf(api, runId, kase) {
 export async function gradeLlm(ctx, input) {
   const { api, options } = ctx;
   // A grader run is paid: none starts once the bench's deadline has passed.
-  if (Date.now() >= options.deadline) return { pass: false, reason: "not graded: the bench's deadline passed", cost_usd: null };
+  if (Date.now() >= options.deadline) return { pass: false, ungraded: true, reason: "not graded: the bench's deadline passed", cost_usd: null };
   if (!ctx.grader) {
     const made = ok("making the grader agent", await api("POST", "/agents", { definition: { version: 1, name: TE.GRADER_NAME, description: "Grades the learning bench's runs against a rubric: answers {pass, reason}.", instructions: TE.GRADER_INSTRUCTIONS, skills: [], tools: [], learning: false, place: { mode: "runner" }, max_cost_usd: TE.GRADER_CAP_USD, ...(options.evalGraderModel ? { model: options.evalGraderModel } : {}) } }));
     ctx.grader = String(made.agent_id);
@@ -408,7 +409,9 @@ export async function gradeLlm(ctx, input) {
   const started = ok("starting a grader run", await api("POST", `/agents/${q(ctx.grader)}/runs`, { input: { content: input } }));
   const { view } = await settled(api, String(started.run_id), false, waitUntil(options));
   const verdict = view.status === "completed" ? TE.verdictOf(view.result?.final_answer ?? "") : undefined;
-  return { pass: verdict?.pass ?? false, reason: verdict?.reason ?? `the grader run ended ${view.status}`, cost_usd: usd(view.cost?.usd), run_id: String(started.run_id) };
+  // No verdict (the grader run did not complete, or its answer read as none): not graded, its cost still counted.
+  if (!verdict) return { pass: false, ungraded: true, reason: `not graded: the grader run ended ${view.status}${view.status === "completed" ? " with no verdict" : ""}`, cost_usd: usd(view.cost?.usd), run_id: String(started.run_id) };
+  return { pass: verdict.pass, reason: verdict.reason, cost_usd: usd(view.cost?.usd), run_id: String(started.run_id) };
 }
 
 const round = (x) => Math.round(x * 1e6) / 1e6;
@@ -461,7 +464,9 @@ export function metricsOf(steps, learns) {
     });
   }
   const plantAt = steps.findIndex((s) => s.kind === "plant");
-  const plantGraders = plantAt < 0 ? [] : steps.slice(plantAt + 1).flatMap((x) => x.graders.filter((g) => g.grader.startsWith("plant-")));
+  const plantChecks = plantAt < 0 ? [] : steps.slice(plantAt + 1).flatMap((x) => x.graders.filter((g) => g.grader.startsWith("plant-")));
+  // A plant check that was not graded (a grader outage, a run that did not finish) is no verdict on what was kept.
+  const plantGraders = plantChecks.filter((g) => !g.ungraded);
   return {
     follow_rate: rate(at((s) => s.kind === "repeat").map((s) => s.pass)),
     follow_k: at((s) => s.kind === "repeat").filter((s) => s.pass).length, follow_n: at((s) => s.kind === "repeat").length,
@@ -484,6 +489,8 @@ export function metricsOf(steps, learns) {
     staleness,
     wrong_keeps: learns && plantAt >= 0 ? plantGraders.filter((g) => !g.pass).length : null,
     plant_graders: learns && plantAt >= 0 ? plantGraders.length : null,
+    plant_ungraded: learns && plantAt >= 0 ? plantChecks.length - plantGraders.length : null,
+    ungraded_checks: steps.reduce((n, s) => n + s.graders.filter((g) => g.ungraded).length, 0),
     grade_cost_usd: learns ? round(steps.reduce((s, x) => s + (x.grade_cost_usd ?? 0), 0)) : null,
     grade_cost_unknown_steps: learns ? steps.filter((x) => x.learning?.state === "merged" && x.grade_cost_usd === null).length : null,
     eval_grader_cost_usd: steps.some((s) => s.eval_grader_cost_usd !== null) ? round(steps.reduce((s, x) => s + (x.eval_grader_cost_usd ?? 0), 0)) : null,
@@ -614,14 +621,15 @@ export function render(results) {
     const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.skill_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
     const trend = m.cost_trend_usd_per_run === null ? "-" : `${m.cost_trend_usd_per_run >= 0 ? "+" : ""}${m.cost_trend_usd_per_run.toFixed(5)}`;
     const grade = s.arm === "off" ? "-" : `${money(m.grade_cost_usd)}${m.grade_cost_unknown_steps ? ` (+${m.grade_cost_unknown_steps} unknown)` : ""}`;
-    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${m.follow_k ?? "-"}/${m.follow_n ?? "-"} (${pct(m.follow_rate)}) | ${m.pass_k ?? "-"}/${m.pass_n ?? "-"} (${pct(m.pass_rate)}) | ${m.tokens_per_pass ?? (m.tokens_known_steps === 0 ? "unknown" : "-")} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"} |`);
+    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${m.follow_k ?? "-"}/${m.follow_n ?? "-"} (${pct(m.follow_rate)}) | ${m.pass_k ?? "-"}/${m.pass_n ?? "-"} (${pct(m.pass_rate)}) | ${m.tokens_per_pass ?? (m.tokens_known_steps === 0 ? "unknown" : "-")} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"}${m.plant_ungraded ? ` (+${m.plant_ungraded} ungraded)` : ""} |`);
   }
   for (const s of order) {
-    out.push("", `${s.job} / ${s.harness} / ${s.arm}${s.error ? ` (SERIES STOPPED: ${s.error.slice(0, 200)})` : ""}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
+    out.push("", `${s.job} / ${s.harness} / ${s.arm}${s.error ? ` (SERIES STOPPED: ${s.error.slice(0, 200)})` : ""}${s.metrics.ungraded_checks ? ` (${s.metrics.ungraded_checks} checks ungraded)` : ""}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
     for (const x of s.steps) {
-      const failed = x.graders.filter((g) => !g.pass).map((g) => g.grader);
+      const failed = x.graders.filter((g) => !g.pass && !g.ungraded).map((g) => g.grader);
+      const ungraded = x.graders.filter((g) => g.ungraded).map((g) => g.grader);
       const kept = x.learned ? Object.entries(x.learned).filter(([, v]) => v.length).map(([k, v]) => `${k.slice(0, -1)} ${v.join(", ")}`).join("; ") : "";
-      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"} grade=${x.grade_cost_usd === null ? "unknown" : money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
+      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"} grade=${x.grade_cost_usd === null ? "unknown" : money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${ungraded.length ? ` ungraded=${ungraded.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
     }
   }
   return out.join("\n") + "\n";

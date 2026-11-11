@@ -50,7 +50,8 @@ They feed staleness and wrong keeps. Every other grader is named freely.
    - the workflow proposal rate on `teach` steps, and the reuse rate (`learned_workflow` calls);
    - staleness after a `change` step: whether the active skill and workflow texts changed, the `change-*` graders' pass
      rate, and whether `learned_workflow` steps passed them;
-   - wrong keeps (`plant-*` graders failed);
+   - wrong keeps (`plant-*` graders that graded and failed; a check that could not be graded, a grader outage or a run
+     that did not finish, is `ungraded`, counted apart and never a wrong keep);
    - the learning grade's cost.
 
 ```

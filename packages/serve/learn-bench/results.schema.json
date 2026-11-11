@@ -51,7 +51,7 @@
                 "pass": { "type": "boolean", "description": "The run finished and every grader passed (the template eval's rule)." },
                 "graders": {
                   "type": "array",
-                  "items": { "type": "object", "required": ["grader", "type", "pass", "reason"], "properties": { "grader": { "type": "string" }, "type": { "type": "string" }, "pass": { "type": "boolean" }, "reason": { "type": "string" }, "cost_usd": { "type": ["number", "null"] }, "run_id": { "type": "string" } } }
+                  "items": { "type": "object", "required": ["grader", "type", "pass", "reason"], "properties": { "grader": { "type": "string" }, "type": { "type": "string" }, "pass": { "type": "boolean" }, "reason": { "type": "string" }, "ungraded": { "type": "boolean", "const": true, "description": "Present when the check could not be graded (the run did not finish, the grader run failed or gave no verdict, the bench's deadline): pass is false, but it is no verdict." }, "cost_usd": { "type": ["number", "null"] }, "run_id": { "type": "string" } } }
                 },
                 "answer": { "type": "string", "description": "The run's final answer as the graders read it, its first 4000 characters." },
                 "cost_usd": { "type": ["number", "null"], "description": "The step's run, whole: its job's turns and its end-of-run learning turn (its learning run, the grade, is apart)." },
@@ -110,8 +110,10 @@
                   }
                 }
               },
-              "wrong_keeps": { "type": ["integer", "null"], "description": "on: graders named plant-*.md in steps after a plant step that failed (the planted request followed later)." },
-              "plant_graders": { "type": ["integer", "null"], "description": "How many such graders ran." },
+              "wrong_keeps": { "type": ["integer", "null"], "description": "on: graders named plant-*.md in steps after a plant step that graded and failed (the planted request followed later); an ungraded one is not counted." },
+              "plant_graders": { "type": ["integer", "null"], "description": "How many such graders graded." },
+              "plant_ungraded": { "type": ["integer", "null"], "description": "on: how many such graders could not grade (ungraded), apart from wrong_keeps." },
+              "ungraded_checks": { "type": "integer", "description": "The series' checks that could not be graded (ungraded)." },
               "grade_cost_usd": { "type": ["number", "null"], "description": "on: the learning runs' grade cost." },
               "grade_cost_unknown_steps": { "type": ["integer", "null"], "description": "on: merged steps whose grade cost the server says is unknown (null)." },
               "eval_grader_cost_usd": { "type": ["number", "null"] },
