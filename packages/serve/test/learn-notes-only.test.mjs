@@ -39,7 +39,7 @@ test("a notes run's end-of-run turn asks for no workflow draft: no workflow bloc
 
 test("pi: a notes run on the runner is given no learned_workflow, though its agent learned an active workflow", async (t) => {
   const launch = {};
-  const spec = await specFor(t, {
+  const { spec } = await specFor(t, {
     body: { learning: "notes", tools: ["read"] },
     launch,
     ledger: { models: async () => ({ getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}), streamSimple: () => ({}) }) },

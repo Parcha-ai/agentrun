@@ -81,6 +81,9 @@ export type CheckInput = {
   readonly ask?: DraftAsk;
   /** Where each of `gated`'s denies was set (this agent's settings or this server's), for the refusal's words. */
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
+  /** False for a run of a revision that says `learning: "notes"`: a workflow draft it gives is left out (rule `workflow`,
+   *  NOTES_ONLY), and its notes and skill go on. */
+  readonly workflows?: false;
   /** The workflow DSL a draft is read with; a proposal that holds a draft is checked with it, never without. */
   readonly dsl?: DraftReader;
   /** Each draft's dry run (skills.ts draftDryRun), by its workflow.json's path: one that failed is refused, rule
@@ -94,6 +97,9 @@ export type CheckInput = {
 export type ProposalCheck = { readonly ok: boolean; readonly problems: Problem[]; readonly notes: ProposedNote[] };
 
 const MODES: Record<string, string> = { "120000": "a link: never followed", "040000": "a folder: nothing in it was read" };
+/** Why a draft from a run of a revision that learns notes alone (`learning: "notes"`) is left out. */
+const NOTES_ONLY = "this agent learns notes and skills alone (learning: \"notes\"): it keeps no workflow draft";
+
 /** Why a run's path is none of what it may propose. */
 const OUTSIDE = "a run proposes notes at the folder's top, skills/<name>/SKILL.md, and workflows/<name>/ with its workflow.json and README.md";
 
@@ -187,6 +193,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   nameScanned(path, refused, add);
   if (!learnedName(place.kind, place.name)) return add("file_name", place.kind === "skill" ? "a skill's name is lowercase letters, digits and single dashes, at most 64" : "a workflow's name is lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit", path);
   if (change.status === "deleted") return add("deleted", "a run never deletes a skill or a workflow", path);
+  if (place.kind === "workflow" && input.workflows === false) return add("workflow", NOTES_ONLY, path);
   if (change.mode !== undefined && change.mode !== "100644") return add("file_mode", MODES[change.mode] ?? "not a regular file: never read", path);
   const size = change.size ?? change.bytes?.length ?? 0;
   const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;

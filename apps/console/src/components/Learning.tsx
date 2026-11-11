@@ -82,7 +82,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     );
   };
 
-  const on = agent.definition.learning === true;
+  const on = agent.definition.learning === true || agent.definition.learning === "notes";
   const readOnly = !!agent.archived_at;
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
@@ -335,7 +335,7 @@ function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: A
     setShown(null); setBusy(false);
   };
   return (
-    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? agent.definition.learning === true} onChange={(v) => void flip(v)}
+    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? (agent.definition.learning === true || agent.definition.learning === "notes")} onChange={(v) => void flip(v)}
       busy={busy} disabled={disabled} server={server}
       problem={trouble ? <ProblemCard problem={failed(trouble, "the agent", "Learning was not changed.")} className="mt-2" /> : null} />
   );

@@ -47,6 +47,9 @@ import { type Entry, isWorkspaceError, type Workspace, WorkspaceError, workspace
  *  default: a run learns when its agent's definition says `learning: true`. `off`: no run this server starts does. */
 export const LEARNING_MODES = ["on", "off"] as const;
 export type LearningMode = (typeof LEARNING_MODES)[number];
+/** Whether a revision's `learning` (its definition's: true, false or "notes") has its runs learn: true learns notes, skills
+ *  and workflows; "notes" learns notes and skills alone, never given a learned workflow nor asked to draft one. */
+export const learnsOf = (learning: unknown): boolean => learning === true || learning === "notes";
 export const LEARNING_ENV = "AGENTRUN_SERVE_LEARNING";
 /** The switch: `given`, else AGENTRUN_SERVE_LEARNING, else on. Any other value is an error, and the server does not start. */
 export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode {
