@@ -8,6 +8,11 @@
 // allow or an ask, so an allowed call not as pinned is refused unsent, and one under ask is refused before anyone is
 // asked; an approved call is checked again before it runs. The agent's pin and the server's both hold.
 //
+// bash's setting in an agent's own tool settings may carry a policy the same way (policyRefusal): `policy: "read-only"`
+// (bash-read-only.ts) reads each shell call's command and refuses one that could write, run code or read outside the
+// run's folder, after a deny and a pin and before an allow or an ask, so approvals "never" lifts none of it; an approved
+// call is decided again before it runs.
+//
 // An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The runner's loop answers the
 // call with waitingText and ends the turn, as ask_person's does; the run goes needs_input with the pending approval. On
 // an answer the loop runs the approved call once, through the journal, and resumes the session with a message naming the
@@ -29,6 +34,7 @@ import { SHELL_TOOLS } from "./background.js";
 import { SERVE_OWN_TOOLS, TABLE_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
 import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
+import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -142,7 +148,7 @@ export const MAX_PIN_CHOICES = 16;
 
 /** A layer of tool settings (the server's, PUT /v2/settings/tools, or an agent's own, definition.tool_settings) as the
  *  gate reads it: a permission by settings key, and an MCP tool's pin. */
-export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts checkToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's settings that does not read (tool-plane.ts checkToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true } | undefined>>;
+export type PermissionSettings = Readonly<Record<string, { permission?: Permission; /** Not as written: a value not offered, read as its fail-closed stand-in (tool-plane.ts checkToolSettings). Never shown. */ fallback?: true; pin?: Pin; /** A pin in the server's settings that does not read (tool-plane.ts checkToolSettings): every call of the tool is refused. Never shown. */ brokenPin?: true; /** bash's policy, in an agent's own settings only (bash-read-only.ts): what its commands may do. */ policy?: string } | undefined>>;
 
 /** A one-of list in its one form: each value once, null first, then by its JSON text; any other value as it is. The
  *  same meaning is the same text (a revision's id) and the same words (a refusal). */
@@ -381,8 +387,8 @@ export class RunGate {
 
   /** The gate's answer for one call before its intent, for a loop that parks and answers asks itself (the runner's adapter
    *  loops, pi's and the CLI harnesses'): run it, ask a person, or refuse it with the words the model reads. The order:
-   *  the deny (with where it was set, and that nothing was sent or charged), a pin, then the allow, then the ask, so an
-   *  allow that approvals "never" made is decided
+   *  the deny (with where it was set, and that nothing was sent or charged), a pin, bash's policy (policyRefusal), then
+   *  the allow, then the ask, so an allow that approvals "never" made is decided
    *  only after every refusal. Where no one can approve (accounts off: the store's approvers row a runner reads at each
    *  claim, server-approvers.ts), the ask is refused at once in words, never parked, as `enter` refuses it. */
   async decide(name: string, args: unknown): Promise<"allow" | "ask" | { deny: string }> {
@@ -392,6 +398,8 @@ export class RunGate {
     if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), "no") };
     const pinned = this.pinned(key, args, "no");
     if (pinned) return { deny: pinned.text };
+    const policed = this.policyRefusal(key, name, args);
+    if (policed) return { deny: policed };
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, "no") };
   }
@@ -437,6 +445,21 @@ export class RunGate {
    *  each call as its permission is, so a pin set or changed reaches a live run at its next call. */
   private pinned(key: string, args: unknown, ran: "no" | "unknown" = "no"): { text: string; mismatched: string[] } | undefined {
     return pinRefusal(key, args, this.serverSettings() ?? {}, this.overrides, ran);
+  }
+
+  /** Why bash's policy refuses the call `name` (held to `key`) with `args` now, or undefined: the revision's own setting
+   *  (an agent's tool_settings.bash.policy), so every shell tool under every harness's name for it is held to it. A policy
+   *  this server does not know refuses every shell call (fail closed), as a pin that does not read does. */
+  private policyRefusal(key: string, name: string, args: unknown): string | undefined {
+    if (key !== "bash") return undefined;
+    const policy = this.overrides.bash?.policy;
+    if (policy === undefined) return undefined;
+    // Its own name for a background tool (bash_background, under claude-agent's mcp__hands__ name too); bash for bash and
+    // a CLI's own shell (codex's shell, claude-agent's Bash).
+    const tool = shellToolOf(name) ?? "bash";
+    if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool} can't be called: this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
+    const reason = readOnlyReason(tool, args, [this.where.work, COMPUTER_ROOT]);
+    return reason === undefined ? undefined : readOnlyText(tool, reason, NOT_RUN);
   }
 
   private lastGood?: PermissionSettings;

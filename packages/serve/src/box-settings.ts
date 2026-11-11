@@ -1,6 +1,7 @@
 // The hosts a run's computer may reach (AGENTRUN_BOX_ALLOW), as the server reads them at its start: a run's launch keeps
 // them (box_allow) and its computer is made with them (workspace/computer-deps.ts). A setting that is not one throws,
-// naming it: the start checks it, so no run meets one.
+// naming it: the start checks it, so no run meets one. A Docker computer's size (AGENTRUN_BOX_CPUS, _MEMORY, _PIDS) is
+// workspace/computer-deps.ts dockerLimitsOf.
 
 /** The setting that names the hosts a box may reach: a comma list of hosts, each a name or `*.` and a name, which
  *  replaces the default list; `none` for no network at all. Unset or empty, the default. */
