@@ -33,6 +33,30 @@ for (const kind of ["cancel", "stop"]) {
   });
 }
 
+test("a close's read of the stop rows and its loops' stop share one window, the lease less its margin: a stalled read and a loop that never stops end the close at that window, never later", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  // A loop that ignores its stop and keeps committing, beside a read that never answers.
+  const faux = fauxLoops({ stubborn: true, turnMs: 20 });
+  t.after(() => faux.loops.forEach((loop) => (loop.halted = true)));
+  const stalled = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "commandsOf") return () => new Promise(() => {});
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000 };
+  const runner = startRunner({ store: stalled, createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...window });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(() => faux.loops.length === 1, "the run claimed");
+  const startedAt = Date.now();
+  await runner.close();
+  const took = Date.now() - startedAt;
+  // runnerCloseBoundMs's window after the drain (none here): 5 s, the read's 3 s inside it, never 3 s + 5 s.
+  assert.ok(took >= 4_900 && took < 7_000, `the close took the one window: ${took} ms`);
+});
+
 test("a close whose read of the stop rows never answers is bounded by the stop margin: the run is stopped for a shutdown and released, its cancel left for the next claim", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });

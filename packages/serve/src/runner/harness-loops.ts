@@ -17,12 +17,13 @@ import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { gradeModelFor, type GradeRouteAsk, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
 import type { GraderRoute } from "./learning-ask.js";
-import type { LoopFactory } from "./loop-contract.js";
+import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
 
-/** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). */
-export class NeverFits extends Error {
+/** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). A claim
+ *  refused for good, so a parked run it wakes fails too, never retried as a resume (runner.ts finish). */
+export class NeverFits extends ClaimRefused {
   override name = "NeverFits";
 }
 
