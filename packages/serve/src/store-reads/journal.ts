@@ -28,7 +28,7 @@ export async function runEntries(store: Store, runId: string, context: Context):
  *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
 export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
   const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? []);
+  const from = reflectFrom(records.submissions ?? [], records.entries);
   if (from === undefined) return undefined;
   const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
   return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
