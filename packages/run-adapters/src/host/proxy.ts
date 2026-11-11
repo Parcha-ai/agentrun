@@ -994,8 +994,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let ticket: unknown;
     try {
       if (!route.free) ticket = await hooks.beforeRequest({
-        // A side call: on another model than the session's, or the host's own (it counts toward no typical request).
-        model: asked, inputTokensMax, ...(asked !== model || host !== undefined ? { side: true as const } : {}),
+        // A side call: on another model than the session's, the host's own, or one on the session's model that is no answer
+        // of the turn (a title, a summary: `answering`, the policy's answers). It counts toward no typical request, and the
+        // cap never prices the session's next request from it.
+        model: asked, inputTokensMax, ...(asked !== model || host !== undefined || !answering ? { side: true as const } : {}),
         ...(noted ? { noted: true as const, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}),
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
