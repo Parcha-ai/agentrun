@@ -31,6 +31,17 @@ async function start(api, id, content, extra = {}, definition = {}) {
   return started.body;
 }
 
+/** The run's timeline once its usage row is in: a run reads paused as its park commits, and its usage row can follow a
+ *  moment later. Bounded: a usage row that never comes fails the check below with the rows as they are. */
+async function settledRows(api, runId) {
+  let rows = [];
+  for (let i = 0; i < 50; i++, await new Promise((resolve) => setTimeout(resolve, 100))) {
+    rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+    if (rows.some((row) => row.kind === "usage")) break;
+  }
+  return rows;
+}
+
 /** No row says the run made a model request it never sent: its usage line says it sent none. */
 function noPhantomRequest(rows) {
   for (const row of rows) {
@@ -67,7 +78,9 @@ test("pi: a cap that cannot buy its first request's least is refused before anyt
   // medium thinking level's 8,192 (pi-ai's table), 9,216 at $1 a million, $0.009216 (rounded up in the words to $0.01). The
   // agent names medium thinking: one that names none is sent at effort none, its least the answer's 1,024 tokens alone.
   const { api, posts } = await gateway(t, "0,1");
-  const { run, rows } = await ended(api, (await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 }, { thinking: "medium" })).run_id);
+  const { run_id } = await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 }, { thinking: "medium" });
+  const { run } = await ended(api, run_id);
+  const rows = await settledRows(api, run_id);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
   assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0005\. Raise the cap to at least \$0\.01 to continue\.$/);
   assert.equal(run.cost.usd, 0);
@@ -96,7 +109,7 @@ for (const harness of ["claude-agent", "codex"]) {
     // 1,024 tokens at $0.0001 are $0.1024: the least cap is $0.11 in the words.
     assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.11, and this run's cap is \$0\.05\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal((await records(data, run_id, "faux.request")).length, 0, "nothing was sent");
-    noPhantomRequest(rows);
+    noPhantomRequest(rows.some((row) => row.kind === "usage") ? rows : await settledRows(api, run_id));
   });
 
   test(`${harness}: a run that spends its cap down is refused once what is left cannot buy 1,024 tokens, saying so, the refused request counts as none, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
