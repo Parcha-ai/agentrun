@@ -16,6 +16,8 @@ export interface ImageInput {
   readonly bytes: number;
   readonly width?: number;
   readonly height?: number;
+  /** The detail it asks for, where the API takes one (OpenAI's `low`, `high` or `auto`). */
+  readonly detail?: string;
 }
 
 /** What of a request decides what its provider adds: whether it offers tools, how it asks for them, and its images. */
@@ -140,20 +142,38 @@ export function imageProviderOf(model: string | undefined): "anthropic" | "opena
 
 /**
  * The most tokens OpenAI bills an image of `width` x `height` as, by its "Calculating costs" rules
- * (https://developers.openai.com/api/docs/guides/images-vision), the more of:
- *  - the tile rule (high detail): the image fit within 2048 x 2048, then its shorter side brought to 768 (up as well as
- *    down, the dearer reading for a small image), each 512 px tile 170 tokens beside a base of 85; for a gpt-4o-mini
- *    model, 5,667 a tile beside 2,833;
- *  - the patch rule: its 32 px patches at the largest multiplier listed, 2.46.
- * At most `OPENAI_IMAGE_TOKENS_MAX`.
+ * (https://developers.openai.com/api/docs/guides/images-vision):
+ *  - the tile rule, for every model: at detail "low", 85 tokens; otherwise (high, or auto, which may choose high) the
+ *    image fit within 2048 x 2048, then its shorter side brought to 768 (up as well as down, the dearer reading for a
+ *    small image), each 512 px tile 170 tokens beside a base of 85. A gpt-4o-mini model bills 2,833 and 5,667 a tile;
+ *  - the patch rule, for the models it lists as billed by 32 px patches (`openaiPatchMultiplier`): its patches at the
+ *    model's multiplier, when that is more.
+ * At most `OPENAI_IMAGE_TOKENS_MAX`. With no model named, every rule (the patches at the largest multiplier, 2.46).
  */
-export function openaiImageTokens(width: number, height: number, model?: string): number {
-  const fit = Math.min(1, 2048 / Math.max(width, height));
-  const short = 768 / Math.min(width * fit, height * fit);
-  const tiles = Math.ceil((width * fit * short) / 512) * Math.ceil((height * fit * short) / 512);
-  const tiled = model && /4o-mini/i.test(model) ? 2_833 + 5_667 * tiles : 85 + 170 * tiles;
-  const patched = Math.ceil(Math.ceil(width / 32) * Math.ceil(height / 32) * 2.46);
+export function openaiImageTokens(width: number, height: number, model?: string, detail?: string): number {
+  const mini = model !== undefined && /4o-mini/i.test(model);
+  let tiled: number;
+  if (detail === "low") tiled = mini ? 2_833 : 85;
+  else {
+    const fit = Math.min(1, 2048 / Math.max(width, height));
+    const short = 768 / Math.min(width * fit, height * fit);
+    const tiles = Math.ceil((width * fit * short) / 512) * Math.ceil((height * fit * short) / 512);
+    tiled = mini ? 2_833 + 5_667 * tiles : 85 + 170 * tiles;
+  }
+  const multiplier = openaiPatchMultiplier(model);
+  const patched = multiplier > 0 ? Math.ceil(Math.ceil(width / 32) * Math.ceil(height / 32) * multiplier) : 0;
   return Math.min(OPENAI_IMAGE_TOKENS_MAX, Math.max(tiled, patched));
+}
+
+/** The multiplier OpenAI bills a patch-billed model's 32 px patches at: 2.46 for a nano model, 1.72 for o4-mini (and
+ *  codex-mini, built on it), 1.62 for another mini model (gpt-4o-mini excepted: it bills tiles); 0 for a tile-billed
+ *  model; 2.46, the largest, for a model not named. */
+export function openaiPatchMultiplier(model: string | undefined): number {
+  if (model === undefined) return 2.46;
+  if (/nano/i.test(model)) return 2.46;
+  if (/o4-mini|codex-mini/i.test(model)) return 1.72;
+  if (/mini/i.test(model) && !/4o-mini/i.test(model)) return 1.62;
+  return 0;
 }
 
 /** What Gemini bills a picture as at the most ("Media resolution" and "Image understanding" in its API docs): 258 tokens
@@ -176,9 +196,10 @@ export function imageTokens(model: string | undefined, image: ImageInput): numbe
   if (image.width === undefined || image.height === undefined) return provider === "anthropic" ? ANTHROPIC_IMAGE_TOKENS_MAX : OPENAI_IMAGE_TOKENS_MAX;
   const { width, height } = image;
   if (provider === "anthropic") return anthropicImageTokens(width, height);
-  if (provider === "openai") return openaiImageTokens(width, height, model);
+  if (provider === "openai") return openaiImageTokens(width, height, model, image.detail);
   if (provider === "google") return geminiImageTokens(width, height);
-  return Math.max(anthropicImageTokens(width, height), openaiImageTokens(width, height, model), geminiImageTokens(width, height));
+  // Of no provider known: every OpenAI rule (no model named), beside Anthropic's and Google's.
+  return Math.max(anthropicImageTokens(width, height), openaiImageTokens(width, height), geminiImageTokens(width, height));
 }
 
 /** The pixel size an image's base64 `data` says in its own header (PNG, JPEG, GIF or WebP), or undefined: another format,
@@ -236,7 +257,7 @@ export function messagesImagesIn(messages: unknown): ImageInput[] {
 export function responsesImagesIn(input: unknown): ImageInput[] {
   const out: ImageInput[] = [];
   const image = (part: unknown) => {
-    if (plain(part) && part.type === "input_image") out.push(imageInputOf(part.image_url));
+    if (plain(part) && part.type === "input_image") out.push({ ...imageInputOf(part.image_url), ...(typeof part.detail === "string" ? { detail: part.detail } : {}) });
   };
   for (const item of list(input)) {
     if (!plain(item)) continue;

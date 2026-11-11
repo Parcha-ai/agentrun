@@ -6,7 +6,7 @@ A capped run that reads screenshots is no longer refused at its cap after the fi
 
 Each image, in every turn, now counts at what the routed model's provider can bill it as, in place of its data's bytes, whatever API carries it. The size comes from the image's own header (PNG, JPEG, GIF or WebP):
 - Anthropic: its 28-pixel patches or its area at 750 pixels a token, whichever is more, at most 4,784.
-- OpenAI: its 512-pixel tiles after resizing (85 + 170 each) or its 32-pixel patches at 2.46, whichever is more, at most 73,800.
+- OpenAI: its 512-pixel tiles after resizing (85 + 170 each; 85 at detail low), or for a patch-billed mini or nano model its 32-pixel patches at that model's multiplier when more, at most 73,800.
 - Google: 258 per 768-pixel tile, at least 1,120.
 - Any other provider: the most of the three.
 An image whose size can't be read counts at its provider's per-image maximum, never at its bytes. An image-shaped object outside where the API reads images (a tool call's arguments) is counted at its bytes, as text.

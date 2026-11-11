@@ -150,8 +150,13 @@ test("an image is counted at what the routed model's provider bills it as by its
     ['anthropic', 'anthropic', 'openai', 'openai', 'openai', 'openai', 'google', 'google', undefined, undefined, undefined]);
   // OpenAI: 1280x720 is 1365x768 with its shorter side at 768, 3 x 2 tiles: 85 + 6 x 170 = 1,105; its 40 x 23 patches at
   // 2.46: 2,264.
-  assert.equal(host.openaiImageTokens(1280, 720), 2264, 'the patch rule, above the tile rule');
+  assert.equal(host.openaiImageTokens(1280, 720, 'gpt-5'), 1105, 'a tile-billed model: its tiles alone, far under the 73,800 maximum');
+  assert.equal(host.openaiImageTokens(1280, 720, 'openai/gpt-5', 'low'), 85, 'detail low: 85 whatever its size');
+  assert.equal(host.openaiImageTokens(1280, 720, 'gpt-5', 'auto'), 1105, 'detail auto may choose high');
+  assert.deepEqual(['gpt-4.1-nano', 'o4-mini', 'codex-mini-latest', 'gpt-4.1-mini', 'gpt-5', 'gpt-5.1-codex'].map((m) => host.openaiImageTokens(1280, 720, m)), [2264, 1583, 1583, 1491, 1105, 1105], 'patch-billed models at their multipliers, above their tiles');
+  assert.equal(host.openaiImageTokens(1280, 720), 2264, 'no model named: every rule, the patches at 2.46');
   assert.equal(host.openaiImageTokens(1280, 720, 'gpt-4o-mini'), 2833 + 6 * 5667, 'gpt-4o-mini\'s tiles');
+  assert.equal(host.openaiImageTokens(1280, 720, 'gpt-4o-mini', 'low'), 2833, 'gpt-4o-mini at detail low');
   assert.equal(host.openaiImageTokens(100, 100), 765, 'its shorter side brought to 768 either way: 2 x 2 tiles, above its 16 patches');
   assert.equal(host.openaiImageTokens(20_000, 20_000), 73_800, 'at most the per-image maximum');
   // Gemini: 258 a 768 px tile (2 x 1 for 1280x720 = 516), or 258 for one at most 384 px; at least Gemini 3's 1,120.
@@ -163,7 +168,7 @@ test("an image is counted at what the routed model's provider bills it as by its
     of('anthropic-messages', { tools: false, images: [screen], model: 'meta-llama/llama-4' }),
     of('openai-completions', { tools: false, images: [screen], model: 'anthropic/claude-sonnet-5.5' }),
     of('openai-responses', { tools: false, images: [{ bytes: 900 }], model: 'gpt-5' }),
-  ], [1229 - 1_300_000, 2264 - 1_300_000, 1120 - 1_300_000, 2264 - 1_300_000, 1229 - 1_300_000, 73_800 - 900], 'never the image\'s bytes; an unread size at the largest maximum');
+  ], [1229 - 1_300_000, 1105 - 1_300_000, 1120 - 1_300_000, 2264 - 1_300_000, 1229 - 1_300_000, 73_800 - 900], 'never the image\'s bytes; an unread size at the largest maximum');
 });
 
 test("Claude's rule by an image's size", () => {

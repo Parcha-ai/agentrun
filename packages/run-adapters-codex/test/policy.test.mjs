@@ -92,6 +92,22 @@ test("each image counts at the most one image is billed as on the Responses API,
   assert.equal(policy.serverInputOverhead(withImages(1)), host.providerInputOverhead?.('openai-responses', { tools: true, images: [{ bytes }] }), 'the policy and the shared function agree');
 });
 
+test("a 1280x720 screenshot on an OpenAI model counts at its tiles (1,105: 3 x 2 tiles of 512 px at 170 and a base of 85, about a thousand tokens), never the 73,800 maximum or its megabyte of base64; at detail low, 85", () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  // A PNG's header saying 1280x720, and a megabyte of pixel data after it, as a real screen's.
+  const png = Buffer.alloc(1_000_000);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).copy(png, 0);
+  png.write('IHDR', 12, 'latin1');
+  png.writeUInt32BE(1280, 16);
+  png.writeUInt32BE(720, 20);
+  const url = `data:image/png;base64,${png.toString('base64')}`;
+  const screen = (detail) => ({ ...RECORDED_REQUEST, model: 'gpt-5.1-codex', tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }], input: [...RECORDED_REQUEST.input, { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', image_url: url, ...(detail ? { detail } : {}) }] }] });
+  const counted = (body) => policy.serverInputOverhead(body) + url.length;
+  assert.equal(counted(screen()), 1105, 'its tiles');
+  assert.ok(counted(screen()) < 73_800 / 50, 'never the per-image maximum');
+  assert.equal(counted(screen('low')), 85, 'detail low');
+});
+
 test("a body with a file input (billed by its pages, with no stated bound) leaves the input bound unmeasured, so a cap treats it as unknown", async () => {
   const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
   const withFile = { ...RECORDED_REQUEST, input: [...RECORDED_REQUEST.input, { type: 'message', role: 'user', content: [{ type: 'input_file', file_data: 'data:application/pdf;base64,JVBERi0=' }] }] };
