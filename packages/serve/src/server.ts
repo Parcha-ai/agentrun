@@ -67,18 +67,16 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreBusy, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunRow, type Store, StoreConstraint, type WorkflowBody } from "./store/index.js";
+import { answerOf, logged } from "./agents.js";
 import { FINAL_STATES } from "./store/store.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
-/** A busy store, and the home_busy answer it maps to (agents.ts homeBusy's words), for a read or write that
- *  meets the one store under load. */
-const storeBusy = (error: unknown): boolean => error instanceof StoreBusy;
-const homeBusy = (): ApiError => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 import { runLines } from "./usage-lines.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
 import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
@@ -292,8 +290,6 @@ export type ServeOptions = {
   maxRuns?: number;
   /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
   minFreeBytes?: number;
-  /** How often a carry back the store refused is tried again while the server lives (default 30 s). */
-  settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
   /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
@@ -303,39 +299,18 @@ export type ServeOptions = {
    *  left to finish their turn, and this start's, when it waits for a server that is stopping (server-lock.ts). Default:
    *  standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
-  /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
-   *  hook called at each such refusal. */
-  /** A test hook the per-run process used for carry-back; the runner owns carry-back now (unused by the server cut). */
-  carryBackRetry?: unknown;
   /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
   beforeAbort?: (runId: string) => Promise<void> | void;
   /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
    *  process is launched, so a test can hold a reopen there. */
   beforeReopenLaunch?: (runId: string) => Promise<void> | void;
-  /** A test's seam: awaited where a raise that opens a let-go workflow pins what its launch needs, after its place is
-   *  taken (runs.ts finishRaise); one that throws stands for a pin that fails there. */
-  beforeRaiseLaunch?: (runId: string) => Promise<void> | void;
   /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
   hostMemory?: number;
-  /** A test's seam: told each stat and each read of a workflow run's pause by its watch (runs.ts watchPause). */
-  onPauseCheck?: (runId: string, what: "stat" | "read") => void;
-  /** A test's seam: awaited by a message before it goes to the run's door, so a test can act while it is in flight. */
-  beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
   /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
   onRunLoad?: (runId: string) => void;
-  /** A test's seam: awaited before a run's serve.json is written (runs.ts beforeMetaSave). */
-  beforeMetaSave?: (runId: string, meta: Readonly<Record<string, unknown>>) => Promise<void> | void;
   /** A test's seam: who wrote a message sent to a run through its messages route (`origin`, as a raised cap's follow-up
    *  carries it), so a test sends a server-written message down the path a person's message takes. */
   messageOrigin?: (runId: string, content: string) => MessageOrigin | undefined;
-  /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
-  readyTimeoutMs?: number;
-  /** How long a launched run's process has to open its run before it is stopped and the run opened again (default 45 s,
-   *  READY_TIMEOUT_MS: the wait of a run's first message). */
-  openTimeoutMs?: number;
-  /** With `faux` only: the door nonce each run's process is handed in place of its launch's own, so its door answers the
-   *  launch's proof wrongly (a test of a door that fails its proof). */
-  fauxHandedNonce?: string;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -1097,15 +1072,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : kind === "browser" ? browserToolNames : capabilityToolDefs(kind).map((def) => def.name);
   let faux: FauxComputers | undefined;
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
+  /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
+   *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
+   *  box, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
+   *  daemon that stops after the start is seen, and one that is gone says so in noDockerWords); once it answers, the
+   *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
+   *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
+   *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
+   *  reason, which says how to fix it. */
+  const dockerDaemon = dockerDaemonCheck({ env });
+  const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
+    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
+    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+      const daemon = await dockerDaemon();
+      if (!daemon.up || box?.available) return daemon;
+    } else if (box?.available) return { up: true };
+    return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
+  };
   let computerRoutes: ComputerRoutes | undefined;
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
+      // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
+        answers: dockerAnswers,
       }),
   }));
   /** Whether an agent's computer setting can be had here now, by the answers the runner's claim gives (resolve-computer.ts
@@ -1113,12 +1107,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
-   *  a computer setting, in place of the box check. Whether Docker answers here is the boxes' own start-time probe
-   *  (boxOffers, in memory: no new probe), with its reason, which says how to fix it. */
-  const dockerAnswers = (provider: string): true | string => {
-    const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    return box?.available ? true : box?.reason ?? `${provider} is not a box this server has`;
-  };
+   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
   const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
@@ -3143,9 +3132,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (res.headersSent) return void res.end();
       // A request cut before its body was read (push-handler.ts readCapped): its socket goes once the answer is out.
       if (error instanceof HookCut) res.once("finish", () => req.socket.destroy());
-      // A store still busy past a request's wait is home_busy, whichever read or write met it.
-      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      // A store still busy past a request's wait, or a write still open at its deadline, is home_busy, whichever read or
+      // write met it: the request may be sent again, never a 500 (agents.ts answerOf, as an MCP tool's call answers).
+      const known = answerOf(error);
+      if (logged(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;
@@ -3169,7 +3159,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
+    if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
     // Under --faux only: a faux desktop's live view, a page on this server's own address (faux-computers.ts viewPage), so
     // a run's take-over has a viewer to open in the console's real-browser flows. Gone after the computer's release.
     if (options.faux && raw.startsWith(`${FAUX_VIEW_PATH}/`)) {

@@ -19,7 +19,7 @@ import * as adapters from "../dist/adapters.js";
 import { findOpenCode } from "../dist/harness-opencode/binary.js";
 import { verifyOpenCodeBinary } from "../dist/harness-opencode/verify.js";
 import { harnessOffers } from "../dist/harness.js";
-import { modelOn, providerFor } from "../dist/provider.js";
+import { modelOn } from "../dist/provider.js";
 
 const pinned = verifyOpenCodeBinary(findOpenCode());
 const skip = pinned instanceof Error && env.AGENTRUN_OPENCODE_REQUIRE_BINARY !== "1" ? pinned.message : false;
