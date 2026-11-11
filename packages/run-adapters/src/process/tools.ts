@@ -104,6 +104,19 @@ function parkedUntilAborted(signal: AbortSignal, tool: string): Promise<never> {
 }
 
 /**
+ * The host's gate, asked about a call before anything of it is written: the first step of every harness's tool bridge
+ * (this one's, and the faux harness's, run-adapters/testing). Undefined when it allows the call; the refusal for a deny,
+ * whose words are the call's answer; a park holds the call until `signal` is aborted (the run parked and this process
+ * lets go of it), then rejects, so the harness is never handed a result for it.
+ */
+export async function askGate(gate: (call: GateCall) => Promise<GateAnswer>, call: GateCall, signal: AbortSignal): Promise<{ deny: string } | undefined> {
+  const answer = await gate(call);
+  if (answer === 'allow') return undefined;
+  if ('deny' in answer) return answer;
+  return parkedUntilAborted(signal, call.tool);
+}
+
+/**
  * Build the bridge for one drive. The calls' effects are this drive's: build
  * a new bridge per `drive(ctx)`.
  *
@@ -123,11 +136,8 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
       const fresh = !ctx.isMemoized(key);
       // The gate first: before the flush and the intent, so a refused or parked call leaves nothing in the log.
       if (fresh && options.gate) {
-        const answer = await options.gate({ callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown> });
-        if (answer !== 'allow') {
-          if ('deny' in answer) return { text: answer.deny, isError: true };
-          await parkedUntilAborted(signal ? AbortSignal.any([signal, ctx.signal]) : ctx.signal, tool.name);
-        }
+        const refused = await askGate(options.gate, { callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown> }, signal ? AbortSignal.any([signal, ctx.signal]) : ctx.signal);
+        if (refused) return { text: refused.deny, isError: true };
       }
       if (fresh && tool.replay === 'never') await options.beforeNever?.({ name: tool.name, callId, args });
       if (fresh && live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });
