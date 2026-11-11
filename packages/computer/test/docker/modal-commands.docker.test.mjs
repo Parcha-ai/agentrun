@@ -33,6 +33,12 @@ const IMAGES = ["debian:bookworm-slim", "alpine:3.20"];
 const ZERO = "0000000000000000";
 /** What init --own-network needs of root: to make a network namespace and bring its loopback up. */
 const NAMESPACE_CAPS = ["--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN"];
+/**
+ * Root as Modal's gVisor gives it (live, a T4 sandbox, 11-11): no CAP_SYS_ADMIN or CAP_NET_ADMIN, so no network
+ * namespace of its own, but a user namespace with one is allowed. Docker's default capabilities, and no seccomp profile
+ * (Docker's default refuses a user namespace to a root without CAP_SYS_ADMIN; gVisor's does not).
+ */
+const GVISOR_LIKE = ["--security-opt", "seccomp=unconfined"];
 const modalCommands = (options) => modal.modalCommands(options);
 
 /** A /proc status file's fields, by name. */
@@ -60,12 +66,12 @@ describe("the Modal provider's upload commands in a root container with no netwo
 	 * keeps Docker's default capabilities and adds the two init --own-network needs, as Modal's root holds every one;
 	 * caps adds docker run flags.
 	 */
-	function sandbox(image, { waitSeconds = 120, user = "1000:1000", caps = [] } = {}) {
+	function sandbox(image, { waitSeconds = 120, user = "1000:1000", caps = [], gvisorLike = false, runtime = "vm" } = {}) {
 		const name = `computer-modal-${randomBytes(6).toString("hex")}`;
 		names.push(name);
 		const deadline = new Date(Date.now() + 300_000).toISOString();
-		const commands = modalCommands({ deadline, user, waitSeconds });
-		docker("run", "--detach", "--name", name, "--network", "none", "--user", "0:0", ...NAMESPACE_CAPS, ...caps, image, ...commands.entrypoint);
+		const commands = modalCommands({ deadline, user, waitSeconds, runtime });
+		docker("run", "--detach", "--name", name, "--network", "none", "--user", "0:0", ...(gvisorLike ? GVISOR_LIKE : NAMESPACE_CAPS), ...caps, image, ...commands.entrypoint);
 		return { name, deadline };
 	}
 
@@ -288,6 +294,42 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
 			assert.match(logs.stderr, /refuses to start/);
 			assert.match(logs.stderr, /bounding set/);
+		});
+
+		it(`${image}: as on gVisor (root without CAP_SYS_ADMIN, a user namespace allowed): --own-network refuses in words; --own-network-userns starts init in a user and network namespace of its own, and its programs reach their own loopback alone`, async () => {
+			// The VM runtime's flag, where root may not make a network namespace: init refuses, and the computer ends.
+			const vm = sandbox(image, { gvisorLike: true });
+			upload(vm.name);
+			assert.equal(exitCodeOf(vm.name), "1", "init refused to start, and the container ended");
+			assert.match(spawnSync("docker", ["logs", vm.name], { encoding: "utf8" }).stderr, /init refuses to start: cannot make a network namespace of its own .*CAP_SYS_ADMIN/);
+
+			// gVisor's: the same namespace, made inside a user namespace.
+			const { name, deadline } = sandbox(image, { gvisorLike: true, runtime: "gvisor" });
+			upload(name);
+			const client = await connected(name);
+			// PID 1 is the init that started the other: root, no capability left, no_new_privs set.
+			const pid1 = fieldsOf(docker("exec", name, "cat", "/proc/1/status"));
+			assert.deepEqual([pid1.Uid, pid1.CapEff, pid1.CapBnd, pid1.NoNewPrivs], ["0\t0\t0\t0", ZERO, ZERO, "1"], "the first init keeps nothing");
+			assert.deepEqual(docker("exec", name, "cat", "/proc/1/cmdline").split("\0").filter(Boolean), ["/opt/agentrun/computerd", "init", "--deadline", deadline, "--user", "1000:1000", "--own-network-userns"]);
+			const outside = docker("exec", name, "sh", "-c", "readlink /proc/1/ns/net; readlink /proc/1/ns/user").trim().split("\n");
+			// A program exec.run starts: uid 1000, no capability, in another network and user namespace than PID 1's.
+			const ran = await client.call("exec.run", { argv: ["sh", "-c", "id -u; grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status; readlink /proc/self/ns/net; readlink /proc/self/ns/user"], timeoutMs: 10_000 });
+			assert.equal(ran.ok, true, JSON.stringify(ran));
+			const [id, capEff, capBnd, nnp, net, user] = Buffer.from(ran.value.stdout, "base64").toString().trim().split("\n");
+			assert.deepEqual([id, capEff.replace(/\s+/g, " "), capBnd.replace(/\s+/g, " "), nnp.replace(/\s+/g, " ")], ["1000", `CapEff: ${ZERO}`, `CapBnd: ${ZERO}`, "NoNewPrivs: 1"]);
+			assert.notEqual(net, outside[0], "the program's network namespace is not PID 1's");
+			assert.notEqual(user, outside[1], "the program's user namespace is not PID 1's");
+			// The provider's probe, through the daemon: the loopback alone, every target refused.
+			const targets = ["1.1.1.1:443", "1.1.1.1:53/udp"];
+			const probed = await client.call("exec.run", { argv: ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])], timeoutMs: 30_000 }, { signal: AbortSignal.timeout(40_000) });
+			client.close();
+			assert.equal(probed.ok, true, JSON.stringify(probed));
+			const report = JSON.parse(Buffer.from(probed.value.stdout, "base64").toString());
+			assert.deepEqual(report.interfaces, ["lo"], "the daemon's programs see their own loopback alone");
+			assert.deepEqual([report.reached, report.accepted], [[], []]);
+			// SIGTERM to PID 1, as Modal's terminate sends: passed on, and the computer ends.
+			docker("kill", "--signal", "TERM", name);
+			assert.notEqual(exitCodeOf(name), "", "the computer ended on SIGTERM");
 		});
 
 		it(`${image}: an upload whose sha256 does not match exits 5 in words and leaves no daemon where the entrypoint looks`, () => {

@@ -108,6 +108,17 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `--egress`: such a computer's network is `none` (open and allowlists wait for a proxy out of that namespace, which
   is not built yet). The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
+- `computerd init ... --user <uid:gid> --own-network-userns` is the same fence where root may make a user namespace but
+  not a network namespace: Modal's gVisor, a GPU computer's runtime (see Modal's "The loopback fence on gVisor").
+  - Init starts itself again as `computerd userns-init --started-in <its network namespace>`, a child in a new user
+    namespace that maps every uid and gid to itself (written by the root parent, which needs CAP_SETUID and CAP_SETGID)
+    and a new network namespace.
+  - The child does all of the above but make the namespace: it brings the loopback up and reads back
+    (`isolate.KeepOwnNetwork`) that no thread is in the namespace it was started from, before touching anything.
+  - The first init keeps no capability (no_new_privs, every set empty), passes SIGTERM and SIGINT on, reaps, and exits
+    with the child's code.
+  - Without the user namespace, the child refuses to start in words, as `--own-network` does without CAP_SYS_ADMIN.
+  - `--own-network` and `--own-network-userns` are one or the other, each with `--user` and no `--egress`.
 - **Init drops its privileges itself, as any user, root included,** before it listens, so the line holds on every
   vendor and not only where the provider drops capabilities (Docker: `--cap-drop ALL`). On every thread it sets
   `no_new_privs`; drops from the bounding set each capability up to the kernel's last
@@ -1151,7 +1162,8 @@ of that slice, and the live conformance file waits for a key (below).
 - **The loopback block.** Init starts with `--own-network` (see [Init, the socket and the
   bridge](#init-the-socket-and-the-bridge)) whatever Modal runs inside the sandbox: the daemon's programs reach their
   own loopback and nothing else, and the default computer user is 2510:2510 (`user` option or spec.user for another;
-  init refuses one another process holds). Modal's root holds every capability, so the namespace is made there. Known
+  init refuses one another process holds). On the VM runtime Modal's root holds every capability, so the namespace is
+  made there; a GPU computer, on gVisor, starts with `--own-network-userns` instead (below). Known
   gap: network `open` is refused in words until a proxy carries it out of the daemon's own network, the next feature
   after this one; a computer that needs pip, npm or git from the internet cannot be made on Modal until then.
 - **The daemon is uploaded at create.** The sandbox's command is a small POSIX sh entrypoint (BusyBox and coreutils
@@ -1266,18 +1278,34 @@ of that slice, and the live conformance file waits for a key (below).
   type it asked for. `spec.gpu: { type, count }` becomes the SDK's `gpu` (`"T4"`, `"A100-80GB:2"`), and since Modal
   offers GPUs on gVisor only, such a sandbox runs with `runtime: "gvisor"`; every other computer stays on the VM
   runtime. The drift check holds the runtime from both sides: the probe's kernel must be gVisor's on a GPU computer, and a
-  VM's on any other. Init starts with `--own-network` as on every computer, so a gVisor that cannot give it its own network
-  namespace refuses at init and the create fails in words, never with a weaker isolation. Modal reads no GPU back: the
+  VM's on any other. Modal reads no GPU back: the
   spec tag records the GPUs, and attach reports them on a computer the probe reads as gVisor. `capabilities().isolation`
   stays `vm`, every other computer's; a GPU computer's is declared apart, `gpu.isolation: "gvisor"`, so a caller that
   needs a VM's isolation can tell. Modal's GPUs are `preemptible: true`: Modal may move a GPU workload, so a run on one
   can be cut short (guide/preemption). `gpu.mounts` is `[]`: a GPU with an Archil mount is refused (checkGpu), since the
   Archil client's FUSE mount is not proven on gVisor yet. That keeps serve from giving a run a Modal GPU sandbox in either
   mode, as a serve sandbox always mounts the run's folder; the library takes one without a mount.
-  **A Modal GPU computer can't start today.** Its daemon's init can't make its own network namespace under gVisor:
-  Modal's gVisor refuses `unshare(CLONE_NEWNET)` with EPERM (CAP_SYS_ADMIN is not given), so init refuses to start, and
-  the create fails as `gone` in init's words. That is the fence holding: there is no way to skip it. It was seen live
-  on a T4 on 11-10 (d6/live-gpu-modal-live-20261110t234551z). A workaround is pending a decision.
+- **The loopback fence on gVisor.** A GPU computer's init gets the same network namespace of its own, loopback alone,
+  made another way.
+  - Modal's gVisor gives root no CAP_SYS_ADMIN, so `unshare(CLONE_NEWNET)` is EPERM. With `--own-network`, init refused
+    to start there (live on a T4, 11-10).
+  - It does let root make a user namespace with a network namespace inside it (`unshare -Urn`, live on a T4, 11-11, as
+    root and as nobody; nothing of Modal's runs or listens inside a gVisor sandbox, and every loopback port answered
+    nothing).
+  - So the provider starts init on gVisor with `--own-network-userns`. A Go process with threads can't enter a new user
+    namespace, so init starts itself again as `computerd userns-init`, in a new user namespace mapping every uid and gid
+    to itself and a new network namespace.
+  - That child is the init that serves. It brings its loopback up, reads back that no thread is in the namespace it was
+    started from and that the loopback alone is up, refuses strangers, closes the system's sockets, drops to the tool
+    user and installs the vsock and io_uring filter, as `--own-network` does.
+  - The first init stays PID 1 with no capability and no_new_privs set. It passes SIGTERM and SIGINT on, and ends with
+    the child, so the sandbox lives as long as the init that serves.
+  - It is declared by runtime: `--own-network` on the VM runtime, `--own-network-userns` on gVisor, never one tried after
+    the other.
+  - A root container with Docker's default capabilities and no seccomp profile stands in for gVisor in
+    `test/docker/modal-commands.docker.test.mjs`: `--own-network` refused in words; `--own-network-userns` running with
+    the programs as 1000, no capability, in another network and user namespace than PID 1's, the loopback alone.
+  - Not yet proven live on Modal.
 
 ### What every Modal fact rests on
 

@@ -286,6 +286,10 @@ func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 		{"init", "--own-network", "--deadline", deadline},
 		{"init", "--deadline", deadline, "--own-network", "--egress", "/opt/agentrun/egress/egress.sock", "--user", "2510:2510"},
 		{"init", "--deadline", deadline, "--own-network", "--own-network", "--user", "2510:2510"},
+		{"init", "--deadline", deadline, "--own-network-userns"},
+		{"init", "--deadline", deadline, "--own-network-userns", "--egress", "/opt/agentrun/egress/egress.sock", "--user", "2510:2510"},
+		{"init", "--deadline", deadline, "--own-network", "--own-network-userns", "--user", "2510:2510"},
+		{"init", "--deadline", deadline, "--own-network-userns", "--own-network-userns", "--user", "2510:2510"},
 	} {
 		code, stderr := computerd(t, 30*time.Second, args...)
 		if code != 2 {
@@ -305,6 +309,36 @@ func TestInitWithOwnNetworkMustStartAsRoot(t *testing.T) {
 	code, stderr := computerd(t, 30*time.Second, "init", "--own-network", "--user", "2510:2510", "--deadline", deadline)
 	if code != 1 || !strings.Contains(stderr, "root") {
 		t.Fatalf("init --own-network as uid %d: exit %d, stderr %q; want a refusal that says init must start as root", os.Geteuid(), code, stderr)
+	}
+}
+
+// --own-network-userns starts init again in a user namespace mapping every id to itself, which takes root's CAP_SETUID
+// and CAP_SETGID: as another user it is refused in words, and nothing is served.
+func TestInitWithOwnNetworkUsernsRefusesInWordsWithoutRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: init would start its child and drop; that is the Docker live tests'")
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	code, stderr := computerd(t, 30*time.Second, "init", "--own-network-userns", "--user", "2510:2510", "--deadline", deadline)
+	if code != 1 || !strings.Contains(stderr, "user and a network namespace of its own") || !strings.Contains(stderr, "CAP_SETUID") {
+		t.Fatalf("init --own-network-userns as uid %d: exit %d, stderr %q; want a refusal that names the user namespace and CAP_SETUID", os.Geteuid(), code, stderr)
+	}
+}
+
+// userns-init is only the child InitInUserNamespace starts: with no --started-in, or without --own-network-userns
+// among init's arguments, it refuses (2) before anything.
+func TestUserNamespaceInitRefusesAnythingButTheChildsArguments(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"userns-init", "--deadline", deadline, "--own-network-userns", "--user", "2510:2510"},
+		{"userns-init", "--started-in", "", "--deadline", deadline, "--own-network-userns", "--user", "2510:2510"},
+		{"userns-init", "--started-in", "net:[4026531840]", "--deadline", deadline, "--user", "2510:2510"},
+		{"userns-init", "--started-in", "net:[4026531840]", "--deadline", deadline, "--own-network", "--user", "2510:2510"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 || !strings.Contains(stderr, "userns-init") && !strings.Contains(stderr, "--own-network") {
+			t.Errorf("computerd %q: exit %d, stderr %q; want 2, a refusal in words", args, code, stderr)
+		}
 	}
 }
 

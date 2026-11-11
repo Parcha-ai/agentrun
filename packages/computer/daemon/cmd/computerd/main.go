@@ -1,6 +1,6 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network | --own-network-userns] [--egress <socket>]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
@@ -13,6 +13,11 @@
 //	                    init, still root, refuses to start while another process holds uid, moves itself into a network
 //	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock and io_uring to
 //	                    every thread: its programs reach their own loopback and nothing else (internal/isolate)
+//	                    With --own-network-userns instead, where root may make a user namespace but not a network
+//	                    namespace (gVisor on Modal: no CAP_SYS_ADMIN), init starts itself again as `computerd userns-init`
+//	                    in a user namespace that maps every id to itself and a network namespace, both its own; that init
+//	                    does all of the above but make the namespace, and this one keeps no capability, passes SIGTERM
+//	                    and SIGINT on, and ends with it (daemon.InitInUserNamespace)
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
@@ -66,7 +71,7 @@ var version = "0.0.0-dev"
 
 func main() {
 	logger := log.New(os.Stderr, "computerd: ", log.LstdFlags)
-	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && len(os.Args) != 2) {
+	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && len(os.Args) != 2) {
 		usage()
 	}
 	switch os.Args[1] {
@@ -83,21 +88,31 @@ func main() {
 		if !ok {
 			os.Exit(2)
 		}
-		var dropped error
-		if opts.user != nil {
-			dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), daemon.Isolation{OwnNetwork: opts.ownNetwork})
-		} else {
-			dropped = daemon.Unprivileged()
+		if opts.ownNetworkUserns {
+			self, err := os.Executable()
+			if err != nil {
+				logger.Printf("init refuses to start: cannot name its own program to start again: %v", err)
+				os.Exit(1)
+			}
+			os.Exit(daemon.InitInUserNamespace(self, os.Args[2:], logger))
 		}
-		if dropped != nil {
-			logger.Printf("init refuses to start: %v", dropped)
-			os.Exit(1)
+		os.Exit(runInit(opts, daemon.Isolation{OwnNetwork: opts.ownNetwork}, logger))
+	case daemon.UserNamespaceInitArg:
+		// The init InitInUserNamespace started, already in a user and a network namespace of its own.
+		args := os.Args[2:]
+		if len(args) < 2 || args[0] != "--started-in" || args[1] == "" {
+			logger.Printf("init: %s takes --started-in <network namespace> and then init's own arguments", daemon.UserNamespaceInitArg)
+			os.Exit(2)
 		}
-		var relay daemon.Egress
-		if opts.egress != "" {
-			relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+		opts, ok := initOptionsOf(logger, args[2:])
+		if !ok {
+			os.Exit(2)
 		}
-		os.Exit(daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, logger))
+		if !opts.ownNetworkUserns {
+			logger.Printf("init: %s runs only with --own-network-userns among init's arguments", daemon.UserNamespaceInitArg)
+			os.Exit(2)
+		}
+		os.Exit(runInit(opts, daemon.Isolation{OwnNetwork: true, StartedIn: args[1]}, logger))
 	case "probe":
 		if diagnose, ok := diagnoseOf(logger, os.Args[2:]); !ok {
 			os.Exit(2)
@@ -132,6 +147,26 @@ func main() {
 	default:
 		usage()
 	}
+}
+
+// runInit drops (Become with isolation, as --user asks, else Unprivileged), then serves until the computer ends, and
+// gives init's exit code; a drop that fails is said and init refuses to start (1).
+func runInit(opts initOptions, isolation daemon.Isolation, logger *log.Logger) int {
+	var dropped error
+	if opts.user != nil {
+		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
+	} else {
+		dropped = daemon.Unprivileged()
+	}
+	if dropped != nil {
+		logger.Printf("init refuses to start: %v", dropped)
+		return 1
+	}
+	var relay daemon.Egress
+	if opts.egress != "" {
+		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+	}
+	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, logger)
 }
 
 // syncServeRun is the server sync-serve leaves behind: itself again, given the listener as fd 3.
@@ -208,7 +243,7 @@ func syncServeRunning(logger *log.Logger, args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network | --own-network-userns] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | version")
 	os.Exit(2)
 }
 
@@ -222,12 +257,15 @@ type initOptions struct {
 	egress string
 	// ownNetwork: init, as root, gives itself and its programs a network of their own (daemon.Isolation).
 	ownNetwork bool
+	// ownNetworkUserns: the same network of their own, made inside a user namespace of their own, where root may make
+	// one but not a network namespace (daemon.InitInUserNamespace).
+	ownNetworkUserns bool
 }
 
 const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid> and --egress <socket> may follow, each once"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
-const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (such a computer's network is none)"
+const ownNetworkWords = "--own-network or --own-network-userns takes no value, one of them given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (such a computer's network is none)"
 
 // initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>` and `--egress <socket>`,
 // in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum before the deadline, it
@@ -238,12 +276,13 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	var sawDeadline, sawMost, sawUser, sawEgress bool
 	for i := 0; i < len(args); i += 2 {
 		flag := args[i]
-		if flag == "--own-network" {
-			if opts.ownNetwork {
+		if flag == "--own-network" || flag == "--own-network-userns" {
+			if opts.ownNetwork || opts.ownNetworkUserns {
 				logger.Printf("init: %s", ownNetworkWords)
 				return opts, false
 			}
-			opts.ownNetwork = true
+			opts.ownNetwork = flag == "--own-network"
+			opts.ownNetworkUserns = flag == "--own-network-userns"
 			i-- // a flag with no value
 			continue
 		}
@@ -306,7 +345,7 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		logger.Printf("init: %s", deadlineWords)
 		return opts, false
 	}
-	if opts.ownNetwork && (opts.user == nil || opts.egress != "") {
+	if (opts.ownNetwork || opts.ownNetworkUserns) && (opts.user == nil || opts.egress != "") {
 		logger.Printf("init: %s", ownNetworkWords)
 		return opts, false
 	}

@@ -745,9 +745,7 @@ computer is made with the GPUs asked.
   cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox with the run's folder mounted from Archil, and
   its network allowlist, are not yet proven live.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
-  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible. Besides,
-  a Modal GPU computer can't start today: its daemon can't make its own network namespace under gVisor, so it refuses to
-  start (pending a decision; see the computer package's README).
+  proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 

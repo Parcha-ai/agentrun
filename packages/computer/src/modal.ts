@@ -449,11 +449,13 @@ const HOLD_SCRIPT = [
 
 /**
  * Init's arguments, after the daemon's path: the one place they are built, for the image route's command and the
- * entrypoint alike. Init and every tool run in a network namespace of their own, loopback alone (--own-network), an
- * Archil computer's too: its archil client and serve run through exec as root, outside it.
+ * entrypoint alike. Init and every tool run in a network namespace of their own, loopback alone, an Archil computer's
+ * too: its archil client and serve run through exec as root, outside it. On the VM runtime root makes the namespace
+ * (--own-network). On gVisor, a GPU computer's runtime, root may not (no CAP_SYS_ADMIN: unshare(CLONE_NEWNET) is EPERM,
+ * live on a T4), but may make a user namespace, so init makes the same namespace inside one (--own-network-userns).
  */
-function initArgs({ deadline, user }: { deadline: string; user: string }): string[] {
-	return ["init", "--deadline", deadline, "--user", user, "--own-network"];
+function initArgs({ deadline, user, runtime }: { deadline: string; user: string; runtime: ModalRuntime }): string[] {
+	return ["init", "--deadline", deadline, "--user", user, runtime === "gvisor" ? "--own-network-userns" : "--own-network"];
 }
 
 /**
@@ -469,9 +471,10 @@ export function modalCommands({
 	daemon = DAEMON_IN_COMPUTER,
 	home = WORK,
 	gate,
-}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string; gate?: string } = {}) {
+	runtime = "vm",
+}: { deadline?: string; user?: string; waitSeconds?: number; sha256?: string; daemon?: string; home?: string; gate?: string; runtime?: ModalRuntime } = {}) {
 	return {
-		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs({ deadline, user })],
+		entrypoint: ["sh", "-c", ENTRYPOINT_SCRIPT, "sh", daemon, String(waitSeconds), home, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs({ deadline, user, runtime })],
 		upload: ["sh", "-c", UPLOAD_SCRIPT, "sh", daemon, sha256],
 		hold: ["sh", "-c", HOLD_SCRIPT, "sh", daemon],
 		stdio: [daemon, "stdio"],
@@ -953,8 +956,8 @@ export class ModalProvider implements ComputerProvider {
 		const waitMs = uploadMs + callMs + (gate === undefined ? 0 : this.#archilMs());
 		const command =
 			daemon === undefined && gate === undefined
-				? [DAEMON_IN_COMPUTER, ...initArgs({ deadline, user })]
-				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, ...(gate === undefined ? {} : { gate }) }).entrypoint;
+				? [DAEMON_IN_COMPUTER, ...initArgs({ deadline, user, runtime: recorded.runtime })]
+				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, runtime: recorded.runtime, ...(gate === undefined ? {} : { gate }) }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
 			runtime: recorded.runtime,

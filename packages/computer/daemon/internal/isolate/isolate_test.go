@@ -18,21 +18,30 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 )
 
-// The children this test binary runs as: ownNetworkChild, denySocketsChild and vsockChild.
+// The children this test binary runs as: ownNetworkChild (with OwnNetwork, or KeepOwnNetwork), denySocketsChild and
+// vsockChild.
 const (
-	ownNetworkArg  = "own-network-child"
-	denySocketsArg = "deny-sockets-child"
-	vsockArg       = "vsock-child"
-	waitArg        = "wait-child"
-	prSetNoNewPriv = 38
-	heldThreads    = 4
+	ownNetworkArg     = "own-network-child"
+	keepOwnNetworkArg = "keep-own-network-child"
+	denySocketsArg    = "deny-sockets-child"
+	vsockArg          = "vsock-child"
+	waitArg           = "wait-child"
+	prSetNoNewPriv    = 38
+	heldThreads       = 4
 )
 
 func TestMain(m *testing.M) {
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
 		case ownNetworkArg:
-			os.Exit(ownNetworkChild(os.Args[2:]))
+			os.Exit(ownNetworkChild(os.Args[2:], func(string) error { return OwnNetwork() }))
+		case keepOwnNetworkArg:
+			// args: the parent's listener, then the network namespace the child was started from.
+			if len(os.Args) != 4 {
+				fmt.Fprintln(os.Stderr, "keep-own-network child: <parent's loopback address> <first network namespace>")
+				os.Exit(2)
+			}
+			os.Exit(ownNetworkChild(os.Args[2:3], func(string) error { return KeepOwnNetwork(os.Args[3]) }))
 		case denySocketsArg:
 			os.Exit(denySocketsChild())
 		case vsockArg:
@@ -79,11 +88,11 @@ func threadNamespaces() ([]string, error) {
 	return links, nil
 }
 
-// ownNetworkChild holds threads of its own, calls OwnNetwork, and prints what a program of its would see: "refused <why>"
-// and exit 3 when OwnNetwork refuses; else "first <ns>", "thread <ns>" for each thread, "interfaces <names>", "parent
-// <reached|refused: why>" for a dial to the parent's loopback listener at args[0], and "loopback <ok|why>" for a
-// listener of its own on its loopback.
-func ownNetworkChild(args []string) int {
+// ownNetworkChild holds threads of its own, calls own (OwnNetwork, or KeepOwnNetwork), and prints what a program of its
+// would see: "refused <why>" and exit 3 when own refuses; else "first <ns>", "thread <ns>" for each thread, "interfaces
+// <names>", "parent <reached|refused: why>" for a dial to the parent's loopback listener at args[0], and "loopback
+// <ok|why>" for a listener of its own on its loopback.
+func ownNetworkChild(args []string, own func(string) error) int {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "own-network child: <parent's loopback address>")
 		return 2
@@ -94,7 +103,7 @@ func ownNetworkChild(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := OwnNetwork(); err != nil {
+	if err := own(first); err != nil {
 		fmt.Println("refused", err)
 		return 3
 	}
@@ -223,6 +232,83 @@ func TestOwnNetworkLeavesEveryThreadOnlyItsOwnLoopback(t *testing.T) {
 	}
 	if first == "" || threads < heldThreads+1 {
 		t.Fatalf("the child's lines: %q; want its first namespace and every thread (%d or more)", lines, heldThreads+1)
+	}
+}
+
+// KeepOwnNetwork, in a child started as InitInUserNamespace starts init: in a user namespace and a network namespace of
+// its own, made at its start, with root of that user namespace mapped to this user (as an unprivileged user may; the
+// computer's init maps every id). The child brings the loopback up and reads back that no thread is in the namespace
+// it was started from, and its programs see the loopback alone: the box's listener unreached, their own loopback usable.
+// Started in no network namespace of its own, it refuses in words: every thread is still in the first one.
+func TestKeepOwnNetworkHoldsAnInitStartedInItsOwnNetworkAndRefusesOneThatWasNot(t *testing.T) {
+	nocgo.Require(t)
+	first, err := os.Readlink("/proc/thread-self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0") // key-gate: loopback-rule the test's stand-in for a vendor agent on the box's loopback
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	start := func(flags uintptr) (string, error) {
+		cmd := exec.Command(os.Args[0], keepOwnNetworkArg, listener.Addr().String(), first)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags:  flags,
+			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		}
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	out, err := start(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)
+	// A host may refuse the user namespace, or make one whose root holds nothing (Ubuntu's AppArmor userns restriction).
+	if err != nil && (!strings.HasPrefix(out, "refused") || strings.Contains(out, "operation not permitted")) {
+		t.Skipf("this host gives this user no user namespace with a network namespace (%v: %s): run this test binary where it does, as gVisor on Modal does", err, strings.TrimSpace(out))
+	}
+	if err != nil {
+		t.Fatalf("KeepOwnNetwork in a user and network namespace of its own: %v, %q", err, out)
+	}
+	threads := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		word, rest, _ := strings.Cut(line, " ")
+		switch word {
+		case "thread":
+			threads++
+			if rest == first {
+				t.Errorf("a thread is in the network namespace the child was started from (%s)", rest)
+			}
+		case "interfaces":
+			if rest != "lo:true" {
+				t.Errorf("interfaces %q, want lo alone, up", rest)
+			}
+		case "parent":
+			if !strings.HasPrefix(rest, "refused") {
+				t.Errorf("a program reached a listener on the box's loopback: %s", rest)
+			}
+		case "loopback":
+			if rest != "ok" {
+				t.Errorf("a program cannot use its own loopback: %s", rest)
+			}
+		}
+	}
+	if threads < heldThreads+1 {
+		t.Fatalf("the child's lines: %q; want every thread (%d or more)", out, heldThreads+1)
+	}
+
+	refused, err := start(syscall.CLONE_NEWUSER)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 || !strings.Contains(refused, "still in the network namespace init started in") {
+		t.Fatalf("KeepOwnNetwork started in the first network namespace: %v, %q; want a refusal (exit 3) that says a thread is still in it", err, refused)
 	}
 }
 

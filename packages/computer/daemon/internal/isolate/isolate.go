@@ -62,6 +62,26 @@ func OwnNetwork() error {
 	return checkOwnNetwork(first)
 }
 
+// KeepOwnNetwork is OwnNetwork for an init that was started in a network namespace of its own: made, with a user
+// namespace around it, by the init that started it (daemon.InitInUserNamespace), where root may make a user namespace
+// but not a network namespace (gVisor on Modal: unshare(CLONE_NEWNET) is EPERM without CAP_SYS_ADMIN). first is the
+// network namespace that init was in. It brings the loopback up, as root of the user namespace that owns the network
+// namespace, and reads back what OwnNetwork reads: no thread in first, and the loopback alone up or addressed. Any
+// failure is an error in words, and init refuses to start.
+func KeepOwnNetwork(first string) error {
+	if first == "" {
+		return fmt.Errorf("the network namespace init was started from is not named, so its own cannot be read back as another")
+	}
+	// Before anything is touched: an init still in first was not started in a namespace of its own.
+	if err := threadsLeft(first); err != nil {
+		return err
+	}
+	if err := loopbackUp(); err != nil {
+		return err
+	}
+	return checkOwnNetwork(first)
+}
+
 // loopbackUp brings up the loopback of the network namespace this thread is in: a new one starts with it down.
 func loopbackUp() error {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
@@ -86,6 +106,21 @@ func loopbackUp() error {
 // namespace the loopback alone up or addressed (netstate.OwnProblem): a kernel's fallback tunnels, down with no address,
 // are there on some kernels (Modal's), and no program of init's can raise them, holding no CAP_NET_ADMIN.
 func checkOwnNetwork(first string) error {
+	if err := threadsLeft(first); err != nil {
+		return err
+	}
+	ifaces, err := netstate.Read()
+	if err != nil {
+		return fmt.Errorf("cannot read the new network namespace back: %w", err)
+	}
+	if problem := netstate.OwnProblem(ifaces); problem != "" {
+		return fmt.Errorf("init's own network does not keep to its loopback: %s", problem)
+	}
+	return nil
+}
+
+// threadsLeft reads back that no thread of this process is in the network namespace first.
+func threadsLeft(first string) error {
 	tasks, err := os.ReadDir("/proc/self/task")
 	if err != nil {
 		return fmt.Errorf("cannot list init's threads to read their network namespace back: %w", err)
@@ -99,15 +134,8 @@ func checkOwnNetwork(first string) error {
 			return fmt.Errorf("cannot read thread %s's network namespace back: %w", task.Name(), err)
 		}
 		if link == first {
-			return fmt.Errorf("thread %s is still in the network namespace init started in (%s) after every thread was moved", task.Name(), link)
+			return fmt.Errorf("thread %s is still in the network namespace init started in (%s), not in one of its own", task.Name(), link)
 		}
-	}
-	ifaces, err := netstate.Read()
-	if err != nil {
-		return fmt.Errorf("cannot read the new network namespace back: %w", err)
-	}
-	if problem := netstate.OwnProblem(ifaces); problem != "" {
-		return fmt.Errorf("init's own network does not keep to its loopback: %s", problem)
 	}
 	return nil
 }
