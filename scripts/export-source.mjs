@@ -149,7 +149,9 @@ function excluded(path, file) {
 }
 const forbidden = [
   // A /home/ or /Users/ right after a route parameter (`{name}`, not `${...}`) is an API route template (/agents/{agent_id}/home/files/{path}).
-  ['machine_path', /(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
+  // /Users/Shared/ is macOS's folder shared by every user, no one's home: a path in it names no one's machine (an Orgo
+  // Mac's labels file, /Users/Shared/agentrun/labels.json), so it alone of /Users/ is not a finding.
+  ['machine_path', /(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home\/|Users\/(?!Shared\/))[A-Za-z0-9._-]+\//],
   // No leading host group: it made the scan quadratic on a long run of host characters, and only the match's presence is used.
   ['internal_domain', /(?:code\.run|northflank\.com|ts\.net)\b/i],
   ['private_key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],

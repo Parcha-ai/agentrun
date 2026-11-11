@@ -776,13 +776,13 @@ export class OrgoDesktopProvider implements ComputerProvider {
 				...(labels[RUN_LABEL] !== undefined ? { [RUN_LABEL]: labels[RUN_LABEL] } : {}),
 				...(parts.epoch !== undefined ? { [EPOCH_LABEL]: parts.epoch } : {}),
 			};
-			let deadline: Date | undefined = parts.deadline ?? (typeof record.ends_at === "string" ? new Date(record.ends_at) : undefined);
+			// The janitor's deadline is the name's, which every name this provider makes carries.
+			const deadline = parts.deadline;
 			if (others.length > 0) {
 				if (record.status !== "running") continue;
 				const file = await this.#readLabels(ref, signal);
 				if (!file.ok || !others.every((key) => file.value.labels[key] === labels[key])) continue;
 				read = { ...file.value.labels };
-				deadline = parts.deadline ?? new Date(file.value.deadline);
 			}
 			infos.push({ ref, labels: read, deadline, state: RUNNING.has(record.status) ? "running" : "stopped", network: "open" });
 		}

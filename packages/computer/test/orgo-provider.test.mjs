@@ -308,6 +308,14 @@ test("Orgo list: a Windows or macOS desktop in the workspace is the other provid
 	for (const other of others) assert.notEqual(fakes.api.computers.get(other.id).deleted, true, other.os);
 });
 
+test("Orgo list: the deadline is the name's alone; a computer whose name has none is listed with none, whatever Orgo's end, and the janitor ends it", async () => {
+	const fakes = setup();
+	const bare = fakes.api.add({ name: orgoName(SPEC.labels, "00000000000e"), ends_at: new Date(Date.now() + 2 * HOUR).toISOString() });
+	const listed = (await fakes.provider.list({})).value;
+	assert.deepEqual(listed.map(({ ref, deadline }) => [ref.id, deadline]), [[bare.id, undefined]], "Orgo's end is not a deadline");
+	assert.deepEqual(await sweep(fakes.provider, { now: new Date() }), { ok: true, value: { deleted: [bare.name], kept: 0 } });
+});
+
 test("Orgo attach: the labels file is the truth; the spec read back from inside; a name that disagrees with the file is drift", async () => {
 	const fakes = setup();
 	const { ref } = seeded(fakes);
