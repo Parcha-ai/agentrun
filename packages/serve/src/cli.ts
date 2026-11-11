@@ -409,4 +409,4 @@ stopping = stop;
 writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
 chmodSync(record, 0o600);
 // A stop asked during the start runs now, as one asked from here on would.
-if (askedAt !== undefined) stop();
+if (askedAt !== undefined) stop(askedAt);
