@@ -37,7 +37,7 @@ import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -514,6 +514,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/promote$/, name: "promoteLearnedWorkflow" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning\/diff$/, name: "getRunLearningDiff" },
 ];
@@ -1588,9 +1589,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
-   *  current revision's, those the gate allows under the server's settings and the agent's own. */
-  async function learnedDraftToolsOf(id: string): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
-    const revision = (await needAgent(id)).revision;
+   *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
+   *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
+    const revision = (entry ?? (await needAgent(id))).revision;
     if (revision?.kind !== "agentic") return { tools: [], gated: {} };
     const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
@@ -1748,6 +1750,48 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
     const entry = await agents.create(definition, async (revision) => void (warnings = await saveable(revision)), "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined);
     return { entry, warnings };
+  }
+
+  /** Agent `source`'s learned workflow `raw` made into a workflow agent of its own, as POST /agents makes one
+   *  (createAgentOf: the definition's checks, the workflow's validation and what this host refuses of it). Only an active
+   *  one, checked again as a restore checks it (learning-routes.ts promotable). Its revision is a workflow revision of the
+   *  learned workflow.json, its tools those its call nodes call (each one the source agent has and its gate allows), and
+   *  the source's policy as it is now: its own tool settings, its approvals and its default cap, never more. Named
+   *  `body.name`, else the workflow's own; its id is the workflow's name, with -2, -3 and on past an agent's id or name
+   *  already here. The learned workflow stays where it is, unchanged. */
+  async function promoteOf(source: AgentEntry, raw: string, body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    const extra = unknownFields(body, ["name"]);
+    if (body.name !== undefined && (typeof body.name !== "string" || body.name.trim() === "" || body.name.length > 200)) extra.push({ field: "name", reason: "wrong_type", message: "name is the new agent's name: text of 1 to 200 characters" });
+    if (extra.length) throw invalid(extra);
+    const id = source.agent.id;
+    const learned = await promotable(data, id, raw, { refuse: await learningValues(id), draftTools: () => learnedDraftToolsOf(id, source) });
+    // Its policy from the same read of the source as the tools checked above: one revision's, whatever is saved meanwhile.
+    const policy = (source.revision?.body ?? {}) as { toolSettings?: Record<string, unknown>; approvals?: string; maxCostUsd?: number; capMode?: string };
+    const promoted = (agentId: string) => ({
+      id: agentId,
+      name: typeof body.name === "string" ? body.name.trim() : agentId,
+      ...(learned.description ? { description: learned.description } : {}),
+      workflow: learned.workflow,
+      tools: learned.calls,
+      ...(policy.toolSettings ? { tool_settings: policy.toolSettings } : {}),
+      ...(policy.approvals === "never" ? { approvals: "never" } : {}),
+      ...(policy.maxCostUsd !== undefined ? { max_cost_usd: policy.maxCostUsd } : {}),
+      ...(policy.capMode !== undefined ? { cap_mode: policy.capMode } : {}),
+    });
+    const note = `Made from the learned workflow ${learned.name} of agent ${id}.`;
+    // Another promotion (or a create) may take the id between the read and the write: the next one is tried.
+    for (let tries = 0; ; tries++) {
+      const all = [...(await agents.list()), ...(await agents.list({ archived: true }))];
+      const taken = new Set(all.flatMap((entry) => [entry.agent.id, entry.agent.name]));
+      let n = 1;
+      while (taken.has(n === 1 ? learned.name : `${learned.name}-${n}`)) n++;
+      const agentId = n === 1 ? learned.name : `${learned.name}-${n}`;
+      try {
+        return await createAgentOf({ definition: promoted(agentId), note });
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "agent_exists") || tries >= 4) throw error;
+      }
+    }
   }
 
   /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
@@ -2499,6 +2543,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Making a learned workflow an agent of its own gives it runs of its own, outside any agentic run's turn: the owner's
+    // click alone, the same session as an approval.
+    if (found.name === "promoteLearnedWorkflow" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+      authFailed(`/v2${path}`, "promote_without_session");
+      throw new ApiError("forbidden", owner ? "Making a learned workflow an agent takes the owner's password sign-in in the console, never a token." : "Making a learned workflow an agent takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
     // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
     // approving a note is (never a token a run, an MCP client or a script may hold).
     if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -3051,6 +3101,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const shown = secretsShown(refuse);
         const located = written.status === 201 && shown.name(written.file) === written.file;
         return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
+      }
+      case "promoteLearnedWorkflow": {
+        // The source read once the body is in, as it is then: what promoteOf checks and what it copies are that one read.
+        const body = await bodyOf(req);
+        const source = await needAgent(id);
+        const answer = await idempotent(req, `/agents/${id}/learning/workflows/${second}/promote`, body, async () => {
+          const { entry, warnings } = await promoteOf(source, second!, body);
+          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+        });
+        return send(res, answer.status, answer.body, answer.headers);
       }
       case "getRunLearning": {
         const run = await needRun(id);
