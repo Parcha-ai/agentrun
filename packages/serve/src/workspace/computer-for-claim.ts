@@ -36,13 +36,16 @@ export interface ClaimLaunch {
   /** What the run's computer may reach, as its launch resolved it (run-launch.ts boxAllow): "none" or absent is no
    *  network, a list an allow-list. The computer's spec takes it. */
   readonly boxAllow?: readonly string[] | "none";
+  /** The operator set that (run-launch.ts boxAllowSet), not the default. */
+  readonly boxAllowSet?: true;
 }
 
-/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach; and what the
- *  provider declares it makes (its capabilities()): its networks and its longest lifetime. Absent, the spec asks as the
- *  run allows. */
+/** What of the run a computer's spec is made from, besides its kind and provider: what it may reach, and whether the
+ *  operator set that; and what the provider declares it makes (its capabilities()): its networks and its longest
+ *  lifetime. Absent, the spec asks as the run allows. */
 export interface ComputerRun {
   readonly boxAllow?: readonly string[] | "none";
+  readonly boxAllowSet?: true;
   readonly networks?: readonly ("none" | "open" | "allow")[];
   readonly maxLifetimeMs?: number;
 }
@@ -299,6 +302,7 @@ export async function computerForClaim(launch: ClaimLaunch, store: Pick<Store, "
       const { network: networks, maxLifetimeMs } = provider.capabilities();
       const run: ComputerRun = {
         ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
+        ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
         ...(networks ? { networks } : {}),
         ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
       };

@@ -211,7 +211,7 @@ export const PROVIDERS: readonly ProviderEntry[] = [
 		label: "Local Chrome",
 		keys: [],
 		mounts: [],
-		network: ["open"],
+		network: ["open", "allow"],
 		metered: false,
 		capabilities: [{ kind: "browser", groups: ["cdp"] }],
 		defaultImage: { browser: BROWSER_IMAGE },

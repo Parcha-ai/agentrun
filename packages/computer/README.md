@@ -2115,7 +2115,9 @@ The fence and the sandbox are PR #1718's:
   Chrome that cannot start its sandbox here, in words that name the fix (an AppArmor profile on Ubuntu 23.10 and later,
   or Chrome's setuid helper). Nothing retries without the sandbox.
 - Every request Chrome makes goes through the browser's egress proxy, the same one Docker's computers use
-  (`docker/egress-proxy.ts`) with no list. The proxy reaches public addresses only, each checked after its lookup:
+  (`docker/egress-proxy.ts`). A spec's `network` is `"open"` (no list) or `{ allow: [names and CIDRs] }`. With a list,
+  the proxy reaches only those hosts, on ports 80 and 443, and refuses any other host by name before its lookup. A
+  CIDR that covers a refused range (loopback, private) is refused at `check()`. The proxy reaches public addresses only, each checked after its lookup:
   this machine's loopback, private networks, link-local and a cloud's metadata address (169.254.169.254) are
   refused. Chrome is started with `--proxy-bypass-list=<-loopback>`, so loopback goes through the proxy too. Its
   `--host-resolver-rules=MAP <proxy> <proxy>, MAP * ~NOTFOUND` means Chrome resolves no name itself, so a request
