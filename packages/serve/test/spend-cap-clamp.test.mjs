@@ -107,7 +107,8 @@ for (const harness of ["claude-agent", "codex"]) {
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be what was spent and the next request's least: $0.003 + $0.1024, $0.11 up to the cent.
-    assert.match(run.pending.said, /^Not sent: this run has spent \$0 of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
+    // It spent $0.003: under a cent, but never "$0", which would say it spent nothing.
+    assert.match(run.pending.said, /^Not sent: this run has spent less than a cent of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal((await records(data, run_id, "faux.request")).length, 2, "two were sent");
     const usage = rows.findLast((r) => r.kind === "usage")?.usage;
     assert.equal(usage?.requests, 2, JSON.stringify(usage));
