@@ -313,7 +313,7 @@ test("an allow written just after a stop (its write raced the stop's) never runs
   const allow = await server.command("run-1", { kind: "approve", body: { approval: ask.callId } });
   assert.ok(allow.id > stop.id);
   spawn("runner-b");
-  await cancelled(server);
+  await stopped(server);
   await staysWithdrawn(server, sent);
   const rows = await server.commands("run-1", 0);
   const allowRow = rows.find((row) => row.id === allow.id);
