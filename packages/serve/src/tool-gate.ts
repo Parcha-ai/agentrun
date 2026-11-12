@@ -23,6 +23,7 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
 import { computerToolDefs, defaultPermissionOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
@@ -95,6 +96,9 @@ const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot
 const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
   const keys = new Map<string, string[]>();
   for (const def of [...computerToolDefs("desktop", []), ...computerToolDefs("phone", [])]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  // pi's code mode, offered only beside a desktop's or a phone's tools (runner/adapters/pi-computer.ts): its scripts
+  // reach the computer as computer_script's do, so it is held to the same keys. Its nested tool calls pass the gate each.
+  keys.set(CODEMODE_TOOL_NAME, keys.get("computer_script") ?? []);
   return keys;
 })();
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };

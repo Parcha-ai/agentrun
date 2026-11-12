@@ -36,8 +36,9 @@
 // (end) ends its background processes through the computer (the kernel's endBackground), then sweeps.
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
-import { type CapabilityKind, COMPUTER_TOOLS, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
+import { type CapabilityKind, COMPUTER_TOOLS, type ComputerPort, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
 import type { ComputerClient, Group } from "@parcha/agentrun-computer";
+import type { Card } from "@parcha/agentrun-computer/surface";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { portOf, surfaceOf } from "./computer-ports.js";
 import { computerScriptExecutor } from "./computer-script.js";
@@ -81,11 +82,15 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and the script's
  *  executor for its card; none for any other computer. */
-async function portsOf(computer: RunComputer | undefined): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor }> {
+async function portsOf(computer: RunComputer | undefined): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
   const surface = await surfaceOf(computer.computer.client, computer.kind, computer.groups);
-  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(surface.card) };
+  return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(surface.card), card: surface.card };
 }
+
+/** A desktop's or a phone's surface as a harness's own script runtime binds it (pi's code mode): its card, which the
+ *  script prelude builds `computer` from, and the run's port, held by the person's take-over as the tools' is. */
+export type ScriptComputer = { readonly card: Card; readonly port: ComputerPort };
 
 /** The run's scratch in its own folder: bash's TMPDIR. */
 export const TMP_DIR = ".agentrun/tmp";
@@ -109,6 +114,8 @@ export type RunHands = {
   /** The registry's host executors: pi's read, write and edit, and pi's bash as bash's own run where the run has a shell
    *  (none where it is "none", so nothing can run a command on this server). */
   readonly executors: { readonly read: PiExecutor; readonly write: PiExecutor; readonly edit: PiExecutor; readonly bash?: PiExecutor; /** computer_script's run in serve's isolate, with a desktop or a phone. */ readonly computer_script?: Executor };
+  /** A desktop's or a phone's surface for a harness's own script runtime; none for any other computer. */
+  readonly computer?: ScriptComputer;
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
    *  and its TMPDIR swept. */
   sweep(): Promise<void>;
@@ -143,7 +150,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
   const own = await portsOf(computer);
-  const { ports, kinds, groups, script } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
+  const { ports, kinds, groups, script, card } = options.hold !== undefined && own.ports.computer ? { ...own, ports: options.hold(own.ports) } : own;
   return {
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
@@ -156,6 +163,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     cwd,
     names,
     executors: { read: executor(read), write: executor(tools.write!), edit: executor(tools.edit!), ...(shell === "none" ? {} : { bash: executor(tools.bash!) }), ...(script ? { computer_script: script } : {}) },
+    ...(card && ports.computer ? { computer: { card, port: ports.computer } } : {}),
     async sweep() {
       // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });
@@ -234,6 +242,9 @@ export type RunTools = {
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
    *  run's gate decided before its intent, each answer kept in `results` (bindTools). */
   hostTools(names: readonly string[], results?: ToolResults): HostTool[];
+  /** A desktop's or a phone's surface for a harness's own script runtime (pi's code mode binds `computer` over it); none
+   *  for any other computer. */
+  readonly computer?: ScriptComputer;
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
@@ -259,6 +270,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     shell: run.shell,
     kindTools: registry.list().map((def) => def.name).filter((name) => brought.has(name)),
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
+    ...(run.computer ? { computer: run.computer } : {}),
     async end() {
       await endBackground(run.hands);
       await run.sweep();
