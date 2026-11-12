@@ -34,6 +34,8 @@ jobs:
     timeout-minutes: 40
     defaults:
       run:
+        # bash by name runs with pipefail, so `swift test | tee` fails when a test does.
+        shell: bash
         working-directory: packages/computer/daemon-macos
     steps:
       - uses: actions/checkout@v4

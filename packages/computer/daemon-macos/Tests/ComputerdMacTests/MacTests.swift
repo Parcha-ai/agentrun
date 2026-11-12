@@ -23,9 +23,10 @@ final class MacTests: XCTestCase {
 	func testAChordHoldsItsModifiersAroundTheKey() throws {
 		let events = try Keycodes.events(try KeyChord.parse("super+shift+s"), source: nil)
 		let codes = events.map { $0.getIntegerValueField(.keyboardEventKeycode) }
-		let downs = events.map { $0.type == .keyDown }
 		XCTAssertEqual(codes, [0x38, 0x37, 0x01, 0x01, 0x37, 0x38].map(Int64.init))
-		XCTAssertEqual(downs, [true, true, true, false, false, false])
+		// The system makes a modifier key's event a flags change; the flags say which are held.
+		XCTAssertEqual(events.map(\.type), [.flagsChanged, .flagsChanged, .keyDown, .keyUp, .flagsChanged, .flagsChanged])
+		XCTAssertEqual(events.map { $0.flags.contains(.maskCommand) }, [false, true, true, true, false, false])
 		XCTAssertTrue(events[2].flags.contains(.maskCommand))
 		XCTAssertTrue(events[2].flags.contains(.maskShift))
 	}

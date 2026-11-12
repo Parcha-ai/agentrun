@@ -14,7 +14,8 @@ id=ai.parcha.computerd
 [[ "${CI:-}" == "true" ]] || { echo "seed-tcc.sh runs on CI runners only" >&2; exit 2; }
 
 echo "SIP: $(csrutil status 2>&1)"
-requirement="$(codesign --display --requirements - "$app" 2>&1 | sed -n 's/^designated => //p')"
+# An ad-hoc signature's requirement is implicit, so codesign prints it as a comment: "# designated => cdhash H"…"".
+requirement="$(codesign --display --requirements - "$app" 2>&1 | sed -n 's/^#* *designated => //p')"
 echo "designated requirement: $requirement"
 blob="$(mktemp)"
 printf '%s' "$requirement" | csreq -r- -b "$blob" || { echo "csreq could not compile the requirement"; exit 0; }
