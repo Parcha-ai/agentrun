@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="#case-studies">Code review for 18 cents. A job 7x cheaper once Opus learned it. See the case studies ↓</a>
+</p>
+
+<p align="center">
   <a href="https://www.npmjs.com/package/@parcha/agentrun"><img alt="npm" src="https://img.shields.io/npm/v/@parcha/agentrun?style=flat-square&label=npm&color=ff8700"></a>
   <a href="https://github.com/Parcha-ai/agentrun/actions/workflows/ci.yml?query=branch%3Amain"><img alt="Package checks" src="https://img.shields.io/github/actions/workflow/status/Parcha-ai/agentrun/ci.yml?branch=main&style=flat-square&label=checks"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-0a7ea4?style=flat-square"></a>
@@ -21,8 +25,8 @@
 
 <p align="center">
   <a href="#start-in-three-steps">Quickstart</a> ·
-  <a href="#take-the-tour">Tour</a> ·
   <a href="#case-studies">Case studies</a> ·
+  <a href="#take-the-tour">Tour</a> ·
   <a href="#templates">Templates</a> ·
   <a href="#deploy-it">Deploy</a> ·
   <a href="https://agentrun.ai/docs">Docs</a>
@@ -36,6 +40,23 @@ tokens with every run.
   <a href="https://agentrun.ai"><img alt="An agent's Learning tab in the AgentRun console: since it learned, answers take 2 seconds instead of 10 and a run costs $0.0077 instead of $0.05, with the two notes it kept" src="docs/assets/readme/learning.png" width="100%"></a>
   <br><sub>An agent's Learning tab: what it kept, and what changed since. Demo data from the console's recorded fixtures.</sub>
 </p>
+
+## Case studies
+
+Real jobs on AgentRun. Real numbers.
+
+<p align="center">
+  <a href="docs/case-studies/code-review.md"><img alt="Code review case study: $0.18 a review, and 1.6 times the real bugs Greptile found on 30 pull requests it never trained on: 42% of real defects to 26%, and 5 of 8 serious bugs to 1" src="docs/assets/case-studies/case-code-review.png" width="49%"></a>
+  <a href="docs/case-studies/merchant-classification.md"><img alt="Merchant classification case study: 7 times cheaper, $0.89 a merchant by hand on Opus down to $0.124 with the workflow Opus learned, 86% of merchants finished by the cheap workflow alone" src="docs/assets/case-studies/case-merchant-codes.png" width="49%"></a>
+</p>
+
+**Code review for 18 cents.** A cheap model with a read-only shell, tuned on our own PRs. On 30 PRs it never saw, it
+caught 1.6x the real bugs Greptile did.
+[How we did it](docs/case-studies/code-review.md) · [Do it on your repo](docs/tutorials/tune-a-template.md)
+
+**Opus learns the job. A cheap model runs it.** Merchant classification went from $0.89 to $0.124 a merchant: 7x
+cheaper, and 96% right on a strict Opus re-check.
+[How we did it](docs/case-studies/merchant-classification.md) · [Do it with your own job](docs/tutorials/learn-then-hand-off.md)
 
 ## Why AgentRun
 
@@ -54,34 +75,6 @@ Bring your agent on the harness it runs best on: Claude Code, Codex, OpenCode or
 
 You don't build the plumbing: provider integrations, recovery, run tracking and learning are all here. Run it on your
 laptop with one command, in one container, or as a server with runners. Apache-2.0.
-
-## Case studies
-
-Real jobs, run on AgentRun, measured.
-
-<p align="center">
-  <a href="docs/case-studies/code-review.md"><img alt="Code review case study: $0.18 a review, and 1.6 times the real bugs Greptile found on 30 pull requests it never trained on: 42% of real defects to 26%, and 5 of 8 serious bugs to 1" src="docs/assets/case-studies/case-code-review.png" width="49%"></a>
-  <a href="docs/case-studies/merchant-classification.md"><img alt="Merchant classification case study: 7 times cheaper, $0.89 a merchant by hand on Opus down to $0.124 with the workflow Opus learned, 86% of merchants finished by the cheap workflow alone" src="docs/assets/case-studies/case-merchant-codes.png" width="49%"></a>
-</p>
-
-### Code review for 18 cents
-
-We applied the `code-review` template to this repo, gave a cheap model (particle-1) a read-only checkout of every pull
-request, and tuned it on our own merged PRs with a blind judge. Eight reviewers, one comment-only review, about $0.18 a
-review. On 30 pull requests it never trained on, it caught 1.6 times the real defects Greptile did, and 5 of the 8
-serious bugs to Greptile's 1.
-
-[Read the case study](docs/case-studies/code-review.md) · [Tune a template on your own code](docs/tutorials/tune-a-template.md)
-
-### Expensive learns, cheap runs: merchant codes, 7x cheaper
-
-Every new merchant a payments company signs needs a 4-digit Merchant Category Code, picked by someone who reads the
-merchant's website. We gave the job to Opus with learning on and a reviewer's feedback after every answer. It wrote
-down the path it kept taking as a workflow, and from run 21 on a cheap model ran that workflow, calling Opus back only
-for the hard cases. The cost went from $0.89 a merchant to $0.124, the cheap workflow finished 86% of merchants on its
-own, and on Opus's strict re-check it got 96% right to by hand's 93%.
-
-[Read the case study](docs/case-studies/merchant-classification.md) · [Teach an expensive agent, run a cheap one](docs/tutorials/learn-then-hand-off.md)
 
 ## Start in three steps
 
