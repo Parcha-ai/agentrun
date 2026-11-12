@@ -757,22 +757,6 @@ export async function toolingOf(revision: Revision): Promise<Tooling> {
 /** The variables `entry` needs that `env` does not set, by name. */
 export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] => entry.needs.filter((name) => !env[name]);
 
-/** What keeps `names` from being bound here: names outside the table (or, for a workflow's model nodes, that a node may
- *  not name), and the variables each tool in it needs that `env` does not set. Undefined when nothing does. */
-export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, where: "agent" | "nodes" | "calls" = "agent"): { message: string; unbound: string[]; missing: Record<string, string[]> } | undefined {
-  const allowed = where === "nodes" ? NODE_TOOLS : where === "calls" ? CALL_TOOLS : BOUND_TOOLS;
-  const unbound = names.filter((name) => !allows(allowed, name));
-  if (unbound.length) {
-    const said = { agent: "agentrun-serve binds the tools", nodes: "A workflow's model nodes get the tools", calls: "A workflow's call nodes run the tools" }[where];
-    return { message: `${said} ${allowed.join(", ")}; this ${where === "agent" ? "revision" : "workflow"} also ${where === "calls" ? "calls" : "names"} ${unbound.join(", ")}.`, unbound, missing: {} };
-  }
-  const missing = Object.fromEntries(names.map((name) => [name, missingEnv(toolOf(name)!, env)] as const).filter(([, vars]) => vars.length));
-  const lacking = Object.entries(missing);
-  if (!lacking.length) return undefined;
-  const said = lacking.map(([name, vars]) => `The tool ${name} needs ${keyNeeded(vars)}.`).join(" ");
-  return { message: `This server holds no key for what the revision's tools need. ${said}`, unbound: [], missing };
-}
-
 /** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
  *  (names only), and the harnesses that run it (another harness than pi runs only the host tools, host-tools.ts). A tool
  *  a user picks a provider for (tool-plane.ts) gives the providers offered, the server's (`provider`, the default where it
