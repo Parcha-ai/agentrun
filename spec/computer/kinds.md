@@ -13,7 +13,10 @@ computer's `hello` repeats it. Each kind allows these operating systems and daem
 | `ios` | `ios` | `none` |
 | `browser` | `linux` | `none` |
 
-The daemon modes are in [`stdio.md`](stdio.md#how-the-daemon-gets-in-the-daemon-modes).
+The daemon modes are in [`stdio.md`](stdio.md#how-the-daemon-gets-in-the-daemon-modes). A mode says whether
+`computerd init` runs in the computer, keeping init's promises about programs, and nothing about who answers the wire:
+an attached Mac's Computerd and a phone's own agent are `none`, and a Mac still declares `exec` and `files` as groups
+when it offers them, just not as Core.
 
 ## Groups
 

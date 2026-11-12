@@ -126,9 +126,23 @@ export interface PairedComputer {
 	labels: Record<string, string>;
 }
 
-/** Why a hello may not stand for a paired computer, or undefined. */
+/** Whether protocol version a ("0.3") comes after b ("0.2"), part by part as numbers. */
+function laterProtocol(a: string, b: string): boolean {
+	const [x, y] = [a, b].map((version) => version.split(".").map((part) => Number.parseInt(part, 10) || 0));
+	for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+	return false;
+}
+
+/**
+ * Why a hello may not stand for a paired computer, or undefined. The protocol version must be the server's; the
+ * driver's own version may be any: a person's installed app updates on its own schedule, and the server cannot
+ * replace it the way a provider replaces a copied daemon.
+ */
 export function helloMismatch(paired: PairedComputer, hello: HelloResult): { code: number; message: string } | undefined {
-	if (hello.protocol !== PROTOCOL_VERSION) return { code: ATTACH_CLOSE.protocol, message: `the driver speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: update the driver` };
+	if (hello.protocol !== PROTOCOL_VERSION) {
+		const newer = laterProtocol(hello.protocol, PROTOCOL_VERSION) ?"the server is older: it is updated by whoever runs it" : `update the driver on ${paired.name} (Computerd: its menu's Check for Updates, or the download on the console's Computers page)`;
+		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: ${newer}` };
+	}
 	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
 		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
 	}
@@ -178,6 +192,11 @@ export class AttachHub {
 		return this.#live.has(id);
 	}
 
+	/** The hello of the computer's live connection: its driver's version and groups now, which an update may change. */
+	hello(id: string): HelloResult | undefined {
+		return this.#live.get(id)?.hello;
+	}
+
 	/** The computer's connection, shared: closing it leaves the socket open. Undefined while it is not attached. */
 	connection(id: string): ComputerConnection | undefined {
 		const live = this.#live.get(id);
@@ -217,17 +236,19 @@ export class AttachHub {
  * made, stopped or deleted by a run. It has no init of ours, so its daemon mode is none.
  */
 export function attachedProvider(paired: PairedComputer, hub: AttachHub): ComputerProvider {
-	const capabilities: ComputerCapabilities = {
+	/** What the computer says now: its live hello while attached (an update may add groups), else what it paired as. */
+	const now = () => hub.hello(paired.id) ?? paired.hello;
+	const capabilities = (): ComputerCapabilities => ({
 		kind: paired.hello.kind,
 		lifetime: "vendor",
 		network: ["open"],
 		isolation: "machine",
 		os: paired.hello.os,
 		daemon: "none",
-		groups: [...paired.hello.groups],
+		groups: [...now().groups],
 		maxLifetimeMs: 24 * 60 * 60_000,
 		release: ["delete"],
-	};
+	});
 	const ref: ComputerRef = { id: paired.id, name: paired.name };
 	const mine = (asked: { id: string }) => asked.id === paired.id;
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
@@ -235,9 +256,13 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	const holds = (labels: Record<string, string>, wanted: Record<string, string>) => Object.entries(wanted).every(([key, value]) => labels[key] === value);
 	return {
 		id: "attached",
-		version: paired.hello.version,
-		capabilities: () => capabilities,
-		check: (spec) => [...kindRefusals(capabilities), ...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities) : [])],
+		// The driver's version is the computer's, whatever it is: the provider never refuses a newer or older build of one
+		// protocol, because it cannot replace a person's app the way it replaces a copied daemon.
+		get version() {
+			return now().version;
+		},
+		capabilities,
+		check: (spec) => [...kindRefusals(capabilities()), ...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities()) : [])],
 		async create(spec) {
 			const refusals = this.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
@@ -248,7 +273,7 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 		async attach(asked) {
 			const found = "id" in asked ? mine(asked) : holds({ ...paired.labels, ...hub.claimed(paired.id) }, asked.labels);
 			if (!found) return unknown("id" in asked ? asked.id : JSON.stringify(asked.labels));
-			return ok({ ...ref, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: capabilities.kind } });
+			return ok({ ...ref, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind } });
 		},
 		async list(labels) {
 			const have = { ...paired.labels, ...hub.claimed(paired.id) };

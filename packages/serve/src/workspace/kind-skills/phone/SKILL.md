@@ -21,8 +21,8 @@ state s2 · com.android.settings "Settings" · window 360×800 pt
   @e9 button "About phone"
 ```
 
-Each line is a ref (`@e5`), a role, a name, a value after `=` and flags in brackets. A child is indented under its
-parent. The head line names the **state**. `image: true` adds a screenshot, for what the elements can't tell you:
+Each line is a ref (`@e5`), a role, a name, a value after `=`, what else the element says in parentheses (a row's
+second line: `("Mobile, Wi-Fi, hotspot")`) and flags in brackets. A child is indented under its parent. The head line names the **state**. `image: true` adds a screenshot, for what the elements can't tell you:
 layout, images, colours. Without the `ui` group, observe is the screenshot.
 
 **`computer_act` `{steps, state?, expect?, observe?}`** runs steps in order:
@@ -76,6 +76,8 @@ return { met: page.expect, lines: page.after.outline.split("\n").filter((line) =
 
 - **Known steps**: open an app, press through a known path, read one value: one script, an `expect` on each page.
 - **A few facts out of a long screen**: `find()` inside the script and return only those, never whole observations.
+  `find({ role, text, id })`: a role is the same name on every phone, a text matches the name, the value or what the
+  parentheses say, and an id is the app's own (an Android resource-id).
 - **Loops**: scroll a list until a row shows.
 
 When you are unsure what is on the screen, observe before you act, and decide from what it shows.

@@ -34,11 +34,11 @@ export function bindComputer(call: Call, card: Card): Computer {
 				last = (await call("observe", { ...(id !== undefined ? { app: id } : {}), ...options })) as State;
 				return last;
 			},
-			find(query: { role?: string; text?: string | RegExp }): UiNode[] {
+			find(query: { role?: string; id?: string; text?: string | RegExp }): UiNode[] {
 				if (!last) throw new Error("find() reads the app's last observation: call observe() first");
 				const text = query.text;
 				const holds = (value: string | undefined) => value !== undefined && (typeof text === "string" ? value.toLowerCase().indexOf(text.toLowerCase()) >= 0 : text instanceof RegExp ? text.test(value) : true);
-				return last.elements.filter((node) => (query.role === undefined || node.role === query.role) && (text === undefined || holds(node.name) || holds(node.value)));
+				return last.elements.filter((node) => (query.role === undefined || node.role === query.role) && (query.id === undefined || node.id === query.id) && (text === undefined || holds(node.name) || holds(node.value) || holds(node.desc)));
 			},
 			act,
 			press: (ref, options) => act([{ press: ref }], options),

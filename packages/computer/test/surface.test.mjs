@@ -174,6 +174,20 @@ test("the outline stops within its cap and counts what it left out", () => {
 	assert.match(outlineOf("head", [], false), /no elements/);
 });
 
+test("an element's desc is on its line; a window whose tree is off says why, and its image comes whole", async () => {
+	const row = { ref: "@e5", role: "button", name: "Network & internet", desc: "Mobile, Wi-Fi, hotspot", bounds: [0, 0, 1, 1] };
+	assert.equal(outlineOf("head", [row], false), 'head\n@e5 button "Network & internet" ("Mobile, Wi-Fi, hotspot")');
+	const fake = fakeComputer();
+	const call = fake.client.call.bind(fake.client);
+	fake.client.call = async (method, params, options) =>
+		method === "ui.observe"
+			? { ok: true, value: { state: "s1", app: { id: "com.example.game", name: "Game" }, window: { id: "w1", bounds: [0, 0, 800, 600] }, nodes: [], empty: "this app draws its own window: the tree is off here", image: { format: "png", data: PNG, width: 2, height: 1 }, truncated: false } }
+			: call(method, params, options);
+	const answer = await createSurface(fake.client, fake.hello).call("observe", {});
+	assert.match(answer.text, /\(no elements: this app draws its own window: the tree is off here; act at points in the window's image\)/);
+	assert.equal(answer.images.length, 1, "the image the computer sent instead, unasked");
+});
+
 /** A script run the way an isolate runs it: the one-line prelude, then the code, in a fresh context whose only global
  *  is the host's call. */
 async function runScript(surface, code) {
@@ -205,6 +219,20 @@ test("a script finds elements in the last observation with no call, and a point 
 	assert.equal(found, "@e3");
 	assert.deepEqual(calls.map((call) => call.method), ["ui.observe", "ui.act"]);
 	assert.equal(calls[1].params.state, "s1");
+});
+
+test("a script's find() takes the app's own id, and its text matches an element's desc", async () => {
+	const fake = fakeComputer();
+	const call = fake.client.call.bind(fake.client);
+	const nodes = [
+		{ ref: "@e1", role: "button", name: "Network & internet", desc: "Mobile, Wi-Fi, hotspot", id: "network", bounds: [0, 0, 10, 10] },
+		{ ref: "@e2", role: "button", name: "Battery", desc: "80%", id: "battery", bounds: [0, 10, 10, 10] },
+	];
+	fake.client.call = async (method, params, options) =>
+		method === "ui.observe" ? { ok: true, value: { state: "s1", app: { id: "com.android.settings", name: "Settings" }, window: { id: "w1", bounds: [0, 0, 360, 800] }, nodes, truncated: false } } : call(method, params, options);
+	const surface = createSurface(fake.client, fake.hello);
+	const found = await runScript(surface, `const app = computer.app(); await app.observe(); return [app.find({ text: "hotspot" }).map((n) => n.ref), app.find({ id: "battery" }).map((n) => n.ref), app.find({ role: "button", id: "nope" }).length];`);
+	assert.deepEqual(JSON.parse(JSON.stringify(found)), [["@e1"], ["@e2"], 0]);
 });
 
 test("a script's errors carry the computer's words", async () => {

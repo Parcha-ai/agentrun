@@ -14,6 +14,7 @@ export interface AdbUiPhone {
 }
 
 const FEATURES: Features = {
+	"ui.tree": true,
 	"ui.foreground": true,
 	"ui.nav": true,
 	"ui.background": { off: "this phone is driven over adb, whose input is the phone's own; phoned's input is needed for the background route" },

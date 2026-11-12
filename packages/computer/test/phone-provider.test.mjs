@@ -443,7 +443,7 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	// Its Android release, as the phone's getprop says it; its screen in points; what its groups can do over adb.
 	const { features, ...hello } = connected.value.hello;
 	assert.deepEqual(hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS, screen: { width: SCREEN.width, height: SCREEN.height, scale: 1 } });
-	assert.deepEqual(Object.keys(features).sort(), ["apps.background", "ui.background", "ui.foreground", "ui.image", "ui.nav"]);
+	assert.deepEqual(Object.keys(features).sort(), ["apps.background", "ui.background", "ui.foreground", "ui.image", "ui.nav", "ui.tree"]);
 	assert.deepEqual([features["ui.foreground"], features["ui.nav"]], [true, true]);
 	assert.ok(["apps.background", "ui.background", "ui.image"].every((name) => typeof features[name].off === "string" && features[name].off !== ""), "a feature that is off says why");
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
@@ -933,7 +933,7 @@ test("parseUiElements: Android's classes as the protocol's roles, an editable fi
 test("ui.observe never sends a secure field's value", async () => {
 	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" password="true" bounds="[0,0][100,50]" /></hierarchy>`;
 	const view = parseUiElements(xml, 1, [100, 50]).value;
-	const engine = new UiEngine({ features: () => ({}), look: async () => ({ ok: true, value: view }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
+	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: view }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
 	const seen = await engine.observe({});
 	assert.equal(seen.ok, true, JSON.stringify(seen));
 	assert.deepEqual(seen.value.nodes.map(({ role, value, flags }) => ({ role, value, flags })), [{ role: "textbox", value: undefined, flags: ["secure"] }]);

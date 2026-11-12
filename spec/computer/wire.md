@@ -39,7 +39,8 @@ A computer with the `ui` group also says its screen and its features:
 ```json
 {"protocol":"0.2","version":"0.2.0","os":"macos","kind":"desktop","arch":"arm64","groups":["apps","ui","screen"],
  "screen":{"width":1512,"height":982,"scale":2},
- "features":{"ui.image":true,"ui.background":true,"ui.foreground":true,"ui.page":{"off":"Safari's automation is off in its Develop menu"},"ui.nav":{"off":"a Mac has no system back, home or app switch"},"apps.background":true}}
+ "osVersion":"26.1 (25B78)","device":{"maker":"Apple","model":"MacBook Pro"},
+ "features":{"ui.tree":true,"ui.image":true,"ui.background":true,"ui.foreground":true,"ui.page":{"off":"Safari's automation is off in its Develop menu"},"ui.nav":{"off":"a Mac has no system back, home or app switch"},"apps.background":true}}
 ```
 
 - `protocol`: the version of this protocol the computer speaks. A caller refuses a computer that speaks another.
@@ -56,8 +57,12 @@ A computer with the `ui` group also says its screen and its features:
 - `screen`: the main screen's size in points and its scale (pixels per point). Present with the `ui` group.
 - `features`: what the computer can and cannot do inside its groups, each name `true`, or `{"off": "<why, in words>"}`.
   A feature that is off is refused with that sentence when asked for, never ignored. The names and what they mean are
-  `features` in [`protocol.json`](protocol.json): `ui.image`, `ui.background`, `ui.foreground`, `ui.page`, `ui.nav` and
-  `apps.background`. Names stay the same on every OS; an OS name appears only in a reason.
+  `features` in [`protocol.json`](protocol.json): `ui.tree`, `ui.image`, `ui.background`, `ui.foreground`, `ui.page`,
+  `ui.nav` and `apps.background`. Names stay the same on every OS; an OS name appears only in a reason. A computer of
+  the `ui` group always declares `ui.tree`.
+- `osVersion`: the OS's version as the computer says it, with its build when the driver knows it: `"15 (API 35)"`,
+  `"26.1 (25B78)"`.
+- `device`: the machine, `{"maker": "Apple", "model": "MacBook Pro"}`. The same fields on every OS; its CPU is `arch`.
 
 ## Requests, replies and order
 
@@ -164,9 +169,14 @@ The result:
 - `state`: this observation's id. It is the connection's own; a driver keeps the last few (32 in `UiEngine`).
 - `window.bounds`: where the window sits, in screen points. A node's `bounds` are in **window points**, from the
   window's top left. A point in a step is in window points too. (`input.actions` stays in screen pixels.)
-- A node: `ref` (`@e12`), `role` (one of `uiRoles`: ARIA's names, the same on every OS), `name`, `value` (never for a
-  `secure` field), `id` (the app's own identifier, when it has one), `bounds`, `parent` (a ref before it), `flags` (of
-  `uiFlags`) and `actions` (the platform's own names, such as `AXPress` or `ACTION_CLICK`).
+- A node: `ref` (`@e12`), `role` (one of `uiRoles`: ARIA's names, the same on every OS), `name`, `value` (what it
+  holds, editable: a field's text, a slider's value; never for a `secure` field), `desc` (what else it says: a row's
+  secondary text, a help tag), `id` (the app's own identifier, when it has one), `bounds`, `parent` (a ref before it),
+  `flags` (of `uiFlags`) and `actions` (the platform's own names, such as `AXPress` or `ACTION_CLICK`).
+- With `ui.tree` off (a Mac without the Accessibility grant), `nodes` is empty and `empty` says why; the window's image
+  comes whether asked for or not, so a caller can still act at points from its state. With `ui.image` off as well,
+  `ui.observe` is refused `denied` with both reasons. An act's `expect` reads the elements, so it is refused
+  `unsupported` while the tree is off.
 
 ### ui.act
 
@@ -180,7 +190,7 @@ The result:
   `nav` (`back`, `home`, `app_switch`; feature `ui.nav`), `scroll` (a ref or a point, `dx`, `dy` in points) and `drag`
   (points, with `ms`). There is no wait step: an act with no steps and an `expect` is a wait.
 - `state`: the state the steps' points were read from. A step at a point needs it.
-- `expect`: `text` somewhere in the window, or on the element `ref`; with `gone: true`, until it is not. The computer
+- `expect`: `text` somewhere in the window (in a name, value or desc), or on the element `ref`; with `gone: true`, until it is not. The computer
   polls it for `timeoutMs` (default `defaultExpectMs`, at most `maxExpectMs`).
 - `foreground`: the call allows the foreground route, which moves the user's pointer and focus. Default false.
 

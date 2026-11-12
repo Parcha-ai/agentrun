@@ -166,7 +166,7 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		const head = [`state ${result.state}`, `${result.app.id}${result.app.name ? ` "${result.app.name}"` : ""}`, `window${window.title ? ` "${window.title}"` : ""} ${window.bounds[2]}×${window.bounds[3]} pt`].join(" · ");
 		lastState.set(result.app.id, result.state);
 		lastApp = result.app.id;
-		const outline = outlineOf(head, result.nodes, result.truncated);
+		const outline = outlineOf(head, result.nodes, result.truncated, result.empty);
 		const imageNote = result.image ? `\nimage: ${result.image.width}×${result.image.height} px of the window's ${window.bounds[2]}×${window.bounds[3]} points` : "";
 		return {
 			id: result.state,

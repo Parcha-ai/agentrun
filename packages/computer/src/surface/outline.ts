@@ -14,18 +14,19 @@ const MAX_INDENT = 8;
 const clip = (text: string) => (text.length > TEXT_CHARS ? `${text.slice(0, TEXT_CHARS - 1)}…` : text);
 const quoted = (text: string) => JSON.stringify(clip(text.replace(/\s+/g, " ").trim()));
 
-/** One element's line: `@e4 button "Save" = "value" [focused]`. */
+/** One element's line: `@e4 button "Save" = "value" ("what else it says") [focused]`. */
 export function lineOf(node: UiNode): string {
 	const parts = [node.ref, node.role];
 	if (node.name) parts.push(quoted(node.name));
 	if (node.value !== undefined && node.value !== "" && node.value !== node.name) parts.push(`= ${quoted(node.value)}`);
+	if (node.desc && node.desc !== node.name) parts.push(`(${quoted(node.desc)})`);
 	if (node.flags && node.flags.length > 0) parts.push(`[${node.flags.join(" ")}]`);
 	return parts.join(" ");
 }
 
 /** The outline of an observation: `head`, then the elements within OUTLINE_MAX_CHARS, each indented under its parent,
  *  then a line saying what was left out (by the driver, `truncated`, or here for room). */
-export function outlineOf(head: string, nodes: readonly UiNode[], truncated: boolean): string {
+export function outlineOf(head: string, nodes: readonly UiNode[], truncated: boolean, empty?: string): string {
 	const depth = new Map<string, number>();
 	const lines = [head];
 	let room = OUTLINE_MAX_CHARS - head.length - 100;
@@ -42,6 +43,8 @@ export function outlineOf(head: string, nodes: readonly UiNode[], truncated: boo
 	const cut = nodes.length - shown;
 	if (cut > 0) lines.push(`… ${cut} more elements not shown: find() them in a script, or act on a scrollarea to see others`);
 	else if (truncated) lines.push("… the computer left out more elements: scroll to see others, or observe with full");
-	if (nodes.length === 0) lines.push("(no elements: the window shows nothing with a name; observe with image: true to see it)");
+	// The computer can't read this window's elements (ui.tree off): its words, and the image it sent instead.
+	if (nodes.length === 0 && empty) lines.push(`(no elements: ${empty}; act at points in the window's image)`);
+	else if (nodes.length === 0) lines.push("(no elements: the window shows nothing with a name; observe with image: true to see it)");
 	return lines.join("\n");
 }

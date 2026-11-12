@@ -114,8 +114,28 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	}
 	const old = await dial(hub, pairedFor(mac), new Old());
 	assert.equal(old.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(old.accepted.error.message, /speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(Computerd: its menu's Check for Updates/);
 	assert.equal(redials(old.serve.closed.code), false, "a driver of another protocol stops dialing until it is updated");
 	assert.equal(hub.online("c-1"), false);
+});
+
+test("a driver updated within the protocol is accepted, and the provider's version and groups follow its live hello", async () => {
+	const hub = new AttachHub();
+	const driver = new FakeUiDriver();
+	const paired = pairedFor(driver);
+	class Updated extends FakeUiDriver {
+		hello() {
+			return { ...super.hello(), version: "fake.2", groups: ["apps", "ui", "screen"] };
+		}
+	}
+	const provider = attachedProvider(paired, hub);
+	assert.equal(provider.version, "fake");
+	const updated = await dial(hub, paired, new Updated());
+	assert.equal(updated.accepted.ok, true);
+	assert.equal(provider.version, "fake.2");
+	assert.deepEqual(provider.capabilities().groups, ["apps", "ui", "screen"]);
+	const connected = await provider.connect({ id: paired.id, name: paired.name });
+	assert.equal(connected.value.hello.version, provider.version, "the drift check's two versions agree");
 });
 
 test("one run holds an attached computer; offline refuses create; release never stops it; revoke closes it", async () => {

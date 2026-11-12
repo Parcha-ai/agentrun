@@ -21,8 +21,9 @@ state s3 · com.apple.Notes "Notes" · window "Groceries" 900×700 pt
   @e7 button "Save"
 ```
 
-Each line is a ref (`@e7`), a role, a name, a value after `=` and flags in brackets. A child is indented under its
-parent. The head line names the **state** (`s3`). `image: true` adds the window's picture, which you need only for
+Each line is a ref (`@e7`), a role, a name, a value after `=`, what else the element says in parentheses (a help tag)
+and flags in brackets. A child is indented under its parent. When an app draws its own window, the computer can't
+list its elements: the outline says so, the window's picture comes with it, and you act at points in that picture. The head line names the **state** (`s3`). `image: true` adds the window's picture, which you need only for
 what elements can't tell you: layout, colours, images. `full: true` lists every element, not only the named or
 actionable ones.
 
@@ -83,7 +84,8 @@ A script is one call where tools would be many. Use one when:
   script with an `expect` at the end, instead of one act per step.
 - **You need a few facts out of a big window.** Observe and `find()` inside the script, and return only what the next
   decision needs: a ref, a value, a count, three rows. Never return whole observations: their elements are long, and
-  you pay for every line you read.
+  you pay for every line you read. `find({ role, text, id })`: a role is the same name on every OS, a text matches
+  the name, the value or what the parentheses say, and an id is the app's own for the element.
 - **You loop.** Scroll a list until a row shows, or read each row of a table.
 
 Don't script steps you have not seen yet. When you are unsure what is on the screen, observe before you act, by tool

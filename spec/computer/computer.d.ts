@@ -71,6 +71,8 @@ interface UiNode {
   name?: string;
   /** What it holds: a text field's text, a slider's value. A secure field's value is never sent. */
   value?: string;
+  /** What else it says, beside its name: a row's secondary text ("Mobile, Wi-Fi, hotspot"), a help tag. */
+  desc?: string;
   /** The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier. */
   id?: string;
   /** In window points. */
@@ -215,9 +217,9 @@ interface App {
   readonly id: string;
   /** Observe the app's window: its elements, and its image when asked. */
   observe(options?: ObserveOptions): Promise<State>;
-  /** The elements of the app's last observation that match, with no call to the computer: by role, and by a text its
-   *  name or value holds (or a RegExp they match). */
-  find(query: { role?: string; text?: string | RegExp }): UiNode[];
+  /** The elements of the app's last observation that match, with no call to the computer: by role (ARIA's, the same on
+   *  every OS), by the app's own id for it, and by a text its name, value or desc holds (or a RegExp they match). */
+  find(query: { role?: string; id?: string; text?: string | RegExp }): UiNode[];
   /** Run steps on the app, in order; the first refused one stops the rest. */
   act(steps: UiStep[], options?: ActOptions): Promise<ActResult>;
   /** The element's default action: the surest, fastest step. */

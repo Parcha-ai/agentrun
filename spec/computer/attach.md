@@ -21,20 +21,90 @@ what they need is [at the end](#what-serve-needs).
 - **The server is the caller.** Once the socket is open, the server sends `hello`, and the driver answers. Then the
   server sends the run's calls. The driver sends replies only; it never sends a request.
 
-## Pairing and the token
+## Pairing: bring your own machine
 
-A computer is paired once and keeps its token.
+A person pairs a machine once, in about two minutes, and it stays paired until they remove it.
 
-1. **A code.** The owner asks the console (or `POST /v2/computers/pairings`) for a pairing code. It is eight characters
-   a person reads and types, `K7PD-W3QX` (no 0, O, 1 or I), good once, for 10 minutes.
-2. **The trade.** The driver sends the code to `POST /v2/computers/pair`, with a name for the machine and its own
-   `hello` (`PairRequest`). The server checks the code, burns it, records the computer under the code's owner with
-   what its `hello` said (kind, os, groups, features), and answers the computer's id and a token (`PairResult`).
-3. **The token.** It is a secret of 32 random bytes, shown once. The driver keeps it in the OS's keychain; the server
-   keeps only its hash. It does not expire on its own: it lasts until the owner removes the computer, which revokes it.
-   A revoked token's socket is closed at once with `4401`, and its next dial is refused.
+### 1. The console makes a code
 
-A machine paired again (a reinstalled driver) gets a new id and token; the owner removes the old one.
+On the console's **Computers** page the owner presses **Pair a computer**. The console calls
+`POST /v2/computers/pairings` with the owner's session and shows what comes back:
+
+```json
+{"code":"K7PD-W3QX","expiresAt":"2026-11-12T18:40:00Z","download":"https://<server>/downloads/computerd"}
+```
+
+- The code is eight characters a person reads and types: two groups of four, no 0, O, 1 or I
+  (`PAIRING_CODE_PATTERN`). It is good once, for 10 minutes (`PAIRING_CODE_TTL_MS`), and belongs to the owner who made
+  it. The server keeps its hash, never the code.
+- The page shows the code, a countdown, and the driver's download link, and waits: when the code is used, the new
+  computer appears on the page with its name and "online".
+- A new code for the same owner does not cancel an older one. Each expires on its own, and a used one is gone.
+
+### 2. The app submits it
+
+The person installs the driver (Computerd.app on a Mac), and its first run asks for the code. The app calls
+`POST /v2/computers/pair`. This route needs no session: the code is the credential.
+
+```json
+{"code":"K7PD-W3QX","name":"Ada's MacBook Pro","hello":{"protocol":"0.2","version":"0.2.0","os":"macos","kind":"desktop","arch":"arm64","groups":["apps","ui","screen","input.pointer","input.keys"],"features":{"ui.tree":true}}}
+```
+
+- `name` is what the person calls the machine, which they can edit before sending. The app suggests the OS's own
+  computer name.
+- `hello` is the driver's own, as it would answer it, so the server records what it pairs: kind, os, groups and
+  features. A `hello` of another protocol version is refused with the words of [the version rule](#versions), and the
+  code stays good.
+
+### 3. The server issues the credential
+
+The server checks the code: it must exist, be unused and unexpired. It then burns the code and records the computer
+under the code's owner, with its name, its `hello` and the time. The answer:
+
+```json
+{"computer":"cmp_8f2k3j","token":"art_4c1f...e93a"}
+```
+
+- The token is the machine's long-lived credential: 32 random bytes, prefixed `art_` so a secret scanner knows it. It
+  is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
+  Keystore-backed storage) and never in a file or a log. The server keeps only its SHA-256.
+- It belongs to this one machine: one token per paired computer, never shared. It has no expiry of its own: a machine
+  in a drawer for a month still dials back. It ends when the owner removes the computer.
+- A wrong, used or expired code is refused `404`, with no word about which of the three, so codes cannot be probed.
+  Each source address gets 10 tries a minute. With 32^8 codes (about 1.1 trillion) and a 10-minute life, guessing one is
+  out of reach.
+
+The app then dials the attach socket with the token, and the console's page shows the computer online.
+
+### 4. Revoking from the console
+
+On the **Computers** page, each paired computer has **Remove**. Removing calls `DELETE /v2/computers/{id}`. The server
+marks the token revoked, ends a run's hold on the machine (the run's next call fails `gone`), and closes the live
+socket with `4401` (`AttachHub.revoke`). The app stops dialing and asks for a new code, saying it was removed from the
+console. Its next dial with the old token is refused at the upgrade with `401`.
+
+A machine paired again (a reinstalled app, a wiped keychain) gets a new id and token. Its old entry shows offline
+until the owner removes it.
+
+## Versions
+
+A person's installed app updates on its own schedule, so it can lag the server. The rule:
+
+- **The protocol version must be the server's.** The subprotocol a driver asks for, and the `protocol` in its `hello`,
+  name the protocol version it speaks. A driver of another version is refused: at the upgrade when the subprotocol
+  differs, else at `hello`, with close code `4426` and words that say what to do. An older driver gets "update the
+  driver on Ada's MacBook Pro (Computerd: its menu's Check for Updates, or the download on the console's Computers
+  page)". A newer driver than the server gets "the server is older: it is updated by whoever runs it". The app shows
+  these words and stops dialing until it is updated, then dials again on its own.
+- **Within one protocol version, any build is accepted.** A newer or older patch of the driver (0.2.0, 0.2.3) is the
+  same wire. The server records the build each `hello` names and shows it on the Computers page.
+- **The daemon version check does not apply.** A copied `computerd` must be exactly the provider's version, because
+  the provider puts it there and replaces a drifted one. An attached driver is the person's own app, which the provider
+  cannot replace, so `attachedProvider`'s `version` is the version of the driver's live `hello`. The drift check then
+  compares a version with itself and holds trivially, and the protocol rule above is the only gate.
+- **What a driver offers can change with an update.** An updated driver may declare more groups or features. The
+  provider's capabilities follow the live `hello`, while kind and os stay what the machine paired as (another is
+  `4400`).
 
 ## Liveness
 
@@ -55,7 +125,7 @@ A machine paired again (a reinstalled driver) gets a new id and token; the owner
 | `4401` | Its token is unknown or revoked. | Stops: the person pairs it again. |
 | `4408` | Nothing heard for 60 s. | Dials again. |
 | `4409` | The same computer dialed again. | Dials again (the newer socket is already up). |
-| `4426` | It speaks another protocol version. | Stops: the person updates the driver. |
+| `4426` | It speaks another protocol version ([Versions](#versions)). | Stops: the person updates the driver. |
 
 Any other code, or a drop with none (`1006`), is redialed. A driver waits 1 s before its first redial, doubling each
 time to at most 60 s, less up to a fifth at random so a fleet that lost the server together does not return together
@@ -78,9 +148,10 @@ The server maps an attached computer to a provider so a run takes it like any ot
 - **One connection.** `AttachHub.accept(paired, socket)` calls `hello` on a new socket and keeps it when the `hello` is
   what the computer paired as (same kind and os, this protocol version). Every caller in the server shares that one
   connection: one run holds the computer at a time, so its refs and states are that run's.
-- **A provider per paired computer.** `attachedProvider(paired, hub)` is a `ComputerProvider` with id `attached` whose
-  capabilities are what the computer paired as: its kind, os and groups, network as the machine has it, isolation
-  `machine`. It has no init of ours, so its daemon mode is `none`.
+- **A provider per paired computer.** `attachedProvider(paired, hub)` is a `ComputerProvider` with id `attached`. Its
+  capabilities are the computer's kind and os as it paired, the groups of its live `hello`, network as the machine has
+  it, and isolation `machine`. Its daemon mode is `none`: no `computerd init` runs on the machine, so none of init's promises about programs hold, and
+  `exec` and `files` are groups it may declare but not Core ([`kinds.md`](kinds.md)).
 - **Claim, not make.** `create` claims the computer for a run, with the run's labels: refused `gone` while it is not
   attached, `refused` while another run holds it. `release` with `delete` ends the run's hold and deletes nothing;
   `stop` is refused. A person's machine is never made, stopped or deleted by a run.
@@ -93,8 +164,9 @@ The server maps an attached computer to a provider so a run takes it like any ot
 These touch files under the current hold (serve's `computers.ts`, `openapi.ts`, `resolve-computer.ts`,
 `computer-for-claim.ts`, the generated clients) and land when it lifts:
 
-1. **A store table** of paired computers: id, owner, name, the `hello` it paired as, labels, the token's hash,
-   created and last-seen times, and a revoked flag. Pairing codes: the code's hash, owner, expiry, used.
+1. **A store table** of paired computers: id, owner, name, the `hello` it paired as, the driver build of its last
+   `hello`, labels, the token's SHA-256, created and last-seen times, and a revoked flag. Pairing codes: the code's
+   hash, owner, expiry and used. A rate limit on `POST /v2/computers/pair` by source address.
 2. **Routes** in `computers.ts`, with their OpenAPI entries and the regenerated clients:
    `POST /v2/computers/pairings` (owner: a new code), `POST /v2/computers/pair` (driver: code for token),
    `GET /v2/computers/attach` (the WebSocket upgrade: check the token's hash and the subprotocol, then
@@ -110,8 +182,5 @@ These touch files under the current hold (serve's `computers.ts`, `openapi.ts`, 
 
 ## Open questions
 
-- **The daemon mode.** An attached driver is neither `computerd init` (it keeps none of init's promises about
-  programs, because it runs none) nor a provider answering itself. It declares `none` today, which gives the right Core
-  groups. A mode of its own, `driver`, would say it plainly; it is a change to `DaemonMode` and the kind table.
 - **A Mac-mini VM** dials out the same way, with a token baked into its golden image and revoked when the VM is
   deleted. Whether that token is per image or per VM is the pool's call.
