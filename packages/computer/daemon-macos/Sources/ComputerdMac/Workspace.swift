@@ -66,11 +66,11 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 		} catch {
 			throw RPCError.invalid("\(id) did not open: \(error.localizedDescription)")
 		}
-		// It returns once the app shows a window, at most 3 s on, so a ui.observe right after finds it (on macos-26 the ui
-		// fixture was in front before its window was listed); an app that opens none, a menu bar app, costs the 3 s.
-		// Opened in the background, an app that activates itself takes the front within a moment, sometimes twice (once
-		// launched, again when its document's window opens): for at least 2 s, it is given back each time. (On macos-26,
-		// TextEdit came forward after the first 500 ms.)
+		// The protocol's rule: apps.launch answers once the app has a window on screen, so a ui.observe right after finds
+		// it (on macos-26 the ui fixture was in front before its window was listed), or it is refused timeout after
+		// launchWindowSeconds. Opened in the background, an app that activates itself takes the front within a moment,
+		// sometimes twice (once launched, again when its document's window opens): for at least 2 s, it is given back
+		// each time. (On macos-26, TextEdit came forward after the first 500 ms.)
 		let pid = launched.processIdentifier
 		let guarded = background && front != nil && front!.processIdentifier != pid
 		let start = Date()
@@ -79,10 +79,16 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 			if guarded, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { front!.activate() }
 			shown = shown || Self.hasWindow(pid)
 			let waited = Date().timeIntervalSince(start)
-			if waited >= 3 || (shown && (!guarded || waited >= 2)) { return }
+			if shown && (!guarded || waited >= 2) { return }
+			if !shown && waited >= Self.launchWindowSeconds {
+				throw RPCError(.timeout, "\(id) opened, and showed no window on screen in \(Int(Self.launchWindowSeconds)) s: it may be hidden, or an app with no window (a menu bar app)")
+			}
 			try? await Task.sleep(nanoseconds: 50_000_000)
 		}
 	}
+
+	/// How long apps.launch waits for the app's window.
+	static let launchWindowSeconds: TimeInterval = 10
 
 	/// The app shows a window: the window server lists one at the normal level, and so does the accessibility tree
 	/// when Computerd may read it.
