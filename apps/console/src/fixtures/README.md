@@ -1,7 +1,7 @@
 # Recorded fixtures
 
 Responses of AgentRun Server's `agentrun.v2/0`, recorded from a seeded server on its scripted model (synthetic content,
-no key, no network) with the dev kit that has since been removed. Each file is `{request, status, headers, body}` as the
+no key, no network). The recorder is gone; the files are edited by hand. Each file is `{request, status, headers, body}` as the
 server answered.
 
 They are kept in step with the contract by editing, not by recording again: when the served document makes a field
@@ -68,7 +68,5 @@ carries each run's learning in words (`detail`), and the impact each side's time
 what learning itself costs a run.
 `learning.diff-run` and `learning.diff` are a pair from one later recording of the same story: Brooklinen's run, and what
 its learning changed (`GET /v2/runs/{id}/learning/diff`: the note it added, the note it replaced, and the index), for
-the run page's "What it changed". `record.mjs` records them with the rest; until the set is recorded again whole, their
-run is not the one in `learning.runs`.
-To record them again: build the server and the console, then `node serve.mjs ...`, `node seed.mjs <url> <data>` and
-`node record.mjs <url> <data> apps/console/src/fixtures`. No token is written: the token stays in the data directory.
+the run page's "What it changed". Their run is not the one in `learning.runs`.
+No token is written to any fixture.
