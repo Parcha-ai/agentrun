@@ -43,10 +43,8 @@ function claim(root, saved = SAVED) {
       launched.push([entry.id, spec]);
       if (spec.kind === "browser") return { id: "browserbase", groups: ["cdp"], browser: { provider: "browserbase", maxLifetimeS: 600, open: async () => "b1", find: async () => [], url: async () => "wss://connect.browserbase.test/b1?signingKey=SECRET", close: async () => {} }, release: async () => void launched.push(["released", "b1"]) };
       const computer = fakeComputer(root);
-      const kind = spec.kind === "phone" ? "android" : spec.kind === "desktop" ? "desktop" : "linux";
-      const groups = entry.capabilities.find((one) => one.kind === kind).groups;
-      const hello = { protocol: "0.2", version: "0", os: kind === "android" ? "android" : "linux", kind, arch: "amd64", groups };
-      return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, hello, release: async () => void launched.push(["released", computer.id]) };
+      const groups = entry.capabilities.find((one) => (spec.kind === "phone" ? one.kind === "android" : spec.kind === "desktop" ? one.kind === "desktop" : one.kind === "linux")).groups;
+      return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, release: async () => void launched.push(["released", computer.id]) };
     },
   };
 }
@@ -183,16 +181,6 @@ test("start: a computer that cannot be had fails as computer_unavailable, in the
   const side = { keysOf: async () => SAVED.e2b, launch: async () => { throw new Error("E2B answered 503: no capacity"); } };
   const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
   await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B answered 503: no capacity");
-});
-
-test("start: a desktop launched with no hello is refused and released: its surface is made from what it said at connect", async () => {
-  const root = scratch();
-  const computer = fakeComputer(root);
-  const released = [];
-  const side = { keysOf: async () => SAVED.e2b, launch: async () => ({ id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups: ["screen"], release: async () => void released.push(computer.id) }) };
-  const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
-  await assert.rejects(resolved.start({ workspace: localWorkspace(root), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: it gave no hello");
-  assert.deepEqual(released, [computer.id]);
 });
 
 test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {

@@ -37,10 +37,10 @@
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, COMPUTER_TOOLS, type ComputerPort, createRegistry, endBackground, type Executor, type Registry } from "@parcha/agentrun-kernel/kernel";
-import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
-import { type Card, createSurface } from "@parcha/agentrun-computer/surface";
+import type { ComputerClient, Group } from "@parcha/agentrun-computer";
+import type { Card } from "@parcha/agentrun-computer/surface";
 import type { AttachableComputer, MountCheck } from "./attach.js";
-import { portOf } from "./computer-ports.js";
+import { portOf, surfaceOf } from "./computer-ports.js";
 import { computerScriptExecutor } from "./computer-script.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
@@ -59,13 +59,12 @@ import type { Workspace } from "./workspace.js";
  * - phone: the computer's tools; never attached;
  * - browser: what the run's browser tool drives it by (its CDP URL through its provider); no tools of the registry's,
  *   never attached.
- * `hello`: what a desktop or a phone said it is when the claim connected it; its groups say which of the computer's
- * tools it has, and its surface is made from it.
+ * `groups`: what the computer offers (its hello's groups), which say which of the computer's tools it has.
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
-  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly hello: HelloResult; readonly check?: MountCheck }
-  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly hello: HelloResult }
+  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly groups: readonly Group[]; readonly check?: MountCheck }
+  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
   | { readonly kind: "browser"; readonly browser: ClaimBrowser };
 
 /** A desktop's or a phone's port as a person's hold on the computer gives it back: each look or act made while the
@@ -77,7 +76,7 @@ export type RunHold = (ports: Pick<Hands, "computer">) => Pick<Hands, "computer"
  *  provider mounts the folder; none for any other. */
 function mountedIn(computer: RunComputer | undefined): { readonly computer: AttachableComputer; readonly check: MountCheck } | undefined {
   if (computer?.kind === "sandbox") return computer;
-  if (computer?.kind === "desktop" && computer.check && computer.hello.groups.includes("files") && computer.hello.groups.includes("exec")) return { computer: computer.computer, check: computer.check };
+  if (computer?.kind === "desktop" && computer.check && computer.groups.includes("files") && computer.groups.includes("exec")) return { computer: computer.computer, check: computer.check };
   return undefined;
 }
 
@@ -85,7 +84,7 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
  *  executor for its card; none for any other computer. */
 async function portsOf(computer: RunComputer | undefined): Promise<{ readonly ports: Pick<Hands, "computer">; readonly kinds: readonly CapabilityKind[]; readonly groups: readonly string[]; readonly script?: Executor; readonly card?: Card }> {
   if (computer?.kind !== "desktop" && computer?.kind !== "phone") return { ports: {}, kinds: [], groups: [] };
-  const surface = createSurface(computer.computer.client, computer.hello);
+  const surface = await surfaceOf(computer.computer.client, computer.kind, computer.groups);
   return { ports: { computer: portOf(surface) }, kinds: [computer.kind], groups: surface.card.groups, script: computerScriptExecutor(surface.card), card: surface.card };
 }
 

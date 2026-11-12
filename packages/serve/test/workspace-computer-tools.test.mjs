@@ -39,9 +39,6 @@ const COMPUTER = [...LOCAL, "bash_background", "bash_output", "bash_input", "bas
 const TOOLS = [...COMPUTER_TOOLS];
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 const PHONE_GROUPS = ["screen", "input.touch", "apps"];
-/** What a Linux desktop or an Android phone with `groups` says when the claim connects it. */
-const desktopHello = (groups) => ({ protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups });
-const phoneHello = (groups) => ({ protocol: "0.2", version: "0", os: "android", kind: "android", arch: "arm64", groups });
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 
 /** A loopback computer: computerd's screen.shot answers the PNG in two pieces (the rest by screen.read), input.actions
@@ -75,7 +72,7 @@ function fakeScreen(root, { ui = false } = {}) {
 test("a desktop whose provider does not mount, in Mode 1: the run folder stays the runner's with no shell, and the computer's tools come on top, on its screen and raw input (no ui group)", async () => {
   const root = scratch();
   const computer = fakeScreen(root);
-  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: desktopHello(DESKTOP_GROUPS) }, { mode: 1, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, groups: DESKTOP_GROUPS }, { mode: 1, context: ctx });
   assert.deepEqual(names(run), [...FILES, ...TOOLS]);
   assert.deepEqual(run.kindTools, TOOLS);
   assert.equal(run.hands.processes, undefined, "no background processes on an unmounted desktop");
@@ -111,13 +108,13 @@ test("a desktop whose provider does not mount, in Mode 1: the run folder stays t
 test("a desktop whose provider mounts: the run folder is attached (shell computer, the five background tools), with the computer's tools on top", async () => {
   const root = scratch();
   const computer = fakeScreen(root);
-  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, hello: desktopHello(DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "desktop", computer, groups: DESKTOP_GROUPS, check: { readBackOf } }, { mode: 1, context: ctx });
   assert.deepEqual(names(run), [...COMPUTER, ...TOOLS]);
   assert.ok(run.hands.processes && run.hands.computer);
   assert.deepEqual(run.hands.computer.groups, DESKTOP_GROUPS);
   assert.ok(computer.methods().includes("readBack"), "attach read the mount back");
   // A desktop with no exec or files (a screen alone) attaches nothing, mount or not.
-  const bare = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeScreen(root), hello: desktopHello(["screen", "input.pointer"]), check: { readBackOf } }, { mode: 1, context: ctx });
+  const bare = await runTools(localWorkspace(scratch()), { kind: "desktop", computer: fakeScreen(root), groups: ["screen", "input.pointer"], check: { readBackOf } }, { mode: 1, context: ctx });
   assert.deepEqual(names(bare), [...FILES, ...TOOLS]);
 });
 
@@ -131,7 +128,7 @@ test("a sandbox: today's computer list, attached; no computer tools", async () =
 test("a phone with the ui group: observe is the outline of its window, act its steps by ref, each with its route; the state goes with a step at a point", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: phoneHello([...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui"] }, { mode: 2, context: ctx });
   assert.deepEqual(names(run), [...LOCAL, ...TOOLS]);
   const tools = run.hostTools(TOOLS);
   const seen = await call(tools, "computer_observe", {});
@@ -150,7 +147,7 @@ test("a phone with the ui group: observe is the outline of its window, act its s
 test("a phone without the ui group (an iPhone today): observe falls back to the screenshot, and taps go as touch input", async () => {
   const root = scratch();
   const iphone = fakeScreen(root);
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: iphone, hello: { ...phoneHello(PHONE_GROUPS), os: "ios", kind: "ios" } }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: iphone, groups: PHONE_GROUPS }, { mode: 2, context: ctx });
   assert.deepEqual(names(run), [...LOCAL, ...TOOLS]);
   const tools = run.hostTools(TOOLS);
   const seen = await call(tools, "computer_observe", {});
@@ -175,14 +172,14 @@ test("a person's hold on the computer: runTools hands a desktop's or a phone's p
     seen.push(Object.keys(ports).sort());
     return { computer: { ...ports.computer, call: async (op, args, signal) => (op === "act" ? Promise.reject(new Error("the person had this computer: observe again before you act")) : ports.computer.call(op, args, signal)) } };
   };
-  const desktop = await runTools(localWorkspace(root), { kind: "desktop", computer: fakeScreen(root), hello: desktopHello(DESKTOP_GROUPS), check: { readBackOf } }, { mode: 1, context: ctx, hold });
+  const desktop = await runTools(localWorkspace(root), { kind: "desktop", computer: fakeScreen(root), groups: DESKTOP_GROUPS, check: { readBackOf } }, { mode: 1, context: ctx, hold });
   const tools = desktop.hostTools(TOOLS);
   assert.equal((await call(tools, "computer_screenshot", {})).isError, false, "a look runs through the hold");
   assert.deepEqual(await call(tools, "computer_act", { steps: [{ click: [1, 1] }] }), { text: "the person had this computer: observe again before you act", isError: true });
   const script = await call(tools, "computer_script", { code: "await computer.input.act([{ type: 'move', at: [1, 1] }]); return (await computer.screen.shot()).width;" });
   assert.equal(script.structured, 1280, "a script's calls go through the same hands");
   assert.ok(desktop.hands.processes, "the shell's processes never pass through the hold");
-  await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root), hello: phoneHello(PHONE_GROUPS) }, { mode: 1, context: ctx, hold });
+  await runTools(localWorkspace(root), { kind: "phone", computer: fakeScreen(root), groups: PHONE_GROUPS }, { mode: 1, context: ctx, hold });
   await runTools(localWorkspace(root), { kind: "browser", browser: { provider: "local-chrome" } }, { mode: 1, context: ctx, hold });
   await runTools(localWorkspace(root), { kind: "sandbox", computer: fakeComputer(root), check: { readBackOf } }, { mode: 1, context: ctx, hold });
   assert.deepEqual(seen, [["computer"], ["computer"]], "a browser and a sandbox never pass through it");
@@ -196,7 +193,7 @@ test("with no computer or a sandbox, a computer tool is refused in words naming 
 test("computer_script: the script's value is the per-step tool's value; text() and image() show beside it; a throw answers its words; the isolate has no network, no process and no require", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: phoneHello([...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui"] }, { mode: 2, context: ctx });
   const tools = run.hostTools(TOOLS);
   const byTool = await call(tools, "computer_observe", {});
   const byScript = await call(tools, "computer_script", { code: "return await computer.app().observe();" });
@@ -226,7 +223,7 @@ test("computer_script: the script's value is the per-step tool's value; text() a
 test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and the script answer, with structuredContent and image blocks", async () => {
   const root = scratch();
   const phone = fakeScreen(root, { ui: true });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: phoneHello([...PHONE_GROUPS, "ui"]) }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui"] }, { mode: 2, context: ctx });
   const tools = run.hostTools(run.kindTools);
   const mcp = computerMcp(tools);
   const client = new Client({ name: "computer-mcp-test", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
