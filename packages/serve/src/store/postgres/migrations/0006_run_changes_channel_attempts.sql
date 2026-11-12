@@ -24,7 +24,8 @@ BEGIN
 END
 $$;
 
-CREATE OR REPLACE TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
+DROP TRIGGER IF EXISTS runs_changed ON runs;
+CREATE TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
   FOR EACH ROW
   WHEN ((OLD.state IS DISTINCT FROM NEW.state OR OLD.runner IS DISTINCT FROM NEW.runner)
     AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL)))
