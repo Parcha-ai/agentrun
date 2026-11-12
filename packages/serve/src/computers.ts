@@ -9,6 +9,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { checkGpu, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
+import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
@@ -19,7 +20,7 @@ import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { Store } from "./store/index.js";
-import { type ShellPlace, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -151,6 +152,14 @@ export const VENDOR_NETWORK_WORDS = "the vendor's own network; this server's all
 /** A browser behind its own egress proxy (Local Chrome): every public host, unless the operator set a list. */
 export const OPERATOR_LIST_WORDS = "open unless this server sets AGENTRUN_BOX_ALLOW; then only those hosts";
 
+/** A computer that needs a network where this server's AGENTRUN_BOX_ALLOW is none: a run of it is refused at its start
+ *  and at its claim (resolve-computer.ts noNetworkRefusal), so Settings says so and never offers it. */
+export const NETWORK_REFUSED_WORDS = `needs a network, which this server refuses: its ${BOX_ALLOW_ENV} is none`;
+
+/** Why a provider whose computers can't run with no network is not ready where this server has none. */
+const noNetworkWhy = (provider: ProviderEntry): string =>
+  `${provider.label} needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network): pick a computer that runs with no network, or set ${BOX_ALLOW_ENV} to a host list`;
+
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where
  *  the allow-list applies as it is (Docker), or nothing is declared. */
@@ -247,6 +256,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const slots = kinds.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
     const metas = new Map((await keyMetaOf(store, slots, env)).map((meta) => [meta.name, meta]));
     const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
+    // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a
+    // run's start and its claim (resolve-computer.ts noNetworkRefusal), so it is never ready here, whatever its keys.
+    const refusedOpen = (provider: ProviderEntry): boolean => boxAllowOf(env as NodeJS.ProcessEnv) === "none" && needsNetwork(provider.network);
+    const unusable = (kind: ComputerKind, provider: ProviderEntry): string | undefined => modeRefusal(kind, provider, mode) ?? (refusedOpen(provider) ? noNetworkWhy(provider) : undefined);
     // Each provider that binds a folder of this machine asked once for the view: its daemon answers, or why not.
     const daemons = new Map(await Promise.all(kinds.PROVIDERS.filter(local).map(async (provider) => [provider.id, await answers(provider.id)] as const)));
     return {
@@ -256,16 +269,18 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const daemon = daemons.get(provider.id);
-          const why = modeRefusal(kind, provider, mode) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const why = unusable(kind, provider) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
           const images = imagesOf(provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0), provider.defaultImage?.[kind]);
-          const network = networkWords(provider.network);
+          const network = refusedOpen(provider) ? NETWORK_REFUSED_WORDS : networkWords(provider.network);
           // A sandbox's GPUs: only a sandbox takes them (computer-setting.ts computerIssues).
           const gpu = kind === "sandbox" ? sandboxGpu(kinds, provider) : undefined;
           return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(gpu ? { gpu: gpuView(gpu, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
-        const offered = kind === "none" || serving.some((provider) => modeRefusal(kind, provider, mode) === undefined);
-        const why = offered ? undefined : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
+        const offered = kind === "none" || serving.some((provider) => unusable(kind, provider) === undefined);
+        const why = offered ? undefined
+          : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
+          : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
         return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
     };
