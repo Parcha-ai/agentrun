@@ -1,6 +1,7 @@
 // A command row carries its answer, and a write wakes the readers in this process.
 //   - the commit that takes a row writes its answer (StagedTake.answer): answerOf reads it once and clears it; a take with
 //     no answer, a refused row, an untaken row and another run's row answer nothing;
+//   - a computer_call row keeps its params (a typed secret) only until it settles, however it settles;
 //   - watchCommands: a command() on one handle wakes the listener of another handle on the same data with "written", a
 //     take or a journal commit that takes wakes "answered", and unsubscribing stops it.
 import assert from "node:assert/strict";
@@ -46,6 +47,24 @@ test("a take with no answer, and a refused row, answer nothing", async (t) => {
   assert.equal(await store.answerOf("run-1", plain.id), undefined, "taken with no answer");
   await store.take(claim, refused.id, "refused", "no such call");
   assert.equal(await store.answerOf("run-1", refused.id), undefined, "refused");
+});
+
+test("a computer_call row's params go when it settles, taken with an answer, taken bare or refused; another kind keeps its body", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store, "run-1");
+  const call = (text) => store.command("run-1", { kind: "computer_call", body: { method: "keyboard.type", params: { text }, answers: false } });
+  const answered = await call("secret-1");
+  const bare = await call("secret-2");
+  const refused = await call("secret-3");
+  const steer = await store.command("run-1", { kind: "steer", body: { content: "kept" } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  await commitTaking(store, claim, answered.id, { ok: true });
+  await store.take(claim, bare.id);
+  await store.take(claim, refused.id, "refused", "no such call");
+  await store.take(claim, steer.id);
+  const rows = new Map((await store.commands("run-1", 0)).map((one) => [one.id, one]));
+  for (const row of [answered, bare, refused]) assert.deepEqual(rows.get(row.id).body, { method: "keyboard.type", answers: false }, JSON.stringify(rows.get(row.id)));
+  assert.deepEqual(rows.get(steer.id).body, { content: "kept" });
 });
 
 test("watchCommands across two handles on one data directory: command() wakes written, a take wakes answered, unsubscribe stops it", async (t) => {

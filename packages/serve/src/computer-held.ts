@@ -5,13 +5,17 @@
 // agent starts, and to check what it left after. A benchmark is the user: it sets a task up, starts the agent, reads the
 // computer after, then lets it go.
 //
+// A person's stop ends the agent, not the hold: before the start or while the agent works, the hold moves to "ended" and
+// the run keeps its computer until the release or the lapse, then ends stopped. A cancel ends the run and lets the
+// computer go at once.
+//
 // Like the take-over (computer-commands.ts), it runs over the one store: the server writes command rows, the run's
 // runner applies them to the computer it holds (runner/held-run.ts), and commits what came of each to the run's journal.
 // The server reads the journal, never anything in its own memory.
 //
 // The journal contract (the runner writes it; the server reads it):
 //   computer.held, `{ state, at, minutes, by?, why? }`: "waiting" (the computer is up, the agent not started), "started"
-//     (row `by` started it), "ended" (the agent is done; the run keeps the computer), "released" (row `by` released it, or
+//     (row `by` started it), "ended" (the agent is done or was stopped; the run keeps the computer), "released" (row `by` released it, or
 //     `why`: "timeout" when no call came for `minutes`, "lost" when the claim that held it was lost and its computer with it).
 //   computer.call (the channel's, computer-channel.ts): each owner call starts the hold's `minutes` again from its `at`.
 // The rows: computer_start `{}`, computer_release `{}`.
@@ -92,6 +96,7 @@ export const heldWords = {
   waiting: (minutes: number) => `The computer is up and held: the agent starts when its owner starts it, within ${minutes} minutes`,
   started: "The owner started the agent",
   ended: (minutes: number) => `The agent is done. The run keeps its computer until its owner releases it, or ${minutes} minutes pass with no call`,
+  stopped: (minutes: number) => `The agent was stopped. The run keeps its computer until its owner releases it, or ${minutes} minutes pass with no call`,
   released: "The owner released the computer",
   timeout: (minutes: number) => `The computer was let go: no call came from its owner for ${minutes} minutes`,
   lost: "The computer was let go: the runner that held it lost the run",

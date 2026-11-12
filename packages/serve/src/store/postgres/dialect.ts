@@ -22,6 +22,8 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     jsonNotFalse: (column, keys) => `COALESCE((${column}::json #> ${path(keys)})::text NOT IN ('false', '0'), TRUE)`,
     jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_array_elements_text(${column}::json) AS element(value) WHERE element.value = ?)`,
     jsonArrayLength: (column) => `json_array_length(${column}::json)`,
+    // Through jsonb, the one place: a body that loses a key is never read for its key order.
+    jsonWithout: (column, key) => `(${column}::jsonb - '${key.replaceAll("'", "''")}')::text`,
     firingOrder: "ord",
     limitAll: "LIMIT ALL",
     nullSafeEquals: (column) => `${column} IS NOT DISTINCT FROM ?`,

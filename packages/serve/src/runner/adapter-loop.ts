@@ -636,6 +636,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   let stopped: () => void = () => {};
   const stopping = new Promise<void>((resolve) => (stopped = resolve));
+  /** A cancel, a lost claim or a shutdown that came after a person's stop, and the cut it gives the held computer that
+   *  stop kept (writeEnd). */
+  let laterStop: StopReason | undefined;
+  let cutHeld: () => void = () => {};
+  const heldCut = new Promise<void>((resolve) => (cutHeld = resolve));
   /** Aborted by any stop of the run (AdapterRun.stopped, with the claim's signal): a host tool call in flight (a CLI's door
    *  call among them, whose own request signal its CLI may never abort) is cut with it, as pi's own abort cuts pi's calls.
    *  stop() aborts it first, with the stop's Interrupted, so the reason a cut call reads is the stop's. */
@@ -666,6 +671,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The current pass's computer for the computer call channel (AdapterRunSpec.computer), and how a call's entry is
    *  committed on the run's root through the pass's Harness. */
   let channelNow: { readonly computer: LoopComputer; readonly commit: (entries: readonly { kind: string; data: Record<string, unknown> }[]) => Promise<void> } | undefined;
+  /** Channel calls done on the computer whose record (and row's take) is still to be written: each answers whether it
+   *  wrote (settleCalls). */
+  const unsettledCalls = new Set<() => Promise<boolean>>();
   /** This claim's spec, once known: a raise is checked by its cap's rule, and the end's patch is read from it. */
   let specNow: AdapterRunSpec | undefined;
   /** Whether this claim's tool host was let go (its beforeRelease run), once. */
@@ -905,8 +913,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    * A call through the computer call channel (runner/computer-channel.ts): run on the pass's computer, behind the
    * person's hold, and taken with its answer by the commit that writes its computer.call entry. It runs off the take-over's
    * turn and off the runner's delivery, which goes on to the next row at once: a call may wait for a person's hand-back,
-   * and the hand-back is a later row. So `taken` here means its take rides on that entry's commit once the call is done;
-   * a pass that ends first leaves the row untaken, and the run's end refuses it. Refused in words when the run has no
+   * and the hand-back is a later row. So `taken` here means its take rides on that entry's commit once the call is done
+   * (settleCalls): a fault's restart meanwhile writes it through the claim's next pass, and a claim that ends first leaves
+   * the row untaken for the run's end, or its next claim, to settle. Refused in words when the run has no
    * computer that takes calls, is parking or ending, or held its computer and let it go.
    */
   const channelCommand = async (command: Command): Promise<CommandOutcome> => {
@@ -920,15 +929,34 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if ("refused" in call) return call;
     void (async () => {
       const done = await runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now);
-      if (theGate.sealed) return;
-      theHeld?.touched(done.at);
-      const landed = theGate.expect(writesEntry(CALL_KIND, (data) => data.by === command.id), { take: [command.id], answer: { command: command.id, value: done.answer } });
-      landed.catch(() => undefined);
-      await pass.commit([{ kind: CALL_KIND, data: { by: command.id, at: done.at, ...done.record } }]);
-      await landed;
+      unsettledCalls.add(async () => {
+        // Written through the pass open now: the one the call ran in, or, when a fault closed that one meanwhile, the
+        // claim's next. None open (between passes): it waits for the next pass to open.
+        const [liveGate, livePass] = [gate, channelNow];
+        if (!liveGate || liveGate.sealed || !livePass) return false;
+        heldNow?.touched(done.at);
+        const landed = liveGate.expect(writesEntry(CALL_KIND, (data) => data.by === command.id), { take: [command.id], answer: { command: command.id, value: done.answer } });
+        landed.catch(() => undefined);
+        await livePass.commit([{ kind: CALL_KIND, data: { by: command.id, at: done.at, ...done.record } }]);
+        await landed;
+        return true;
+      });
+      settleCalls();
     })().catch(() => undefined);
     return { taken: true };
   };
+
+  /** Writes each finished channel call whose record is not written yet, through the pass open now. One the pass's seal
+   *  failed stays for the next pass; one the claim ends with stays untaken, and the run's end (or its next claim) settles
+   *  its row. */
+  function settleCalls(): void {
+    for (const settle of [...unsettledCalls]) {
+      unsettledCalls.delete(settle);
+      settle().then((written) => {
+        if (!written) unsettledCalls.add(settle);
+      }, () => unsettledCalls.add(settle));
+    }
+  }
 
   /** The raise entry, taking every raise row this claim has in its one commit (each take keyed to the entry). */
   async function takeRaises(): Promise<void> {
@@ -1653,6 +1681,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
         }
         opened();
+        // A channel call a fault's restart cut off from its pass: its record is written through this one.
+        settleCalls();
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
           return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, [], await cutRows(claim, spec, "faulted"));
@@ -1933,8 +1963,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (cut || deps.signal.aborted) return await interrupted(cut?.kind ?? "its claim's signal aborted");
         }
         // A held computer stays the owner's after the agent's end, for their checks: the run's end, and its computer's
-        // release after it, wait for the owner's release or the hold's lapse. A stop ends the run stopped at once, and a
-        // lost claim leaves it for the next claim.
+        // release after it, wait for the owner's release or the hold's lapse. A person's stop keeps waiting (writeEnd), the
+        // run then ending stopped; a cancel ends it at once, and a lost claim leaves it for the next claim.
         if (heldNow) {
           const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
           handingBack = true;
@@ -2471,6 +2501,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** `failedWith`: a CLI turn's own error (record "loop"), cut of every secret the runner holds: written in the end's
    *  commit, right before the end, as pi's own error answer (cliErrorAnswer), main's error row for a CLI's turn. */
   async function writeEnd(on: Harness, conversation: Conversation, theGate: Gate, base: EndData, take: readonly number[], also: readonly AlsoRow[] = [], failedWith?: string): Promise<LoopEnd> {
+    // A person's stop of a run that holds its computer ends its agent, not the hold (computer-held.ts): the end, and the
+    // computer's release after it, wait for the owner's release or the hold's lapse, the owner's calls still answered.
+    // A cancel, a lost claim or a shutdown meanwhile ends the wait; a cancel's end is then the run's, taking both rows.
+    const stop = stopReason;
+    if (stop?.kind === "command" && !stop.cancel && take.includes(stop.commandId) && heldNow && heldNow.state() !== "released" && !theGate.sealed) {
+      const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
+      handingBack = true;
+      await heldNow.heldAtEnd(Promise.race([heldCut, aborted, on.closed]), heldWords.stopped(heldNow.minutes));
+      const later = laterStop as StopReason | undefined;
+      if (later?.kind === "command" && later.cancel) {
+        base = { ...base, ...stopEnd(true) };
+        take = [...take, later.commandId];
+      }
+    }
     // The end is the run's release: nothing of this claim lands after it, so the tool host is let go first (its writes in
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
@@ -2550,7 +2594,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (command.kind === "pause" || command.kind === "resume") return { refused: AGENTIC_PAUSE_REFUSED };
       return { refused: `an adapter loop takes no ${command.kind} command` };
     },
+    keepsComputer(reason) {
+      return reason.kind === "command" && !reason.cancel && heldNow !== undefined && heldNow.state() !== "released" && !gate?.sealed;
+    },
     async stop(reason) {
+      // A cancel, a lost claim or a shutdown after a stop that kept the run's computer: the hold ends with it (writeEnd).
+      if (stopReason && stopReason !== reason && (reason.kind !== "command" || reason.cancel)) {
+        laterStop ??= reason;
+        cutHeld();
+      }
       stopReason ??= reason;
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
       stopped();

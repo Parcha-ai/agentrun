@@ -57,6 +57,9 @@ export async function runChannelCall(computer: LoopComputer, call: ComputerCall,
   try {
     leave = computer.hold ? await computer.hold.enter(signal) : undefined;
     answer = (await unrecorded(() => computer.client.call(call.method as never, call.params as never, { signal }))) as ComputerAnswer;
+    // A client answers its signal's abort with an error answer of its own (the daemon client's), never a throw: the same
+    // `timeout` as a wait the signal cut.
+    if (!answer.ok && signal.aborted) answer = { ok: false, error: { code: "timeout", message: `the call did not end in time: ${words(signal.reason)}` } };
   } catch (error) {
     answer = signal.aborted
       ? { ok: false, error: { code: "timeout", message: leave || !computer.hold ? `the call did not end in time: ${words(signal.reason)}` : `a person held the run's computer for the whole of the call's time: ${words(signal.reason)}` } }

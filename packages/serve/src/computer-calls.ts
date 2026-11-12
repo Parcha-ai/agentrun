@@ -130,14 +130,16 @@ export function recordedClient(client: ComputerClient): ComputerClient {
     call: (async (method: string, params: unknown, options?: { signal?: AbortSignal }) => {
       const into = scope.getStore();
       if (!into) return (client.call as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>)(method, params, options);
+      // Its place is kept when it starts, so calls made together read in the order they were made, and the bound keeps
+      // the first ones made. A call still going when its tool call ended reads unfinished.
+      const slot = into.calls.length < MAX_RECORDED_CALLS ? into.calls.push({ method, ok: false, ms: 0, code: "unfinished" }) - 1 : undefined;
+      if (slot === undefined) into.dropped += 1;
       const started = performance.now();
       const answer = await (client.call as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>)(method, params, options).catch((error: unknown) => {
-        if (into.calls.length < MAX_RECORDED_CALLS) into.calls.push({ method, ok: false, ms: Math.round(performance.now() - started), code: "gone" });
-        else into.dropped += 1;
+        if (slot !== undefined) into.calls[slot] = { method, ok: false, ms: Math.round(performance.now() - started), code: "gone" };
         throw error;
       });
-      if (into.calls.length < MAX_RECORDED_CALLS) into.calls.push(callRecordOf(method, params, answer, performance.now() - started));
-      else into.dropped += 1;
+      if (slot !== undefined) into.calls[slot] = callRecordOf(method, params, answer, performance.now() - started);
       return answer;
     }) as ComputerClient["call"],
     close: () => client.close(),

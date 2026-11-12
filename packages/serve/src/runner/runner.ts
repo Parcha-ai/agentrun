@@ -309,7 +309,9 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   const stopLoop = (held: Held, reason: StopReason) => {
-    held.stopping = true;
+    // A person's stop of a run that keeps its computer for its owner ends its agent only: its rows (the owner's calls,
+    // the release, a cancel) are still handed on until the computer is let go.
+    if (!held.loop.keepsComputer?.(reason)) held.stopping = true;
     held.loop.stop(reason).catch((error: unknown) => emit({ type: "error", runId: held.claim.runId, step: "stop", message: message(error) }));
   };
 
@@ -367,7 +369,8 @@ export function startRunner(options: RunnerOptions): Runner {
           if (row.kind === "stop" || row.kind === "cancel") {
             held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id, ...(row.kind === "cancel" ? { cancel: true as const } : {}) });
-            break;
+            // A stop that keeps the run's computer leaves the rows after it to be handed on (the loop head ends the rest).
+            continue;
           }
           const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
           if (held.sealed || killed) return;

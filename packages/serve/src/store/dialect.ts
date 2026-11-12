@@ -18,6 +18,8 @@ export interface Dialect {
   jsonArrayHas(column: string): string;
   /** The length of the JSON array in TEXT column `column`. */
   jsonArrayLength(column: string): string;
+  /** The JSON object in TEXT column `column` without its top-level `key`. */
+  jsonWithout(column: string, key: string): string;
   /** trigger_firings' insertion order: the tie-break of rows written in the same ms. */
   readonly firingOrder: string;
   /** No row limit, before an OFFSET. */
@@ -74,6 +76,7 @@ export const SQLITE: Dialect = {
   jsonNotFalse: (column, path) => `json_extract(${column}, ${jsonPath(path)}) IS NOT 0`,
   jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ?)`,
   jsonArrayLength: (column) => `json_array_length(${column})`,
+  jsonWithout: (column, key) => `json_remove(${column}, ${jsonPath([key])})`,
   firingOrder: "rowid",
   limitAll: "LIMIT -1",
   nullSafeEquals: (column) => `${column} IS ?`,
@@ -88,3 +91,8 @@ export const SQLITE: Dialect = {
   lockRow: async () => undefined,
   lockKey: async () => undefined,
 };
+
+/** The SET fragment every statement that settles command rows (taken or refused) carries: a computer call's params go
+ *  with its settling, so text an owner typed or wrote through the computer call channel (a password, a credential's file)
+ *  never stays in the store once the call is done. The row keeps its method. */
+export const settledBody = (dialect: Dialect): string => `body = CASE WHEN kind = 'computer_call' THEN ${dialect.jsonWithout("body", "params")} ELSE body END`;
