@@ -1193,10 +1193,37 @@ test("a wait that ends at its window writes the timeline row that says so; one t
   const waited = await person.wait("call-11", ["ar-run-40-2"]);
   await clock.tick(holdMs);
   await waited.lapsed;
+  assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [], "the row waits for the runner to park on the lapse");
+  waited.confirmed();
   // The run parks, and its release lets the session go after the row: that release writes no second row.
   person.sessionEnded("ar-run-40-2");
   waited.drop();
+  waited.confirmed();
   assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [["agentrun.phase", "The browser was released after 20 min waiting for you"]]);
+});
+
+test("a lapse the answer overrode writes no row: the answer's turn goes on, on the same browser", async (t) => {
+  const root = await scratch(t);
+  const clock = fakeClock();
+  const holdMs = 20 * 60_000;
+  const rows = [];
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async (kind, data) => void rows.push([kind, data.summary]), timers: clock.timers, holdMs, now: clock.now, personTime: async () => ({ drop: () => {} }) });
+  t.after(() => person.close());
+  const waited = await person.wait("call-13", ["ar-run-42-1"]);
+  await clock.tick(holdMs);
+  await waited.lapsed;
+  waited.drop();
+  waited.confirmed();
+  assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), []);
+});
+
+test("a wait the cap has no room for writes the release row before it is refused", async (t) => {
+  const root = await scratch(t);
+  const rows = [];
+  const person = personAt({ root, gates: () => ({ give: () => false }), pollMs: 60_000, note: async (kind, data) => void rows.push([kind, data.summary]), personTime: async () => ({ refused: "the run's cap has no room" }) });
+  t.after(() => person.close());
+  assert.deepEqual(await person.wait("call-14", ["ar-run-43-1"]), { refused: "the run's cap has no room" });
+  assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [["agentrun.phase", "The browser was released while the run waited for you: the run's cap has no room"]]);
 });
 
 test("a wait whose session its provider ends writes that row, once", async (t) => {
@@ -1208,6 +1235,8 @@ test("a wait whose session its provider ends writes that row, once", async (t) =
   person.sessionEnded("ar-run-41-1");
   person.sessionEnded("ar-run-41-1");
   assert.match(await waited.lapsed, /let go/);
+  waited.confirmed();
+  waited.confirmed();
   waited.drop();
   assert.deepEqual(rows.filter(([kind]) => kind === "agentrun.phase"), [["agentrun.phase", "The browser session ended while the run waited for you"]]);
 });

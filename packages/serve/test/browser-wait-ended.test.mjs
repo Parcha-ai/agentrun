@@ -81,6 +81,8 @@ test("the wait's end hands its row's words and time to the ended state, once; an
   const waited = await person.wait("call-2", ["ar-run-50-2"], clock);
   tick(15 * 60_000);
   await waited.lapsed;
+  assert.deepEqual(ended, [], "nothing is handed before the runner parks on the lapse");
+  waited.confirmed();
   person.sessionEnded("ar-run-50-2");
   waited.drop();
   assert.deepEqual(ended, [{ at: "2026-11-11T14:26:00.000Z", why: "The browser was released after 15 min waiting for you" }]);

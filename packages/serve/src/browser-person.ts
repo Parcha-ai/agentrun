@@ -204,9 +204,6 @@ export function personHands(options: {
   const ledgers = new Map<string, Ledger>();
   /** The runs' waits in their claim on the person's answer (wait), by user: the sessions each keeps open, and its lapse. */
   const waits = new Map<string, { tags: ReadonlySet<string>; lapse(words: string): void }>();
-  /** A wait of this process's ended with its browser let go (its window, the cap, its session gone): the run parks on
-   *  its question, and the Screen tab's ended state stays for it (waitEndedHere). */
-  let waitEndedHere = false;
   /** The sessions let go (sessionEnded), by tag: a wait whose hold was being admitted as one went still sees it. */
   const ended = new Set<string>();
   /** `work` on `ledger` once every extension before it is done. */
@@ -525,8 +522,9 @@ export function personHands(options: {
      *  and its release lets the browser go, booking its time to then. `pauses: false`: a refusal pauses nothing, the run
      *  parks on its question as it would with no browser. Refused in the cap's words when there is no room. `lapsed`
      *  settles, in words, at the bound, when the cap refuses a re-hold (a take-over's sharing the session), or when a
-     *  session it keeps is let go (sessionEnded); drop() lets the shares go, once. */
-    async wait(callId: string, tags: readonly string[], since: number = now()): Promise<{ refused: string } | { lapsed: Promise<string>; drop(): void }> {
+     *  session it keeps is let go (sessionEnded); confirmed() writes that lapse's row and ended state once the runner
+     *  parked the run on it; drop() lets the shares go, once. */
+    async wait(callId: string, tags: readonly string[], since: number = now()): Promise<{ refused: string } | { lapsed: Promise<string>; confirmed(): void; drop(): void }> {
       const user = `wait:${callId}`;
       const held: string[] = [];
       let bound: unknown;
@@ -537,27 +535,33 @@ export function personHands(options: {
       };
       const expiresAt = since + holdMs;
       if (expiresAt <= now()) return { refused: waitExpired(holdMs) };
+      const record = (row: string, at: number) => {
+        void note(HOST_PHASE, { summary: row, at });
+        try { options.waitEnded?.(at, row); } catch { /* the Screen tab's state is a convenience; the row stands */ }
+      };
       for (const tag of new Set(tags)) {
         const refused = await acquire(tag, user, WAIT_WHAT, false, expiresAt);
         if (refused) {
           letGo();
+          // The cap has no room for the person's time: the run parks and its release lets the browser go, and the person is told why.
+          if (!closed) record(`The browser was released while the run waited for you: ${refused.refused}`, now());
           return refused;
         }
         held.push(tag);
       }
       let settle: (words: string) => void = () => {};
       const lapsed = new Promise<string>((resolve) => (settle = resolve));
-      // The wait ends once: at its window, when a session it keeps ends, or at the cap (each with its timeline row, so the
-      // person sees why the browser went), or by the answer (drop: no row, the run goes on).
+      // The wait ends once: at its window, when a session it keeps ends, or at the cap. Each settles `lapsed` at once, and its
+      // timeline row and the Screen tab's state are written when the runner confirms the run parked on it (a lapse during
+      // the answer's placement is ignored by the runner: the answer's turn goes on, on the same browser). The answer ends it
+      // too (drop: no row, the run goes on).
       let over = false;
+      let pending: { row: string; at: number } | undefined;
       const end = (words: string, row: string) => {
         if (over) return;
         over = true;
-        waitEndedHere = true;
+        pending = { row, at: now() };
         settle(words);
-        const at = now();
-        void note(HOST_PHASE, { summary: row, at });
-        try { options.waitEnded?.(at, row); } catch { /* the Screen tab's state is a convenience; the row stands */ }
       };
       const lapse = (words: string) => end(words, words === WAIT_SESSION_GONE ? BROWSER_GONE_WHILE_WAITING : `The browser was released while the run waited for you: ${words}`);
       const entry = { tags: new Set(held), lapse };
@@ -567,20 +571,20 @@ export function personHands(options: {
       if (held.some((tag) => ended.has(tag))) lapse(WAIT_SESSION_GONE);
       return {
         lapsed,
+        confirmed: () => {
+          const ended = pending;
+          pending = undefined;
+          if (ended) record(ended.row, ended.at);
+        },
         drop: () => {
           over = true;
+          pending = undefined;
           if (waits.get(user) === entry) waits.delete(user);
           letGo();
         },
       };
     },
     /** Session `tag` was let go (its release, whatever made it): a wait that kept it open for the person lapses. */
-    /** Whether a wait of this process ended with its browser let go: its claim then parks on the question, and the
-     *  Screen tab's ended state is kept for it; any other release of the claim (the run's end, a park for another
-     *  reason) lets that state go (tools.ts beforeRelease). */
-    waitEndedHere(): boolean {
-      return waitEndedHere;
-    },
     sessionEnded(tag: string): void {
       ended.add(tag);
       for (const wait of [...waits.values()]) if (wait.tags.has(tag)) wait.lapse(WAIT_SESSION_GONE);
