@@ -19,7 +19,7 @@ import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
@@ -367,7 +367,7 @@ function uuidv7(now = Date.now()): string {
 
 /** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
  *  place fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean; readonly thinking?: unknown };
+type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
@@ -456,14 +456,16 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
-  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
+  // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
+  const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...grade };
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...notesOnly, ...grade };
   try {
     // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
     const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
@@ -477,10 +479,10 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.
-    const workflows = chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...grade };
+    const workflows = notesOnly.notesOnly ? [] : chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
   } catch {
-    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
+    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...notesOnly, ...grade };
   }
 }
 

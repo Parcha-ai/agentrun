@@ -3,7 +3,7 @@
 // the console, signed in, and the server refuses the token on them (secret-writes.ts). A secret is never in argv, so
 // never in shell history or `ps`, and never in any output or error. Each command is `{ command, pathParams, summary,
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
-// `{ fail, targetOf, clientOf, request, send, secretAt, BAD_HEADER }`: the token's custody and the requests are its.
+// `{ fail, baseOf, targetOf, clientOf, request, BAD_HEADER }`: the token's custody and the requests are its.
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
