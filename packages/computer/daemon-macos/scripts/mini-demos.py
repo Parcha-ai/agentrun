@@ -372,7 +372,7 @@ def finder_rename_file(t):
         deadline = time.monotonic() + seconds
         while True:
             listed = (t.c.call("files.list", {"path": folder}).get("result") or {}).get("entries", [])
-            got = sorted(e.get("name") for e in listed)
+            got = sorted(os.path.basename(e.get("path") or "") for e in listed)
             if got == want or time.monotonic() >= deadline:
                 return got
             time.sleep(0.25)
@@ -421,7 +421,15 @@ def notes_new_note(t):
     title, line = f"Groceries {t.nonce}", "oat milk and eggs"
     t.launch()
     tree = first_run(t, t.observe())
-    t.act([{"key": "super+n"}, {"type": title}, {"key": "enter"}, {"type": line}], "new note (super+n), type its title and a line", expect={"text": line, "timeoutMs": 10000})
+    # The new note's editor takes focus a moment after super+n: typing at once went to the notes list and was lost.
+    # So the agent looks again and types into the editor by its ref.
+    t.act([{"key": "super+n"}], "new note (super+n)")
+    tree = t.observe("observe the new note's editor")
+    boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
+    editor = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or (boxes[-1] if boxes else None)
+    if editor is None:
+        raise Failed("no text box for the new note among %d nodes" % len(tree["nodes"]))
+    t.act([{"type": title, "into": editor["ref"]}, {"key": "enter"}, {"type": line}], "type the note's title and a line", expect={"text": line, "timeoutMs": 10000})
     tree = t.observe("observe the new note")
     need(t, tree["nodes"], "the note in the list, by its title", contains=title)
     t.notes.append(f"the note \"{title}\" is in the list, with its line")
