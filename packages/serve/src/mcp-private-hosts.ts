@@ -8,7 +8,6 @@
 // stay refused whatever the list says.
 import net from "node:net";
 import os from "node:os";
-import { checkAddress } from "./egress-table.js";
 import { invalid, type InputIssue } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import type { Settings } from "./store/index.js";
@@ -31,13 +30,13 @@ ALLOWABLE.addSubnet("fc00::", 7, "ipv6");
 
 const familyOf = (address: string) => (net.isIPv6(address) ? "ipv6" : "ipv4");
 
-/** Whether `address` is a cloud metadata service's, by the egress table's one list (egress-table.ts): the ones inside
- *  ALLOWABLE (AWS's over IPv6 in fc00::/7, Alibaba Cloud's in 100.64/10) are never allowable whatever the list says; the
- *  rest (169.254.169.254 among them) are link-local, outside it already. */
-const isMetadata = (address: string): boolean => {
-  const verdict = checkAddress(address, []);
-  return !verdict.ok && verdict.class === "metadata";
-};
+/** The cloud metadata services inside ALLOWABLE (AWS's over IPv6 in fc00::/7, Alibaba Cloud's in 100.64/10): never
+ *  allowable whatever the list says. The rest (169.254.169.254 among them) are link-local, outside it already. The same
+ *  addresses the computer's egress table refuses (packages/computer/src/docker/egress-table.ts). */
+const METADATA = new net.BlockList();
+METADATA.addAddress("100.100.100.200", "ipv4"); // key-gate: denylist a cloud metadata address
+METADATA.addSubnet("fd00:ec2::", 32, "ipv6"); // key-gate: denylist a cloud metadata range
+const isMetadata = (address: string): boolean => METADATA.check(address, familyOf(address));
 
 /** Whether `address` is in a range a listed host may resolve to (ALLOWABLE), and not a cloud metadata service's. */
 export const inAllowableRange = (address: string): boolean => net.isIP(address) !== 0 && ALLOWABLE.check(address, familyOf(address)) && !isMetadata(address);
