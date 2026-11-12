@@ -5,9 +5,11 @@
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import type { CommandWire } from "../command-wake.js";
 import { runnableDeadline } from "../deadline.js";
 import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
+import { WakeFile, wakeFileOf } from "./wake-file.js";
 import { ONE_ANSWER_INDEX } from "../schema.js";
 import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
@@ -88,6 +90,9 @@ export interface StoreConnection {
    *  in-memory database. A database server's: its kind, host, database and schema, never a user, a password or any
    *  credential. An in-process key only: never printed in a log line, an error or an answer. */
   readonly where: string;
+  /** The command wake's way to the other processes on this data (command-wake.ts): a wake file beside a SQLite file,
+   *  NOTIFY and LISTEN on Postgres; none for an in-memory database, which no other process shares. */
+  readonly wire?: CommandWire | undefined;
   get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined>;
   all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]>;
   /** One write transaction of fixed statements, in order; `full`: a durable commit. */
@@ -178,6 +183,11 @@ export class Connection implements SqliteDatabase, StoreConnection {
   get where(): string {
     return this.#where;
   }
+  /** The wake file beside the store's file (wake-file.ts); none for an in-memory database. */
+  #wire: WakeFile | undefined;
+  get wire(): CommandWire | undefined {
+    return this.#wire;
+  }
   readonly #worker: Worker;
   #next = 1;
   readonly #waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -229,8 +239,9 @@ export class Connection implements SqliteDatabase, StoreConnection {
     try {
       await connection.#send({ op: "open", file, busyTimeoutMs, owner });
       connection.#busyTimeoutMs = busyTimeoutMs;
-      // Opened, the file exists: its real path names it.
+      // Opened, the file exists: its real path names it, and its wake file lies beside it.
       connection.#where = whereOf(file);
+      if (!inMemory(file)) connection.#wire = new WakeFile(wakeFileOf(realpathSync(file)));
     } catch (error) {
       await worker.terminate();
       throw error;
@@ -393,9 +404,11 @@ export class Connection implements SqliteDatabase, StoreConnection {
   /** Waits for every call queued before it, closes the connection (and the owner lock) and ends the worker. */
   async close(): Promise<void> {
     if (this.#closed) return;
+    const wireClosed = this.#wire?.close();
     // A worker already lost has nothing left to close.
     if (this.#lost) {
       this.#closed = true;
+      await wireClosed;
       return;
     }
     const last = this.#queued(async () => this.#send({ op: "close" }));
@@ -405,6 +418,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
     } finally {
       this.#closing = true;
       await this.#worker.terminate();
+      await wireClosed;
     }
   }
 }

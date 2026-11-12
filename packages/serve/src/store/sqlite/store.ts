@@ -311,6 +311,7 @@ function snapshotOf(connection: StoreConnection, tx: Tx): StoreConnection {
   return {
     dialect: connection.dialect,
     where: connection.where,
+    wire: connection.wire,
     get: (sql, ...params) => tx.get(sql, ...params),
     all: (sql, ...params) => tx.all(sql, ...params),
     write: () => Promise.reject(new Error("a store snapshot only reads")),
@@ -677,7 +678,7 @@ class SqliteStore implements Store {
           await tx.run("UPDATE triggers SET failures_in_a_row = 0, updated_at = ? WHERE id = ?", at, triggerId);
           return { sent: true as const, commandId: row!.id };
         });
-        if (sent !== undefined && "sent" in sent) wakeCommands(this.where, { runId, what: "written" });
+        if (sent !== undefined && "sent" in sent) wakeCommands(db, { runId, what: "written" });
         return sent;
       },
       waiting: async () =>
@@ -849,7 +850,7 @@ class SqliteStore implements Store {
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
         });
-        wakeCommands(this.where, { runId, what: "written" });
+        wakeCommands(db, { runId, what: "written" });
         return command;
       },
       claimable: async ({ limit } = {}) => {
@@ -894,8 +895,8 @@ class SqliteStore implements Store {
           }
           return row;
         });
-        // After the commit: the readers of this run's command answers in this process wake (a take, or the run gone final).
-        if (take.length > 0 || patch.state === "ended" || patch.state === "stopped" || patch.state === "failed") wakeCommands(this.where, { runId: claim.runId, what: "answered" });
+        // After the commit: the readers of this run's command answers wake (a take, or the run gone final).
+        if (take.length > 0 || patch.state === "ended" || patch.state === "stopped" || patch.state === "failed") wakeCommands(db, { runId: claim.runId, what: "answered" });
         return updated;
       },
     };
@@ -1471,7 +1472,7 @@ class SqliteStore implements Store {
     if (open && !open.closed) return open;
     const journal: RunStorage = new RunStorage(this.#db, claim, this.#now, () => {
       if (this.#journals.get(key) === journal) this.#journals.delete(key);
-    }, this.where);
+    }, this.#db);
     this.#journals.set(key, journal);
     return journal;
   }
@@ -1505,12 +1506,12 @@ class SqliteStore implements Store {
       params: [kind, json(body), this.#now(), runId],
       expect: { kind: "final", runId },
     }]);
-    wakeCommands(this.where, { runId, what: "written" });
+    wakeCommands(this.#db, { runId, what: "written" });
     return commandOf(result!.rows[0] as CommandRecord);
   }
 
   watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void {
-    return watchCommandsAt(this.where, listener);
+    return watchCommandsAt(this.#db, listener);
   }
 
   async answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined> {
@@ -1575,7 +1576,7 @@ class SqliteStore implements Store {
       const now = await underClaim(tx, claim, this.#now);
       await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(this.#db.dialect)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
     });
-    wakeCommands(this.where, { runId: claim.runId, what: "answered" });
+    wakeCommands(this.#db, { runId: claim.runId, what: "answered" });
   }
 
   async retry(claim: Claim, commandId: number): Promise<number> {
