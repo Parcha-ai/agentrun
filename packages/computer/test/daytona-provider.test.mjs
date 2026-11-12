@@ -492,7 +492,28 @@ test("a refused daemon upload deletes the sandbox and says so", async () => {
 	assert.match(made.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 403/);
 	assert.match(made.error.message, /was deleted/);
 	assert.equal(fake.sandboxes.size, 0);
+	assert.equal(of(fake, "POST", /\/files\/upload$/).length, 0, "a refusal that is not a 404 is never sent to the older route");
 	assert.equal(of(fake, "POST", /\/process\//).length, 0, "nothing runs after a refused upload");
+});
+
+test("a toolbox with no files/upload-v2 (404) gets the daemon through files/upload, and the computer starts", async () => {
+	const { provider, fake } = setup({ olderToolbox: true });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	assert.equal(of(fake, "POST", /\/files\/upload-v2$/).length, 1, "the 404 is not retried");
+	const [upload] = of(fake, "POST", /\/files\/upload$/);
+	assert.match(upload.query.path, /^\/tmp\/agentrun-computerd-[0-9a-f]{16}$/);
+	assert.deepEqual(upload.body.file, { size: DAEMON_BYTES.length, sha256: DAEMON_SHA }, "the daemon's own bytes");
+	const [install] = of(fake, "POST", /\/process\/execute$/).map((r) => scriptOf(r.body.command));
+	assert.equal(install.args[0], upload.query.path, "the install takes the file the older route wrote");
+	assert.equal(deleted(fake).length, 0);
+
+	const refused = setup({ olderToolbox: true, uploadStatus: 403 });
+	const failed = await refused.provider.create(SPEC);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "denied", "the older route's refusal is the one that counts");
+	assert.match(failed.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 404 404 page not found, then POST \/toolbox\/[^ ]+\/files\/upload: 403/);
+	assert.equal(refused.fake.sandboxes.size, 0);
 });
 
 test("an install the snapshot cannot do, and a daemon that reads back other bytes, are refused and deleted", async () => {
