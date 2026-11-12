@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { ModalProvider } from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as modal from "../dist/modal.js";
 import { ARCHIL_GATE, ARCHIL_HELPER, DAEMON, DAEMON_IMAGE, ENTRYPOINT_MARK, fakeModal, fakeObjects } from "./fake-modal.mjs";
 

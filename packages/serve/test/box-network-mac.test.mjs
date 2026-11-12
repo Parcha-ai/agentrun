@@ -25,7 +25,7 @@ const IMAGE = "debian:bookworm-slim";
 const SANDBOX = { mode: "sandbox", box: "docker" };
 const DEFAULT = ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com", "github.com", "codeload.github.com"];
 // The contract, written out: what the proxy container and the box get.
-const EGRESS_IMAGE = "node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da";
+const EGRESS_IMAGE = "node:22.23.5-trixie-slim@sha256:68c76cfad89921b927eae28ba21407475e29d0ce450afcdbe70c1532db042b64";
 const EGRESS_MOUNT = "/run/agentrun/egress";
 const PROXY = "http://127.0.0.1:3128";
 const PROXY_ENV = { HTTP_PROXY: PROXY, HTTPS_PROXY: PROXY, http_proxy: PROXY, https_proxy: PROXY, NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" };
@@ -329,7 +329,7 @@ test("the volume is made before any run gets its name, even while the proxy's im
   assert.ok(docker.volumes()[1].includes(`agentrun.egress=${keyOf(data)}`));
   const offer = await dockerOf(api);
   assert.equal(offer.network, "none");
-  assert.equal(offer.network_reason, "the box network proxy is pulling its image, node:22-bookworm-slim");
+  assert.equal(offer.network_reason, "the box network proxy is pulling its image, node:22.23.5-trixie-slim");
   assert.deepEqual(docker.proxies(), [], "no proxy before its image is in");
   await rm(join(docker.state, "pull-hold"));
   await until(async () => (await dockerOf(api)).network === "allowlist", "allowlist once the image is in");

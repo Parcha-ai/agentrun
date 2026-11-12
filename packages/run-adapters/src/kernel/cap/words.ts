@@ -55,7 +55,7 @@ export function paidRefusal(cap: number, spent: number, held: number, name: stri
   const leastCapUsd = raiseFigure(cap, spent + held + holdUsd);
   return {
     text: `${SPEND_CAP_REACHED}: Not sent: this run has ${spentOf(spent, held, cap)}, and the next step, ${name}, could cost up to ${money(holdUsd)} (${basis}). Raise the cap to at least $${leastCapUsd.toFixed(2)} to continue.`,
-    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd },
+    figures: { spentUsd: spent + held, needsUsd: holdUsd, leastCapUsd, step: { name, holdUsd, basis } },
   };
 }
 

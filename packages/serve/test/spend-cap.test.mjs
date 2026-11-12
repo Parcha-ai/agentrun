@@ -139,15 +139,15 @@ test("a response of unknown price leaves the run's cost unknown (null), not $0, 
   }
 });
 
-// SKIP (follow-up #2080): the run completes on the runner before the state the test waits for
-test.skip("a refused request is final: one refusal, never retried, the model is never called for it, and the run pauses at its cap", async (t) => {
+test("a refused request is final: one refusal, never retried, the model is never called for it, and the run pauses at its cap", async (t) => {
   // $0.015625 per million output tokens: one request's least (its answer and the medium thinking level's allowance, 9,216
   // tokens) is $0.000144, over the $0.0001 cap. The refusal's code says the run is out of budget, which pi-ai's retry takes
   // as final whatever digits its words hold (cap-final.test.mjs puts retry digits in them).
+  // The agent names medium thinking: one that names none is sent at effort none, its least the answer's 1,024 tokens alone.
   const { api, posts } = await gateway(t, { price: "0,0.015625" });
   const from = Date.now();
-  const { run_id } = await start(api, "final", "What is six times seven?", { max_cost_usd: 0.0001 });
-  const { rows } = await follow(api, run_id, ["input_required", "failed"]);
+  const { run_id } = await start(api, "final", "What is six times seven?", { max_cost_usd: 0.0001 }, { thinking: "medium" });
+  const { rows } = await follow(api, run_id, ["input_required", "failed", "completed"]);
   const run = (await api("GET", `/runs/${run_id}`)).body;
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
   assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0001\. Raise the cap to at least \$0\.01 to continue\.$/);
