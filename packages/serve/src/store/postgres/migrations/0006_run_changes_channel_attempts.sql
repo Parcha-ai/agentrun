@@ -6,7 +6,7 @@
 -- number changes in commit order: the trigger takes one transaction-scoped advisory lock before it inserts, so two
 -- transactions that each write a change commit them in seq order, and a reader that has read seq n has every change at
 -- or below it.
-CREATE TABLE run_changes (
+CREATE TABLE IF NOT EXISTS run_changes (
   seq BIGSERIAL PRIMARY KEY,
   run_id TEXT COLLATE "C" NOT NULL,
   state TEXT COLLATE "C" NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE run_changes (
   runner TEXT COLLATE "C"
 );
 
-CREATE FUNCTION run_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION run_changed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext(TG_TABLE_SCHEMA || '.run_changes'));
   EXECUTE format('INSERT INTO %I.run_changes (run_id, state, ended_at, epoch, runner) VALUES ($1, $2, $3, $4, $5)', TG_TABLE_SCHEMA)
@@ -24,13 +24,13 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
+CREATE OR REPLACE TRIGGER runs_changed AFTER UPDATE OF state, runner ON runs
   FOR EACH ROW
   WHEN ((OLD.state IS DISTINCT FROM NEW.state OR OLD.runner IS DISTINCT FROM NEW.runner)
     AND (NEW.state IN ('ended', 'stopped', 'failed', 'parked') OR (NEW.state = 'running' AND NEW.runner IS NULL)))
   EXECUTE FUNCTION run_changed();
 
-CREATE TABLE channel_attempts (
+CREATE TABLE IF NOT EXISTS channel_attempts (
   seq BIGSERIAL PRIMARY KEY,
   channel TEXT COLLATE "C" NOT NULL,
   post_id TEXT COLLATE "C" NOT NULL,
@@ -42,6 +42,6 @@ CREATE TABLE channel_attempts (
   retry_at BIGINT,
   redelivery BIGINT NOT NULL CHECK (redelivery IN (0, 1))
 );
-CREATE INDEX channel_attempts_by_channel ON channel_attempts (channel, seq);
+CREATE INDEX IF NOT EXISTS channel_attempts_by_channel ON channel_attempts (channel, seq);
 
 UPDATE store_meta SET schema_version = 6 WHERE singleton = 1;

@@ -736,24 +736,22 @@ test("an applied migration whose file changed since is refused at the server's o
 
 test("a store holding two answers to one approval is refused migration 0003 in words: the run, the call, its commands, and what to do", ONLY, async (t) => {
   const schema = await schemaFor(t);
-  // The store as a build before 0003 left it: its schema at 0002 (whatever migrations come after 0003), a run, and an
-  // approve and a deny of call-1 that raced and were both written; call-2 has one answer, which the migration keeps as it is.
-  const before = await client();
-  try {
-    await migrate(before, schema, Date.now(), migrationsIn().filter((migration) => migration.version <= 2));
-  } finally {
-    await before.end();
-  }
-  await sql(schema, "INSERT INTO agents (id, name, created_at) VALUES ('agent-1', 'agent-1', 0)");
-  await sql(schema, "INSERT INTO revisions (id, agent_id, kind, body, created_at) VALUES ('rev-1', 'agent-1', 'agentic', '{}', 0)");
-  await sql(schema, "INSERT INTO runs (id, agent_id, revision_id, state, started_at) VALUES ('run-1', 'agent-1', 'rev-1', 'queued', 0)");
+  const store = await openPostgresStore({ url: PG_URL, schema });
+  await queued(store);
+  await store.close();
+  // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
+  // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
+  // again from 0003 (0004 on runs.outcome's check runs twice unharmed).
+  await sql(schema, "DROP INDEX commands_one_answer");
+  await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");
   const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
   const first = await answer("approve", "call-1");
   const second = await answer("deny", "call-1");
   const other = await answer("deny", "call-2");
   let words = "";
-  // A store that opens all the same is closed, so its connections hold no test open after the failure.
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema }).then(async (opened) => (await opened.close(), opened)), (error) => {
+  // A store that opens anyway is closed before the case fails: left open, its pool and owner lock keep the file's process
+  // alive past its last case, and the whole Postgres job waits on it to its limit instead of failing this case by name.
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }).then((opened) => opened.close()), (error) => {
     words = error.message;
     return true;
   });
