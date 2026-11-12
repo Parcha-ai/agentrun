@@ -39,7 +39,7 @@ export type LearningChange =
        *  no old skill stays served beside the note that replaces it; not when `note` was left out as `taken` (another
        *  note holds that name, so the skill's rule would be lost). Its file is checked against the run's seed as a
        *  skill's file the merge writes is. */
-      retire?: { skill: string; note: string }[];
+      retire?: { skill: string; note: string; rule: string }[];
     }
   | {
       kind: "person";
@@ -153,8 +153,27 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   }));
   // Each re-filed skill main holds, not retired, retired in this write (`retire`), unless its note was left out as taken.
   const retiring: string[] = [];
-  for (const { skill, note } of change.retire ?? []) {
+  // The rules main's active notes hold now, apart from the notes this merge supersedes: a skill retires only while its rule
+  // has an active note, the re-filed note written here or another main holds as this merge commits (a person may have
+  // edited or retired it since the grade read main), so the rule is never left with no active copy.
+  const superseding = new Set([...(change.supersede ?? []).map(({ path }) => path), ...[...files].filter(([path]) => isNote(path) && !held.has(path)).flatMap(([path, text]) => {
+    const one = parseNoteFile(path, text);
+    return Array.isArray(one) ? [] : one.supersedes;
+  })]);
+  const holding = new Set<string>();
+  if (change.retire?.length) {
+    for (const one of snapshotNotes(snapshot).filter((note) => note.status === "active" && !superseding.has(note.file))) {
+      const text = parseNoteFile(one.file, await body(one.file, blobOf(snapshot, one.file)!));
+      if (!Array.isArray(text)) holding.add(ruleOf(text.body));
+    }
+    for (const [path, text] of files) {
+      const one = isNote(path) && !held.has(path) ? parseNoteFile(path, text) : undefined;
+      if (one && !Array.isArray(one)) holding.add(ruleOf(one.body));
+    }
+  }
+  for (const { skill, note, rule } of change.retire ?? []) {
     if (left.some((one) => one.path === note && one.reason === "taken")) continue;
+    if (!holding.has(rule)) continue;
     const oid = blobOf(snapshot, skill);
     const item = snapshot?.skills.find((one) => one.files.some((file) => file.path === skill));
     if (oid === undefined || !item || item.status === "retired") continue;

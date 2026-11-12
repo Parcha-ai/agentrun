@@ -378,6 +378,33 @@ test("the merge: a copy of a main note's rule, then an update of that note: the 
   }
 });
 
+// #2256 review (PRRT_kwDOUmdVMs62n9cX): the skill retires only while an active note holds its rule as the merge commits.
+test("the merge retires a re-filed skill only while an active note holds its rule: a holder a person retired since the grade leaves the skill active", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-retire-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-old", reason: "learned a skill", graded: {}, files: [{ path: SKILL.file, text: SKILL.text }] })).ok, true);
+    const rule = ruleOf(parseNoteFile("report-format.md", skillAsNote(SKILL.file, SKILL.text).text).body);
+    const retire = [{ skill: SKILL.file, note: "report-format.md", rule }];
+    const status = async () => (await readSnapshot(folder.workspace)).skills.map(({ name, status: one }) => [name, one]);
+    // No active note holds the rule (the one that did was retired after the grade read main): the skill stays.
+    const one = await learningCommit(folder.workspace, { kind: "merge", runId: "run-a", reason: "r", graded: {}, files: [{ path: NOTE.file, text: NOTE.text }], retire });
+    assert.equal(one.ok, true, JSON.stringify(one));
+    assert.deepEqual(await status(), [["report-format", "active"]], "the rule has no active note: its skill stays");
+    // An active note holds it: the skill retires in the same write.
+    const holder = skillAsNote(SKILL.file, SKILL.text);
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: holder.file, text: holder.text, ifMatch: null })).ok, true);
+    const other = noteNamed("budget", "Budget", "Stay under the cap.");
+    const two = await learningCommit(folder.workspace, { kind: "merge", runId: "run-b", reason: "r", graded: {}, files: [{ path: other.file, text: other.text }], retire });
+    assert.equal(two.ok, true, JSON.stringify(two));
+    assert.deepEqual(await status(), [["report-format", "retired"]], "a note holds the rule: the skill retires");
+  } finally {
+    await folder.end();
+  }
+});
+
 test("re-filing an update to a skill main holds retires that skill in the same write: no old SKILL.md stays active beside the note", async (t) => {
   const old = { file: SKILL.file, text: "---\nname: report-format\ndescription: How every report is laid out\n---\nStart every report with STATUS.\n" };
   const { end, notes, skills } = await refileRun(t, { skill: old });

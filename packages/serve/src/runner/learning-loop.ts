@@ -155,6 +155,13 @@ export const NOTE_NAME_IN_RUN = (name: string) => `This run also kept a note nam
 /** Whether `held`, the note main holds at `file`, says the same rule as `text`: their bodies, whitespace and case aside
  *  (notes.ts ruleOf), as readMain and the merge's own settle (learn/commit.ts) read it, whatever their front matter. A
  *  text that is no note is the same only when it is the same text. */
+/** The rule a re-filed note says (notes.ts ruleOf), "" when its text is no note: what the merge checks main still holds
+ *  before it retires the skill that note replaces. */
+const ruleOfText = (file: string, text: string): string => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? "" : ruleOf(note.body);
+};
+
 const sameRule = (file: string, held: string, text: string): boolean => {
   const [theirs, ours] = [parseNoteFile(file, held), parseNoteFile(file, text)];
   return !Array.isArray(theirs) && !Array.isArray(ours) ? ruleOf(theirs.body) === ruleOf(ours.body) : held === text;
@@ -236,7 +243,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
   ];
   // Each skill re-filed as a note is retired on main in the same write (learn/commit.ts mergeOf): a kept one, and one
   // main already holds the same rule of as a note (dropped unsaid), so no old skill stays served beside its note.
-  const retire = verdict.items.flatMap((item) => (item.note && (item.keep || item.why === SAME_NOTE) && learnedPlace(item.file)?.kind === "skill" ? [{ skill: item.file, note: item.note.file }] : []));
+  const retire = verdict.items.flatMap((item) => (item.note && (item.keep || item.why === SAME_NOTE) && learnedPlace(item.file)?.kind === "skill" ? [{ skill: item.file, note: item.note.file, rule: ruleOfText(item.note.file, item.note.text) }] : []));
   return {
     kind: "merge", runId, reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
     ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}),
