@@ -24,7 +24,10 @@ export const MACOS_GROUPS: readonly Group[] = ["exec", "screen", "input.pointer"
  * Windows and macOS are parked (ORGO_PARKED): create({ os }) still builds them, for the conformance suite and their
  * tests, but no agent's setting selects one, and a setting that names one is refused in words saying so.
  */
-export const ORGO_CONFIGURATIONS = [{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {} }] as const satisfies readonly KindCapabilities[];
+export const ORGO_CONFIGURATIONS = [
+	// Orgo's suspend keeps a Linux desktop's memory and disk: an agent's own computer resumes where it was.
+	{ ...LINUX_DESKTOP, image: ORGO_BASE_IMAGE, options: {}, persistence: { keepsState: true, resume: true } },
+] as const satisfies readonly KindCapabilities[];
 
 /** Orgo's desktops not offered yet, each as its module builds it (create()'s os), and why, in the words a setting naming
  *  one is refused in. */
@@ -48,6 +51,8 @@ export const ORGO = defineProvider({
 	network: ["none"],
 	capabilities: ORGO_CONFIGURATIONS,
 	parked: ORGO_PARKED,
+	// An agent's own computers' labels: Orgo holds none, and a detached computer is never woken to read its labels file.
+	ledger: { option: "ledger" },
 	defaultImage: { desktop: ORGO_BASE_IMAGE },
 	load: () => import("../orgo.js"),
 });
