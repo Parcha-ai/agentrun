@@ -53,6 +53,20 @@ function importedRefusal(moment: RunMoment): ApiError {
   });
 }
 
+/** An archived run, or a run of an archived agent, takes no message: archiving closes it. Said as archived, never as
+ *  finished, with the way back: unarchive it (or its agent), or start a new run. */
+function archivedRefusal(moment: RunMoment): ApiError {
+  const own = moment.archived === "run";
+  const why = own ? "This run is archived" : "This run's agent is archived";
+  const back = own ? `unarchive it (POST /runs/${moment.id}/unarchive)` : `unarchive the agent (POST /agents/${moment.agentId}/unarchive)`;
+  return new ApiError("not_continuable", `${why}, so it takes no message: ${back} to go on, or start a new run of the agent.`, {
+    details: { reason: "archived", archived: moment.archived },
+    next_action: own
+      ? { type: "request", method: "POST", path: `/runs/${moment.id}/unarchive`, caller_supplies: [] }
+      : { type: "request", method: "POST", path: `/agents/${moment.agentId}/unarchive`, caller_supplies: [] },
+  });
+}
+
 /** A run that has ended takes no further act: start a new run (runs.ts finished). */
 function finished(moment: RunMoment): ApiError {
   const status = moment.cancelled ? "cancelled" : moment.terminalKind;
@@ -139,6 +153,8 @@ export async function message(
   { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
+  // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
+  if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
   // A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else, as the
