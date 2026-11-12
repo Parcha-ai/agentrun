@@ -366,8 +366,8 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
    words for its version, read with getprop when it connected: `The phone is ready: Android <version> (<arch>), from
    Phone harness.`
 
-   It passes when the run completes; its timeline shows that row, then `phone_open` of `com.android.settings` (or a tap
-   that opens it) and a `phone_tree` or `phone_screen` read of the About phone page; its final answer names the version
+   It passes when the run completes; its timeline shows that row, then a `computer_act` or `computer_script` that opens
+   `com.android.settings` and a `computer_observe` read of the About phone page; its final answer names the version
    in that row (a phone of this account said `15`); the phone is released at the run's end (a minute later the
    account lists no session `provisioning` or `ready`: `GET https://api.phone-harness.com/sessions`, the key as a
    bearer); and no key is in any answer, the timeline or the server's log.

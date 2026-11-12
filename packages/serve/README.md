@@ -703,8 +703,16 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
-| `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `phone` | A rented Android, through the same computer tools | `phone-harness` |
+
+A desktop's and a phone's tools are one set over the computer's groups. With the `ui` group, `computer_observe` returns
+the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
+set, click, type, key, scroll, drag, nav), each step saying its route and whether a readback verified it, and the answer
+ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
+`computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
+network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
+declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`.
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
@@ -2859,7 +2867,7 @@ screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.08 | $0.14 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 | `expected` (the default) | Either | as `strict` | as `strict` until #2504 lands | as `strict` until #2504 lands |
 

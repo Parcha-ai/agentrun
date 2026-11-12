@@ -6,8 +6,9 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter: the bound is the bytes, 8,500 tokens at first), the first request needs $0.047 and
-//    the whole run $0.106: $0.11, documented, takes it to its answer, $0.10 parks it before its last step;
+//  - through a gateway (OpenRouter: the bound is the bytes, 16,400 tokens at first, most of them the computer's tools'
+//    definitions), the first request needs $0.077 and the whole run $0.135: $0.14, documented, takes it to its answer,
+//    $0.13 parks it before its last step;
 //  - straight to Anthropic, each bound is Anthropic's count (3,821 tokens at first with the tool prompt), so the first
 //    request needs $0.030 and the whole run $0.083: $0.09, documented, takes it to its answer, $0.08 parks it.
 import assert from "node:assert/strict";
@@ -22,7 +23,7 @@ const { fauxComputers } = await import("../dist/faux-computers.js");
 after(closeOpenSessions);
 
 /** The minimums docs/run-caps.md states for pi on Sonnet: through a gateway, and straight to Anthropic. */
-const GATEWAY_MINIMUM = 0.11;
+const GATEWAY_MINIMUM = 0.14;
 const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
@@ -46,7 +47,7 @@ function desktopOrigin(sent, counted) {
     const usage = { input_tokens: 4, cache_creation_input_tokens: step === 0 ? FIRST_TOKENS : 1_300, cache_read_input_tokens: step === 0 ? 0 : FIRST_TOKENS + 1_300 * (step - 1), output_tokens: 1 };
     const start = { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage } };
     const blocks = step < 4
-      ? [{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: `toolu_${step}`, name: "desktop_screen", input: {} } }, { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } }, { type: "content_block_stop", index: 0 }]
+      ? [{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: `toolu_${step}`, name: "computer_screenshot", input: {} } }, { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } }, { type: "content_block_stop", index: 0 }]
       : [{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "faux-host" } }, { type: "content_block_stop", index: 0 }];
     return sse([start, ...blocks, { type: "message_delta", delta: { stop_reason: step < 4 ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 40 } }, { type: "message_stop" }]);
   };
@@ -75,19 +76,19 @@ async function neededFor(t, origin) {
   return { first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
 }
 
-test("the documented minimums are what the run needs, to the cent above: $0.11 through a gateway, $0.09 straight to Anthropic", async (t) => {
+test("the documented minimums are what the run needs, to the cent above: $0.14 through a gateway, $0.09 straight to Anthropic", async (t) => {
   const gateway = await neededFor(t, "https://openrouter.ai/api");
   const direct = await neededFor(t, "https://api.anthropic.com");
-  assert.ok(gateway.asked[0].request.inputTokensMax > 8_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
+  assert.ok(gateway.asked[0].request.inputTokensMax > 16_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
   assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.047, 0.03], "the first request's least");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.077, 0.03], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
 test("through a gateway, a pi desktop run on Sonnet under $0.04 is refused its first request unsent, in the words that name what it needs", async (t) => {
   const { asked, sent, row } = await desktopRun(t, 0.04, "https://openrouter.ai/api");
   assert.equal(sent.length, 0, "nothing sent");
-  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.05/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
+  assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.08/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
 });
 
 for (const [route, origin, minimum] of [["through a gateway", "https://openrouter.ai/api", GATEWAY_MINIMUM], ["straight to Anthropic", "https://api.anthropic.com", DIRECT_MINIMUM]]) {

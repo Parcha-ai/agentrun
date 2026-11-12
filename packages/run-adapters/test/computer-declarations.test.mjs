@@ -24,5 +24,14 @@ test("a computer's declarations offer only its groups' members, and each compile
   assert.match(errorsOf(shellOnly, `return computer.app("x");`).join("\n"), /Property 'app' does not exist/);
   assert.deepEqual(errorsOf(computerDeclarations(["screen", "input.touch"]), `return computer.input.act([{ type: "tap", at: [1, 2] }]);`), []);
   const mac = computerDeclarations(["ui", "screen", "apps", "exec", "files", "input.pointer", "input.keys"]);
-  assert.deepEqual(errorsOf(mac, `const notes = await computer.apps.open("com.apple.Notes"); await notes.observe(); return notes.find({ role: "button" }).map((node) => node.ref);`), []);
+  assert.deepEqual(errorsOf(mac, `await computer.apps.open("com.apple.Notes"); const notes = computer.app("com.apple.Notes"); await notes.observe(); return notes.find({ role: "button" }).map((node) => node.ref);`), []);
+});
+
+test("a computer's declarations hold only the types its members reach: no element types without the ui group", () => {
+  const screenOnly = computerDeclarations(["screen", "input.pointer", "input.keys"]);
+  assert.doesNotMatch(screenOnly, /interface UiNode|type UiStep|interface App /);
+  assert.match(screenOnly, /type InputAction/);
+  const mac = computerDeclarations(["ui", "screen", "input.pointer"]);
+  assert.match(mac, /interface UiNode/);
+  assert.match(mac, /type UiStep/);
 });

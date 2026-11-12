@@ -57,7 +57,6 @@ export function bindComputer(call: Call, card: Card): Computer {
 			list: () => call("apps.list", {}),
 			async open(id: string, options: { url?: string; background?: boolean } = {}) {
 				await call("apps.open", { id, ...options });
-				return bind(id);
 			},
 		});
 	if (has("ui")) computer.app = (id?: string) => bind(id);

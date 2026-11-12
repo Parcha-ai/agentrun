@@ -12,14 +12,15 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
-import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { computerToolsFor } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
-/** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
-const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
+/** A kind's computer tools, as the kernel registry lists them for its provider's groups (the desktop's and the phone's
+ *  are the same tools). */
+const kindTools = (kind) => computerToolsFor(KIND_REGISTRY.PROVIDERS.flatMap((one) => one.capabilities).find((one) => one.kind === (kind === "phone" ? "android" : kind)).groups);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });

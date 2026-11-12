@@ -302,30 +302,235 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
   }
 };
 
-/** The types `computer` names. */
-const TYPES = "/** What a computer is (its machine kind): the shape its tools take. Kind sets which groups are Core. */\ntype ComputerKind = \"linux\" | \"desktop\" | \"android\" | \"ios\" | \"browser\";\n\n/** The platform a computer runs, which the key table and exec need. */\ntype ComputerOs = \"linux\" | \"windows\" | \"macos\" | \"android\" | \"ios\";\n\n/** A screen's size in points, and how many pixels a point holds (2 on a Retina Mac, 2.625 on many phones, 1 on Xvfb). */\ninterface ScreenSize {\n  width: number;\n  height: number;\n  scale: number;\n}\n\ntype FileType = \"file\" | \"dir\" | \"symlink\" | \"other\";\n\n/**\n * In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\n * the window's points, origin at its top left.\n */\ntype Point = [x: number, y: number];\n\ntype Rect = [x: number, y: number, w: number, h: number];\n\ntype Button = \"left\" | \"right\" | \"middle\";\n\n/** A key is a name in KEYS, or one printable ASCII character (0x21-0x7e): \"a\", \"A\", \"1\", \"/\". */\ntype Key = \"enter\" | \"tab\" | \"space\" | \"backspace\" | \"delete\" | \"escape\" | \"insert\" | \"up\" | \"down\" | \"left\" | \"right\" | \"home\" | \"end\" | \"pageup\" | \"pagedown\" | \"f1\" | \"f2\" | \"f3\" | \"f4\" | \"f5\" | \"f6\" | \"f7\" | \"f8\" | \"f9\" | \"f10\" | \"f11\" | \"f12\" | \"shift\" | \"ctrl\" | \"alt\" | \"super\" | \"capslock\" | string;\n\ntype InputAction =\n  // input.pointer\n  | { type: \"move\"; at: Point }\n  /** State persists across batches: a down with no up stays down. */\n  | { type: \"down\" | \"up\"; button?: Button }\n  | { type: \"click\"; at?: Point; button?: Button; count?: 1 | 2 | 3; keys?: Key[] }\n  /** 2 or more points. */\n  | { type: \"drag\"; path: Point[]; button?: Button; keys?: Key[] }\n  | { type: \"scroll\"; at?: Point; dx?: number; dy?: number; unit: \"clicks\" | \"px\"; keys?: Key[] }\n  // input.keys\n  /** One key is a press; several are a combo, released in reverse. */\n  | { type: \"key\"; keys: Key[]; repeat?: number }\n  | { type: \"hold\"; keys: Key[]; ms: number }\n  | { type: \"type\"; text: string }\n  // input.touch\n  | { type: \"tap\"; at: Point; count?: 1 | 2 }\n  | { type: \"long_press\"; at: Point; ms?: number }\n  | { type: \"swipe\"; path: Point[]; ms?: number }\n  /** Above 1 the fingers move apart, below 1 together. */\n  | { type: \"pinch\"; at: Point; scale: number; ms?: number }\n  /** Not keys: \"home\" the key is line start. */\n  | { type: \"button\"; name: \"back\" | \"home\" | \"app_switch\" }\n  // any input group\n  | { type: \"wait\"; ms: number };\n\ntype UiRole = \"window\" | \"dialog\" | \"menu\" | \"menuitem\" | \"toolbar\" | \"tab\" | \"button\" | \"link\" | \"textbox\" | \"searchbox\" | \"checkbox\" | \"radio\" | \"switch\" | \"slider\" | \"combobox\" | \"progressbar\" | \"list\" | \"listitem\" | \"table\" | \"row\" | \"cell\" | \"scrollarea\" | \"image\" | \"text\" | \"heading\" | \"group\" | \"generic\";\n\n/**\n * A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\n * once the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".\n */\ntype UiRef = string;\n\ntype UiFlag = \"focused\" | \"disabled\" | \"selected\" | \"checked\" | \"secure\" | \"offscreen\";\n\ninterface UiNode {\n  ref: UiRef;\n  role: UiRole;\n  /** What a person reads it as: its label, title or text. */\n  name?: string;\n  /** What it holds: a text field's text, a slider's value. A secure field's value is never sent. */\n  value?: string;\n  /** The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier. */\n  id?: string;\n  /** In window points. */\n  bounds: Rect;\n  /** The nearest node above it in this list; absent at the top. A node comes after its parent. */\n  parent?: UiRef;\n  flags?: UiFlag[];\n  /** The platform's own action names, for the perform step: \"AXShowMenu\", \"ACTION_LONG_CLICK\". */\n  actions?: string[];\n}\n\n/** The ways a driver can make a step happen, best first. A step's result says which one ran. */\ntype UiRoute = \"semantic\" | \"page\" | \"background\" | \"foreground\";\n\n/**\n * One action. A step that names a ref acts on its element; a step at a point needs the act's state, and is refused as\n * `stale` when what is under the point is no longer what that state saw.\n */\ntype UiStep =\n  /** The element's default action: AXPress, a click on Android's node. */\n  | { press: UiRef }\n  /** Set its value: a text field's text, a slider's value, a switch's \"on\" or \"off\". */\n  | { set: UiRef; value: string }\n  /** One of its actions, by the platform's name. */\n  | { perform: UiRef; action: string }\n  /** On a touch screen, a tap; button right is a long press there. */\n  | { click: UiRef | Point; button?: \"left\" | \"right\"; count?: 1 | 2 | 3 }\n  /** Type text, into the element when named, else where the focus is. */\n  | { type: string; into?: UiRef }\n  /** A chord: names in KEYS or one printable character, joined by \"+\": \"super+s\", \"enter\", \"ctrl+shift+t\". */\n  | { key: string }\n  /** The system's own navigation (feature ui.nav). */\n  | { nav: \"back\" | \"home\" | \"app_switch\" }\n  /** Scroll the element, or what is at the point, by points: dy > 0 shows what is below, dx > 0 what is right. */\n  | { scroll: UiRef | Point; dx?: number; dy?: number }\n  /** Press at the first point, move through the rest, let go at the last: 2 or more points, over ms. */\n  | { drag: Point[]; ms?: number };\n\n/**\n * What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\n * it holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\n * name or value holds the text. gone: the opposite of each. At least one of text and ref.\n */\ninterface UiExpect {\n  text?: string;\n  ref?: UiRef;\n  gone?: boolean;\n  /** Default DEFAULT_EXPECT_MS, at most MAX_EXPECT_MS. */\n  timeoutMs?: number;\n}\n\n/** An image a script can show the model with `image(...)`: base64 PNG or JPEG, with its size in pixels. */\ninterface Image {\n  type: \"image\";\n  mimeType: \"image/png\" | \"image/jpeg\";\n  /** base64. */\n  data: string;\n  width: number;\n  height: number;\n}\n\n/** What the computer is, from its hello. */\ninterface Card {\n  kind: ComputerKind;\n  os: ComputerOs;\n  /** The OS's own version, as \"15\" or \"26.1\", where the computer says it. */\n  osVersion?: string;\n  arch: string;\n  /** The main screen, in points, where the computer has one. */\n  screen?: ScreenSize;\n  /** What the computer offers (hello.groups): each namespace below is here only with its group. */\n  groups: string[];\n  /** What its groups can and cannot do here: a feature that is off says why. */\n  features: Record<string, true | { off: string }>;\n}\n\n/** One observation of an app's window: its state id, its elements, and its image when asked. */\ninterface State {\n  /** The state's id, as \"s7\". A step at a point names it (an act's `state`), and is refused as stale once the window\n   *  moved or redrew under the point. */\n  id: string;\n  app: { id: string; name: string };\n  /** bounds in screen points: where the window sits. Elements' bounds and steps' points are in the window's points. */\n  window: { id: string; title?: string; bounds: Rect };\n  /** The elements, in reading order, each after its parent. */\n  elements: UiNode[];\n  /** Elements were left out (too many, or past the reply's size). */\n  truncated: boolean;\n  /** The elements as compact lines, as computer_observe shows them: `@e12 button \"Save\"`. */\n  outline: string;\n  /** The window's image, when asked. Its pixels are not points: a point is pixel × window.bounds[2] / image.width. */\n  image?: Image;\n}\n\n/** How a step reached the app: the protocol's routes, or `input` for raw screen input on a computer with no ui group. */\ntype Route = UiRoute | \"input\";\n\n/** What one step did: the route it ran by, and whether a readback confirmed it; or why it was refused. */\ntype StepResult = { route: Route; verified: boolean } | { error: { kind: string; message: string } };\n\n/** What an act did: each step's result, the expect's outcome, whether the window changed, and the new state. */\ninterface ActResult {\n  /** One per step tried, in order. A refused step is the last: the steps after it did not run. */\n  steps: StepResult[];\n  /** With an expect: met, or unmet when it did not hold before its timeout. */\n  expect?: \"met\" | \"unmet\";\n  /** The window changed after the steps. Absent with raw input, which can't tell. */\n  changed?: boolean;\n  /** The state after the steps. Absent with raw input, which has no states. */\n  state?: string;\n  /** The new observation, when asked with `observe`. */\n  after?: State;\n}\n\n/** What `observe` takes. */\ninterface ObserveOptions {\n  /** Add the window's image. Default false: the elements are usually enough. */\n  image?: boolean;\n  /** Every element, not only those that can be acted on or have a name. */\n  full?: boolean;\n}\n\n/** What `act` takes, beside its steps. */\ninterface ActOptions {\n  /** The state the steps' points were read from. A step at a point needs it; the app's last observe is the default. */\n  state?: string;\n  /** A condition to wait for after the steps. */\n  expect?: UiExpect;\n  /** Let steps take the foreground route, which moves the user's pointer and focus. Default false. */\n  foreground?: boolean;\n  /** Observe again after the steps and return it as `after` (one call instead of two). */\n  observe?: boolean | ObserveOptions;\n}\n\n/** An app, bound by its id: observe it and act on it. Every act waits until the window settles. */\ninterface App {\n  readonly id: string;\n  /** Observe the app's window: its elements, and its image when asked. */\n  observe(options?: ObserveOptions): Promise<State>;\n  /** The elements of the app's last observation that match, with no call to the computer: by role, and by a text its\n   *  name or value holds (or a RegExp they match). */\n  find(query: { role?: string; text?: string | RegExp }): UiNode[];\n  /** Run steps on the app, in order; the first refused one stops the rest. */\n  act(steps: UiStep[], options?: ActOptions): Promise<ActResult>;\n  /** The element's default action: the surest, fastest step. */\n  press(ref: UiRef, options?: ActOptions): Promise<ActResult>;\n  /** Set an element's value: a field's text, a slider's value, a switch's \"on\" or \"off\". */\n  set(ref: UiRef, value: string, options?: ActOptions): Promise<ActResult>;\n  click(at: UiRef | Point, options?: ActOptions & { button?: \"left\" | \"right\"; count?: 1 | 2 | 3 }): Promise<ActResult>;\n  type(text: string, options?: ActOptions & { into?: UiRef }): Promise<ActResult>;\n  /** A key or a chord: key(\"enter\"), key(\"super+s\"). */\n  key(chord: string, options?: ActOptions): Promise<ActResult>;\n  /** Scroll by points: dy > 0 shows what is below. */\n  scroll(at: UiRef | Point, delta: { dx?: number; dy?: number }, options?: ActOptions): Promise<ActResult>;\n  /** Wait until the condition holds (or, with gone, no longer holds), at most its timeoutMs. */\n  waitFor(expect: UiExpect): Promise<ActResult>;\n}\n\n/** An app the computer has. */\ninterface AppInfo {\n  id: string;\n  name?: string;\n}\n\n/** What a shell command did. */\ninterface RunResult {\n  stdout: string;\n  stderr: string;\n  /** null when a signal ended it. */\n  exitCode: number | null;\n  timedOut: boolean;\n  /** Output past what is kept was cut. */\n  truncated: boolean;\n}\n\n/** A file or a directory. */\ninterface FileInfo {\n  path: string;\n  type: FileType;\n  size: number;\n  mtimeMs: number;\n}";
+/** The types `computer` names, in order, each with the types it names. */
+const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] = [
+  {
+    "name": "ComputerKind",
+    "uses": [],
+    "text": "/** What a computer is (its machine kind): the shape its tools take. Kind sets which groups are Core. */\ntype ComputerKind = \"linux\" | \"desktop\" | \"android\" | \"ios\" | \"browser\";"
+  },
+  {
+    "name": "ComputerOs",
+    "uses": [],
+    "text": "/** The platform a computer runs, which the key table and exec need. */\ntype ComputerOs = \"linux\" | \"windows\" | \"macos\" | \"android\" | \"ios\";"
+  },
+  {
+    "name": "ScreenSize",
+    "uses": [],
+    "text": "/** A screen's size in points, and how many pixels a point holds (2 on a Retina Mac, 2.625 on many phones, 1 on Xvfb). */\ninterface ScreenSize {\n  width: number;\n  height: number;\n  scale: number;\n}"
+  },
+  {
+    "name": "FileType",
+    "uses": [],
+    "text": "type FileType = \"file\" | \"dir\" | \"symlink\" | \"other\";"
+  },
+  {
+    "name": "Point",
+    "uses": [],
+    "text": "/**\n * In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\n * the window's points, origin at its top left.\n */\ntype Point = [x: number, y: number];"
+  },
+  {
+    "name": "Rect",
+    "uses": [],
+    "text": "type Rect = [x: number, y: number, w: number, h: number];"
+  },
+  {
+    "name": "Button",
+    "uses": [],
+    "text": "type Button = \"left\" | \"right\" | \"middle\";"
+  },
+  {
+    "name": "Key",
+    "uses": [],
+    "text": "/** A key is a name in KEYS, or one printable ASCII character (0x21-0x7e): \"a\", \"A\", \"1\", \"/\". */\ntype Key = \"enter\" | \"tab\" | \"space\" | \"backspace\" | \"delete\" | \"escape\" | \"insert\" | \"up\" | \"down\" | \"left\" | \"right\" | \"home\" | \"end\" | \"pageup\" | \"pagedown\" | \"f1\" | \"f2\" | \"f3\" | \"f4\" | \"f5\" | \"f6\" | \"f7\" | \"f8\" | \"f9\" | \"f10\" | \"f11\" | \"f12\" | \"shift\" | \"ctrl\" | \"alt\" | \"super\" | \"capslock\" | string;"
+  },
+  {
+    "name": "InputAction",
+    "uses": [
+      "Point",
+      "Button",
+      "Key"
+    ],
+    "text": "type InputAction =\n  // input.pointer\n  | { type: \"move\"; at: Point }\n  /** State persists across batches: a down with no up stays down. */\n  | { type: \"down\" | \"up\"; button?: Button }\n  | { type: \"click\"; at?: Point; button?: Button; count?: 1 | 2 | 3; keys?: Key[] }\n  /** 2 or more points. */\n  | { type: \"drag\"; path: Point[]; button?: Button; keys?: Key[] }\n  | { type: \"scroll\"; at?: Point; dx?: number; dy?: number; unit: \"clicks\" | \"px\"; keys?: Key[] }\n  // input.keys\n  /** One key is a press; several are a combo, released in reverse. */\n  | { type: \"key\"; keys: Key[]; repeat?: number }\n  | { type: \"hold\"; keys: Key[]; ms: number }\n  | { type: \"type\"; text: string }\n  // input.touch\n  | { type: \"tap\"; at: Point; count?: 1 | 2 }\n  | { type: \"long_press\"; at: Point; ms?: number }\n  | { type: \"swipe\"; path: Point[]; ms?: number }\n  /** Above 1 the fingers move apart, below 1 together. */\n  | { type: \"pinch\"; at: Point; scale: number; ms?: number }\n  /** Not keys: \"home\" the key is line start. */\n  | { type: \"button\"; name: \"back\" | \"home\" | \"app_switch\" }\n  // any input group\n  | { type: \"wait\"; ms: number };"
+  },
+  {
+    "name": "UiRole",
+    "uses": [],
+    "text": "type UiRole = \"window\" | \"dialog\" | \"menu\" | \"menuitem\" | \"toolbar\" | \"tab\" | \"button\" | \"link\" | \"textbox\" | \"searchbox\" | \"checkbox\" | \"radio\" | \"switch\" | \"slider\" | \"combobox\" | \"progressbar\" | \"list\" | \"listitem\" | \"table\" | \"row\" | \"cell\" | \"scrollarea\" | \"image\" | \"text\" | \"heading\" | \"group\" | \"generic\";"
+  },
+  {
+    "name": "UiRef",
+    "uses": [],
+    "text": "/**\n * A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\n * once the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".\n */\ntype UiRef = string;"
+  },
+  {
+    "name": "UiFlag",
+    "uses": [],
+    "text": "type UiFlag = \"focused\" | \"disabled\" | \"selected\" | \"checked\" | \"secure\" | \"offscreen\";"
+  },
+  {
+    "name": "UiNode",
+    "uses": [
+      "UiRef",
+      "UiRole",
+      "Rect",
+      "UiFlag"
+    ],
+    "text": "interface UiNode {\n  ref: UiRef;\n  role: UiRole;\n  /** What a person reads it as: its label, title or text. */\n  name?: string;\n  /** What it holds: a text field's text, a slider's value. A secure field's value is never sent. */\n  value?: string;\n  /** The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier. */\n  id?: string;\n  /** In window points. */\n  bounds: Rect;\n  /** The nearest node above it in this list; absent at the top. A node comes after its parent. */\n  parent?: UiRef;\n  flags?: UiFlag[];\n  /** The platform's own action names, for the perform step: \"AXShowMenu\", \"ACTION_LONG_CLICK\". */\n  actions?: string[];\n}"
+  },
+  {
+    "name": "UiRoute",
+    "uses": [],
+    "text": "/** The ways a driver can make a step happen, best first. A step's result says which one ran. */\ntype UiRoute = \"semantic\" | \"page\" | \"background\" | \"foreground\";"
+  },
+  {
+    "name": "UiStep",
+    "uses": [
+      "UiRef",
+      "Point"
+    ],
+    "text": "/**\n * One action. A step that names a ref acts on its element; a step at a point needs the act's state, and is refused as\n * `stale` when what is under the point is no longer what that state saw.\n */\ntype UiStep =\n  /** The element's default action: AXPress, a click on Android's node. */\n  | { press: UiRef }\n  /** Set its value: a text field's text, a slider's value, a switch's \"on\" or \"off\". */\n  | { set: UiRef; value: string }\n  /** One of its actions, by the platform's name. */\n  | { perform: UiRef; action: string }\n  /** On a touch screen, a tap; button right is a long press there. */\n  | { click: UiRef | Point; button?: \"left\" | \"right\"; count?: 1 | 2 | 3 }\n  /** Type text, into the element when named, else where the focus is. */\n  | { type: string; into?: UiRef }\n  /** A chord: names in KEYS or one printable character, joined by \"+\": \"super+s\", \"enter\", \"ctrl+shift+t\". */\n  | { key: string }\n  /** The system's own navigation (feature ui.nav). */\n  | { nav: \"back\" | \"home\" | \"app_switch\" }\n  /** Scroll the element, or what is at the point, by points: dy > 0 shows what is below, dx > 0 what is right. */\n  | { scroll: UiRef | Point; dx?: number; dy?: number }\n  /** Press at the first point, move through the rest, let go at the last: 2 or more points, over ms. */\n  | { drag: Point[]; ms?: number };"
+  },
+  {
+    "name": "UiExpect",
+    "uses": [
+      "UiRef"
+    ],
+    "text": "/**\n * What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\n * it holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\n * name or value holds the text. gone: the opposite of each. At least one of text and ref.\n */\ninterface UiExpect {\n  text?: string;\n  ref?: UiRef;\n  gone?: boolean;\n  /** Default DEFAULT_EXPECT_MS, at most MAX_EXPECT_MS. */\n  timeoutMs?: number;\n}"
+  },
+  {
+    "name": "Image",
+    "uses": [],
+    "text": "/** An image a script can show the model with `image(...)`: base64 PNG or JPEG, with its size in pixels. */\ninterface Image {\n  type: \"image\";\n  mimeType: \"image/png\" | \"image/jpeg\";\n  /** base64. */\n  data: string;\n  width: number;\n  height: number;\n}"
+  },
+  {
+    "name": "Card",
+    "uses": [
+      "ComputerKind",
+      "ComputerOs",
+      "ScreenSize"
+    ],
+    "text": "/** What the computer is, from its hello. */\ninterface Card {\n  kind: ComputerKind;\n  os: ComputerOs;\n  /** The OS's own version, as \"15\" or \"26.1\", where the computer says it. */\n  osVersion?: string;\n  arch: string;\n  /** The main screen, in points, where the computer has one. */\n  screen?: ScreenSize;\n  /** What the computer offers (hello.groups): each namespace below is here only with its group. */\n  groups: string[];\n  /** What its groups can and cannot do here: a feature that is off says why. */\n  features: Record<string, true | { off: string }>;\n}"
+  },
+  {
+    "name": "State",
+    "uses": [
+      "Rect",
+      "UiNode",
+      "Image"
+    ],
+    "text": "/** One observation of an app's window: its state id, its elements, and its image when asked. */\ninterface State {\n  /** The state's id, as \"s7\". A step at a point names it (an act's `state`), and is refused as stale once the window\n   *  moved or redrew under the point. */\n  id: string;\n  app: { id: string; name: string };\n  /** bounds in screen points: where the window sits. Elements' bounds and steps' points are in the window's points. */\n  window: { id: string; title?: string; bounds: Rect };\n  /** The elements, in reading order, each after its parent. */\n  elements: UiNode[];\n  /** Elements were left out (too many, or past the reply's size). */\n  truncated: boolean;\n  /** The elements as compact lines, as computer_observe shows them: `@e12 button \"Save\"`. */\n  outline: string;\n  /** The window's image, when asked. Its pixels are not points: a point is pixel × window.bounds[2] / image.width. */\n  image?: Image;\n}"
+  },
+  {
+    "name": "Route",
+    "uses": [
+      "UiRoute"
+    ],
+    "text": "/** How a step reached the app: the protocol's routes, or `input` for raw screen input on a computer with no ui group. */\ntype Route = UiRoute | \"input\";"
+  },
+  {
+    "name": "StepResult",
+    "uses": [
+      "Route"
+    ],
+    "text": "/** What one step did: the route it ran by, and whether a readback confirmed it; or why it was refused. */\ntype StepResult = { route: Route; verified: boolean } | { error: { kind: string; message: string } };"
+  },
+  {
+    "name": "ActResult",
+    "uses": [
+      "StepResult",
+      "State"
+    ],
+    "text": "/** What an act did: each step's result, the expect's outcome, whether the window changed, and the new state. */\ninterface ActResult {\n  /** One per step tried, in order. A refused step is the last: the steps after it did not run. */\n  steps: StepResult[];\n  /** With an expect: met, or unmet when it did not hold before its timeout. */\n  expect?: \"met\" | \"unmet\";\n  /** The window changed after the steps. Absent with raw input, which can't tell. */\n  changed?: boolean;\n  /** The state after the steps. Absent with raw input, which has no states. */\n  state?: string;\n  /** The new observation, when asked with `observe`. */\n  after?: State;\n}"
+  },
+  {
+    "name": "InputResult",
+    "uses": [
+      "StepResult"
+    ],
+    "text": "/** What raw input did: one result per action tried, in order; a refused one is the last. */\ninterface InputResult {\n  steps: StepResult[];\n}"
+  },
+  {
+    "name": "ObserveOptions",
+    "uses": [],
+    "text": "/** What `observe` takes. */\ninterface ObserveOptions {\n  /** Add the window's image. Default false: the elements are usually enough. */\n  image?: boolean;\n  /** Every element, not only those that can be acted on or have a name. */\n  full?: boolean;\n}"
+  },
+  {
+    "name": "ActOptions",
+    "uses": [
+      "UiExpect",
+      "ObserveOptions"
+    ],
+    "text": "/** What `act` takes, beside its steps. */\ninterface ActOptions {\n  /** The state the steps' points were read from. A step at a point needs it; the app's last observe is the default. */\n  state?: string;\n  /** A condition to wait for after the steps. */\n  expect?: UiExpect;\n  /** Let steps take the foreground route, which moves the user's pointer and focus. Default false. */\n  foreground?: boolean;\n  /** Observe again after the steps and return it as `after` (one call instead of two). */\n  observe?: boolean | ObserveOptions;\n}"
+  },
+  {
+    "name": "App",
+    "uses": [
+      "ObserveOptions",
+      "State",
+      "UiNode",
+      "UiStep",
+      "ActOptions",
+      "ActResult",
+      "UiRef",
+      "Point",
+      "UiExpect"
+    ],
+    "text": "/** An app, bound by its id: observe it and act on it. Every act waits until the window settles. */\ninterface App {\n  readonly id: string;\n  /** Observe the app's window: its elements, and its image when asked. */\n  observe(options?: ObserveOptions): Promise<State>;\n  /** The elements of the app's last observation that match, with no call to the computer: by role, and by a text its\n   *  name or value holds (or a RegExp they match). */\n  find(query: { role?: string; text?: string | RegExp }): UiNode[];\n  /** Run steps on the app, in order; the first refused one stops the rest. */\n  act(steps: UiStep[], options?: ActOptions): Promise<ActResult>;\n  /** The element's default action: the surest, fastest step. */\n  press(ref: UiRef, options?: ActOptions): Promise<ActResult>;\n  /** Set an element's value: a field's text, a slider's value, a switch's \"on\" or \"off\". */\n  set(ref: UiRef, value: string, options?: ActOptions): Promise<ActResult>;\n  click(at: UiRef | Point, options?: ActOptions & { button?: \"left\" | \"right\"; count?: 1 | 2 | 3 }): Promise<ActResult>;\n  type(text: string, options?: ActOptions & { into?: UiRef }): Promise<ActResult>;\n  /** A key or a chord: key(\"enter\"), key(\"super+s\"). */\n  key(chord: string, options?: ActOptions): Promise<ActResult>;\n  /** Scroll by points: dy > 0 shows what is below. */\n  scroll(at: UiRef | Point, delta: { dx?: number; dy?: number }, options?: ActOptions): Promise<ActResult>;\n  /** Wait until the condition holds (or, with gone, no longer holds), at most its timeoutMs. */\n  waitFor(expect: UiExpect): Promise<ActResult>;\n}"
+  },
+  {
+    "name": "AppInfo",
+    "uses": [],
+    "text": "/** An app the computer has. */\ninterface AppInfo {\n  id: string;\n  name?: string;\n}"
+  },
+  {
+    "name": "RunResult",
+    "uses": [],
+    "text": "/** What a shell command did. */\ninterface RunResult {\n  stdout: string;\n  stderr: string;\n  /** null when a signal ended it. */\n  exitCode: number | null;\n  timedOut: boolean;\n  /** Output past what is kept was cut. */\n  truncated: boolean;\n}"
+  },
+  {
+    "name": "FileInfo",
+    "uses": [
+      "FileType"
+    ],
+    "text": "/** A file or a directory. */\ninterface FileInfo {\n  path: string;\n  type: FileType;\n  size: number;\n  mtimeMs: number;\n}"
+  }
+];
 /** Computer's doc comment. */
 const DOC = "/** The computer an agent's code drives. */";
-/** Computer's members, each with the groups it needs one of. */
-const MEMBERS: readonly { groups?: readonly string[]; text: string }[] = [
+/** Computer's members, each with the groups it needs one of and the types it names. */
+const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; text: string }[] = [
   {
+    "uses": [
+      "Card"
+    ],
     "text": "/** What this computer is. */\n  readonly card: Card;"
   },
   {
     "groups": [
       "apps"
     ],
-    "text": "/** @group apps */\n  readonly apps: {\n    /** The installed apps, and which is in front. */\n    list(): Promise<{ apps: AppInfo[]; foreground: string | null }>;\n    /** Open an app (with background, without taking the front, where the computer can) and bind it. */\n    open(id: string, options?: { url?: string; background?: boolean }): Promise<App>;\n  };"
+    "uses": [
+      "AppInfo"
+    ],
+    "text": "/** @group apps */\n  readonly apps: {\n    /** The installed apps, and which is in front. */\n    list(): Promise<{ apps: AppInfo[]; foreground: string | null }>;\n    /** Open an app (with background, without taking the front, where the computer can). With the ui group, bind it\n     *  with app(id). */\n    open(id: string, options?: { url?: string; background?: boolean }): Promise<void>;\n  };"
   },
   {
     "groups": [
       "ui"
+    ],
+    "uses": [
+      "App"
     ],
     "text": "/** Bind an app by its id, open or not, to observe it and act on it. No id: the app in front.\n   *  @group ui */\n  app(id?: string): App;"
   },
   {
     "groups": [
       "screen"
+    ],
+    "uses": [
+      "Rect",
+      "Image"
     ],
     "text": "/** @group screen */\n  readonly screen: {\n    /** A screenshot, as an image; with region, only that part, in the whole screen's pixels. */\n    shot(options?: { region?: Rect }): Promise<Image>;\n  };"
   },
@@ -335,11 +540,18 @@ const MEMBERS: readonly { groups?: readonly string[]; text: string }[] = [
       "input.touch",
       "input.keys"
     ],
-    "text": "/** Raw input at screenshot pixels, for a computer with no ui group.\n   *  @group input.pointer input.touch input.keys */\n  readonly input: {\n    act(actions: InputAction[]): Promise<ActResult>;\n  };"
+    "uses": [
+      "InputAction",
+      "InputResult"
+    ],
+    "text": "/** Raw input at screenshot pixels, for a computer with no ui group.\n   *  @group input.pointer input.touch input.keys */\n  readonly input: {\n    act(actions: InputAction[]): Promise<InputResult>;\n  };"
   },
   {
     "groups": [
       "exec"
+    ],
+    "uses": [
+      "RunResult"
     ],
     "text": "/** @group exec */\n  readonly shell: {\n    /** Run a command: a string runs in sh -c, a list is the program and its arguments. */\n    run(command: string | string[], options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<RunResult>;\n  };"
   },
@@ -347,13 +559,28 @@ const MEMBERS: readonly { groups?: readonly string[]; text: string }[] = [
     "groups": [
       "files"
     ],
+    "uses": [
+      "FileInfo"
+    ],
     "text": "/** @group files */\n  readonly files: {\n    /** A file's text (UTF-8), or with base64 its bytes. */\n    read(path: string, options?: { encoding?: \"utf8\" | \"base64\" }): Promise<string>;\n    write(path: string, data: string, options?: { encoding?: \"utf8\" | \"base64\" }): Promise<void>;\n    list(path: string): Promise<FileInfo[]>;\n    stat(path: string): Promise<FileInfo>;\n  };"
   }
 ];
 
-/** The declarations a script on a computer with these groups reads: the types, Computer with only the members its
- *  groups offer, and `declare const computer`. */
+/** The declarations a script on a computer with these groups reads: the types its members reach, Computer with only
+ *  the members its groups offer, and `declare const computer`. */
 export function computerDeclarations(groups: readonly string[]): string {
   const members = MEMBERS.filter((member) => member.groups === undefined || member.groups.some((group) => groups.includes(group)));
-  return [TYPES, `${DOC}\ninterface Computer {\n${members.map((member) => `  ${member.text}`).join("\n")}\n}`, "/** The computer this script drives. */\ndeclare const computer: Computer;"].join("\n\n");
+  const uses = new Map(TYPES.map((type) => [type.name, type.uses]));
+  const reached = new Set<string>();
+  const visit = (name: string): void => {
+    if (reached.has(name)) return;
+    reached.add(name);
+    for (const used of uses.get(name) ?? []) visit(used);
+  };
+  for (const member of members) for (const used of member.uses) visit(used);
+  return [
+    ...TYPES.filter((type) => reached.has(type.name)).map((type) => type.text),
+    `${DOC}\ninterface Computer {\n${members.map((member) => `  ${member.text}`).join("\n")}\n}`,
+    "/** The computer this script drives. */\ndeclare const computer: Computer;",
+  ].join("\n\n");
 }

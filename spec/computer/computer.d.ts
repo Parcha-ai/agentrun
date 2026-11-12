@@ -185,6 +185,11 @@ interface ActResult {
   after?: State;
 }
 
+/** What raw input did: one result per action tried, in order; a refused one is the last. */
+interface InputResult {
+  steps: StepResult[];
+}
+
 /** What `observe` takes. */
 interface ObserveOptions {
   /** Add the window's image. Default false: the elements are usually enough. */
@@ -262,8 +267,9 @@ interface Computer {
   readonly apps: {
     /** The installed apps, and which is in front. */
     list(): Promise<{ apps: AppInfo[]; foreground: string | null }>;
-    /** Open an app (with background, without taking the front, where the computer can) and bind it. */
-    open(id: string, options?: { url?: string; background?: boolean }): Promise<App>;
+    /** Open an app (with background, without taking the front, where the computer can). With the ui group, bind it
+     *  with app(id). */
+    open(id: string, options?: { url?: string; background?: boolean }): Promise<void>;
   };
   /** Bind an app by its id, open or not, to observe it and act on it. No id: the app in front.
    *  @group ui */
@@ -276,7 +282,7 @@ interface Computer {
   /** Raw input at screenshot pixels, for a computer with no ui group.
    *  @group input.pointer input.touch input.keys */
   readonly input: {
-    act(actions: InputAction[]): Promise<ActResult>;
+    act(actions: InputAction[]): Promise<InputResult>;
   };
   /** @group exec */
   readonly shell: {
