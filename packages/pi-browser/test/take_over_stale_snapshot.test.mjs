@@ -56,7 +56,7 @@ test("the person takes over, navigates and hands back: the held act on the stale
   gate.give();
   const out = await running;
   assert.notEqual(out.isError, true, "no error");
-  assert.equal(PAGE_CHANGED_WHILE_HELD, "page_changed_while_held", "the mark pi-durable-agent's timeline reads, by this name");
+  assert.equal(PAGE_CHANGED_WHILE_HELD, "page_changed_while_held", "the mark serve's timeline reads, by this name");
   assert.equal(out.details?.[PAGE_CHANGED_WHILE_HELD], true, "marked for its row");
   const told = JSON.parse(out.content[0].text);
   assert.equal(told.message, PAGE_CHANGED_FOR_MODEL);

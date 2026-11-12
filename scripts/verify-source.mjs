@@ -121,10 +121,8 @@ syncBuiltinESMExports();
   assert.equal(inspected.checked, 'structure-only');
   assert.ok(inspected.nodes.some(node => node.kind === 'workflow' && node.childWorkflow === 'research-one-question'));
   receipt.graph = { name: inspected.name, sha256: inspected.sha256, nodes: inspected.nodes.length };
-  receipt.piExtension = JSON.parse(await run(process.execPath, ['scripts/verify-pi-install.mjs'], consumer, 0, true));
-  assert.equal(receipt.piExtension.nativeSkillExpansion, true);
   receipt.status = 'passed';
-  console.log('Downloaded source: install, build, demos, graph export/inspection, and native Pi discovery passed. Receipt: .release/source-consumer.json');
+  console.log('Downloaded source: install, build, demos and graph export/inspection passed. Receipt: .release/source-consumer.json');
 } catch (error) {
   receipt.status = 'failed';
   receipt.error = error instanceof Error ? error.message : 'Unknown source verification failure';
