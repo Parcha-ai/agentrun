@@ -640,7 +640,7 @@ export const WITHHELD_TITLE = "Withheld: a sign-in this run used can't be read";
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
 
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+/** A run's `sign_in_handed` as read from its stored row: undefined when absent (never handed one); the hashes it names;
  *  MALFORMED for any other value. */
 export function handedMark(value: unknown): Handed | undefined {
   if (value === undefined) return undefined;
@@ -685,7 +685,7 @@ export async function handedPointers(signIns: SignInReader | undefined, agentId:
   return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
 }
 
-/** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+/** shown() for a run this server holds no Run for (an ended one a list reads from its row and journal alone): cut of
  *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in
  *  (handedPointers); `withheld` when that can't be read back here, as a load would hide the run. `browser` and `handed`
  *  come from the run's record (its plane's vendor browser and its `sign_in_handed` mark); `damaged` when the record was

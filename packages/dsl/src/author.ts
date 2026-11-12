@@ -353,8 +353,6 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
   }
 }
 
-/** The packaged author skill's name, as a skill-loading host registers it. */
-export const AUTHOR_SKILL_NAME = "agentrun-author";
 
 const skillRoot = new URL("../skills/author/", import.meta.url);
 
