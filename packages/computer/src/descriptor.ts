@@ -32,6 +32,18 @@ export interface DescriptorSetting {
  */
 export type ParkedConfiguration = KindCapabilities & { readonly image: string; readonly why: string };
 
+/** A program a provider runs on the server's own machine: the command it looks for on PATH, and what installs it. */
+export interface HostCommand {
+	readonly command: string;
+	/** What gives the command, in words a person installs it by: "Android platform-tools". */
+	readonly from: string;
+	/**
+	 * The machines it is built for, as Node names them (`${process.platform}-${process.arch}`: "linux-x64"). A server on
+	 * any other cannot install it, and says so. Absent: every machine.
+	 */
+	readonly builds?: readonly string[];
+}
+
 /**
  * A provider, declared once. Every field is data but load(), which imports the provider module only when called:
  * reading a descriptor loads no provider and no vendor SDK.
@@ -78,6 +90,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * no environment.
 	 */
 	readonly hostEnv?: readonly string[];
+	/**
+	 * A program its computers need on the server's own machine, found on PATH (the phone's adb): a server looks for it at
+	 * its start and, when it is missing, says from this alone that the provider can't run there and why.
+	 */
+	readonly hostCommand?: HostCommand;
 	/**
 	 * Configurations its module builds but does not offer yet (Orgo's Windows and macOS desktops), each by the image a
 	 * setting would name and why: a setting naming one is refused in its words, saying it is parked, never as an unknown
@@ -140,6 +157,12 @@ export function descriptorProblems(value: unknown): string[] {
 	if (Array.isArray(d.keys) && d.keys.some((key) => typeof key?.required !== "boolean")) problems.push("each key says whether it is required");
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
 	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
+	if (d.hostCommand !== undefined) {
+		const { command, from, builds } = (d.hostCommand ?? {}) as Partial<HostCommand>;
+		if (typeof command !== "string" || !/^[A-Za-z0-9._-]+$/.test(command)) problems.push("hostCommand's command is a program's name, with no path");
+		if (typeof from !== "string" || from.trim() === "") problems.push("hostCommand says in words what installs it (from)");
+		if (builds !== undefined && (!Array.isArray(builds) || builds.length === 0 || builds.some((one) => typeof one !== "string" || !/^[a-z0-9]+-[a-z0-9]+$/.test(one)))) problems.push("hostCommand's builds are machines as Node names them (linux-x64)");
+	}
 	if (d.parked !== undefined) {
 		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "" || typeof one.kind !== "string" || !Array.isArray(one.groups))) problems.push("parked is a list of configurations, each with its image and why it is parked");
 		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");

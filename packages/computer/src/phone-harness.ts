@@ -964,10 +964,12 @@ class AdbClient implements ComputerClient {
 		readonly now: () => number,
 	) {}
 
-	/** What the phone is: its ABI, its screen's size and density; then the hello it answers. */
+	/** What the phone is: its ABI, its Android release, its screen's size and density; then the hello it answers. */
 	async open(version: string): Promise<Result<HelloResult>> {
 		const abi = await this.#shell("getprop ro.product.cpu.abi");
 		if (!abi.ok) return abi;
+		const release = await this.#shell("getprop ro.build.version.release");
+		if (!release.ok) return release;
 		const size = await this.#shell("wm size");
 		if (!size.ok) return size;
 		const density = await this.#shell("wm density");
@@ -979,7 +981,9 @@ class AdbClient implements ComputerClient {
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
 		const reported = abi.value.trim();
-		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
+		// An empty answer says no release: the hello then carries none.
+		const osVersion = release.value.trim();
+		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", ...(osVersion ? { osVersion } : {}), kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
 		return ok(this.#hello);
 	}
 
