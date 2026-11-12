@@ -64,7 +64,7 @@ async function gatewayFor(t) {
 
 test("pi: each effort's note follows the instructions in the run's first model request, and a run with no effort has none", { timeout: 180_000 }, async (t) => {
   const gateway = await gatewayFor(t);
-  withEnv(t, { AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `${gateway.url}/v1`, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("pi-effort", { instructions: INSTRUCTIONS }))).status, 201);
   assert.deepEqual(await firstRequests(api, gateway, "pi-effort", 60_000), WANTED);
@@ -73,7 +73,7 @@ test("pi: each effort's note follows the instructions in the run's first model r
 // codex on its pinned binary, through its proxy (the stand-in sends no developer instructions to its model).
 test("codex, on its pinned binary: each effort's note follows the instructions in the run's first model request, and a run with no effort has none", { timeout: 400_000, skip: noSetpriv }, async (t) => {
   const gateway = await gatewayFor(t);
-  withEnv(t, { AGENT_MODEL_BASE_URL: gateway.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: gateway.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("codex-effort", { harness: "codex", instructions: INSTRUCTIONS }))).status, 201);
   assert.deepEqual(await firstRequests(api, gateway, "codex-effort", 90_000), WANTED);
@@ -90,7 +90,7 @@ test("claude-agent, on its pinned CLI: each effort's note follows the instructio
 // opencode on its pinned binary, through its proxy: the note is in OpenCode's own system prompt, its agent's prompt.
 test("opencode, on its pinned binary: each effort's note follows the instructions in the run's first model request, and a run with no effort has none", { timeout: 400_000, skip: noSetpriv }, async (t) => {
   const gateway = await gatewayFor(t);
-  withEnv(t, { AGENT_MODEL_BASE_URL: gateway.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: gateway.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("opencode-effort", { harness: "opencode", instructions: INSTRUCTIONS }))).status, 201);
   assert.deepEqual(await firstRequests(api, gateway, "opencode-effort", 90_000), WANTED);

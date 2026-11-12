@@ -2254,9 +2254,9 @@ alone: a model of any other provider runs as it does without it. `codex` and `op
 to serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
 `OPENROUTER_API_KEY` is set, runs through OpenRouter (`https://openrouter.ai/api`, the key as a bearer token):
 claude-agent on its Messages endpoint, with Anthropic's own id on the wire (OpenRouter takes it: its Claude Code guide
-says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
-`openrouter/openai/gpt-6-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
-claude-agent and `openai/gpt-6-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
+says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6.1-sol`). On that key alone the defaults are
+`openrouter/openai/gpt-6.1-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
+claude-agent and `openai/gpt-6.1-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
 set. A model named `openrouter/<vendor>/<model>` (pi's name for it) goes through OpenRouter on every harness. An endpoint
 the host names never gets OpenRouter's key: `ANTHROPIC_BASE_URL` without `ANTHROPIC_API_KEY` is refused. A model with more
 than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming the form to use. A provider

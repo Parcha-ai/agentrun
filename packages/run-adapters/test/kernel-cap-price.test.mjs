@@ -136,12 +136,12 @@ test("a priced output with no ceiling is refused whatever is asked; a free outpu
   await capOn(undefined).cap.admit(modelRequest(unbounded, 1_000, 100));
 });
 
-// A price with tiers, as the catalog gives gpt-6-sol's: past 272,000 input tokens in all (fresh and cached), the whole
+// A price with tiers, as the catalog gives gpt-6.1-sol's: past 272,000 input tokens in all (fresh and cached), the whole
 // request at the tier's rates, as pi-ai's calculateCost prices it (the parity with that function is serve's
 // kernel-cap-tiers-parity test, on the catalog's own entry).
 const SOL = Object.freeze({
-  id: "gpt-6-sol", api: "openai-responses", outputCeiling: 128_000,
-  price: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }] },
+  id: "gpt-6.1-sol", api: "openai-responses", outputCeiling: 128_000,
+  price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] },
 });
 
 test("a price with tiers: a request whose input passes a tier's threshold is priced at that tier, whole, its cached tokens counting toward it", async () => {
@@ -149,7 +149,7 @@ test("a price with tiers: a request whose input passes a tier's threshold is pri
   const price = pricingOf(SOL.price);
   near(price({ cached: 0, fresh: 272_000 }, 1_024), usd(272_000, 2.5) + usd(1_024, 10), "at the threshold, the base rates");
   near(price({ cached: 0, fresh: 300_000 }, 1_024), usd(300_000, 5) + usd(1_024, 15), "past it, the tier's rates for all of it");
-  near(price({ cached: 200_000, fresh: 100_000 }, 1_024), usd(200_000, 0.4) + usd(100_000, 5) + usd(1_024, 15), "the cache read counts toward the threshold");
+  near(price({ cached: 200_000, fresh: 100_000 }, 1_024), usd(200_000, 0.2) + usd(100_000, 5) + usd(1_024, 15), "the cache read counts toward the threshold");
 });
 
 test("the hold of a request past a tier's threshold is the tiered price, never the base one", async () => {
