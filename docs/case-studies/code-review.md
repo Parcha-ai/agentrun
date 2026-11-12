@@ -1,7 +1,7 @@
 # Code review for 18 cents
 
-Greptile is an industry-leading code review product, and it charges about a dollar a review. Once our agents started
-opening most of our pull requests, our bill went from $180 a month to $6,451:
+Greptile is an industry-leading code review product. In March it moved from a flat price per seat to a dollar for every
+review past 50. Then our agents took off, and our bill went from $180 a month to $6,451:
 
 <p align="center">
   <img alt="Our Greptile bill, every month: $180 in December up to $6,451 in October and $7,018 so far in November" src="../assets/case-studies/chart-review-bill.png" width="100%">
