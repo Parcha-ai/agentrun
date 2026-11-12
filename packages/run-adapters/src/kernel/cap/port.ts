@@ -51,7 +51,9 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     // A request the host sends beside the harness's own (its host label: a learned workflow's node), or a side call (a
     // title, a summary), is another conversation's prompt: nothing of the session's cache is read for it, so it is priced
     // as a cache miss.
-    const previous = request.host === undefined && !request.side ? options.previousOf?.(request.model) : undefined;
+    // Its bound must be measured as the next request's is (a provider's count, or bytes): their difference is no growth.
+    const before = request.host === undefined && !request.side ? options.previousOf?.(request.model) : undefined;
+    const previous = before && (before.counted === true) === (request.inputTokensCounted === true) ? before : undefined;
     const asked: ModelCapRequest = {
       kind: "model",
       id: `turn-${request.turn}`,

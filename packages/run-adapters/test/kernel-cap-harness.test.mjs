@@ -209,6 +209,19 @@ test("a request the host sends beside the harness's own (a learned workflow's no
   assert.equal(host.holdUsd, uncached.holdUsd, "the host's request is held as uncached");
 });
 
+test("the previous request stands only for a next request bounded the same way: a provider's count beside a bytes bound is no growth to compare, so the next is priced as a cache miss", async () => {
+  const cold = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0 });
+  const uncached = await cold(BIG_ASK);
+  const prices = async (counted, asked) => {
+    const warm = beforeRequestOf({ capUsd: () => 1, modelOf: () => SONNET, now: () => T0, previousOf: () => ({ ...WARM, ...(counted ? { counted: true } : {}) }) });
+    return (await warm({ ...BIG_ASK, ...(asked ? { inputTokensCounted: true } : {}) })).holdUsd;
+  };
+  assert.ok((await prices(true, true)) < uncached.holdUsd, "both counted: priced from the cache");
+  assert.ok((await prices(false, false)) < uncached.holdUsd, "both bytes: priced from the cache");
+  assert.equal(await prices(true, false), uncached.holdUsd, "a counted previous, a bytes next: a cache miss");
+  assert.equal(await prices(false, true), uncached.holdUsd, "a bytes previous, a counted next: a cache miss");
+});
+
 // A request carrying the wrap-up's note is judged as its client sent it first (inputTokensMaxWithoutNote): refused so, it
 // is refused; admitted so, it goes with the note when the note's bytes fit too, and otherwise without it (withoutNote).
 // The note never refuses what fits. 10,000 tokens without the note, 20,000 with it, each priced at Sonnet's cache write

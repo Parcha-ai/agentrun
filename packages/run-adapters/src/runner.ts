@@ -52,6 +52,9 @@ export type BeforeRequest = (request: {
   /** The most input tokens this request can be billed for (the body's UTF-8 bytes plus what the provider adds, as the
    *  model proxy measured it), undefined when it was not measured: a budget treats that input as unknown, never 0. */
   inputTokensMax?: number;
+  /** Its `inputTokensMax` is its provider's count, not its bytes (ModelRequest.inputTokensCounted): two bounds are compared
+   *  (the cap's expected pricing) only when both were measured the same way. */
+  inputTokensCounted?: true;
   /** The most output tokens it asks for, and the least it may be limited to and still answer, as the model proxy read
    *  them from its body (ModelRequest). */
   outputTokensAsked?: number;
@@ -325,14 +328,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string): Error =>
     options.stop ? options.stop(reason, message, code) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }), ...(code === undefined ? {} : { refusal: code }) });
-  const admit = async ({ model, inputTokensMax: measured, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, noted, inputTokensMaxWithoutNote, host, route }: ModelRequest): Promise<ModelTicket> => {
+  const admit = async ({ model, inputTokensMax: measured, inputTokensCounted, outputTokensAsked, outputTokensLeast, feeUsd, paid, side, noted, inputTokensMaxWithoutNote, host, route }: ModelRequest): Promise<ModelTicket> => {
     let inputTokensMax = measured;
     const stopped = options.stopped?.(host === undefined ? {} : { host }) ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
-    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax,
+    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax, ...(inputTokensCounted ? { inputTokensCounted } : {}),
       ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }), ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }), ...(feeUsd === undefined ? {} : { feeUsd }), ...(paid ? { paid } : {}), ...(side ? { side } : {}), ...(noted ? { noted, ...(inputTokensMaxWithoutNote === undefined ? {} : { inputTokensMaxWithoutNote }) } : {}), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse, typeof verdict.code === "string" ? verdict.code : undefined);
     const hold = verdict && "holdUsd" in verdict ? heldFigure(verdict.holdUsd) : undefined;

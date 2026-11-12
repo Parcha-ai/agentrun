@@ -1073,7 +1073,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
          *  the cache, and the rest) and its input bound, and when it ended. None before one has: priced as a cache miss. */
         let previous: Previous | undefined;
         /** Each of this claim's requests as the cap was asked about it, by its turn, until it ends. */
-        const askedFor = new Map<number, { model: string; bound?: number; own: boolean }>();
+        const askedFor = new Map<number, { model: string; bound?: number; counted: boolean; own: boolean }>();
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
@@ -1088,7 +1088,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (!asked?.own || asked.bound === undefined || usage.cut || (how !== undefined && how.end !== "answered")) return;
           const cachedTokens = (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
           if (!(usage.input >= 0 && cachedTokens >= 0 && usage.input + cachedTokens > 0)) return;
-          previous = { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, endedAt: (specNow?.runCap?.now ?? Date.now)() };
+          previous = { model: asked.model, cachedTokens, inputTokens: usage.input, boundTokens: asked.bound, counted: asked.counted, endedAt: (specNow?.runCap?.now ?? Date.now)() };
         };
         const flushed = { flush: () => deps.flush() };
         const earlierDecisions = sessionSpendOf(await sessions.read(DECISION_SESSION)).spentUsd;
@@ -1250,7 +1250,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         const beforeRequest: BeforeRequest = async (request) => {
           // Kept until it ends, so its answer can be the session's previous request (requestEnded).
-          askedFor.set(request.turn, { model: request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), own: request.host === undefined && !request.side });
+          askedFor.set(request.turn, { model: request.model, ...(request.inputTokensMax === undefined ? {} : { bound: request.inputTokensMax }), counted: request.inputTokensCounted === true, own: request.host === undefined && !request.side });
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause).
           const over = await overCap();
