@@ -103,13 +103,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		showOnboarding()
 	}
 
+	/// Opened with --until-granted (the Mac mini's bootstrap does), the window's job is the grants alone: pairing counts as
+	/// put off, so the window closes once every grant is on.
+	var untilGranted: Bool { CommandLine.arguments.contains("--until-granted") }
+
 	func showOnboarding() {
-		if onboarding == nil { onboarding = Onboarding(app: self) }
+		if onboarding == nil {
+			onboarding = Onboarding(app: self)
+			onboarding?.grantsOnly = untilGranted
+		}
 		onboarding?.show()
 	}
 }
 
-/// One window: each grant with its state and a button that asks for it, the capture alert, and pairing.
+/// One window: each grant with its state and a button that asks for it, the capture alert, and pairing. It closes itself
+/// once every grant is on and it is paired or pairing is put off, so it never sits over the windows an agent works in.
 @MainActor
 final class Onboarding: NSObject, NSWindowDelegate {
 	weak var app: AppDelegate?
@@ -122,7 +130,19 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	let serverField = NSTextField(string: "")
 	let codeField = NSTextField(string: "")
 	let pairButton = NSButton(title: "Pair", target: nil, action: nil)
+	let laterButton = NSButton(title: "Not now", target: nil, action: nil)
 	var timer: Timer?
+	/// The person chose to pair later (Not now).
+	var pairingPutOff = false
+	/// Opened for the grants alone (--until-granted): pairing counts as put off, and the window closes as soon as every
+	/// grant is on, even when they all were when it opened.
+	var grantsOnly = false
+	/// The window closes itself once its job is done. Set when it opens with something left to do, so a window opened
+	/// to look at a finished setup stays until it is closed.
+	var closeWhenDone = false
+
+	/// Every grant on, and paired or pairing put off: nothing is left for this window.
+	var done: Bool { Permissions.missing.isEmpty && (pairingPutOff || grantsOnly || AttachSettings.load() != nil) }
 
 	init(app: AppDelegate) {
 		self.app = app
@@ -170,7 +190,9 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		codeField.placeholderString = "K7PD-W3QX"
 		pairButton.target = self
 		pairButton.action = #selector(pair)
-		let pairRow = NSStackView(views: [serverField, codeField, pairButton])
+		laterButton.target = self
+		laterButton.action = #selector(later)
+		let pairRow = NSStackView(views: [serverField, codeField, pairButton, laterButton])
 		pairRow.orientation = .horizontal
 		serverField.widthAnchor.constraint(equalToConstant: 260).isActive = true
 		codeField.widthAnchor.constraint(equalToConstant: 110).isActive = true
@@ -180,6 +202,7 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	}
 
 	func show() {
+		closeWhenDone = grantsOnly || !done
 		refresh()
 		window.center()
 		window.makeKeyAndOrderFront(nil)
@@ -209,8 +232,20 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		if app?.serving == true {
 			pairState.stringValue = app?.attachStatus ?? ""
 		} else {
-			pairState.stringValue = AttachSettings.load().map { "Paired with \($0.server)" } ?? "Not paired"
+			pairState.stringValue = AttachSettings.load().map { "Paired with \($0.server)" } ?? (pairingPutOff || grantsOnly ? "Not paired: pair later from the menu bar item's Grants and Pairing…" : "Not paired")
 		}
+		laterButton.isEnabled = !pairingPutOff && !grantsOnly && AttachSettings.load() == nil
+		if closeWhenDone && done && window.isVisible {
+			// A moment with every row ticked, then the window goes: on a desktop an agent uses, it would cover the
+			// windows it works in.
+			closeWhenDone = false
+			DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.window.close() }
+		}
+	}
+
+	@objc func later() {
+		pairingPutOff = true
+		refresh()
 	}
 
 	@objc func loginItems() {

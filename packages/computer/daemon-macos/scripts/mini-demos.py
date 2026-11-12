@@ -189,9 +189,16 @@ class Task:
             json.dump({k: v for k, v in r.items() if k != "image"}, f, indent=1)
         return r
 
-    def act(self, steps, label, expect=None, state=None, foreground=False):
+    def act(self, steps, label, expect=None, state=None, foreground=False, must=True):
         """One ui.act call: the steps in one batch, then the expect polled on the Mac. Fails the task on a refused step
-        or an unmet expect, with the step and the words."""
+        or an unmet expect, with the step and the words; with must=False, answers None instead, for a way the task
+        tries before another."""
+        if not must:
+            try:
+                return self.act(steps, label, expect, state, foreground)
+            except Failed as e:
+                print(f"    (tried, and it did not do it: {e})", flush=True)
+                return None
         params = {"target": {"app": self.app}, "steps": steps}
         if expect is not None:
             params["expect"] = expect
@@ -349,10 +356,39 @@ def finder_rename_file(t):
     t.run_exec(["/usr/bin/open", "-g", folder], "open -g the folder")
     t.wait_for("draft", "wait for the folder's window")
     tree = t.observe()
-    item = need(t, tree["nodes"], "draft.txt in the window", starts="draft")
-    t.act([{"click": item["ref"]}, {"key": "enter"}, {"type": "final"}, {"key": "enter"}], "select draft.txt, rename it final", expect={"text": "final", "timeoutMs": 10000})
-    names = sorted(e.get("name") for e in (t.c.call("files.list", {"path": folder}).get("result") or {}).get("entries", []))
-    if names != ["final.txt", "other.txt"]:
+    # By element, never by point: the window may sit under other apps' windows on a real desktop. As a list, each
+    # file is a row whose name is a text field Accessibility reaches.
+    as_list = find(tree["nodes"], role="radio", name="list view")
+    if as_list is not None and "checked" not in (as_list.get("flags") or []):
+        t.act([{"press": as_list["ref"]}], "show the folder as a list", expect={"text": "draft.txt", "timeoutMs": 5000})
+        tree = t.observe("observe the list")
+    item = need(t, tree["nodes"], "draft.txt in the window", name="draft.txt")
+    t.act([{"click": item["ref"]}], "select draft.txt")
+
+    want = ["final.txt", "other.txt"]
+
+    def listing(seconds=0):
+        """The folder's names, asked again for a few seconds until they are the ones wanted."""
+        deadline = time.monotonic() + seconds
+        while True:
+            listed = (t.c.call("files.list", {"path": folder}).get("result") or {}).get("entries", [])
+            got = sorted(e.get("name") for e in listed)
+            if got == want or time.monotonic() >= deadline:
+                return got
+            time.sleep(0.25)
+
+    field = find(tree["nodes"], role="textbox", value="draft.txt")
+    done = False
+    if field is not None:
+        set_it = t.act([{"set": field["ref"], "value": "final.txt"}], "set its name field to final.txt", expect={"text": "final.txt", "timeoutMs": 5000}, must=False)
+        done = set_it is not None and listing(3) == want
+        if set_it is not None and not done:
+            print("    (the name field took the text, but Finder did not rename the file)", flush=True)
+    if not done:
+        # Enter on the selected file edits its name with the name before .txt selected: typing replaces that.
+        t.act([{"key": "enter"}, {"type": "final"}, {"key": "enter"}], "rename it: enter, type final, enter", expect={"text": "final.txt", "timeoutMs": 10000})
+    names = listing(5)
+    if names != want:
         raise Failed(f"the folder holds {names}, not final.txt and other.txt")
     t.notes.append(f"the folder holds {', '.join(names)}")
     if not keep:
@@ -398,10 +434,18 @@ def notes_new_note(t):
 
 def calendar_new_event(t):
     """mac.calendar.new-event: a new event with a given title, in the calendar's current view."""
-    title = f"Standup {t.nonce}"
+    # One word: Calendar reads a quick event's words for a date and a time, and a bare number could be taken for one.
+    title = f"Standup-{t.nonce}"
     t.launch()
     tree = first_run(t, t.observe())
-    t.act([{"key": "super+n"}, {"type": title}, {"key": "enter"}], "new event (super+n), type its title", expect={"text": title, "timeoutMs": 10000})
+    # The toolbar's Add Event button opens the quick event field: the title typed there and enter make the event.
+    add = need(t, tree["nodes"], "the Add Event button", role="button", name="Add Event")
+    t.act([{"press": add["ref"]}], "press Add Event")
+    tree = t.observe("observe the quick event field")
+    boxes = [n for n in tree["nodes"] if n.get("role") == "textbox"]
+    field = next((n for n in boxes if "focused" in (n.get("flags") or [])), None) or next((n for n in boxes if "Event" in (n.get("name") or "")), None)
+    typing = {"type": title, "into": field["ref"]} if field is not None else {"type": title}
+    t.act([typing, {"key": "enter"}], "type the event's title, enter", expect={"text": title, "timeoutMs": 10000})
     t.notes.append(f"the event \"{title}\" is on the calendar")
     if not keep:
         # The new event stays selected: Delete removes it.

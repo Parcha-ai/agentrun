@@ -72,9 +72,10 @@ install_app "$build/UIFixture.app" "$fixture"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" "$fixture"
 
 say "the LaunchAgent"
-# Opened by a person (here, by open), the app registers its LaunchAgent and shows its grants window. The agent is the
-# copy that serves the socket; it is restarted so it runs this build.
-open "$app"
+# Opened by a person (here, by open), the app registers its LaunchAgent and shows its grants window; --until-granted
+# closes that window once every grant is on, so it never covers the windows the demos work in. The agent is the copy
+# that serves the socket; it is restarted so it runs this build.
+open "$app" --args --until-granted
 for _ in $(seq 1 30); do
 	launchctl print "$domain/$label" >/dev/null 2>&1 && break
 	sleep 1

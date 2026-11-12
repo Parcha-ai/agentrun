@@ -82,9 +82,12 @@ Connect with Screen Sharing (`vnc://<mini's tailnet name>`). In the Computerd wi
 1. **Click each Allow….** Each one adds Computerd to its list and opens its pane.
 2. **Privacy & Security > Accessibility:** switch Computerd on. This also covers Post Event.
 3. **Privacy & Security > Screen & System Audio Recording:** switch Computerd on.
-4. **Click Raise it now** and answer Allow. The screen capture alert then never appears in the middle of a task.
+4. **The window closes itself** once every grant is on, so it never covers the windows the demos work in.
+5. **Menu bar ⌘D > Grants and Pairing…, then Raise it now,** and answer Allow. The screen capture alert then never
+   appears in the middle of a task. A window opened this way stays until you close it.
 
-The script notices the grants and goes on to the smoke check by itself.
+The script notices the grants and goes on to the smoke check by itself. Opened by a person instead of the script, the
+window also waits for pairing: it closes once the Mac is paired, or after **Not now**.
 
 ## The demo tasks
 
@@ -95,11 +98,11 @@ Automation grant.
 
 | Task | App | What it does | How it is checked |
 | --- | --- | --- | --- |
-| mac.notes.new-note | Notes | super+n, then type a title and a line, in one call | the note's line, then its title in the list |
+| mac.notes.new-note | Notes | press Continue on a first-run sheet, then super+n, type a title and a line, in one call | the note's line, then its title in the list |
 | mac.safari.follow-link | Safari | open a local page in the background, press the "Quarterly report" link by its ref, then super+[ to come back | the linked page's heading, then the first page's link |
-| mac.finder.rename-file | Finder | open a folder in the background, then one call: click draft.txt, enter, type "final", enter | the folder holds final.txt and other.txt |
+| mac.finder.rename-file | Finder | open a folder in the background, show it as a list, select draft.txt by its element, then set its name field to final.txt (or enter, type "final", enter, where Finder takes no set) | the folder holds final.txt and other.txt |
 | mac.textedit.edit-number | TextEdit | open totals.txt in the background, set the text to 42 and save with super+s, in one call | the saved file is the new text, the other lines kept |
-| mac.calendar.new-event | Calendar | super+n, type a title, enter, in one call | the event's title on the calendar, and gone after Delete |
+| mac.calendar.new-event | Calendar | press Add Event, then type a title into the quick event field and enter, in one call | the event's title on the calendar, and gone after Delete |
 
 ```sh
 python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
