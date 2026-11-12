@@ -20,5 +20,8 @@ export const PHONE_HARNESS = defineProvider({
 	defaultImage: { phone: PHONE_IMAGE },
 	// The phones it rents, by session: the server's store backs this ledger, so a phone is never lost across restarts.
 	ledger: { option: "ledger" },
+	// The phone is driven by adb from the server's machine (the module's adb option, adb on PATH by default). Google
+	// builds platform-tools for x86-64 Linux, macOS and x86-64 Windows alone.
+	hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"] },
 	load: () => import("../phone-harness.js"),
 });
