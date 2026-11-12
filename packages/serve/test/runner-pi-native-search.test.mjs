@@ -137,11 +137,13 @@ for (const wire of Object.keys(WIRES)) {
   test(`a capped pi run's native web_search (${wire}) is held at its searches' fees as well as its tokens: a cap the fees could pass refuses the search before it is sent`, { timeout: 60_000 }, async (t) => {
     // Tokens all but free, so only the fees can pass the cap: the search may run 5 searches at $0.01 each.
     const capUsd = 0.005;
-    const { row, timeline, searches } = await nativeSearchRun(t, wire, { capUsd, price: { input: 0.0001, output: 0.0001 } });
+    const { row, timeline, searches, view } = await nativeSearchRun(t, wire, { capUsd, price: { input: 0.0001, output: 0.0001 } });
     assert.equal(searches.length, 0, "the search is refused before it leaves: its fees could pass the cap");
     const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === "web_search");
     assert.match(String(result?.tool_result_preview ?? ""), /error/, `the search answers its refusal: ${JSON.stringify(result)}`);
-    assert.ok(typeof row.costUsd === "number" && row.costUsd <= capUsd, `the run's cost stays within its cap: ${row.costUsd}`);
+    // The run waits at its cap for a raise (a parked run's row has no end cost yet): its view's cost is what it spent.
+    assert.equal(row.state, "parked", JSON.stringify({ state: row.state, summary: row.summary }));
+    assert.ok(typeof view?.cost?.usd === "number" && view.cost.usd <= capUsd, `the run's cost stays within its cap: ${JSON.stringify(view?.cost)}`);
   });
 }
 
