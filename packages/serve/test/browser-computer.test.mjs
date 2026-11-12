@@ -182,6 +182,18 @@ test("a create that failed may have left its browser: the saver's claim stays un
   await assert.rejects(provider.create(other, signal()), /did not answer/, "it opens (and here fails at the stand's create) once nothing carries the tag");
 });
 
+test("a saver's create that failed and left no browser is settled before custody's findByTag frees its claim", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand({ ...ALL, profiles: { settleMs: 5_000 } }, { createFails: { code: "unreachable", message: "stand did not answer" } });
+  const slept = [];
+  const provider = claimBrowserProvider(planeBrowser(s.provider, RUN), { signIn: { name: "default", pointer: "ctx-7" }, sleep: async (ms) => void slept.push(ms) });
+  await assert.rejects(provider.create({ ...SPEC, profile: { name: "default", save: true } }, signal()), /did not answer/);
+  assert.deepEqual(await provider.findByTag(SPEC.tag), []);
+  assert.deepEqual(slept, [5_000], "the vendor may still be writing the profile back");
+  assert.deepEqual(await provider.findByTag(SPEC.tag), []);
+  assert.deepEqual(slept, [5_000], "a tag that holds no saver is not waited for");
+});
+
 test("a session a dead claim left (a lower epoch's labels) is released when the next claim starts the plane's browser", async (t) => {
   t.after(resetBrowserComputerHoldings);
   const s = stand(ALL);

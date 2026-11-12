@@ -174,7 +174,12 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
 
     async findByTag(tag, signal) {
       const found = (await statused(computer.find(tag, signal))).map((id) => ({ id, tag }));
-      if (found.length === 0) freeSaver(tag);
+      // No browser left under a saver's tag: one may have just ended (a create whose reply was lost, found and released
+      // by the provider), and the vendor may still be writing the profile back, so its settle time is waited out first.
+      if (found.length === 0) {
+        if (isSaver(tag) && settle) await settle();
+        freeSaver(tag);
+      }
       for (const ref of found) if (isSaver(ref.tag)) holdSaver(ref);
       return found;
     },
