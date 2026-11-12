@@ -54,14 +54,22 @@ The script:
 3. **Builds Computerd.app and UIFixture.app, signed with that identity.** The app's designated requirement then names
    the certificate (`certificate leaf = H"…"`, or `root`), not this build. macOS keeps the Accessibility and Screen
    Recording grants across every rebuild. An ad-hoc build loses them each time.
-4. **Installs both in /Applications.** Each is swapped in whole, then registered with Launch Services, so `apps.list`
-   and `apps.launch` see them at once.
-5. **Opens Computerd.** This registers its LaunchAgent, which serves `~/Library/Application Support/Computerd/computerd.sock`.
-   The script then restarts the agent on the new build.
-6. **Checks the grants.** If `ui.tree`, `ui.image`, `ui.foreground` or `ui.background` is off, it prints why and opens
+4. **Stops the old agent and installs both in /Applications.** `launchctl bootout` stops the old build's agent, and
+   any Computerd window still open goes too. Each bundle is swapped in whole, then registered with Launch Services, so
+   `apps.list` and `apps.launch` see them at once.
+5. **Registers the LaunchAgent again, for this build** (`open -n Computerd.app --args --register-agent`: unregister,
+   awaited, then register). The agent serves `~/Library/Application Support/Computerd/computerd.sock`. The script prints
+   SMAppService's answer; `requiresApproval` means a person must switch Computerd on in Login Items & Extensions.
+   Registering records a launch constraint, and with a self-signed certificate that constraint names the very build
+   that registered: launchd kills any later build at spawn ("Launch Constraint Violation", exit 78 "needs LWCR
+   update"). A Developer ID build's constraint names its team instead, so this step stops mattering with real signing.
+   The app also registers again by itself when a person opens a new build.
+6. **Opens Computerd's grants window** (`--until-granted`), which closes itself once every grant is on, and restarts
+   the agent on the new build.
+7. **Checks the grants.** If `ui.tree`, `ui.image`, `ui.foreground` or `ui.background` is off, it prints why and opens
    the Accessibility and Screen Recording panes. It waits up to 15 minutes for a person, restarting the agent every
    30 s so a new grant takes hold.
-7. **Runs the smoke check** (`scripts/smoke.py`, strict). This covers:
+8. **Runs the smoke check** (`scripts/smoke.py`, strict). This covers:
    - Core: hello, exec, files and apps.
    - The socket's peer check.
    - TextEdit driven in the background.
@@ -123,7 +131,10 @@ five after the ui conformance cases, and reports them without failing the run.
 - **`computerd hello`** (`/Applications/Computerd.app/Contents/Helpers/computerd hello`) lists each feature, and each
   one that is off says why.
 - **The agent's state:** `launchctl print gui/$(id -u)/ai.parcha.computerd`. If it is not loaded, allow Computerd in
-  System Settings > General > Login Items & Extensions.
+  System Settings > General > Login Items & Extensions. If it says `needs LWCR update` or `last exit code = 78`, launchd
+  holds a launch constraint from another build: `open -n /Applications/Computerd.app --args --register-agent`, then
+  `cat ~/Library/Application\ Support/Computerd/agent-status.txt` and the LaunchAgent lines of
+  `~/Library/Logs/Computerd.log`.
 - **The signature:** `codesign --display --requirements - /Applications/Computerd.app`. The designated requirement must
   name the certificate. If it says `cdhash`, the build was signed ad hoc and its grants won't carry over.
 - **Grants that went stale**, for example after the identity was made again: `tccutil reset All ai.parcha.computerd`,

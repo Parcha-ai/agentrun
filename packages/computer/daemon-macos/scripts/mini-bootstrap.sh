@@ -56,8 +56,20 @@ COMPUTERD_SIGN_IDENTITY="$hash" COMPUTERD_UI_FIXTURE=1 "$here/scripts/bundle.sh"
 codesign --display --requirements - "$build/Computerd.app" 2>&1 | grep -E 'certificate (leaf|root) = H"' >/dev/null \
 	|| die "Computerd.app's designated requirement does not name the certificate, so a rebuild would lose the grants"
 
+say "stopping the old agent"
+# A self-signed build's LaunchAgent is pinned to the build that registered it: launchd kills any other build at spawn
+# ("Launch Constraint Violation", exit 78 "needs LWCR update"). So the old agent stops before its bundle is swapped,
+# and the new build registers again below. Any Computerd window still open is the old build: it goes too.
+if launchctl bootout "$domain/$label" 2>/dev/null; then echo "booted out $label"; else echo "$label was not loaded"; fi
+running="$(pgrep -x -u "$(id -u)" Computerd || true)"
+if [[ -n "$running" ]]; then
+	echo "ending Computerd: pid $(echo $running)"
+	kill $running 2>/dev/null || true
+	sleep 1
+fi
+
 say "installing in /Applications"
-# Each bundle is copied beside the old one, then swapped in, so the running agent never sees half a bundle.
+# Each bundle is copied beside the old one, then swapped in.
 install_app() {
 	local from="$1" to="$2"
 	rm -rf "${to:?}.new"
@@ -72,17 +84,45 @@ install_app "$build/UIFixture.app" "$fixture"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" "$fixture"
 
 say "the LaunchAgent"
-# Opened by a person (here, by open), the app registers its LaunchAgent and shows its grants window; --until-granted
-# closes that window once every grant is on, so it never covers the windows the demos work in. The agent is the copy
-# that serves the socket; it is restarted so it runs this build.
-open "$app" --args --until-granted
+# This build registers the agent again (unregister, awaited, then register), so launchd records this build's launch
+# constraint. open starts it in the login session, where SMAppService works (-n: a new copy, so the argument is not
+# lost on one already running); it writes the outcome to agent-status.txt and exits.
+status_file="$home/agent-status.txt"
+rm -f "$status_file"
+# (open may complain that a copy which never shows a window did not check in: the status file decides.)
+open -n "$app" --args --register-agent || echo "open exited $?: waiting for the status file anyway"
+for _ in $(seq 1 60); do
+	[[ -s "$status_file" ]] && break
+	sleep 1
+done
+agent="$(cat "$status_file" 2>/dev/null || echo "unknown: Computerd --register-agent wrote nothing in 60 s")"
+echo "SMAppService: the LaunchAgent is $agent"
+echo "Computerd.log:"
+{ sed -n '/LaunchAgent/p' "$HOME/Library/Logs/Computerd.log" 2>/dev/null || true; } | tail -n 4 | sed 's/^/  /'
+case "$agent" in
+enabled) ;;
+requiresApproval) die "a person must switch Computerd on in System Settings > General > Login Items & Extensions (Screen Sharing works), then run this again" ;;
+*) die "the LaunchAgent did not register: see Computerd.log above" ;;
+esac
+
+# The grants window, opened as a person would; --until-granted closes it once every grant is on, so it never covers the
+# windows the demos work in.
+open -n "$app" --args --until-granted
 for _ in $(seq 1 30); do
 	launchctl print "$domain/$label" >/dev/null 2>&1 && break
 	sleep 1
 done
-launchctl print "$domain/$label" >/dev/null 2>&1 \
-	|| die "the LaunchAgent is not loaded: in System Settings > General > Login Items & Extensions, allow Computerd"
+if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
+	cat "$status_file" 2>/dev/null | sed 's/^/SMAppService: /'
+	die "the LaunchAgent is registered but launchd has not loaded it"
+fi
+# The agent is the copy that serves the socket; it is restarted so it runs this build.
 launchctl kickstart -k "$domain/$label"
+sleep 2
+if launchctl print "$domain/$label" 2>&1 | grep -E 'needs LWCR update|last exit code = 78' >/dev/null; then
+	launchctl print "$domain/$label" 2>&1 | grep -E 'state|last exit|LWCR|spawn' | sed 's/^/  /'
+	die "launchd refuses this build of the agent (its launch constraint is for another build): run open -n $app --args --register-agent, then this again"
+fi
 for _ in $(seq 1 100); do
 	[[ -S "$home/computerd.sock" ]] && "$computerd" hello >/dev/null 2>&1 && break
 	sleep 0.1

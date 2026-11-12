@@ -6,6 +6,9 @@
 //   Computerd                       run (the LaunchAgent starts it so)
 //   Computerd --pair SERVER CODE [NAME]
 //   Computerd --unpair
+//   Computerd --until-granted       the grants window, closing once every grant is on
+//   Computerd --register-agent      register the LaunchAgent for this build (unregistering first)
+//   Computerd --unregister-agent
 #if os(macOS)
 import AppKit
 import ComputerdKit
@@ -48,10 +51,27 @@ case "--unpair":
 	restartAgent()
 	print("unpaired")
 	exit(0)
+case "--register-agent":
+	// Registers the LaunchAgent for this build, unregistering first: what a new self-signed build needs before its agent
+	// can launch. Run it through open (open -W Computerd.app --args --register-agent) so it starts in the login session.
+	// Exits 0 when the agent is enabled, 2 when a person must allow it in Login Items, 1 otherwise.
+	Task {
+		let status = await Agent.register(force: true)
+		print("the LaunchAgent is \(Agent.name(status))")
+		exit(status == .enabled ? 0 : status == .requiresApproval ? 2 : 1)
+	}
+	dispatchMain()
+case "--unregister-agent":
+	Task {
+		let status = await Agent.unregister()
+		print("the LaunchAgent is \(Agent.name(status))")
+		exit(status == .notRegistered || status == .notFound ? 0 : 1)
+	}
+	dispatchMain()
 case "--version":
 	print("Computerd \(driverVersion) (protocol \(protocolVersion))")
 	exit(0)
-case nil:
+case nil, "--until-granted":
 	break
 default:
 	fail("unknown argument \(arguments[0])")

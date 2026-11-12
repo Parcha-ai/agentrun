@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	var statusItem: NSStatusItem?
 	var onboarding: Onboarding?
 	var attachStatus = "Not paired"
+	/// The LaunchAgent's registration is over (or, serving, was never this copy's to do).
+	var agentSettled = false
 	let environment = ProcessInfo.processInfo.environment
 	var headless: Bool { environment["COMPUTERD_HEADLESS"] == "1" }
 	/// launchd names a job's processes by its label; an app opened from the Finder gets another name.
@@ -24,10 +26,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		let missing = Permissions.missing.map(\.rawValue)
 		log(missing.isEmpty ? "every grant is in place" : "not granted yet: \(missing.joined(separator: ", "))")
 		guard serving else {
-			Agent.register()
 			showOnboarding()
+			// A new build registers again (see Agent). The window waits for it before it may close, since closing
+			// it quits this copy.
+			Task { @MainActor in
+				await Agent.register()
+				self.agentSettled = true
+				self.onboarding?.refresh()
+			}
 			return
 		}
+		agentSettled = true
 		let server = SocketServer(auth: PeerAuth(), makeDriver: { MacPlatform.driver() })
 		do {
 			try server.start()
@@ -141,8 +150,12 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	/// to look at a finished setup stays until it is closed.
 	var closeWhenDone = false
 
-	/// Every grant on, and paired or pairing put off: nothing is left for this window.
-	var done: Bool { Permissions.missing.isEmpty && (pairingPutOff || grantsOnly || AttachSettings.load() != nil) }
+	/// Every grant on, paired or pairing put off, and the LaunchAgent's registration over: nothing is left for this
+	/// window.
+	var done: Bool { app?.agentSettled == true && setUp }
+
+	/// Every grant on, and paired or pairing put off.
+	var setUp: Bool { Permissions.missing.isEmpty && (pairingPutOff || grantsOnly || AttachSettings.load() != nil) }
 
 	init(app: AppDelegate) {
 		self.app = app
@@ -202,7 +215,7 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	}
 
 	func show() {
-		closeWhenDone = grantsOnly || !done
+		closeWhenDone = grantsOnly || !setUp
 		refresh()
 		window.center()
 		window.makeKeyAndOrderFront(nil)
