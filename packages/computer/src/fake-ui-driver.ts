@@ -279,6 +279,8 @@ export class FakeUiDriver implements UiSource {
 		const state = running;
 		const app = this.apps.get(view.app.id) as FakeApp;
 		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
+		/** A disabled element takes no effect by any route: by its ref it is refused, by a point or the focus it is ignored. */
+		const disabled = (one: FakeElement) => one.flags?.includes("disabled") ?? false;
 		/** The route an input step (a pointer, typing, a key) takes, or why it may not run, in the off features' words. */
 		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
 			const only = target?.route === "foreground";
@@ -293,14 +295,15 @@ export class FakeUiDriver implements UiSource {
 		};
 		/** A pointer step by its route: an element it reaches is pressed, and a counting one verified by its count. */
 		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
-			if (hit === undefined || right || (hit.route === "foreground" && route !== "foreground")) return { route, verified: false };
+			// A disabled control a point lands on takes the input and does nothing, as a real one does.
+			if (hit === undefined || right || disabled(hit) || (hit.route === "foreground" && route !== "foreground")) return { route, verified: false };
 			this.#press(state, hit);
 			if (hit.counts !== true) return { route, verified: false };
 			state.values.set(hit.key, String(Number(state.values.get(hit.key) ?? hit.value ?? "0") + 1));
 			return { route, verified: true };
 		};
 		const target = scripted(element?.key);
-		if (target?.flags?.includes("disabled")) return fail("invalid", `${target.name ?? "the element"} is disabled`);
+		if (target !== undefined && disabled(target)) return fail("invalid", `${target.name ?? "the element"} is disabled`);
 		if ("press" in step || ("perform" in step && step.action === target?.actions?.[0])) {
 			if (target?.route === "foreground") {
 				const route = pointer(target);
@@ -339,7 +342,7 @@ export class FakeUiDriver implements UiSource {
 			const into = target ?? scripted(state.focus);
 			const route = pointer(into);
 			if (!route.ok) return route;
-			if (into === undefined || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
+			if (into === undefined || disabled(into) || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
 			state.focus = into.key;
 			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
 			return ok({ route: route.value, verified: true });
@@ -348,7 +351,7 @@ export class FakeUiDriver implements UiSource {
 			const focused = scripted(state.focus);
 			const route = pointer(focused);
 			if (!route.ok) return route;
-			if (step.key === "enter" && focused?.enter !== undefined) this.#apply(state, focused.enter);
+			if (step.key === "enter" && focused?.enter !== undefined && !disabled(focused)) this.#apply(state, focused.enter);
 			return ok({ route: route.value, verified: false });
 		}
 		if ("nav" in step) {
@@ -515,13 +518,32 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 		maxLifetimeMs: 60 * 60_000,
 		release: ["delete"],
 	};
+	const networks = new Map<string, "none" | "open">();
 	const missing = (id: string) => fail("not_found", `no fake ui computer ${id}`);
+	const end = (id: string) => {
+		drivers.get(id)?.close();
+		drivers.delete(id);
+		labelsOf.delete(id);
+		deadlines.delete(id);
+		networks.delete(id);
+	};
+	/** Whether the computer is there: one past its deadline is ended then (its lifetime is the vendor's), and is not. */
+	const live = (id: string) => {
+		const deadline = deadlines.get(id);
+		if (deadline !== undefined && deadline.getTime() <= Date.now()) end(id);
+		return drivers.has(id);
+	};
+	const allowRefused = "a fake ui computer's network is none or open, never an allowlist";
 	return {
 		id: "fake-ui",
 		version: "fake",
 		drivers,
 		capabilities: () => capabilities,
-		check: (spec) => [...kindRefusals(capabilities), ...checkLifetime(spec.lifetimeMs, capabilities)],
+		check: (spec) => [
+			...kindRefusals(capabilities),
+			...checkLifetime(spec.lifetimeMs, capabilities),
+			...(spec.network === "none" || spec.network === "open" ? [] : [{ field: "network", message: typeof spec.network === "object" ? allowRefused : `network is "none" or "open", not ${JSON.stringify(spec.network)}` }]),
+		],
 		async create(spec) {
 			const refusals = this.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
@@ -529,30 +551,31 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 			drivers.set(id, make(options));
 			labelsOf.set(id, { ...spec.labels });
 			deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
+			networks.set(id, spec.network as "none" | "open");
 			return ok({ id, name: id });
 		},
 		async attach(ref) {
-			const id = "id" in ref ? ref.id : [...labelsOf].find(([, labels]) => Object.entries(ref.labels).every(([key, value]) => labels[key] === value))?.[0];
-			if (id === undefined || !drivers.has(id)) return missing("id" in ref ? ref.id : JSON.stringify(ref.labels));
-			return ok({ id, name: id, spec: { image: "fake-ui", user: "501", network: "none", kind: capabilities.kind, deadline: deadlines.get(id) } });
+			const id = "id" in ref ? ref.id : [...labelsOf].find(([found, labels]) => live(found) && Object.entries(ref.labels).every(([key, value]) => labels[key] === value))?.[0];
+			if (id === undefined || !live(id)) return missing("id" in ref ? ref.id : JSON.stringify(ref.labels));
+			return ok({ id, name: id, spec: { image: "fake-ui", user: "501", network: networks.get(id) ?? "none", kind: capabilities.kind, deadline: deadlines.get(id) } });
 		},
 		async list(labels) {
-			const matching = [...labelsOf].filter(([, have]) => Object.entries(labels).every(([key, value]) => have[key] === value));
-			return ok(matching.map(([id, have]) => ({ ref: { id, name: id }, labels: have, deadline: deadlines.get(id), state: "running" as const, network: "none" as const })));
+			const matching = [...labelsOf].filter(([id, have]) => live(id) && Object.entries(labels).every(([key, value]) => have[key] === value));
+			return ok(matching.map(([id, have]) => ({ ref: { id, name: id }, labels: have, deadline: deadlines.get(id), state: "running" as const, network: networks.get(id) ?? "none" })));
 		},
-		async network(ref) {
-			return drivers.has(ref.id) ? ok("none") : missing(ref.id);
+		async network(ref, policy) {
+			if (!live(ref.id)) return missing(ref.id);
+			if (policy !== undefined && policy !== "none" && policy !== "open") return fail("refused", allowRefused);
+			if (policy !== undefined) networks.set(ref.id, policy);
+			return ok(networks.get(ref.id) ?? "none");
 		},
 		async connect(ref) {
-			const driver = drivers.get(ref.id);
-			return driver === undefined ? missing(ref.id) : connectUi(driver);
+			if (!live(ref.id)) return missing(ref.id);
+			return connectUi(drivers.get(ref.id) as FakeUiDriver);
 		},
 		async release(ref, how) {
 			if (how === "stop") return fail("unsupported", "a fake ui computer is deleted on release, never stopped");
-			drivers.get(ref.id)?.close();
-			drivers.delete(ref.id);
-			labelsOf.delete(ref.id);
-			deadlines.delete(ref.id);
+			end(ref.id);
 			return ok(undefined);
 		},
 	};
