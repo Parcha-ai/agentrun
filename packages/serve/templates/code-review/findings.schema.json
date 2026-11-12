@@ -159,7 +159,7 @@
     "dropped": {
       "type": "array",
       "maxItems": 30,
-      "description": "candidates refuted or left unresolved in phase B",
+      "description": "candidates dropped: by a reviewer as duplicate or never-flag, by the merge as duplicate, limit or unverified",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -187,7 +187,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120,
-            "description": "one of wrong, guarded, intended, not-this-change, never-flag, no-break, duplicate, unresolved (other words are kept as given)"
+            "description": "a reviewer: duplicate or never-flag; the merge: duplicate, limit or unverified (other words are kept as given)"
           },
           "note": {
             "type": "string",

@@ -38,9 +38,17 @@ About 30 tool calls; spend them on the code. Start from `git diff --stat pr/merg
 
 ## Report
 
-Every defect you can show is a finding, P2 and edge cases included. Drop a candidate only as `duplicate`, or as
-`never-flag` with the rule line that names its class in `note`. Priority, limits and what never to flag: the
-`CODEREVIEW.md` files.
+Every defect you can show is a finding, P2 and edge cases included. Priority, limits and what never to flag: the
+`CODEREVIEW.md` files, with their never-flag lines read through this one drop rule:
+
+- Drop a candidate only as `duplicate` (same path and failure as one you keep) or as `never-flag`, citing in `note`
+  the rule line that names its class.
+- A comment, doc, changelog or test makes deliberate only the outcome it states, never a harm that follows from it:
+  name the harm and it is a finding.
+- A break the change causes in code it didn't write (a caller, a consumer, a test asserting the old shape) is this
+  change's finding, anchored at the changed line, not pre-existing.
+- Unsure an input reaches it, or a fact you didn't read stops it? Keep it with `Not shown: <fact>` and `confidence`
+  0.6.
 
 **Re-review** (`last_reviewed_sha` set, `previous_findings` given): review only hunks that changed since it. Never
 raise a `dismissed` finding again. List in `resolve` the `active` fingerprints this change fixes. An `active` finding

@@ -38,7 +38,10 @@ Don't read REVIEWER.md, DEEP.md or the rules files yourself: the reviewers do. R
 make eight `subagent` calls, each with the block below filled in, with nothing added:
 
 - five quick reviewers: `<guide>` is `REVIEWER.md`, with `max_tool_calls: 30` and `effort: medium`;
-- three deep reviewers: `<guide>` is `DEEP.md`, with `max_tool_calls: 90` and `effort: high`.
+- three deep reviewers: `<guide>` is `DEEP.md`, with `max_tool_calls: 90` and `effort: high`. The third one's
+  `focus:` is the owner's focus, if any, then this lens: `Contracts: for each name the change touches (function, type,
+  field, message, example body, record, release step), read every reader and writer of it outside the diff and every
+  test asserting its old shape, and check each against the head.`
 
 Name no `model`. Their `tools`: `["bash", "read"]`; with no checkout `["read", "mcp:github/pull_request_read",
 "mcp:github/get_file_contents"]`; for a pasted diff `["read"]`. The prompt:
@@ -68,15 +71,17 @@ no answer. With no answer at all, say so in `summary` and post no finding.
   thing; a shared title is not enough). Keep one: the one whose `Evidence:` quotes the most lines, with the highest
   priority any reviewer gave it. It was raised by as many reviewers as gave it.
 - **Verify**, in at most 8 calls, then post: print a kept finding's cited lines in the head or in the whole change,
-  `git diff pr/merge-base pr/head`. Move it to `dropped` as `unverified` only when a line you print contradicts it. A
-  missing impact is no reason to drop it, and the never-flag rules are the reviewers' job: don't apply them again.
-  Never add a finding.
+  `git diff pr/merge-base pr/head`. Never add a finding. Your only drops are `duplicate` (the merge above), `limit`
+  (the cap) and `unverified`, which needs a line you printed that contradicts the failure, quoted in its `note`. Never
+  drop for intent, scope, a doc line, a missing impact or reachability, and don't apply the never-flag rules again:
+  they are the reviewers' job. One reviewer's finding stands even when others dropped the same failure.
 - **Rank**: P0, then P1, then P2; within a priority, raised by more reviewers first.
 - **Cap**: keep the first 8. Each one past 8 goes to `dropped` with reason `limit`.
 - `coverage` and `skipped`: one entry per path, the first reviewer's that names it. `dropped`: yours (`limit`,
-  `unverified`) first, then each reviewer's, one per path and line, at most 30 in all. `resolve`: every fingerprint a
-  reviewer listed. `risk_score` from the merged findings: 1 none, 2 only P2, 3 one P1, 4 two or more P1, 5 any P0; an
-  open `active` finding counts. `risk_reasons`: the top three findings, one line each. `summary`: 2-4 sentences, yours.
+  `unverified`) first, then every reviewer's, one per path and line, at most 30 in all, its `note` copied exactly as
+  that reviewer wrote it. `resolve`: every fingerprint a reviewer listed. `risk_score` from the merged findings: 1 none,
+  2 only P2, 3 one P1, 4 two or more P1, 5 any P0; an open `active` finding counts. `risk_reasons`: the top three
+  findings, one line each. `summary`: 2-4 sentences, yours.
 
 ## 5. Post
 
