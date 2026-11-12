@@ -50,7 +50,7 @@ import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { claimSecrets, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
-import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
+import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
@@ -165,6 +165,10 @@ export interface AdapterSpecDeps {
   /** A test runner's fake GitHub MCP origin, the one a github_app server may be at (mcp-claim.ts githubMcpOrigin):
    *  for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP (github.ts GITHUB_MCP_ORIGIN). Only a test's in-process runner sets it; the CLI's runner never does. */
   readonly githubMcpOrigin?: string;
+  /** For tests only: the adapter loop's model retry (adapter-loop.ts retry and stream), so a test whose provider fails a run
+   *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
+   *  it; absent, MODEL_RETRY and MODEL_STREAM. */
+  readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
 }
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
