@@ -35,6 +35,9 @@ const (
 	DataPort  = 32050
 )
 
+// LogPath is the relay's log, root's alone (0600): what it closed and why.
+const LogPath = "/var/log/agentrun-archil-relay.log"
+
 // dialFor bounds each connection to the gateway.
 const dialFor = 5 * time.Second
 
@@ -194,23 +197,22 @@ func carry(conn net.Conn, config Config, original Original, logger *log.Logger) 
 		logger.Printf("archil-relay: the gateway at %s took no header (%v), so the connection to %s is closed", gateway, err, dst)
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(up, conn)
-		closeWrite(up)
-		close(done)
-	}()
-	_, _ = io.Copy(conn, up)
-	closeWrite(conn)
-	<-done
-}
-
-func closeWrite(conn net.Conn) {
-	if half, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = half.CloseWrite()
-		return
+	// An end on either side is passed on as a half-close; a failure on either side ends both, as the egress relay does.
+	done := make(chan error, 2)
+	pass := func(to, from net.Conn) {
+		_, err := io.Copy(to, from)
+		if half, ok := to.(interface{ CloseWrite() error }); ok && err == nil {
+			_ = half.CloseWrite()
+		}
+		done <- err
 	}
-	_ = conn.Close()
+	go pass(up, conn)
+	go pass(conn, up)
+	if err := <-done; err != nil {
+		_ = conn.Close()
+		_ = up.Close()
+	}
+	<-done
 }
 
 // Header is the PROXY protocol v2 header for a TCP over IPv4 connection from src to dst

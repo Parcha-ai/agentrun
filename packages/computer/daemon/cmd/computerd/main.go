@@ -306,6 +306,14 @@ func archilRelay(logger *log.Logger, args []string) int {
 		return 4
 	}
 	defer null.Close()
+	// The relay's log: root's alone, appended to, so a mount that fails at the gateway can be read back afterwards
+	// without holding the helper's session pipes open.
+	relayLog, err := os.OpenFile(archilrelay.LogPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		logger.Printf("archil-relay: the relay's log %s: %v", archilrelay.LogPath, err)
+		return 4
+	}
+	defer relayLog.Close()
 	self, err := os.Executable()
 	if err != nil {
 		logger.Printf("archil-relay: %v", err)
@@ -313,7 +321,7 @@ func archilRelay(logger *log.Logger, args []string) int {
 	}
 	process, err := os.StartProcess(self, append([]string{"computerd", archilRelayRun}, config.Args()...), &os.ProcAttr{
 		Env:   []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"},
-		Files: []*os.File{null, null, null, file},
+		Files: []*os.File{null, null, relayLog, file},
 		Sys:   &syscall.SysProcAttr{Setsid: true},
 	})
 	if err != nil {

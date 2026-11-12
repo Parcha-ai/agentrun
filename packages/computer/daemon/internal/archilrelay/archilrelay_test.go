@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -200,3 +202,54 @@ func TestListenRefusesAPortAnotherProcessHolds(t *testing.T) {
 }
 
 func uidIsRoot() bool { return os.Getuid() == 0 }
+
+// resettingGateway reads the PROXY header, then resets the connection (SO_LINGER 0), as a gateway that fails mid-flow.
+func resettingGateway(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_, _ = io.ReadFull(conn, make([]byte, 28))
+				_ = conn.(*net.TCPConn).SetLinger(0)
+				_ = conn.Close()
+			}()
+		}
+	}()
+	return l
+}
+
+func TestRelayEndsBothSidesWhenTheGatewayResetsWhileTheClientStaysOpen(t *testing.T) {
+	gw := resettingGateway(t)
+	config := archilrelay.Config{Gateway: netip.MustParseAddr("127.0.0.1"), MountLane: port(t, gw), DataLane: port(t, gw) + 1}
+	address, _ := relay(t, config, netip.MustParseAddrPort("54.88.2.136:8100"))
+	time.Sleep(50 * time.Millisecond)
+	idle := runtime.NumGoroutine()
+	conn, err := net.DialTimeout("tcp", address, patience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The client sends its hello and then stays open and silent, as a live archil client waiting on the server does.
+	// With the gateway's side reset, the relay must end both sides now, not when the client next writes.
+	_, _ = conn.Write([]byte("client-hello"))
+	deadline := time.Now().Add(patience)
+	for runtime.NumGoroutine() > idle && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := runtime.NumGoroutine(); n > idle {
+		t.Fatalf("%d goroutines still carry the connection after the gateway reset (idle %d)", n-idle, idle)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(patience))
+	if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("the client's side did not end: %v", err)
+	}
+}
