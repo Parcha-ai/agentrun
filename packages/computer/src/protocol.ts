@@ -49,13 +49,13 @@ export type Group =
 	| "input.touch"
 	| "apps"
 	| "apps.install"
-	| "apps.ui_tree"
+	| "ui"
 	| "cdp"
 	| "stream"
 	| "downloads";
 
 /** Every group, in the order the protocol lists them. */
-export const GROUPS: readonly Group[] = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree", "cdp", "stream", "downloads"];
+export const GROUPS: readonly Group[] = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "ui", "cdp", "stream", "downloads"];
 
 /** The groups a provider answers itself, which a computerd hello never lists. */
 export const PROVIDER_GROUPS: readonly Group[] = ["cdp", "stream", "downloads"];
@@ -66,7 +66,7 @@ export const PROVIDER_GROUPS: readonly Group[] = ["cdp", "stream", "downloads"];
  * each release: a minor step adds (a method, an optional field, a group), a major one changes or removes. computerd's
  * Go constant (methods.ProtocolVersion) holds the same value, and a test keeps them equal.
  */
-export const PROTOCOL_VERSION = "0.1";
+export const PROTOCOL_VERSION = "0.2";
 
 export interface HelloParams {
 	/** Who is asking, for the daemon's log: a name and version. */
@@ -92,7 +92,45 @@ export interface HelloResult {
 	display?: string;
 	/** How init holds its programs off the computer's network, when it gave them one of their own (init --own-network). */
 	fence?: NetworkFence;
+	/** The main screen, in points. Absent on a computer with no screen. */
+	screen?: ScreenSize;
+	/**
+	 * What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in
+	 * words a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.
+	 */
+	features?: Features;
 }
+
+/** A screen's size in points, and how many pixels a point holds (2 on a Retina Mac, 2.625 on many phones, 1 on Xvfb). */
+export interface ScreenSize {
+	width: number;
+	height: number;
+	scale: number;
+}
+
+/** A feature that is off, and why: "Screen Recording is not granted to Computerd". */
+export interface FeatureOff {
+	off: string;
+}
+
+export interface Features {
+	[feature: string]: true | FeatureOff;
+}
+
+/**
+ * The features a computer may list in hello.features, and what each one means. The names say what, never which OS:
+ * a driver on any OS lists the same names, and says in the off reason what its OS is missing.
+ */
+export const FEATURES = {
+	"apps.background": "apps.launch with background: true opens an app without bringing it to the front",
+	"ui.image": "ui.observe returns the window's image",
+	"ui.background": "steps run as input posted to the app itself: the user's pointer and focus stay where they are",
+	"ui.foreground": "steps run as the computer's own input, which moves the pointer and the focus (only when a call allows it)",
+	"ui.page": "steps in a web page run through the page itself, by the browser's DevTools or its scripting",
+	"ui.nav": "the nav step: back, home and app_switch",
+} as const;
+
+export type Feature = keyof typeof FEATURES;
 
 /**
  * How init holds its programs off the computer's network: "netns", a network namespace init made itself as root;
@@ -431,7 +469,10 @@ export interface ProcessWaitParams {
 
 export type Empty = Record<string, never>;
 
-/** Pixels of the full screenshot, origin top left. A region shot never changes this space. */
+/**
+ * In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,
+ * the window's points, origin at its top left.
+ */
 export type Point = [x: number, y: number];
 export type Rect = [x: number, y: number, w: number, h: number];
 export type Button = "left" | "right" | "middle";
@@ -582,39 +623,186 @@ export interface AppsInstallParams {
 	path: string;
 }
 
-/** apps.launch and apps.terminate. */
 export interface AppsLaunchParams {
+	/** A bundle id or a package name: "com.apple.Notes", "com.android.settings". */
+	id: string;
+	/** Open this in the app: a deep link, or a page in a browser. */
+	url?: string;
+	/** Open it without bringing it to the front (feature apps.background). Without the feature, refused as `unsupported`. */
+	background?: boolean;
+}
+
+export interface AppsTerminateParams {
 	id: string;
 }
 
-/** The most nodes apps.ui_tree returns. */
-export const MAX_UI_NODES = 5000;
+// --- ui: eyes and hands with meaning --------------------------------------------------------------------------------
+// One app's window, seen as named elements (ui.observe) and acted on by short lists of steps (ui.act). Every coordinate
+// in this group is in the window's points, origin at the window's top left. A driver of ours answers it; a computer
+// without one keeps screen and input.
 
-export interface UiNode {
-	/** The platform's class as given: "android.widget.Button", "XCUIElementTypeButton". */
-	role: string;
-	/** resource-id or accessibilityIdentifier. */
-	id?: string;
-	/** Visible text or value. */
-	text?: string;
-	/** content-desc or accessibilityLabel. */
-	label?: string;
-	/** In screenshot pixels (iOS points times scale). */
-	bounds: Rect;
-	enabled: boolean;
-	clickable?: boolean;
-	focused?: boolean;
-	selected?: boolean;
-	checked?: boolean;
-	scrollable?: boolean;
-	children: UiNode[];
+/** The most nodes one ui.observe returns. */
+export const MAX_UI_NODES = 5000;
+/** The most steps one ui.act holds. */
+export const MAX_STEPS = 100;
+/** The longest an expect waits; it waits DEFAULT_EXPECT_MS when it names no timeoutMs. */
+export const MAX_EXPECT_MS = 60_000;
+export const DEFAULT_EXPECT_MS = 5_000;
+/** The longest a driver waits for a window to settle after the steps, before it answers anyway. */
+export const MAX_SETTLE_MS = 3_000;
+/** An observe image's longest edge, in pixels: at least MIN_IMAGE_EDGE, at most MAX_IMAGE_EDGE, DEFAULT_IMAGE_EDGE when not given. */
+export const MIN_IMAGE_EDGE = 256;
+export const MAX_IMAGE_EDGE = 2048;
+export const DEFAULT_IMAGE_EDGE = 1568;
+
+/**
+ * The roles a node may have: ARIA's names, which a driver maps its platform's roles onto (AXButton and
+ * android.widget.Button are both "button"). A role it cannot map is "generic".
+ */
+export const UI_ROLES = [
+	"window", "dialog", "menu", "menuitem", "toolbar", "tab",
+	"button", "link", "textbox", "searchbox", "checkbox", "radio", "switch", "slider", "combobox", "progressbar",
+	"list", "listitem", "table", "row", "cell", "scrollarea",
+	"image", "text", "heading", "group", "generic",
+] as const;
+export type UiRole = (typeof UI_ROLES)[number];
+
+/**
+ * A driver's name for one element, such as "@e12". It stays good while its element exists, across states and steps;
+ * once the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with "@".
+ */
+export type UiRef = string;
+
+/** Which app and window. A bundle id or package name, and a window id from ui.observe. Omitted: the app in front, its main window. */
+export interface UiTarget {
+	app?: string;
+	window?: string;
 }
 
-export interface UiTreeResult {
-	root: UiNode;
-	/** How many nodes the tree holds, at most MAX_UI_NODES. */
-	nodes: number;
+/** What a node's flags may say. secure: a password field, whose value is never sent. offscreen: in the tree, scrolled out of view. */
+export const UI_FLAGS = ["focused", "disabled", "selected", "checked", "secure", "offscreen"] as const;
+export type UiFlag = (typeof UI_FLAGS)[number];
+
+export interface UiNode {
+	ref: UiRef;
+	role: UiRole;
+	/** What a person reads it as: its label, title or text. */
+	name?: string;
+	/** What it holds: a text field's text, a slider's value. A secure field's value is never sent. */
+	value?: string;
+	/** The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier. */
+	id?: string;
+	/** In window points. */
+	bounds: Rect;
+	/** The nearest node above it in this list; absent at the top. A node comes after its parent. */
+	parent?: UiRef;
+	flags?: UiFlag[];
+	/** The platform's own action names, for the perform step: "AXShowMenu", "ACTION_LONG_CLICK". */
+	actions?: string[];
+}
+
+export interface UiObserveParams {
+	target?: UiTarget;
+	/** Every node. Without it, only the nodes that can be acted on or that have a name, and their parents. */
+	full?: boolean;
+	/** The window's image (feature ui.image), true at DEFAULT_IMAGE_EDGE. Without the feature, refused as `unsupported`. */
+	image?: boolean | { maxEdge: number };
+	/** A state this connection observed before: the result says what changed since it. */
+	since?: string;
+}
+
+/** A window's image, whole: at most MAX_CHUNK_BYTES before base64 (the driver lowers JPEG quality until it fits). */
+export interface UiImage {
+	format: "png" | "jpeg";
+	/** Pixels. The image covers the window: a pixel is window.bounds' width / width points. */
+	width: number;
+	height: number;
+	/** base64. */
+	data: string;
+}
+
+export interface UiObserveResult {
+	/** This observation's id, such as "s7". A step's points are read against the state they came from. */
+	state: string;
+	app: { id: string; name: string; pid?: number };
+	/** bounds in screen points: where the window sits. */
+	window: { id: string; title?: string; bounds: Rect };
+	/** In order, a node after its parent. */
+	nodes: UiNode[];
+	/** Against since, by ref. Absent when since was not given or the driver no longer holds it. */
+	diff?: { added: UiRef[]; removed: UiRef[]; changed: UiRef[] };
+	image?: UiImage;
+	/** Nodes were left out: past MAX_UI_NODES, or to keep the reply within the line limit. */
 	truncated: boolean;
+}
+
+/** The ways a driver can make a step happen, best first. A step's result says which one ran. */
+export type UiRoute = "semantic" | "page" | "background" | "foreground";
+
+/**
+ * One action. A step that names a ref acts on its element; a step at a point needs the act's state, and is refused as
+ * `stale` when what is under the point is no longer what that state saw.
+ */
+export type UiStep =
+	/** The element's default action: AXPress, a click on Android's node. */
+	| { press: UiRef }
+	/** Set its value: a text field's text, a slider's value, a switch's "on" or "off". */
+	| { set: UiRef; value: string }
+	/** One of its actions, by the platform's name. */
+	| { perform: UiRef; action: string }
+	/** On a touch screen, a tap; button right is a long press there. */
+	| { click: UiRef | Point; button?: "left" | "right"; count?: 1 | 2 | 3 }
+	/** Type text, into the element when named, else where the focus is. */
+	| { type: string; into?: UiRef }
+	/** A chord: names in KEYS or one printable character, joined by "+": "super+s", "enter", "ctrl+shift+t". */
+	| { key: string }
+	/** The system's own navigation (feature ui.nav). */
+	| { nav: "back" | "home" | "app_switch" }
+	/** Scroll the element, or what is at the point, by points: dy > 0 shows what is below, dx > 0 what is right. */
+	| { scroll: UiRef | Point; dx?: number; dy?: number }
+	/** Press at the first point, move through the rest, let go at the last: 2 or more points, over ms. */
+	| { drag: Point[]; ms?: number };
+
+/**
+ * What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until
+ * it holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's
+ * name or value holds the text. gone: the opposite of each. At least one of text and ref.
+ */
+export interface UiExpect {
+	text?: string;
+	ref?: UiRef;
+	gone?: boolean;
+	/** Default DEFAULT_EXPECT_MS, at most MAX_EXPECT_MS. */
+	timeoutMs?: number;
+}
+
+export interface UiActParams {
+	/** Where keys and typing without a ref go. Default: the state's app and window, else the app in front. */
+	target?: UiTarget;
+	/** The state the steps' points were read from. A step at a point needs it. */
+	state?: string;
+	/** At most MAX_STEPS; their drag ms add up to at most MAX_BATCH_WAIT_MS. No steps and an expect is a wait. */
+	steps: UiStep[];
+	expect?: UiExpect;
+	/** Let steps take the foreground route, which moves the user's pointer and focus. Default false. */
+	foreground?: boolean;
+}
+
+export type UiStepResult =
+	/** It ran by this route; verified when a readback showed it took (the value set, the element pressed). */
+	| { route: UiRoute; verified: boolean }
+	/** It was refused: stale, denied (a secure field, an app the call may not touch), unsupported (with the feature's off reason). */
+	| { error: { kind: DaemonErrorKind; message: string } };
+
+export interface UiActResult {
+	/** One per step tried, in order. A refused step is the last: the steps after it do not run. */
+	steps: UiStepResult[];
+	/** The state after the steps, once the window settled (at most MAX_SETTLE_MS). */
+	state: string;
+	/** The window's nodes or image changed between before the first step and the settled state. */
+	changed: boolean;
+	/** Whether the expect held in time. Absent with no expect, or when a step was refused. */
+	expect?: "met" | "unmet";
 }
 
 /** Moves init's own deadline. Init refuses an earlier one. Typed now; the daemon answers it from the X11 shim's PR on. */
@@ -670,8 +858,9 @@ export interface DaemonMethods {
 	/** The installed app. */
 	"apps.install": { params: AppsInstallParams; result: App };
 	"apps.launch": { params: AppsLaunchParams; result: Empty };
-	"apps.terminate": { params: AppsLaunchParams; result: Empty };
-	"apps.ui_tree": { params: Empty; result: UiTreeResult };
+	"apps.terminate": { params: AppsTerminateParams; result: Empty };
+	"ui.observe": { params: UiObserveParams; result: UiObserveResult };
+	"ui.act": { params: UiActParams; result: UiActResult };
 	"deadline.extend": { params: DeadlineExtendParams; result: DeadlineExtendResult };
 	"mount.sync": { params: Empty; result: MountSyncResult };
 }
@@ -699,7 +888,9 @@ export type DaemonErrorKind =
 	| "unsupported"
 	| "exists"
 	| "not_dir"
-	| "is_dir";
+	| "is_dir"
+	/** A ref whose element is gone, or a point whose window moved or redrew under it since its state. */
+	| "stale";
 
 export const JSONRPC_CODES = {
 	parse: -32700,

@@ -45,7 +45,7 @@ function context({ hello, capabilities, declared, planted, kept = true }) {
 
 /** The case's computer: a real one of the provider's, so each path that takes a ref reaches the vendor. */
 const CASE_REF = { id: "phone-0123abcd", name: "computer-0123456789ab" };
-const ANDROID = { kind: "android", os: "android", daemon: "none", groups: ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"], network: ["open"] };
+const ANDROID = { kind: "android", os: "android", daemon: "none", groups: ["screen", "input.touch", "input.keys", "apps", "ui"], network: ["open"] };
 const HELLO = { protocol: PROTOCOL_VERSION, version: "1", os: "android", kind: "android", arch: "amd64", groups: ANDROID.groups };
 
 test("health.declared: hello carries this protocol's version, and capabilities() is one of the configurations declared", async () => {
@@ -55,7 +55,7 @@ test("health.declared: hello carries this protocol's version, and capabilities()
 	await declared.run(agree.t);
 
 	const old = context({ hello: { ...HELLO, protocol: undefined }, capabilities: ANDROID, declared: [{ kind: "android", groups: ANDROID.groups }] });
-	await assert.rejects(declared.run(old.t), /hello carries the protocol version this suite speaks, 0\.1: undefined/);
+	await assert.rejects(declared.run(old.t), /hello carries the protocol version this suite speaks, 0\.2: undefined/);
 	const other = context({ hello: { ...HELLO, protocol: "9.0" }, capabilities: ANDROID, declared: [{ kind: "android", groups: ANDROID.groups }] });
 	await assert.rejects(declared.run(other.t), /protocol version.*"9\.0"/);
 
@@ -179,6 +179,16 @@ test("the published schema refuses the params computerd refuses: a map's non-str
 	assert.equal(valid("input.actions", "params", { actions: [{ type: "move", at: [1.5, 2] }] }), false, "a fractional point");
 	assert.equal(valid("input.actions", "params", { actions: [{ type: "scroll", dx: 0.5, unit: "px" }] }), true, "a pixel scroll's fraction");
 	assert.equal(valid("input.actions", "params", { actions: [{ type: "pinch", at: [1, 2], scale: 1.5 }] }), true, "a pinch's scale");
+	// ui.act's steps are exactly one shape each, at whole window points; an expect names text or a ref.
+	assert.equal(valid("ui.act", "params", { state: "s1", steps: [{ press: "@e1" }, { click: [10, 20], count: 2 }, { type: "hi", into: "@e2" }, { key: "super+s" }, { nav: "back" }, { scroll: "@e3", dy: 300 }, { drag: [[1, 2], [3, 4]], ms: 200 }], expect: { text: "Saved", timeoutMs: 2000 }, foreground: true }), true, "a well-formed ui.act");
+	assert.equal(valid("ui.act", "params", { steps: [], expect: { ref: "@e1", gone: true } }), true, "a wait: no steps and an expect");
+	assert.equal(valid("ui.act", "params", { steps: [{ press: "@e1", value: "x" }] }), false, "a step with another step's field");
+	assert.equal(valid("ui.act", "params", { state: "s1", steps: [{ click: [1.5, 2] }] }), false, "a fractional window point");
+	assert.equal(valid("ui.act", "params", { steps: [{ wait: 100 }] }), false, "no wait step: the driver waits");
+	assert.equal(valid("ui.observe", "params", { image: { maxEdge: 1024 }, full: true, since: "s1", target: { app: "com.apple.Notes" } }), true, "a well-formed ui.observe");
+	assert.equal(valid("ui.observe", "params", { target: { pid: 1 } }), false, "a target's unknown field");
+	assert.equal(valid("hello", "result", { protocol: PROTOCOL_VERSION, version: "1", os: "macos", kind: "desktop", arch: "arm64", groups: ["ui"], screen: { width: 1512, height: 982, scale: 2 }, features: { "ui.image": true, "ui.background": { off: "Screen Recording is not granted" } } }), true, "hello's screen and features");
+	assert.equal(valid("hello", "result", { protocol: PROTOCOL_VERSION, version: "1", os: "macos", kind: "desktop", arch: "arm64", groups: ["ui"], features: { "ui.image": false } }), false, "a feature is true or off with a reason, never false");
 	// A result may carry a field a later minor version adds.
 	assert.equal(valid("hello", "result", { protocol: PROTOCOL_VERSION, version: "1", os: "linux", kind: "linux", arch: "amd64", groups: ["exec"], later: 1 }), true);
 });

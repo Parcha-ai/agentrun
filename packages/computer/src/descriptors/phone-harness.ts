@@ -3,7 +3,7 @@ import { defineProvider } from "../descriptor.js";
 import type { Group } from "../protocol.js";
 
 /** The groups a phone harness phone offers. */
-export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
+export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "ui"];
 
 /** The phone harness's Android: a phone computer when its setting names no image. */
 export const PHONE_IMAGE = "android";

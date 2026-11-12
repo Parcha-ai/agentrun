@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { kindRefusals, PHONE_GROUPS } from "../dist/index.js";
+import { kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
@@ -64,7 +64,7 @@ test("create(options) builds the phone-harness provider from its options alone: 
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, network: caps.network, release: caps.release, groups: caps.groups, isolation: caps.isolation },
 		{ kind: "android", os: "android", daemon: "none", lifetime: "vendor", network: ["open"], release: ["delete"], groups: PHONE_GROUPS, isolation: "vm" },
 	);
-	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"]);
+	assert.deepEqual(PHONE_GROUPS, ["screen", "input.touch", "input.keys", "apps", "ui"]);
 	assert.equal(caps.maxLifetimeMs, 30 * 60_000, "30 min by default");
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.equal(provider.extend, undefined, "the phone harness has no extend");
@@ -440,8 +440,12 @@ test("connect reaches the phone over adb with its unlock code, which no result o
 	assert.deepEqual(fake.serverCalls().slice(0, 4), [`host:connect:${endpoint}`, "host:devices-l", "host:transport-id:1 shell:echo ph-ok", "host:transport-id:1 shell:unlock [code]"]);
 	assert.deepEqual(fake.adbCalls()[0], ["-t", "1", "shell", "echo ph-ok"]);
 	assert.deepEqual(fake.shells().slice(0, 3), ["echo ph-ok", `unlock ${ADB_CODE}`, "echo ph-ok"]);
-	// Its Android release, as the phone's getprop says it.
-	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS });
+	// Its Android release, as the phone's getprop says it; its screen in points; what its groups can do over adb.
+	const { features, ...hello } = connected.value.hello;
+	assert.deepEqual(hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "android", osVersion: "15", kind: "android", arch: "amd64", groups: PHONE_GROUPS, screen: { width: SCREEN.width, height: SCREEN.height, scale: 1 } });
+	assert.deepEqual(Object.keys(features).sort(), ["apps.background", "ui.background", "ui.foreground", "ui.image", "ui.nav"]);
+	assert.deepEqual([features["ui.foreground"], features["ui.nav"]], [true, true]);
+	assert.ok(["apps.background", "ui.background", "ui.image"].every((name) => typeof features[name].off === "string" && features[name].off !== ""), "a feature that is off says why");
 	assert.deepEqual((await connected.value.client.call("hello", { client: "test" })).value, connected.value.hello);
 	assert.deepEqual(await connected.value.client.call("ping", {}), { ok: true, value: {} });
 	await connected.value.close();
@@ -558,7 +562,7 @@ test("no spawned adb's argv holds the unlock code or the phone's endpoint, which
 	const { client } = connected.value;
 	assert.equal((await client.call("screen.shot", {})).ok, true);
 	assert.equal((await client.call("input.actions", { actions: [{ type: "tap", at: [10, 10] }] })).ok, true);
-	assert.equal((await client.call("apps.ui_tree", {})).ok, true);
+	assert.equal((await client.call("ui.observe", {})).ok, true);
 	await connected.value.close();
 	const port = String(22220 + 1);
 	for (const argv of fake.adbCalls()) {
@@ -630,24 +634,28 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 	assert.deepEqual([part.width, part.height, part.image.width, part.image.height], [100, 50, 100, 50]);
 	assert.equal((await client.call("screen.shot", { region: [300, 600, 100, 100] })).error.code, "invalid", "a region off the screen");
 
-	// Settings, launched and in front; its top list in the tree.
+	// Settings, launched and in front; its top list in ui.observe, flat, each node after its parent.
 	assert.deepEqual(await call("apps.launch", { id: SETTINGS }), {});
 	const listed = await call("apps.list", {});
 	assert.ok(listed.apps.some((app) => app.id === SETTINGS));
 	assert.equal(listed.foreground, SETTINGS);
-	const tree = await call("apps.ui_tree", {});
-	assert.equal(tree.truncated, false);
-	const all = [];
-	const walk = (n) => {
-		all.push(n);
-		n.children.forEach(walk);
-	};
-	walk(tree.root);
-	assert.equal(tree.nodes, all.length);
-	assert.equal(tree.root.role, "android.widget.FrameLayout");
-	assert.deepEqual(tree.root.bounds, [0, 0, SCREEN.width, SCREEN.height]);
-	const display = all.find((n) => n.text === ITEMS[0]);
-	assert.deepEqual(display, { role: "android.widget.TextView", id: "android:id/title", text: ITEMS[0], bounds: [72, 112, 240, 32], enabled: true, clickable: false, focused: false, selected: false, checked: false, scrollable: false, children: [] });
+	const seen = await call("ui.observe", {});
+	assert.equal(seen.truncated, false);
+	assert.match(seen.state, /^s\d+$/);
+	assert.deepEqual(seen.app, { id: SETTINGS, name: SETTINGS });
+	assert.deepEqual(seen.window, { id: SETTINGS, bounds: [0, 0, SCREEN.width, SCREEN.height] });
+	const [root] = seen.nodes;
+	assert.deepEqual(root, { ref: root.ref, role: "generic", bounds: [0, 0, SCREEN.width, SCREEN.height] });
+	const list = seen.nodes.find((n) => n.role === "scrollarea");
+	assert.deepEqual(list, { ref: list.ref, role: "scrollarea", bounds: [0, 16, SCREEN.width, SCREEN.height - 16], parent: root.ref, actions: ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"] });
+	const row = seen.nodes.find((n) => n.role === "button" && n.name === ITEMS[0]);
+	assert.deepEqual(row, { ref: row.ref, role: "button", name: ITEMS[0], bounds: [0, 96, SCREEN.width, 64], parent: list.ref, actions: ["ACTION_CLICK"] }, "a clickable row, named by its text");
+	const title = seen.nodes.find((n) => n.role === "text" && n.name === ITEMS[0]);
+	assert.deepEqual(title, { ref: title.ref, role: "text", name: ITEMS[0], id: "android:id/title", bounds: [72, 112, 240, 32], parent: row.ref });
+	const refs = seen.nodes.map((n) => n.ref);
+	assert.ok(refs.every((ref) => /^@e\d+$/.test(ref)), refs.join(" "));
+	assert.equal(new Set(refs).size, refs.length, "each node its own ref");
+	assert.ok(seen.nodes.every((n, i) => n.parent === undefined || refs.slice(0, i).includes(n.parent)), "a node comes after its parent");
 
 	const before = fake.shells().length;
 	assert.deepEqual(
@@ -790,29 +798,145 @@ test("a cancelled input batch stops at the action it is on: a wait ends when the
 	assert.equal(other.shells().filter((command) => command.startsWith("input keyevent")).length, 0, "nor the button after it");
 });
 
-test("typing into Settings' search reads back from the tree", async () => {
+/** Settings' search field in ui.observe: a searchbox, its text its value. */
+const searchField = async (client) => (await client.call("ui.observe", {})).value.nodes.find((n) => n.id === SEARCH_FIELD);
+
+test("typing into Settings' search reads back from ui.observe: the field is a searchbox, its text its value, its ref the same", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
 	const { client } = (await provider.connect(ref)).value;
 	await client.call("apps.launch", { id: SETTINGS });
-	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text: "Hello, agentrun! 123" }] });
-	const tree = (await client.call("apps.ui_tree", {})).value;
-	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
-	assert.equal(find(tree.root)?.text, "Hello, agentrun! 123");
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }] });
+	const empty = await searchField(client);
+	assert.deepEqual(empty, { ref: empty.ref, role: "searchbox", id: SEARCH_FIELD, bounds: [56, 16, 288, 56], parent: empty.parent, flags: ["focused"], actions: ["ACTION_CLICK"] }, "an empty field has no value");
+	await client.call("input.actions", { actions: [{ type: "type", text: "Hello, agentrun! 123" }] });
+	const typed = await searchField(client);
+	assert.equal(typed.value, "Hello, agentrun! 123");
+	assert.equal(typed.ref, empty.ref, "the field keeps its ref while its text changes");
 });
 
 test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
 	const { client } = (await provider.connect(ref)).value;
-	const find = (n) => (n.id === SEARCH_FIELD ? n : n.children.map(find).find(Boolean));
 	for (const text of ["format %s", "%s%s", "50% sure", "%%s and %", "s%", "%ss %"]) {
 		await client.call("apps.launch", { id: SETTINGS });
 		const typed = await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text }] });
 		assert.deepEqual(typed, { ok: true, value: { done: 2 } }, text);
-		assert.equal(find((await client.call("apps.ui_tree", {})).value.root)?.text, text, "what the phone got");
+		assert.equal((await searchField(client))?.value, text, "what the phone got");
 		await client.call("apps.terminate", { id: SETTINGS });
 	}
+});
+
+test("ui on a phone of 320 dpi: hello says its screen in points, ui.observe gives bounds in points (pixels / 2), and a press taps the element's centre in pixels", async () => {
+	const { provider, fake } = await setup({ density: 320 });
+	const { value: ref } = await provider.create(SPEC);
+	const { value: connection } = await provider.connect(ref);
+	const { client } = connection;
+	assert.deepEqual(connection.hello.screen, { width: SCREEN.width / 2, height: SCREEN.height / 2, scale: 2 });
+	assert.equal(connection.hello.features["ui.foreground"], true);
+	assert.equal(connection.hello.features["ui.nav"], true);
+	assert.match(connection.hello.features["ui.background"].off, /adb/);
+	await client.call("apps.launch", { id: SETTINGS });
+	const seen = (await client.call("ui.observe", {})).value;
+	assert.deepEqual(seen.window.bounds, [0, 0, SCREEN.width / 2, SCREEN.height / 2]);
+	const row = seen.nodes.find((n) => n.role === "button" && n.name === ITEMS[0]);
+	// The row is [0, 96, 360, 64] in pixels.
+	assert.deepEqual(row.bounds, [0, 48, SCREEN.width / 2, 32]);
+	const search = seen.nodes.find((n) => n.id === "com.android.settings:id/search_action_bar");
+
+	// No foreground allowed: the step is refused, and nothing reaches the phone.
+	const before = fake.shells().length;
+	const denied = await client.call("ui.act", { steps: [{ press: row.ref }] });
+	assert.equal(denied.ok, true, JSON.stringify(denied));
+	assert.equal(denied.value.steps.length, 1);
+	assert.equal(denied.value.steps[0].error.kind, "denied");
+	assert.match(denied.value.steps[0].error.message, /foreground: true/);
+	assert.equal(fake.shells().slice(before).filter((command) => command.startsWith("input ")).length, 0, "no input for a refused step");
+
+	// Allowed: one tap, at the row's centre in pixels, and the row's page opens.
+	const at = fake.shells().length;
+	const pressed = await client.call("ui.act", { steps: [{ press: row.ref }], foreground: true, expect: { text: ITEMS[0], timeoutMs: 1000 } });
+	assert.equal(pressed.ok, true, JSON.stringify(pressed));
+	assert.deepEqual(pressed.value.steps, [{ route: "foreground", verified: false }]);
+	assert.equal(pressed.value.changed, true);
+	assert.equal(pressed.value.expect, "met");
+	assert.deepEqual(fake.shells().slice(at).filter((command) => command.startsWith("input ")), ["input tap 180 128"]);
+	assert.equal(fake.phone.screen, "page");
+
+	// The search entry's element is gone from the page: a step naming it is refused as stale, and runs nothing.
+	const later = fake.shells().length;
+	const stale = await client.call("ui.act", { steps: [{ press: search.ref }], foreground: true });
+	assert.equal(stale.ok, true, JSON.stringify(stale));
+	assert.equal(stale.value.steps[0].error.kind, "stale");
+	assert.equal(fake.shells().slice(later).filter((command) => command.startsWith("input ")).length, 0, "no input for a stale ref");
+	await connection.close();
+});
+
+test("parseUiElements: Android's classes as the protocol's roles, an editable field's text as its value, a clickable row named by its texts, bounds in points", () => {
+	const node = (attrs, children = "") => {
+		const all = { index: "0", text: "", "resource-id": "", class: "android.widget.FrameLayout", package: "com.example", "content-desc": "", clickable: "false", enabled: "true", focused: "false", scrollable: "false", password: "false", selected: "false", checkable: "false", checked: "false", "long-clickable": "false", bounds: "[0,0][1080,2400]", ...attrs };
+		const body = Object.entries(all).map(([k, v]) => `${k}="${v}"`).join(" ");
+		return children === "" ? `<node ${body} />` : `<node ${body}>${children}</node>`;
+	};
+	const xml = (field) =>
+		`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${node({}, [
+			node({ index: "0", class: "android.widget.Button", text: "OK", clickable: "true", bounds: "[105,210][315,420]" }),
+			node({ index: "1", class: "android.widget.EditText", text: field, "content-desc": "Name", "resource-id": "com.example:id/name", focused: "true", bounds: "[0,420][1080,525]" }),
+			node({ index: "2", class: "android.widget.EditText", text: "hunter2", password: "true", bounds: "[0,525][1080,630]" }),
+			node({ index: "3", class: "android.widget.CheckBox", checkable: "true", checked: "true", text: "Remember", bounds: "[0,630][1080,735]" }),
+			node({ index: "4", class: "android.widget.Switch", checkable: "true", text: "Wi-Fi", enabled: "false", bounds: "[0,735][1080,840]" }),
+			node({ index: "5", class: "android.widget.ImageView", "content-desc": "Logo", bounds: "[0,840][105,945]" }),
+			node(
+				{ index: "6", class: "androidx.recyclerview.widget.RecyclerView", scrollable: "true", bounds: "[0,945][1080,2100]" },
+				node({ index: "0", class: "android.widget.LinearLayout", clickable: "true", "long-clickable": "true", bounds: "[0,945][1080,1155]" }, [
+					node({ index: "0", class: "android.widget.TextView", text: "Battery", bounds: "[0,945][540,1050]" }),
+					node({ index: "1", class: "android.widget.TextView", text: "80 %", bounds: "[0,1050][540,1155]" }),
+					node({ index: "2", class: "android.widget.TextView", text: "Charging", bounds: "[540,945][1080,1050]" }),
+					node({ index: "3", class: "android.widget.TextView", text: "Fast", bounds: "[540,1050][1080,1155]" }),
+				].join("")),
+			),
+			node({ index: "7", class: "android.widget.SearchView", bounds: "[0,2100][1080,2205]" }, node({ index: "0", class: "android.widget.AutoCompleteTextView", text: "wifi", clickable: "true", bounds: "[0,2100][1080,2205]" })),
+			node({ index: "8", class: "android.view.View", bounds: "[0,2205][1080,2400]" }),
+		].join(""))}</hierarchy>`;
+	// 420 dpi: 2.625 pixels a point.
+	const parsed = parseUiElements(xml("Ada"), 2.625, [1080, 2400]);
+	assert.equal(parsed.ok, true, JSON.stringify(parsed));
+	const { app, window, elements } = parsed.value;
+	assert.deepEqual(app, { id: "com.example", name: "com.example" });
+	assert.deepEqual(window, { id: "com.example", bounds: [0, 0, 411, 914] });
+	const [root, button, field, secret, check, toggle, image, list, row, ...rest] = elements;
+	const texts = rest.slice(0, 4);
+	const [bar, search, view] = rest.slice(4);
+	assert.deepEqual([root.role, button.role, field.role, secret.role, check.role, toggle.role, image.role, list.role, row.role, bar.role, search.role, view.role], ["generic", "button", "textbox", "textbox", "checkbox", "switch", "image", "scrollarea", "button", "group", "searchbox", "generic"]);
+	assert.ok(texts.every((one) => one.role === "text"));
+	assert.deepEqual({ ...button, key: undefined }, { key: undefined, role: "button", name: "OK", bounds: [40, 80, 80, 80], parent: root.key, actions: ["ACTION_CLICK"] }, "bounds are pixels over 2.625, rounded");
+	assert.deepEqual([field.name, field.value, field.id, field.flags], ["Name", "Ada", "com.example:id/name", ["focused"]], "an editable field's label is its name, its text its value");
+	assert.deepEqual([secret.value, secret.flags], ["hunter2", ["secure"]], "a password field is secure (the engine never sends its value)");
+	assert.deepEqual(check.flags, ["checked"]);
+	assert.deepEqual([toggle.name, toggle.flags], ["Wi-Fi", ["disabled"]]);
+	assert.equal(image.name, "Logo", "content-desc is a name");
+	assert.deepEqual(list.actions, ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"]);
+	assert.deepEqual([row.name, row.parent, row.actions], ["Battery, 80 %, Charging", list.key, ["ACTION_CLICK", "ACTION_LONG_CLICK"]], "a clickable row with no name of its own: its first 3 texts");
+	assert.ok(texts.every((one) => one.parent === row.key));
+	assert.deepEqual([search.value, search.parent], ["wifi", bar.key], "a field inside a SearchView is a searchbox");
+	assert.equal(view.name, undefined);
+	assert.equal(new Set(elements.map((one) => one.key)).size, elements.length, "each element its own key");
+
+	// The same screen with other text in the field: every key stays, so the field's ref does.
+	const again = parseUiElements(xml("Grace"), 2.625, [1080, 2400]).value.elements;
+	assert.deepEqual(again.map((one) => one.key), elements.map((one) => one.key));
+	assert.equal(again[2].value, "Grace");
+	assert.equal(parseUiElements("<hierarchy/>", 1, [10, 10]).ok, false, "a dump with no node");
+});
+
+test("ui.observe never sends a secure field's value", async () => {
+	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" password="true" bounds="[0,0][100,50]" /></hierarchy>`;
+	const view = parseUiElements(xml, 1, [100, 50]).value;
+	const engine = new UiEngine({ features: () => ({}), look: async () => ({ ok: true, value: view }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
+	const seen = await engine.observe({});
+	assert.equal(seen.ok, true, JSON.stringify(seen));
+	assert.deepEqual(seen.value.nodes.map(({ role, value, flags }) => ({ role, value, flags })), [{ role: "textbox", value: undefined, flags: ["secure"] }]);
 });
 
 test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {

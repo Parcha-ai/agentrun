@@ -16,6 +16,7 @@ import { processCases } from "./process.js";
 import { providerCases } from "./provider.js";
 import { screenCases } from "./screen.js";
 import { touchCases } from "./touch.js";
+import { uiCases } from "./ui.js";
 
 export { browserCases, browserOnlyCases } from "./browser.js";
 
@@ -32,6 +33,7 @@ export const conformanceCases: Case[] = [
 	...inputCases,
 	...touchCases,
 	...appsCases,
+	...uiCases,
 	...lifetimeCases,
 	...gpuCases,
 ];

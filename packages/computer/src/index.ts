@@ -1,6 +1,8 @@
 export * from "./protocol.js";
 export * from "./result.js";
 export * from "./provider.js";
+export * from "./ui-engine.js";
+export * from "./phone-ui.js";
 export * from "./mount.js";
 export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
