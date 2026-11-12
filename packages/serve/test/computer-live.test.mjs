@@ -514,6 +514,32 @@ test("the viewer's blur lifts the buttons it holds; Hand back lifts them before 
   assert.equal(sentAtGive, 4, "the up went before the hold was given");
 });
 
+test("a Hand back behind input that never answers gives the hold once the ups' bound has run, said in words: the agent is never left paused", { timeout: 30_000 }, async (t) => {
+  const clock = manualTimers();
+  const SETTLE = 777;
+  const logs = [];
+  const watch = fakeWatch();
+  const { row, hold } = await opened(t, { watch, hold: fakeHold({ grant: true }), timers: clock.timers, limits: { settleMs: SETTLE }, log: (line) => logs.push(line) });
+  const ws = await viewerOf(row);
+  await watch.opened();
+  ws.sendJson({ type: "take" });
+  await next(ws, "hold");
+  const pressed = watch.nextInput();
+  ws.sendJson(press(0));
+  await pressed;
+  watch.blockInputs();
+  let given = false;
+  const give = hold.hold.give;
+  hold.hold.give = async () => ((given = true), give());
+  ws.sendJson({ type: "give" });
+  await turns(() => clock.running(SETTLE).length === 1, "the ups' bound runs");
+  assert.equal(given, false, "not given while the ups are still being sent");
+  clock.running(SETTLE)[0].run();
+  assert.deepEqual(await next(ws, "hold"), { type: "hold", held: false, reason: "given" });
+  assert.equal(given, true);
+  assert.ok(logs.some((line) => /did not answer/.test(line)), JSON.stringify(logs));
+});
+
 test("a blur behind a slow input lifts a press still queued when it came: the press is sent, then its up, never left down", { timeout: 30_000 }, async (t) => {
   const { row, watch } = await opened(t, { hold: fakeHold({ grant: true }) });
   const ws = await viewerOf(row);

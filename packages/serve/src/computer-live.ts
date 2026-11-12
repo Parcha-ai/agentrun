@@ -550,7 +550,8 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       }
       // Hand back: what is queued is not sent, what this take holds is let go, then the hold is given.
       epoch += 1;
-      await liftHeld(current);
+      // Waited for settleMs at most, as a disconnect's and a close's are: an input that never answers must not keep the agent paused.
+      await settled(liftHeld(current), "release of the held buttons");
       const answer = await hold.give();
       if (viewer === current && answer.hold === "agent" && state !== "agent") moved({ state: "agent", ended: "given" });
     } catch (error) {

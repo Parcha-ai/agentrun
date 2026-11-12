@@ -131,10 +131,11 @@ export function viewerAnswers(handover: LiveHandover, reach?: LiveReach, ms = 1_
   });
 }
 
-/** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), whatever
- *  its computer's kind; undefined when none does. */
-export async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>): Promise<LiveHandover | undefined> {
-  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return handover;
+/** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), among the
+ *  kinds `family`'s address reaches (familyReaches: every kind under the computer family, a browser's alone under the
+ *  browser's); undefined when none does. */
+export async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>, family: LiveFamily = "computer"): Promise<LiveHandover | undefined> {
+  for (const handover of await readLiveViewers(store, sealKey, runId)) if (familyReaches(family, handover) && (await answers(handover))) return handover;
   return undefined;
 }
 
@@ -142,7 +143,7 @@ export async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, r
  *  (/browser/live): the newest its runner put whose port answers (`answers`, viewerAnswers), as `{ viewer }`; undefined
  *  when none does. What run-reads-over-store's runBrowserState takes as its `liveViewer` dep. */
 export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ viewer: string } | undefined> {
-  const handover = await answeringViewer(store, sealKey, runId, answers);
+  const handover = await answeringViewer(store, sealKey, runId, answers, "browser");
   return handover && { viewer: viewerLink(runId, handover, "browser") };
 }
 
