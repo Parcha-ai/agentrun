@@ -68,6 +68,17 @@ test("an image within budget is the first capture, taken as requested", async ()
   assert.equal(shot.mimeType, "image/jpeg");
 });
 
+test("a scale asked is the first capture's, and a retake only scales further down from it", async () => {
+  const fits = page({ dpr: 2 });
+  const half = await captureWithinBudget(fits.capture, { scale: 0.5 });
+  assert.deepEqual(fits.calls, [{ fullPage: false, type: "jpeg", quality: 40, scale: 0.5 }]);
+  assert.deepEqual([half.size.width, half.size.height, half.adjusted], [1288, 711, null]);
+  const over = page({ dpr: 4 });
+  const shot = await captureWithinBudget(over.capture, { scale: 0.5 });
+  assert.deepEqual(over.calls.map((o) => o.scale), [0.5, 0.5 * (SCREENSHOT_MAX_EDGE_PX / 2576)]);
+  assert.deepEqual([shot.size.width, shot.size.height], [2000, 1104]);
+});
+
 test("a viewport over the long edge on a dense display is scaled to fit it, as the region asked", async () => {
   const { capture, calls } = page({ dpr: 2 });
   const shot = await captureWithinBudget(capture, { type: "png" });

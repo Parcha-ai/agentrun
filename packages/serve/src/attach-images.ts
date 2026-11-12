@@ -18,7 +18,7 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 /** Why `image` (pi-ai's image part) cannot be attached to a model request; undefined when it can. */
 export function unattachable(image: { readonly data?: unknown; readonly mimeType?: unknown }): string | undefined {
   const { data, mimeType } = image;
-  if (typeof mimeType !== "string" || !SIGNATURES[mimeType]) return `its type ${JSON.stringify(mimeType ?? null)} is not PNG, JPEG, GIF or WebP`;
+  if (typeof mimeType !== "string" || !Object.hasOwn(SIGNATURES, mimeType)) return `its type ${JSON.stringify(mimeType ?? null)} is not PNG, JPEG, GIF or WebP`;
   if (typeof data !== "string" || data.length === 0) return "it is empty";
   if (data.length % 4 !== 0 || !BASE64.test(data)) return "its data is not base64";
   if (!SIGNATURES[mimeType](Buffer.from(data.slice(0, 16), "base64"))) return `its bytes are not a ${mimeType}`;

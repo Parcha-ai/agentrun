@@ -38,6 +38,8 @@ test("an image is attachable only with a known type, data that is base64, bytes 
   assert.equal(unattachable({ data: "[redacted]", mimeType: "image/png" }), "its data is not base64");
   assert.equal(unattachable({ data: "", mimeType: "image/png" }), "it is empty");
   assert.equal(unattachable({ data: png, mimeType: "image/bmp" }), 'its type "image/bmp" is not PNG, JPEG, GIF or WebP');
+  // A name every object inherits is no type either.
+  for (const name of ["__proto__", "toString", "constructor"]) assert.equal(unattachable({ data: png, mimeType: name }), `its type "${name}" is not PNG, JPEG, GIF or WebP`);
   assert.equal(unattachable({ data: png, mimeType: "image/jpeg" }), "its bytes are not a image/jpeg");
   // The PNG's eight-byte signature and nothing after it: no IHDR to say its size.
   assert.equal(unattachable({ data: png.slice(0, 12), mimeType: "image/png" }), "its image/png header does not say its size");

@@ -92,7 +92,8 @@ const QUALITIES = [40, 25, 10];
  */
 export async function captureWithinBudget(capture: Capture, requested: ScreenshotOptions, budget = { maxEdgePx: SCREENSHOT_MAX_EDGE_PX, maxBase64Bytes: SCREENSHOT_MAX_BASE64_BYTES }): Promise<BudgetedScreenshot> {
   const ceiling = requested.type === "png" ? 40 : (requested.quality ?? 40);
-  const clip = requested.clip ? { clip: requested.clip } : {};
+  // The clip and the scale asked are kept on every capture; a retake only scales further down.
+  const clip = { ...(requested.clip ? { clip: requested.clip } : {}), ...(requested.scale === undefined ? {} : { scale: requested.scale }) };
   let taken = 0;
   const take = async (options: ScreenshotOptions) => {
     taken += 1;
