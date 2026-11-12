@@ -178,11 +178,9 @@ struct FakeAX: Accessibility {
 
 	func focused(_ target: ResolvedTarget) -> ElementHandle? { os.with { $0.focusedID }.map { ElementHandle($0) } }
 
-	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> MenuItem? {
+	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> ElementHandle? {
 		os.with { os in
-			os.order.compactMap { os.elements[$0] }.first { $0.role == "menuitem" && $0.name == chord.text }.map {
-				MenuItem(element: ElementHandle($0.id), enabled: !$0.flags.contains(.disabled))
-			}
+			os.order.compactMap { os.elements[$0] }.first { $0.role == "menuitem" && $0.name == chord.text }.map { ElementHandle($0.id) }
 		}
 	}
 }

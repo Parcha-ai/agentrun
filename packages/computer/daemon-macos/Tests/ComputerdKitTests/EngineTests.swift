@@ -502,9 +502,9 @@ final class EngineTests: XCTestCase {
 		XCTAssertFalse(os.entries.contains("ax.AXConfirm 4"), "a field that offers no confirm is only set")
 	}
 
-	/// A background app's menu item that reads disabled: pressing it does nothing; its key, posted, goes back a page.
-	func backMenuItemThatDoesNothing(reads flags: Set<UiFlag> = []) {
-		os.add(9, "menuitem", name: "super+[", actions: ["AXPress"], flags: flags)
+	/// A menu item that does nothing when pressed; its key, posted, goes back a page.
+	func backMenuItemThatDoesNothing() {
+		os.add(9, "menuitem", name: "super+[", actions: ["AXPress"])
 		os.react = { entry, os in
 			guard entry == "bg.key super+[" || entry == "fg.key super+[" else { return }
 			os.with { $0.elements[5]?.name = "Quarterly report" }
@@ -522,25 +522,6 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(result.expect, .met)
 		XCTAssertLessThan(os.now - start, 2000, "no wait for the expect's timeout")
 		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "bg.key super+["])
-	}
-
-	func testAMenuItemThatReadsDisabledAndShowsNothingGoesOnToKeys() async throws {
-		backMenuItemThatDoesNothing(reads: [.disabled])
-		let engine = os.engine()
-		_ = try await engine.observe(UiObserveParams())
-		let result = try await engine.act(UiActParams(steps: [.key("super+[")]))
-		XCTAssertEqual(ran(result, 0)?.0, .background, "no expect, but the item read disabled")
-		XCTAssertEqual(ran(result, 0)?.1, true)
-		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "bg.key super+["])
-
-		// A press of it that does the thing ends there.
-		os.react = { entry, os in
-			if entry == "ax.AXPress 9" { os.with { $0.elements[5]?.name = "Home" } }
-		}
-		let pressed = try await engine.act(UiActParams(steps: [.key("super+[")]))
-		XCTAssertEqual(ran(pressed, 0)?.0, .semantic)
-		XCTAssertEqual(ran(pressed, 0)?.1, true)
-		XCTAssertEqual(os.entries.filter { $0 == "bg.key super+[" }.count, 1, "no second key")
 	}
 
 	func testKeysGoTheForegroundWayFirstWhenAllowedAndTheAppIsInFront() async throws {

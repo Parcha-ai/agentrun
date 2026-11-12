@@ -80,18 +80,6 @@ public struct ResolvedTarget: Sendable, Equatable {
 	public func toScreen(_ p: Point) -> Point { Point(p.x + window.bounds.x, p.y + window.bounds.y) }
 }
 
-/// A menu item a key chord chooses. enabled is what it reads now: an app validates its menus only when it is in front
-/// or a menu opens, so a background app's items read disabled whether or not a press works.
-public struct MenuItem: Sendable {
-	public var element: ElementHandle
-	public var enabled: Bool
-
-	public init(element: ElementHandle, enabled: Bool) {
-		self.element = element
-		self.enabled = enabled
-	}
-}
-
 /// The accessibility tree: read it, and act through it.
 public protocol Accessibility: Sendable {
 	/// Accessibility is granted, or why not.
@@ -128,9 +116,8 @@ public protocol Accessibility: Sendable {
 	func scrollToVisible(_ element: ElementHandle) throws
 	/// The element with keyboard focus in the target's app.
 	func focused(_ target: ResolvedTarget) -> ElementHandle?
-	/// The menu item a key chord would choose in the target's app (super+s is File > Save), and whether it reads
-	/// enabled.
-	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> MenuItem?
+	/// The enabled menu item a key chord would choose in the target's app (super+s is File > Save).
+	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> ElementHandle?
 }
 
 /// An image, encoded.

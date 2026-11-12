@@ -366,11 +366,11 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 
 	static let menuWalked: [String] = [kAXChildrenAttribute, kAXMenuItemCmdCharAttribute, kAXMenuItemCmdModifiersAttribute, kAXEnabledAttribute]
 
-	/// The menu item whose key equivalent is the chord. A background app's menus take no keys, so the engine presses the
-	/// item instead. An enabled item first; else a disabled one: a background app's items read disabled whether or not
-	/// they work (on the mini and in CI, every item of a background Safari or TextEdit read disabled, Back and Save
-	/// among them). A press of one that shows no change goes on to keys.
-	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> MenuItem? {
+	/// The enabled menu item whose key equivalent is the chord. A background app's menus take no keys, so the engine
+	/// presses the item instead. An item that reads disabled is left to the keys: an app validates its menus only in
+	/// front, so a background app's items all read disabled (Back, Save, Close on the mini), and a press of TextEdit's
+	/// disabled Save saved nothing.
+	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> ElementHandle? {
 		guard chord.modifiers.contains(.cmd), chord.key.count == 1 else { return nil }
 		// kAXMenuItemModifier: none is command alone; shift 1, option 2, control 4.
 		var modifiers = 0
@@ -385,21 +385,18 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		var stack: [(AXUIElement, Int)] = [(bar, 0)]
 		var seen = 0
 		var near: [String] = []
-		var disabled: AXUIElement?
 		while case let (element, depth)? = stack.popLast(), seen < 4000 {
 			seen += 1
 			let v = AX.copy(element, Self.menuWalked)
 			if let char = AX.string(v[1]), char.uppercased() == key {
 				let mods = (v[2] as? NSNumber)?.intValue ?? 0
 				let enabled = AX.bool(v[3]) != false
-				if mods == modifiers && enabled { return MenuItem(element: ElementHandle(ax: element), enabled: true) }
-				if mods == modifiers && disabled == nil { disabled = element }
+				if mods == modifiers && enabled { return ElementHandle(ax: element) }
 				near.append("modifiers \(mods), enabled \(enabled)")
 			}
 			guard depth < 6 else { continue }
 			for child in AX.elements(v[0]).reversed() { stack.append((child, depth + 1)) }
 		}
-		if let disabled { return MenuItem(element: ElementHandle(ax: disabled), enabled: false) }
 		log("menu item for \(chord.text) in \(target.app.id): none of \(seen) elements matched; items on \(key): \(near.isEmpty ? "none" : near.joined(separator: "; "))")
 		return nil
 	}

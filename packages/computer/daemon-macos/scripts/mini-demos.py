@@ -344,7 +344,10 @@ def textedit_edit_number(t):
     t.wait_for("Pears: 41", "wait for the document")
     tree = t.observe()
     text = need(t, tree["nodes"], "text area", role="textbox", contains="Pears: 41")
-    t.act([{"set": text["ref"], "value": after}, {"key": "super+s"}], "set the text and save (super+s)", expect={"ref": text["ref"], "text": "Pears: 42"})
+    # Each expect reads the document, not the field's echo: TextEdit marks a document it took an edit into "Edited",
+    # and drops the mark once it saved it.
+    t.act([{"set": text["ref"], "value": after}], "set the text", expect={"text": "Edited", "timeoutMs": 5000})
+    t.act([{"key": "super+s"}], "save (super+s)", expect={"text": "Edited", "gone": True, "timeoutMs": 5000})
     deadline = time.monotonic() + 10
     while True:
         got = t.c.call("files.read", {"path": path}).get("result") or {}
@@ -439,8 +442,12 @@ def safari_follow_link(t):
     tree = first_run(t, t.observe())
     link = need(t, tree["nodes"], "the Quarterly report link", role="link", contains="Quarterly report")
     t.act([{"press": link["ref"]}], "follow Quarterly report", expect={"text": f"Report {t.nonce}", "timeoutMs": 10000})
-    t.act([{"key": "super+["}], "go back (super+[)", expect={"text": "Quarterly report", "timeoutMs": 10000})
-    t.notes.append("followed the link by its name and came back")
+    # Back by the toolbar's Back button, by its ref: a background Safari's menus read disabled, and super+[ posted to
+    # it in the background does not always land.
+    tree = t.observe("observe the report")
+    back = find(tree["nodes"], role="button", name="Go back") or need(t, tree["nodes"], "the Back button", role="button", contains="back")
+    t.act([{"press": back["ref"]}], "go back (the Back button)", expect={"text": "Quarterly report", "timeoutMs": 10000})
+    t.notes.append("followed the link by its name and came back by the Back button")
     if not keep:
         t.close("close the tab (super+w)")
         t.run_exec(["/bin/rm", "-rf", folder], "remove the task's site")

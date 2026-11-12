@@ -373,8 +373,6 @@ public actor UIEngine {
 		let route: Route
 		let off: String?
 		var notAllowed = false
-		/// A way that may do nothing, with no sign beforehand: when it shows no change, the next route tries.
-		var tentative = false
 		let run: () async throws -> Check
 	}
 
@@ -494,13 +492,12 @@ public actor UIEngine {
 		case .key(let text):
 			let chord = try KeyChord.parse(text)
 			let menu = chord.modifiers.contains(.cmd) ? ax.menuItem(for: chord, in: target) : nil
-			var press = semantic(menu == nil ? "no menu item takes \(chord.text)" : nil) {
-				try self.ax.perform(self.ax.pressAction, on: menu!.element)
-				return .change
-			}
-			// An item that reads disabled may work or not: a press of it that shows nothing goes on to keys.
-			press.tentative = menu?.enabled == false
-			attempts = [press] + pointer(foreground, target) { route in
+			attempts = [
+				semantic(menu == nil ? "no menu item takes \(chord.text)" : nil) {
+					try self.ax.perform(self.ax.pressAction, on: menu!)
+					return .change
+				},
+			] + pointer(foreground, target) { route in
 				try await route.key(chord, in: target)
 				return .change
 			}
@@ -564,9 +561,8 @@ public actor UIEngine {
 	/// route reaches it here, unsupported.
 	///
 	/// A route that ran and changed nothing in the window hands the step to the next route the call allows when the
-	/// call's expect does not hold, or when the route was tentative (a menu item that read disabled), rather than leave
-	/// the expect to wait out its timeout for an effect that never came. Only a step that changed nothing climbs, so a
-	/// route that visibly did the step is not done again.
+	/// call's expect does not hold, rather than leave the expect to wait out its timeout for an effect that never came.
+	/// Only a step that changed nothing climbs, so a route that visibly did the step is not done again.
 	func ladder(_ step: Step, view: View, _ attempts: [Attempt], expect: Expect? = nil) async throws -> (Route, Bool, View) {
 		var reasons: [String] = []
 		var denied = false
@@ -595,8 +591,7 @@ public actor UIEngine {
 			case .change:
 				if view.fingerprint != after.fingerprint { return (attempt.route, true, after) }
 				let next = attempts[(i + 1)...].contains { $0.off == nil }
-				let pending = expect.map { !holds($0, after) } ?? false
-				guard next, pending || attempt.tentative else { return (attempt.route, false, after) }
+				guard let expect, next, !holds(expect, after) else { return (attempt.route, false, after) }
 				climbed.append(attempt.route.rawValue)
 				unseen = (attempt.route, after)
 			}
