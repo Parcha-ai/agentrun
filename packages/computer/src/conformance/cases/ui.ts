@@ -19,12 +19,20 @@ const act = (t: CaseContext, params: Omit<UiActParams, "target">): Promise<UiAct
 const byId = (t: CaseContext, seen: UiObserveResult, id: string): UiNode => t.present(seen.nodes.find((node) => node.id === id), `the fixture's ${id}, by its id, in ui.observe: ${show(seen.nodes.map((node) => node.id ?? node.name))}`);
 const centre = ({ bounds: [x, y, w, h] }: UiNode): Point => [Math.floor(x + w / 2), Math.floor(y + h / 2)];
 
-/** The fixture, freshly launched on its home window and seen there; skips when this computer has not installed it. */
-async function start(t: CaseContext): Promise<UiObserveResult> {
+/** The fixture, freshly launched; skips when this computer has not installed it. */
+async function launch(t: CaseContext): Promise<void> {
 	const listed = await t.call("apps.list", {});
 	if (!listed.apps.some((app) => app.id === APP)) return t.skip(`the ui fixture (${APP}) is not installed on this computer: its conformance image installs it`);
 	await t.call("apps.terminate", { id: APP });
 	t.deepEqual(await t.call("apps.launch", { id: APP }), {}, `apps.launch ${APP}`);
+	await t.until(async () => (await t.call("apps.list", {})).foreground === APP, `${APP} in front after apps.launch`);
+}
+
+/** The fixture, freshly launched on its home window and seen there; skips without the fixture or the tree. */
+async function start(t: CaseContext): Promise<UiObserveResult> {
+	await launch(t);
+	const treeOff = featureOff(t.hello.features ?? {}, "ui.tree");
+	if (treeOff !== undefined) return t.skip(`the fixture's cases read its elements, and ${treeOff}`);
 	return t.until(async () => {
 		const seen = await look(t);
 		return seen.nodes.some((node) => node.id === "next") ? seen : undefined;
@@ -80,6 +88,7 @@ export const uiCases: Case[] = [
 				t.equal(node.role, role, `${id}'s role`);
 				t.equal(node.name, name, `${id}'s name`);
 			}
+			t.equal(byId(t, seen, "wifi").desc, "Networks nearby", "Wi-Fi's secondary text, in desc (not value, which is an editable value)");
 			const full = await look(t, { full: true });
 			t.assert(full.nodes.length >= seen.nodes.length, `a full observe holds every node a compact one does: ${full.nodes.length} < ${seen.nodes.length}`);
 			// since: what changed from a state, by refs.
@@ -215,8 +224,13 @@ export const uiCases: Case[] = [
 				t.assert(value === true || off, `hello.features.${name} is ${show(value)}, not true or { off: "<why, in words>" }`);
 				if (!KNOWN.has(name)) t.observe(`hello.features names ${name}, which the protocol does not (FEATURES)`);
 			}
+			t.assert(features["ui.tree"] !== undefined, `hello.features declares ui.tree, on or off with its reason: ${show(features)}`);
 			const screen = t.present(t.hello.screen, "hello.screen, which a computer of the ui group declares");
 			t.assert([screen.width, screen.height, screen.scale].every((n) => typeof n === "number" && n > 0), `hello.screen is ${show(screen)}, not { width, height, scale } above 0`);
+			const device = t.hello.device;
+			if (device !== undefined) {
+				t.assert([device.maker, device.model].every((one) => typeof one === "string" && one.trim() !== ""), `hello.device is ${show(device)}, not { maker, model } in words`);
+			}
 		},
 	},
 	{
@@ -257,15 +271,37 @@ export const uiCases: Case[] = [
 		needs: ["ui", "apps"],
 		async run(t) {
 			const features = t.hello.features ?? {};
-			const offs = (["ui.image", "ui.nav", "apps.background"] as const).filter((name) => features[name] !== true);
-			if (offs.length === 0) return t.skip("this computer declares ui.image, ui.nav and apps.background on: no refusal to check");
-			const seen = await start(t);
+			const offs = (["ui.tree", "ui.image", "ui.nav", "apps.background"] as const).filter((name) => features[name] !== true);
+			if (offs.length === 0) return t.skip("this computer declares ui.tree, ui.image, ui.nav and apps.background on: no refusal to check");
 			/** The refusal says why, in the computer's own sentence, when it declared one. */
 			const says = (message: string, name: (typeof offs)[number]) => {
 				const value = features[name];
 				const why = typeof value === "object" ? value.off : undefined;
 				if (why !== undefined) t.assert(message.includes(why), `the refusal of ${name} carries its sentence ${show(why)}: ${message}`);
 			};
+			if (offs.includes("ui.tree")) {
+				// No tree: the window's image with no nodes and the reason, or, with no image either, denied in words.
+				await launch(t);
+				const seen = await t.client.call("ui.observe", { target: { app: APP } }, { signal: t.signal });
+				if (offs.includes("ui.image")) {
+					const refused = t.refused(seen, "ui.observe with ui.tree and ui.image off", ["denied"]);
+					says(refused.message, "ui.tree");
+					says(refused.message, "ui.image");
+				} else {
+					const view = t.ok(seen, "ui.observe with ui.tree off");
+					t.deepEqual(view.nodes, [], "ui.observe's nodes with ui.tree off");
+					says(t.present(view.empty, "ui.observe's empty, the reason it has no nodes"), "ui.tree");
+					t.present(view.image, "ui.observe's image with ui.tree off, unasked: the view a caller acts on by points");
+					const waited = await t.client.call("ui.act", { target: { app: APP }, steps: [], expect: { text: "UI fixture", timeoutMs: 100 } }, { signal: t.signal });
+					says(t.refused(waited, "an expect with ui.tree off", ["unsupported"]).message, "ui.tree");
+				}
+				if (offs.includes("apps.background")) {
+					const launched = await t.client.call("apps.launch", { id: APP, background: true }, { signal: t.signal });
+					says(t.refused(launched, "apps.launch in the background, apps.background off", ["unsupported"]).message, "apps.background");
+				}
+				return;
+			}
+			const seen = await start(t);
 			for (const name of offs) {
 				if (name === "ui.image") {
 					const shot = await t.client.call("ui.observe", { target: { app: APP }, image: true }, { signal: t.signal });

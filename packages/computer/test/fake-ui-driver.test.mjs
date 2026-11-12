@@ -36,6 +36,27 @@ test("with ui.image and ui.foreground off, both are refused with their sentences
 	assert.match(reasonOf(report, "ui.route-reported"), /the foreground route is not tested: ui.foreground is off here: the user's pointer is theirs/);
 });
 
+test("with ui.tree off, observe answers the image and the reason with no nodes, an expect is refused, and the fixture's cases skip in words", { timeout: 60_000 }, async () => {
+	const why = "Accessibility is not granted to Computerd: System Settings > Privacy & Security > Accessibility";
+	const report = await run(fakeUiProvider({ features: { "ui.tree": { off: why } } }));
+	for (const id of ["ui.hello", "ui.features-off-refused"]) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	for (const id of ["ui.fixture-shape", "ui.refs-stable", "ui.stale-point"]) {
+		assert.equal(statuses(report)[id], "skip", id);
+		assert.equal(reasonOf(report, id), `the fixture's cases read its elements, and ui.tree is off here: ${why}`);
+	}
+	const c = await fakeUiConnection({ features: { "ui.tree": { off: why } } });
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.deepEqual(seen.nodes, []);
+	assert.equal(seen.empty, `ui.tree is off here: ${why}`);
+	assert.equal(seen.image.width, 480, "the image comes unasked, at the window's size within the default edge");
+	const clicked = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [40, 150] }] });
+	assert.deepEqual(clicked.value.steps, [{ route: "background", verified: false }], "a point from the image-only state still lands");
+	await c.close();
+	const both = await run(fakeUiProvider({ features: { "ui.tree": { off: why }, "ui.image": { off: "Screen Recording is not granted" } } }), ["ui.features-off-refused"]);
+	assert.equal(statuses(both)["ui.features-off-refused"], "pass", reasonOf(both, "ui.features-off-refused"));
+});
+
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
 	class Mumbling extends FakeUiDriver {
 		async handle(engine, method, params, signal) {

@@ -108,6 +108,7 @@
   ],
   "features": {
     "apps.background": "apps.launch with background: true opens an app without bringing it to the front",
+    "ui.tree": "ui.observe reads the window's elements; off, it answers the window's image with no nodes (ui.image on) or is refused",
     "ui.image": "ui.observe returns the window's image",
     "ui.background": "steps run as input posted to the app itself: the user's pointer and focus stay where they are",
     "ui.foreground": "steps run as the computer's own input, which moves the pointer and the focus (only when a call allows it)",

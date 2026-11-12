@@ -10,11 +10,11 @@
 // Its default app is the ui fixture (conformance/ui-fixture.ts). Pass apps of your own to script others.
 import { readFileSync } from "node:fs";
 import { PassThrough, type Readable, type Writable } from "node:stream";
-import { pathToFileURL } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
 import { type AttachSocket, socketStreams } from "./attach.js";
 import { DaemonClient } from "./client.js";
 import { type FakeApp, type FakeEffect, type FakeElement, UI_FIXTURE } from "./conformance/ui-fixture.js";
+import { isCommand } from "./entry.js";
 import {
 	CANCEL_METHOD,
 	type ComputerKind,
@@ -118,6 +118,7 @@ export class FakeUiDriver implements UiSource {
 		const touch = this.kind === "android" || this.kind === "ios";
 		this.#features = {
 			"apps.background": touch ? { off: "an app a phone opens comes to the front" } : true,
+			"ui.tree": true,
 			"ui.image": true,
 			"ui.background": true,
 			"ui.foreground": true,
@@ -133,7 +134,7 @@ export class FakeUiDriver implements UiSource {
 	}
 
 	hello(): HelloResult {
-		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: ["apps", "ui"], screen: SCREEN, features: this.#features };
+		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: ["apps", "ui"], screen: SCREEN, osVersion: this.os === "android" ? "15 (API 35)" : "26.1 (25B78)", features: this.#features, device: { maker: "AgentRun", model: "Fake ui driver" } };
 	}
 
 	/** The screen an app shows now, by its name; undefined when it is not running. */
@@ -496,7 +497,7 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 }
 
 // node dist/fake-ui-driver.js [apps.json]: the driver on stdin and stdout, its apps from a JSON file of FakeApp[].
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isCommand(import.meta)) {
 	const file = process.argv[2];
 	const apps = file === undefined ? undefined : (JSON.parse(readFileSync(file, "utf8")) as FakeApp[]);
 	const driver = new FakeUiDriver(apps === undefined ? {} : { apps });

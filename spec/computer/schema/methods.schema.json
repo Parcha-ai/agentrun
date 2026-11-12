@@ -851,6 +851,25 @@
         "at"
       ]
     },
+    "Device": {
+      "description": "What the machine is, the same fields on every OS. Its CPU is hello's arch, its OS's version hello's osVersion.",
+      "title": "Device",
+      "type": "object",
+      "properties": {
+        "maker": {
+          "type": "string",
+          "title": "maker"
+        },
+        "model": {
+          "type": "string",
+          "title": "model"
+        }
+      },
+      "required": [
+        "maker",
+        "model"
+      ]
+    },
     "Empty": {
       "title": "Empty",
       "type": "object"
@@ -1362,7 +1381,7 @@
           "title": "os"
         },
         "osVersion": {
-          "description": "The OS's own version as the computer says it: a phone's Android release (getprop ro.build.version.release), such\nas \"15\". Absent where the computer does not say one.",
+          "description": "The OS's own version as the computer says it, with its build or API level when the driver knows it: \"15\",\n\"15 (API 35)\", \"26.1 (25B78)\". Absent where the computer does not say one.",
           "type": "string",
           "title": "osVersion"
         },
@@ -1405,6 +1424,11 @@
           "description": "What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in\nwords a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.",
           "$ref": "#/definitions/Features",
           "title": "features"
+        },
+        "device": {
+          "description": "The machine, for a person and a run's record: \"Apple\", \"MacBook Pro\"; \"Google\", \"Pixel 9\".",
+          "$ref": "#/definitions/Device",
+          "title": "device"
         }
       },
       "required": [
@@ -3035,6 +3059,11 @@
           "type": "string",
           "title": "value"
         },
+        "desc": {
+          "description": "What else it says, beside its name: a row's secondary text (\"Mobile, Wi-Fi, hotspot\"), a help tag.",
+          "type": "string",
+          "title": "desc"
+        },
         "id": {
           "description": "The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier.",
           "type": "string",
@@ -3263,6 +3292,11 @@
           "description": "A window's image, whole: at most MAX_CHUNK_BYTES before base64 (the driver lowers JPEG quality until it fits).",
           "$ref": "#/definitions/UiImage",
           "title": "image"
+        },
+        "empty": {
+          "description": "Why nodes is empty though the window is not: the tree is off here (feature ui.tree), in words. The result then\ncarries the window's image, asked for or not, so a caller can still act at points.",
+          "type": "string",
+          "title": "empty"
         },
         "truncated": {
           "description": "Nodes were left out: past MAX_UI_NODES, or to keep the reply within the line limit.",
