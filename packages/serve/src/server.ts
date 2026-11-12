@@ -2151,8 +2151,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let meters = endedMeters.get(key);
     if (!meters) {
       // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
-      // folded back from the paid-tools session (store-reads/journal withPaidCosts), as meterFiguresIn read a file-backed
-      // run's own database — the same figures (the money-parity rule).
+      // folded back from the paid-tools session (store-reads/journal withPaidCosts).
       meters = await metersOverStore(store, row.id, ctx);
       endedMeters.set(key, meters);
     }
