@@ -84,11 +84,9 @@ public struct ResolvedTarget: Sendable, Equatable {
 public protocol Accessibility: Sendable {
 	/// Accessibility is granted, or why not.
 	var feature: Feature { get }
-	/// The platform's name for an element's default action (AXPress), for opening its menu (AXShowMenu), and for
-	/// taking a field's value as entered, as Return does (AXConfirm).
+	/// The platform's name for an element's default action (AXPress), and for opening its menu (AXShowMenu).
 	var pressAction: String { get }
 	var menuAction: String { get }
-	var confirmAction: String { get }
 	/// Actions nearly every element lists, which do not make it worth showing in a compact view.
 	var incidentalActions: Set<String> { get }
 	/// The app and window a target names. Throws not_found for an app that is not running or a window it lacks.

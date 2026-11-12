@@ -491,17 +491,6 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(ran(kept, 0)?.1, true)
 	}
 
-	func testASetConfirmsAFieldThatOffersIt() async throws {
-		os.add(9, "textbox", name: "Name", value: "draft.txt", frame: Rect(120, 160, 300, 20), parent: 2, actions: ["AXConfirm"], settable: true, textInput: true)
-		let engine = os.engine()
-		let r = try await engine.observe(UiObserveParams())
-		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "Name"), value: "final.txt")]))
-		XCTAssertEqual(ran(result, 0)?.1, true)
-		XCTAssertEqual(os.entries.filter { $0.hasPrefix("ax.") }, ["ax.set 9 final.txt", "ax.AXConfirm 9"], "set, then confirmed as Return would")
-		_ = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "x")]))
-		XCTAssertFalse(os.entries.contains("ax.AXConfirm 4"), "a field that offers no confirm is only set")
-	}
-
 	/// A menu item that does nothing when pressed; its key, posted, goes back a page.
 	func backMenuItemThatDoesNothing() {
 		os.add(9, "menuitem", name: "super+[", actions: ["AXPress"])
@@ -533,6 +522,9 @@ final class EngineTests: XCTestCase {
 		os.with { $0.frontPID = 42 }
 		let front = try await engine.act(UiActParams(steps: [.key("enter")], foreground: true))
 		XCTAssertEqual(ran(front, 0)?.0, .foreground)
+		let r = try await engine.observe(UiObserveParams())
+		let click = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(30, 30)), button: nil, count: nil)], foreground: true))
+		XCTAssertEqual(ran(click, 0)?.0, .background, "a pointer step keeps the background way first")
 		os.with { $0.elements[5]?.name = "Hello" }
 		let alone = try await engine.act(UiActParams(steps: [.key("enter")]))
 		XCTAssertEqual(ran(alone, 0)?.0, .background, "in front, but foreground not allowed")

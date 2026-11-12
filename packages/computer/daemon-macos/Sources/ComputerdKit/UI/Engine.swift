@@ -405,14 +405,10 @@ public actor UIEngine {
 
 		case .set(let ref, let value):
 			let secure = node!.flags.contains(.secure)
-			// A field that offers to confirm takes a set value only once confirmed, as Return does: Finder's name
-			// field shows a set name and renames nothing until then.
-			let confirms = node!.actions.contains(ax.confirmAction)
 			attempts = [
 				semantic(node!.settable ? nil : "\(ref)'s value cannot be set: click it and type instead") {
 					try self.ax.setValue(value, on: element!)
 					let ax = self.ax
-					if confirms { try ax.perform(ax.confirmAction, on: element!) }
 					return secure ? .readback { false } : .lasting { ax.value(element!) == value }
 				},
 			]
@@ -497,7 +493,7 @@ public actor UIEngine {
 					try self.ax.perform(self.ax.pressAction, on: menu!)
 					return .change
 				},
-			] + pointer(foreground, target) { route in
+			] + pointer(foreground, target, keys: true) { route in
 				try await route.key(chord, in: target)
 				return .change
 			}
@@ -531,11 +527,12 @@ public actor UIEngine {
 		return Attempt(route: .semantic, off: off, run: run)
 	}
 
-	/// The background route, then the foreground one, for a step done by posting input. When the call allows the
-	/// foreground and the target's app is already in front, the foreground route goes first: the user's focus is there
-	/// already, and it raises the target's window and makes it key, which an app in front with several windows (Finder,
-	/// its desktop among them) needs for keys to reach that window.
-	func pointer(_ allowed: Bool, _ target: ResolvedTarget, _ body: @escaping (any InputRoute) async throws -> Check) -> [Attempt] {
+	/// The background route, then the foreground one, for a step done by posting input. For a key chord, when the call
+	/// allows the foreground and the target's app is already in front, the foreground route goes first: the user's
+	/// focus is there already, and it raises the target's window and makes it key, which an app in front with several
+	/// windows (Finder, its desktop among them) needs for keys to reach that window. Pointer steps keep background
+	/// first: CI's canvas click did not land by the foreground route with the fixture in front.
+	func pointer(_ allowed: Bool, _ target: ResolvedTarget, keys: Bool = false, _ body: @escaping (any InputRoute) async throws -> Check) -> [Attempt] {
 		var background: String?
 		if case .off(let reason) = platform.backgroundFeature { background = "ui.background is off here: \(reason)" }
 		var foreground: String?
@@ -552,7 +549,7 @@ public actor UIEngine {
 			Attempt(route: .background, off: background) { try await body(bg) },
 			Attempt(route: .foreground, off: foreground, notAllowed: notAllowed) { try await body(fg) },
 		]
-		let inFront = allowed && foreground == nil && platform.workspace.frontmost == target.pid
+		let inFront = keys && allowed && foreground == nil && platform.workspace.frontmost == target.pid
 		return inFront ? routes.reversed() : routes
 	}
 

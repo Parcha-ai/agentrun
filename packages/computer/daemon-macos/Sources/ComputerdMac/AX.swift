@@ -142,7 +142,6 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 
 	let pressAction = kAXPressAction as String
 	let menuAction = kAXShowMenuAction as String
-	let confirmAction = kAXConfirmAction as String
 	let incidentalActions: Set<String> = [kAXShowMenuAction as String, "AXScrollToVisible", kAXRaiseAction as String]
 
 	// MARK: apps and windows
@@ -265,9 +264,13 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			// desc: what it says beside its name. A description that is not already the name, else its help tag.
 			let desc = [description, AX.string(v[13])].compactMap { $0 }.first { !$0.isEmpty && $0 != name }
 			let textInput = axRole.map { Roles.textInput.contains($0) } == true || subrole == "AXSearchField"
+			let actions = AX.actions(element)
+			// An item that opens (a Finder file's name in a list) says its value is settable, takes a set value into the
+			// field and renames nothing: on the mini, three runs. Its name changes only by its own rename, by keys.
+			let settable = !actions.contains("AXOpen") && AX.settable(element, kAXValueAttribute)
 			nodes.append(RawNode(
 				handle: ElementHandle(ax: element), role: role, name: name, value: value, desc: desc, identifier: AX.string(v[5]), frame: frame,
-				parent: parent, flags: flags, actions: AX.actions(element), settable: AX.settable(element, kAXValueAttribute), textInput: textInput
+				parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput
 			))
 			guard depth < 64 else { continue }
 			let me = nodes.count - 1

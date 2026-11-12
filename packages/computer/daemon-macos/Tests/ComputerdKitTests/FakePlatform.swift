@@ -91,7 +91,6 @@ struct FakeAX: Accessibility {
 	var feature: Feature { os.with { $0.trusted } ? .on : .off("Accessibility is not granted to Computerd") }
 	var pressAction: String { "AXPress" }
 	var menuAction: String { "AXShowMenu" }
-	var confirmAction: String { "AXConfirm" }
 	var incidentalActions: Set<String> { ["AXShowMenu", "AXScrollToVisible"] }
 
 	func resolve(_ target: Target?) throws -> ResolvedTarget {

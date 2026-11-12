@@ -344,9 +344,10 @@ def textedit_edit_number(t):
     t.wait_for("Pears: 41", "wait for the document")
     tree = t.observe()
     text = need(t, tree["nodes"], "text area", role="textbox", contains="Pears: 41")
-    # Each expect reads the document, not the field's echo: TextEdit marks a document it took an edit into "Edited",
-    # and drops the mark once it saved it.
-    t.act([{"set": text["ref"], "value": after}], "set the text", expect={"text": "Edited", "timeoutMs": 5000})
+    # Typed, not set: a set replaces the text view's string without the document taking it as an edit (no "Edited"
+    # mark on the mini). Each expect reads the document, not the field's echo: TextEdit marks a document it took an
+    # edit into "Edited", and drops the mark once it saved it.
+    t.act([{"key": "super+a"}, {"type": after, "into": text["ref"]}], "select all and type the new text", expect={"text": "Edited", "timeoutMs": 5000})
     t.act([{"key": "super+s"}], "save (super+s)", expect={"text": "Edited", "gone": True, "timeoutMs": 5000})
     deadline = time.monotonic() + 10
     while True:
@@ -396,8 +397,9 @@ def finder_rename_file(t):
                 return got
             time.sleep(0.25)
 
-    # Each way is judged by the disk, never by the window: Finder's name field takes a set value and shows it while
-    # renaming nothing. The ways, most background first; the one that renamed it goes in the notes.
+    # Each way is judged by the disk, never by the window. A file's name is an item that opens, not a field: the driver
+    # refuses a set on it (Finder took a set name into the field and renamed nothing), so the rename is Finder's own,
+    # by keys. The ways, most background first; the one that renamed it goes in the notes.
     def renamed(way, steps, foreground=False):
         r = t.act(steps, way, foreground=foreground, must=False)
         routes = ", ".join((s.get("route", "?") + ("" if s.get("verified") else " unverified")) for s in (r or {}).get("steps") or [])
@@ -409,9 +411,7 @@ def finder_rename_file(t):
 
     # Enter on the selected file edits its name with the part before .txt selected: typing replaces that.
     keys = [{"key": "enter"}, {"type": "final"}, {"key": "enter"}]
-    field = find(tree["nodes"], role="textbox", value="draft.txt")
-    done = field is not None and renamed("set its name field to final.txt", [{"set": field["ref"], "value": "final.txt"}])
-    done = done or renamed("rename it in the background: enter, type final, enter", keys)
+    done = renamed("rename it in the background: enter, type final, enter", keys)
     if not done:
         # Finder starts a rename only in its key window: bring it forward, raise the task's window, and rename as a
         # person does.
