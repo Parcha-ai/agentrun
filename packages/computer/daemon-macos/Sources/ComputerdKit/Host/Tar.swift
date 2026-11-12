@@ -176,14 +176,14 @@ final class Child: @unchecked Sendable {
 		if stdin { guard pipe(&inPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") } }
 		if stdout { guard pipe(&outPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") } }
 		guard pipe(&errPipe) == 0 else { throw RPCError.invalid("cannot make a pipe") }
-		var actions = posix_spawn_file_actions_t()
+		var actions = Exec.blankActions()
 		posix_spawn_file_actions_init(&actions)
 		defer { posix_spawn_file_actions_destroy(&actions) }
 		if stdin { posix_spawn_file_actions_adddup2(&actions, inPipe[0], 0) } else { posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0) }
 		if stdout { posix_spawn_file_actions_adddup2(&actions, outPipe[1], 1) } else { posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0) }
 		posix_spawn_file_actions_adddup2(&actions, errPipe[1], 2)
 		for fd in inPipe + outPipe + errPipe where fd >= 0 { posix_spawn_file_actions_addclose(&actions, fd) }
-		var attr = posix_spawnattr_t()
+		var attr = Exec.blankAttr()
 		posix_spawnattr_init(&attr)
 		defer { posix_spawnattr_destroy(&attr) }
 		var flags = Int16(POSIX_SPAWN_SETPGROUP)

@@ -11,6 +11,23 @@ import Glibc
 public enum Exec {
 	static let killGrace: Double = 2000
 
+	// posix_spawn's opaque types are a pointer on Darwin and a struct on Glibc; each starts empty, for its init call.
+	static func blankActions() -> posix_spawn_file_actions_t {
+		#if canImport(Darwin)
+		nil
+		#else
+		posix_spawn_file_actions_t()
+		#endif
+	}
+
+	static func blankAttr() -> posix_spawnattr_t {
+		#if canImport(Darwin)
+		nil
+		#else
+		posix_spawnattr_t()
+		#endif
+	}
+
 	public static func run(_ p: ExecRunParams, clock: any Clock = SystemClock()) async throws -> ExecRunResult {
 		guard let program = p.argv.first, !program.isEmpty else { throw RPCError.invalid("argv needs at least a program") }
 		guard p.timeoutMs > 0 else { throw RPCError.invalid("the timeout must be positive") }
@@ -30,7 +47,7 @@ public enum Exec {
 		var errPipe: [Int32] = [0, 0]
 		guard pipe(&outPipe) == 0, pipe(&errPipe) == 0 else { throw RPCError.invalid("cannot make a pipe: \(String(cString: strerror(errno)))") }
 
-		var actions = posix_spawn_file_actions_t()
+		var actions = blankActions()
 		posix_spawn_file_actions_init(&actions)
 		defer { posix_spawn_file_actions_destroy(&actions) }
 		posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
@@ -39,7 +56,7 @@ public enum Exec {
 		for fd in outPipe + errPipe { posix_spawn_file_actions_addclose(&actions, fd) }
 		if let cwd { posix_spawn_file_actions_addchdir_np(&actions, cwd) }
 
-		var attr = posix_spawnattr_t()
+		var attr = blankAttr()
 		posix_spawnattr_init(&attr)
 		defer { posix_spawnattr_destroy(&attr) }
 		posix_spawnattr_setpgroup(&attr, 0)
