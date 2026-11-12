@@ -17,7 +17,7 @@
 // written) is cut of it, a file's name holding one reads "[redacted]" whole, and a diff's file holding one is withheld.
 import type { DraftAsk } from "./learn/skills.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, restorable, restore, restoredLearned } from "./learn/index.js";
+import { approve, buildIndex, CAPS, checkNote, draftProblems, frontKeys, INDEX_FILE, INDEX_LINES, isHeld, LEARNED_KEYS, type LearnedNote, learnedName, learnedPlace, learnedStatus, NOTE_FILE, NOTE_STATUSES, parseNoteFile, type Problem, printable, released, retire, retiredLearned, skillProblems, SKILLS_DIR, supersede, UNCLEAR_FRONT, unstorable, WORKFLOWS_DIR, unclearFront, restorable, restore, restoredLearned } from "./learn/index.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, heldOnMain, isBodyMismatch, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, type SnapChange, type SnapHistory, type SnapLearned, type SnapNote, type Snapshot, snapshotNotes, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
 import { type ItemStatus, detailShown, type Learning, learningFolderOf, type NoteRuns, notesView, reasonShown, secretsShown, type Shown, withAgentRepo } from "./learning.js";
@@ -40,7 +40,11 @@ const RETIRED_LINE = Buffer.byteLength("status: retired\nretired_from: pending\n
 type Page<T> = { items: T[]; total: number; next_cursor: string | null };
 type NoteView = { file: string; name: string; description: string; type: string; status: string; origin: string; superseded_by: string | null; text: string; etag: string; retired?: Retired; last_change?: LastChange; runs: { given: number; read: number } };
 /** When a retired note, skill or draft was retired, and by whom: a person (its retire's commit), else a run. */
-type Retired = { at: string; by: "person" | "run"; from: "active" | "pending" };
+/** Who retired a retired item, and when, and `from`, the status its restore gives back; or, for a skill or draft that
+ *  reads retired only because its file can't be read (its front matter reads no way: unclearFront, read from its file as
+ *  the view is made), that no one did: the host could not read it (`why`), with no `from`, since its restore waits for
+ *  the file to be fixed. One closed shape. */
+type Retired = { at: string; by: "person" | "run" | "host"; from?: "active" | "pending"; why?: "unreadable" };
 /** The newest change to a note, skill or draft (its file: the note, a SKILL.md, a draft's README.md): what it was, by
  *  whom and when. A person's is named by its commit (`learning: <kind> by a person: <file>`); a run's merge is `learned`. */
 type LastChange = { kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded"; by: "person" | "run"; at: string };
@@ -101,8 +105,8 @@ async function reading<T>(data: string, agentId: string, read: (folder: { ws: Wo
 /** A retired item's `retired`: its newest retire by a person; else, one a person made retired another way (an edit to
  *  status: retired, or created so), their newest change; else (retired by none of theirs) its newest change's time. */
 /** `from`: the status its restore gives back (its retire recorded it, retired_from; none recorded reads pending, as its
- *  restore gives it: only an approval makes an item active). */
-const retiredOf = (history: SnapHistory, from: "active" | "pending" | undefined): Retired => ({ ...(history.retire ? { at: history.retire.at, by: "person" as const } : history.person ? { at: history.person.at, by: "person" as const } : { at: history.at, by: "run" as const }), from: from ?? "pending" });
+ *  restore gives it: only an approval makes an item active). `unread`: the host could not read its file. */
+const retiredOf = (history: SnapHistory, from: "active" | "pending" | undefined, unread = false): Retired => (unread ? { at: history.at, by: "host", why: "unreadable" } : { ...(history.retire ? { at: history.retire.at, by: "person" as const } : history.person ? { at: history.person.at, by: "person" as const } : { at: history.at, by: "run" as const }), from: from ?? "pending" });
 
 /** A note as the view shows it, cut of the host's secrets: its name and the one that superseded it whole; with its
  *  ETag, the one its file's GET answers, so an edit or a retire from the card names the version it shows; its last
@@ -118,13 +122,13 @@ const noteView = (note: SnapNote, text: string, shown: Shown, runs: NoteRuns): N
  *  last changed it, its size in bytes, and the ETag of the file that says whether it waits (a SKILL.md, a README.md),
  *  which an approval names; cut of the host's secrets (a name or a file holding one reads [redacted]). */
 type LearnedView = { name: string; file: string; readme?: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
-function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown): LearnedView {
+function learnedView(item: SnapLearned, kind: "skill" | "workflow", shown: Shown, unread = false): LearnedView {
   const file = kind === "skill" ? item.file : `${WORKFLOWS_DIR}/${item.name}/workflow.json`;
   const bytes = item.files.find(({ path }) => path === file)?.bytes ?? item.bytes;
   return {
     name: shown.name(item.name), file: shown.name(file), ...(kind === "workflow" ? { readme: shown.name(item.file) } : {}), description: shown.text(item.description), status: item.status, run: item.run, bytes, etag: etagOf(item.oid),
     ...(item.history.last ? { last_change: item.history.last } : {}),
-    ...(item.status === "retired" ? { retired: retiredOf(item.history, item.retired_from) } : {}),
+    ...(item.status === "retired" ? { retired: retiredOf(item.history, item.retired_from, unread) } : {}),
   };
 }
 
@@ -211,7 +215,10 @@ export async function agentLearning(data: string, agentId: string, shown: Shown,
   return reading<AgentView>(data, agentId, async ({ snapshot, body }) => {
     const index = snapshot.index.bytes ? await body(INDEX_FILE, snapshot.index.oid) : "";
     const notes = await notesPage(snapshot.notes, snapshot.main, 0, NOTES_PAGE, body, shown, runs);
-    return { agent: agentId, main: snapshot.main, index: shown.text(index), notes, skills: snapshot.skills.map((item) => learnedView(item, "skill", shown)), workflows: snapshot.workflows.map((item) => learnedView(item, "workflow", shown)), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
+    // A retired skill or draft whose key file can't be read is said so (unclearFront), read from its file now, as the
+    // snapshot's status was: a few retired items, one read each.
+    const unread = async (item: SnapLearned) => item.status === "retired" && unclearFront(await body(item.file, item.oid));
+    return { agent: agentId, main: snapshot.main, index: shown.text(index), notes, skills: await Promise.all(snapshot.skills.map(async (item) => learnedView(item, "skill", shown, await unread(item)))), workflows: await Promise.all(snapshot.workflows.map(async (item) => learnedView(item, "workflow", shown, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
   }, () => ({ agent: agentId, main: null, index: "", notes: EMPTY, skills: [], workflows: [], log: EMPTY, counts, impact }));
 }
 
@@ -354,7 +361,7 @@ const NOT_NOTE = "The folder's file by this name on main is no note (not a regul
  *  `Approved-Via: console` on an approval), main moved only from the main it read (computed again on a main that moved
  *  meanwhile), then the checked-out files and the snapshot. A note the checks refuse is never written to git. A retire
  *  of a note that is not active, and an edit that changes nothing, commit nothing. `refuse`: the host's secrets. */
-export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
+export async function writeNote(data: string, agentId: string, raw: string, input: { ifMatch?: string; ifNoneMatch?: string; body?: Buffer; refuse: readonly string[]; approve?: boolean; restore?: boolean; draftTools?: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> }): Promise<{ status: 200 | 201; file: string; text: string; etag: string }> {
   const file = fileOf(raw, input.approve ? "approve" : input.restore ? "restore" : input.body === undefined ? "retire" : "write");
   // A skill's SKILL.md or a draft's README.md: only ever approved or retired here.
   const learned = learnedPlace(file);
@@ -438,9 +445,9 @@ export async function writeNote(data: string, agentId: string, raw: string, inpu
             // a restore never brings back a draft no run could run.
             const draft = changes.find(({ path }) => path === `${folder}workflow.json`);
             if (learned.kind !== "skill" && draft && input.draftTools) {
-              const { tools, gated, ask } = await input.draftTools();
+              const { tools, gated, deniedBy, ask } = await input.draftTools();
               const dsl = await import("@parcha/agentrun-dsl");
-              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, {}, ask)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
+              for (const { rule, detail } of draftProblems(dsl as never, draft.bytes.toString("utf8"), tools, gated, deniedBy ?? {}, ask)) problems.push(printable({ rule, path: draft.path, detail }, input.refuse));
             }
             if (problems.length) throw refused(problems);
           } else {
@@ -522,7 +529,7 @@ export type Promotable = { name: string; description: string; workflow: Record<s
  *  its gate (draftProblems: the DSL's validation with no code run, no code node, no shell or executor call, no call node
  *  on a tool the agent does not have or the gate holds to ask or deny). Any of those is 400 with `problems`, printable.
  *  Reads only: the folder is never written. */
-export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string> }> }): Promise<Promotable> {
+export async function promotable(data: string, agentId: string, raw: string, input: { refuse: readonly string[]; draftTools: () => Promise<{ tools: string[]; gated: Record<string, string>; deniedBy?: Record<string, "agent" | "server" | "default"> }> }): Promise<Promotable> {
   let name: string;
   try {
     name = decodeURIComponent(raw);
@@ -546,8 +553,8 @@ export async function promotable(data: string, agentId: string, raw: string, inp
   if (!json) problems.push(printable({ rule: "workflow", path: file, detail: "the workflow's folder holds no workflow.json" }, input.refuse));
   const dsl = await import("@parcha/agentrun-dsl");
   if (json && !problems.length) {
-    const { tools, gated } = await input.draftTools();
-    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated)) problems.push(printable({ rule, path: file, detail }, input.refuse));
+    const { tools, gated, deniedBy } = await input.draftTools();
+    for (const { rule, detail } of draftProblems(dsl as never, json.text, tools, gated, deniedBy ?? {})) problems.push(printable({ rule, path: file, detail }, input.refuse));
   }
   if (problems.length) throw new ApiError("bad_request", `The workflow does not pass the checks: ${[...new Set(problems.map((problem) => problem.rule))].join(", ")}.`, { problems });
   const workflow = JSON.parse(json!.text) as Record<string, unknown>;

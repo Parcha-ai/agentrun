@@ -4,11 +4,10 @@ import { crc32 } from "node:zlib";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import type { AttachTarget, BrowserProvider, FetchRequest, FetchResult, LiveView, ProviderCaps, RemoteFile, SearchRequest, SearchResult, SessionSpec } from "../core/host.js";
+import type { AttachTarget, BrowserProvider, LiveView, ProviderCaps, RemoteFile, SessionSpec } from "../core/host.js";
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { makeSentinels, type Sentinels } from "./sentinels.js";
 
-export type FakeFetchByFormat = { markdown?: { contentType: string; content: string } | { status: number }; raw?: { contentType: string; content: string } | { status: number } };
 
 /** A vendor SDK's failure: the HTTP status is on the error, never inside the text. */
 export class FakeProviderError extends Error {
@@ -34,9 +33,6 @@ export type FakeBackendOptions = {
   caps?: Partial<ProviderCaps>;
   start?: string;
   pages?: Record<string, FixturePage>;
-  /** A URL not listed is a 404; an object answers markdown and raw apart. */
-  fetches?: Record<string, string | FakeFetchByFormat>;
-  search?: SearchResult["results"];
   /** Every ledger row is also appended here as JSONL, so a killed process leaves its calls behind. */
   logFile?: string;
   connections?: BrokerConnection[];
@@ -68,7 +64,7 @@ export function fakeImage(type: "png" | "jpeg", width: number, height: number): 
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IEND", Buffer.alloc(0))]);
 }
 
-const DEFAULT_CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: 3600, survivesDisconnect: false, releaseIsAsync: false, profiles: false, extension: "loaded-locally" };
+const DEFAULT_CAPS: ProviderCaps = { profiles: false };
 
 type Session = { id: string; tag: string; metadata: Record<string, string>; state: "running" | "stopped"; url: string; broker: boolean; plane: string };
 
@@ -91,7 +87,7 @@ export class FakeBackend {
   private delays = new Map<string, number>();
   private peak = 0;
   private echoOn = false;
-  readonly opts: Required<Pick<FakeBackendOptions, "start" | "fetches" | "search" | "connections" | "downloads">> & FakeBackendOptions;
+  readonly opts: Required<Pick<FakeBackendOptions, "start" | "connections" | "downloads">> & FakeBackendOptions;
 
   constructor(options: FakeBackendOptions = {}) {
     this.sentinels = options.sentinels ?? makeSentinels();
@@ -99,8 +95,6 @@ export class FakeBackend {
     this.opts = {
       ...options,
       start: options.start ?? "about:blank",
-      fetches: options.fetches ?? {},
-      search: options.search ?? [],
       downloads: options.downloads ?? {},
       connections: options.connections ?? [{ name: "demo", startUrl: "https://login.sentinel.test/", fields: [{ name: "username", type: "text" }, { name: "password", type: "password" }, { name: "otp", type: "totp" }], allowedOrigins: ["https://login.sentinel.test"], enrollment: true }],
     };
@@ -132,7 +126,7 @@ export class FakeBackend {
     const count = (op: string) => this.ledger.filter((r) => r.op === op).length;
     return {
       creates: count("create"), findByTag: count("findByTag"), status: count("status"), attaches: count("attach"), releases: count("release"), releaseNoops: count("release-noop"),
-      fetches: count("fetch"), searches: count("search"), dispatches: this.dispatched.filter((d) => d.op === "run").length, reads: this.dispatched.filter((d) => d.op === "read").length,
+      dispatches: this.dispatched.filter((d) => d.op === "run").length, reads: this.dispatched.filter((d) => d.op === "read").length,
       peakLive: this.peak, liveAtEnd: this.liveCount(),
     };
   }
@@ -237,23 +231,6 @@ export class FakeBackend {
         const view = b.sentinels.bbLiveViewUrl;
         return { fullscreen: view, framed: `${view}&framed=1`, pages: [{ id: "p1", url: s.url, title: b.pages[s.url]?.title ?? "", fullscreen: view }] };
       },
-      async fetch(request: FetchRequest, signal?: AbortSignal): Promise<FetchResult> {
-        await b.before("fetch", signal);
-        b.record("fetch", { url: request.url });
-        await b.after("fetch");
-        const entry = b.opts.fetches[request.url];
-        if (entry === undefined) throw new FakeProviderError(`fetch ${request.url}: 404`, 404);
-        if (typeof entry === "string") return { finalUrl: request.url, statusCode: 200, contentType: "text/markdown", content: entry };
-        const answer = entry[request.format === "raw" ? "raw" : "markdown"];
-        if (!answer || "status" in answer) throw new FakeProviderError(`fetch ${request.url}: ${answer?.status ?? 404}`, answer?.status ?? 404);
-        return { finalUrl: request.url, statusCode: 200, contentType: answer.contentType, content: answer.content };
-      },
-      async search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult> {
-        await b.before("search", signal);
-        b.record("search", { query: request.query });
-        await b.after("search");
-        return { results: b.opts.search.slice(0, request.n) };
-      },
       downloads: {
         async list(_ref: LeaseRef): Promise<RemoteFile[]> { return Object.entries(b.opts.downloads).map(([name, body]) => ({ name, sizeBytes: Buffer.byteLength(body), modifiedAt: null })); },
         async read(_ref: LeaseRef, fileName: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>> {
@@ -316,8 +293,6 @@ export function remoteProvider(url: string, options: { name?: string; caps?: Par
     attach: (ref, signal) => call("attach", [ref], signal),
     release: (ref, signal) => call("release", [ref], signal),
     liveView: (ref) => call("liveView", [ref]),
-    fetch: (request, signal) => call("fetch", [request], signal),
-    search: (request, signal) => call("search", [request], signal),
   };
 }
 

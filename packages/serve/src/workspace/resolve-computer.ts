@@ -1,4 +1,4 @@
-// The claim's resolver: an agent's computer setting {kind, provider, gpu?}, in the server's mode, read against the computer
+// The claim's resolver: an agent's computer setting {kind, provider, image?, gpu?}, in the server's mode, read against the computer
 // module's kind registry (its setting kinds and provider entries), gives how to start the computer for the run, whether
 // it mounts the run's folder, and which of the kernel's ports it fills; or a refusal in words that name the setting
 // (Settings → Computers). The runner's harness start calls it at the claim, starts the computer, and hands it to
@@ -18,9 +18,10 @@
 // serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
-import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { checkGpu, type ComputerClient, type ComputerSettingKind, type GpuSpec, type Group, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
+import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
+import { gpuRefused } from "../gpu-words.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -29,8 +30,9 @@ import type { Workspace } from "./workspace.js";
  *  provider of the kind registry: the computer module's own types. Where a run's shell is: the kernel registry's. */
 export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace };
 
-/** An agent's computer setting: a sandbox's may ask for GPUs. */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly gpu?: GpuSpec };
+/** An agent's computer setting. `image`: the one of the provider's configurations it selects; absent, the default. A
+ *  sandbox's may ask for GPUs. */
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec };
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
@@ -63,14 +65,24 @@ export type ClaimBrowser = {
   readonly provider: string;
   /** The longest a session lives, in seconds. */
   readonly maxLifetimeS: number;
-  /** Makes a session for `tag`, to live at most `lifetimeS`: its computer's id. */
-  open(tag: string, lifetimeS: number, signal?: AbortSignal): Promise<string>;
+  /** What its sessions offer beyond the protocol (the provider's capabilities().browser), which `open` may ask for. */
+  readonly features: BrowserFeatures;
+  /** Makes a session for `tag`, to live at most `lifetimeS`, with its own options (spec.browser): its computer's id. */
+  open(tag: string, lifetimeS: number, browser?: BrowserSpec, signal?: AbortSignal): Promise<string>;
   /** The sessions made for `tag`, by id. */
   find(tag: string, signal?: AbortSignal): Promise<string[]>;
+  /** Whether the session runs: false once it has ended or its provider no longer knows it. */
+  running(id: string, signal?: AbortSignal): Promise<boolean>;
   /** The session's CDP URL now. */
   url(id: string): Promise<string>;
   /** Ends the session; one already gone is ended. */
   close(id: string): Promise<void>;
+  /** The files a session downloaded, kept by the provider: where its features declare downloads. */
+  readonly downloads?: {
+    list(id: string): Promise<BrowserFile[]>;
+    /** The file's bytes, streamed; the stream fails in words once it passes maxBytes. */
+    read(id: string, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>>;
+  };
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one
@@ -82,7 +94,9 @@ export type ClaimSide = {
   /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails: none answering is refused in
    *  the one wording a run's start and Settings → Computers say (noDockerWords). Absent: the launch's own words. */
   daemon?(provider: string): Promise<DockerDaemon>;
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+  /** `configuration`: the provider's configuration the setting selected; its options go to the provider with the keys,
+   *  and its image, when it names one, is the computer's. `gpu`: a sandbox's GPUs, held to that configuration. */
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -101,8 +115,8 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
     return keys;
   };
 
-/** Whether a provider's computers run only on the vendor's own network: the network forms it declares (its module's
- *  NETWORK, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
+/** Whether a provider's computers run only on the vendor's own network: the network forms it declares (its
+ *  descriptor's, its capabilities().network) are "open" alone, as a cloud phone's and a hosted browser's are. */
 export const vendorNetworkOnly = (network: readonly string[] | undefined): boolean => network !== undefined && network.length > 0 && network.every((one) => one === "open");
 
 /** Whether a provider's computers can't have no network: it declares its network forms and "none" isn't one (a cloud
@@ -125,8 +139,11 @@ export const noNetworkRefusal = (label: string, kind: string): string =>
  *  claim launches it, and asks only once its launch fails (ClaimSide.daemon). Absent: not asked.
  *
  *  `boxAllow`: this server's allow setting (box-settings.ts boxAllowOf). Under "none", a computer whose provider makes no
- *  "none" is refused (noNetworkRefusal), as the claim refuses it. Absent: not asked. */
-export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => DockerDaemon | Promise<DockerDaemon>, boxAllow?: readonly string[] | "none"): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
+ *  "none" is refused (noNetworkRefusal), as the claim refuses it. Absent: not asked.
+ *
+ *  `hostWhy`: why this machine cannot run a provider's computers, in words that say how to fix it (computers.ts
+ *  hostCommandRefusals, read at the server's start: the phone's adb not on PATH), or undefined. Absent: not asked. */
+export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, registry: KindRegistry, keyOf: (name: string) => Promise<string | undefined>, answers?: (provider: string) => DockerDaemon | Promise<DockerDaemon>, boxAllow?: readonly string[] | "none", hostWhy?: (provider: string) => string | undefined): Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }> {
   const resolved = await resolveComputer(setting, mode, registry, {
     keysOf: providerKeys(registry, keyOf),
     // A setting is given, so the Mode 1 default (the only asker) is never read; and nothing is launched.
@@ -141,6 +158,8 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, r
     if (!said.up && said.absent) return { refused: noDockerWords(resolved.kind, registry.PROVIDERS, mode), box: entry.id };
     if (!said.up) return { refused: `This agent's computer is a ${entry.label} ${resolved.kind}, and this server cannot run it: ${said.reason.replace(/[.!?]+$/, "")}.`, box: entry.id };
   }
+  const host = entry ? hostWhy?.(entry.id) : undefined;
+  if (host) return { refused: `This agent's computer is a ${entry!.label} ${resolved.kind}, and this server cannot run it: ${host.replace(/[.!?]+$/, "")}.` };
   if (boxAllow === "none" && entry && needsNetwork(entry.network)) return { refused: noNetworkRefusal(entry.label, resolved.kind) };
   return { ok: true };
 }
@@ -191,6 +210,12 @@ function mountsFolder(kind: ComputerSettingKind, entry: ProviderEntry, serving: 
 /** The configurations of `entry` that serve `kind`. */
 const servingOf = (registry: Pick<KindRegistry, "servingRefusals">, entry: ProviderEntry, kind: ComputerSettingKind): KindCapabilities[] => entry.capabilities.filter((one) => registry.servingRefusals(one, kind).length === 0);
 
+/** The one configuration of `serving` the setting selects (configurationOf), as a list: [] when its image names none. */
+const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetting, entry: ProviderEntry, kind: ComputerSettingKind): readonly KindCapabilities[] => {
+  const one = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
+  return one ? [one] : [];
+};
+
 /**
  * Where a run of an agent with computer `setting` has its shell in `mode` (shellPlaceOf), read off the setting and the
  * kind registry before anything starts: what the claim's runTools gives the run once its computer is started. "computer"
@@ -206,11 +231,29 @@ export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick
   if (!registry.PROVIDERS.some((one) => one.kinds.includes(kind))) return "none";
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
   if (!entry) return "none";
-  const serving = servingOf(registry, entry, kind);
+  const serving = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
   if (serving.length === 0) return "none";
   const mounts = mountsFolder(kind, entry, serving, mode);
   if (kind === "sandbox" && !mounts) return "none";
   return shellPlaceOf(mounts, mode);
+}
+
+/** What a choice of computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note) and
+ *  said by the save's refusal of a tool it leaves out. A computer that mounts the folder leaves nothing out. */
+export const SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">, string>> = Object.freeze({
+  local: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer.",
+  none: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands.",
+});
+
+/** The host tools a run with its shell at `shell` gets, by name: the kernel registry's own list (hostToolDefs), never a
+ *  second one: the file tools always, bash with a shell, the five background tools on a computer. */
+export const hostToolsOf = (shell: ShellPlace): string[] => hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name);
+
+/** A computer choice as an agent's settings show it: where its runs have their shell (runShellOf), the host tools that
+ *  gives, and what it leaves out, in words (none for a computer that mounts the folder). */
+export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
+  const shell = runShellOf(setting, mode, registry);
+  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: SHELL_NOTES[shell] }) };
 }
 
 /** The server's default where an agent has no computer setting: in Mode 1 a sandbox on the first provider that binds a
@@ -247,22 +290,35 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
+  // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
+  // it does.
+  const [configuration] = selectedOf(serving, setting, entry, kind);
+  if (!configuration) {
+    const images = imagesOf(serving, entry.defaultImage?.[kind]);
+    const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;
+    // A configuration its descriptor parks (built, not offered yet): refused saying so, never as an unknown image.
+    const parked = entry.parked?.find((one) => one.image === setting.image);
+    if (parked) return { refused: `${parked.why}, so this agent's ${JSON.stringify(setting.image)} ${kind} is parked. It ${offers} for this agent's computer in ${SETTINGS}.` };
+    return { refused: `${entry.label} has no ${kind} image ${JSON.stringify(setting.image)}. It ${offers} for this agent's computer in ${SETTINGS}.` };
+  }
 
-  // The run's folder: mounted where the kind has files and exec and the provider mounts the mode's folder.
-  const mounts = mountsFolder(kind, entry, serving, mode);
+  // The run's folder: mounted where the selected configuration has files and exec and the provider mounts the mode's
+  // folder.
+  const mounts = mountsFolder(kind, entry, [configuration], mode);
   if (kind === "sandbox" && !mounts) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: a ${entry.label} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };
     if (entry.mounts.includes("bind")) return { refused: `Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in ${SETTINGS}, or no computer.` };
     return { refused: `A ${entry.label} sandbox can't mount the run's folder from Archil: pick another sandbox for this agent's computer in ${SETTINGS}.` };
   }
 
-  // Its GPUs, a sandbox's alone: in checkGpu's words, against what the configuration that serves it declares, with the
-  // mode's folder as the mount it takes (a sandbox here always mounts it).
+  // Its GPUs, a sandbox's alone: in gpuRefused's words, against what the configuration the setting selected declares,
+  // with the mode's folder as the mount it takes (a sandbox here always mounts it). A GPU computer that can't mount the
+  // folder is told so, and what to use instead.
   const gpu = kind === "sandbox" && setting.gpu ? setting.gpu : undefined;
   if (gpu) {
-    const offered = serving.find((one) => one.gpu !== undefined) ?? serving[0]!;
-    const [refusal] = checkGpu(gpu, offered, { kind: mode === 1 ? "bind" : "archil" });
-    if (refusal) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refusal.message}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
+    const refused = gpuRefused(gpu, configuration.gpu, { kind: mode === 1 ? "bind" : "archil" }, entry.label);
+    if (refused?.folder) return { refused: refused.words };
+    if (refused) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refused.words}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
   }
 
   // Its keys: every required one saved, before anything starts; only declared names go to the provider.
@@ -287,7 +343,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       const mount = mounts ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
-        launched = await side.launch(entry, { kind, keys, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(signal ? { signal } : {}) });
+        launched = await side.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         // A provider that binds a folder of this machine (Docker) whose daemon does not answer: the one wording.
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;

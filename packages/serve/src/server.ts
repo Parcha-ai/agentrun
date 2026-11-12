@@ -24,7 +24,7 @@ import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
-import { HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
+import { HOME_HOST_OWNED, SETUP_LOST } from "./files.js";
 import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
@@ -41,7 +41,7 @@ import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, prom
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
-import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn, boxNetworkOf, FAUX_BOX_ENV, fauxBoxes } from "./box-settings.js";
+import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, byOwnerSession, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
@@ -49,10 +49,11 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
-import { momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -75,16 +76,10 @@ import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
 import { runLines } from "./usage-lines.js";
-import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { type BoxOffer, boxesByDefault, boxesLog, boxRegistry, daytonaApi, enabledBoxes, VM_NO_LIST, VM_PROVIDER } from "./boxes.js";
+import { type BoxOffer, boxesByDefault, boxesLog, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
+import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
-import { type DockerNetwork, egressParentTooLong, FAUX_EGRESS_ENV, MAX_EGRESS_PARENT, sweepEgressDirs } from "./box-egress.js";
-import { type EgressContainer, startEgressContainer } from "./box-egress-vm.js";
-import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, egressParentOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
-import { boxImageOf, clearImage, type DockerImage, dockerImage, type ImageState, withImage } from "./box-image.js";
-import { startBoxRelay } from "./box-relay.js";
-import { vmRelay, type VmSdk } from "./box-relay-vm.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_MODES, type CapMode } from "./cap.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, MCP_HARNESSES, NOT_SET_UP, type RevisionShape } from "./runnable.js";
@@ -122,9 +117,9 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, readPackages, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
@@ -135,11 +130,11 @@ import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from 
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
-import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
+import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -268,24 +263,14 @@ export type ServeOptions = {
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
    *  stand-ins for the harnesses. */
   harnessTable?: string;
-  /** With `faux` only: a module whose default export, given the data root, is the box provider runs' Docker boxes come
-   *  from (the tests' faux box, pi-transport's local box): docker is then available, and nothing asks Docker. */
-  fauxBox?: string;
-  /** Under `faux` only: a module that stands in for the VM provider's SDK (its client class, by the SDK's name for it),
-   *  so the VM box runs on the tests' fake, never the provider. */
-  fauxVm?: string;
+  /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
+  fauxDocker?: boolean;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
-  /** Under `faux`: a module whose default export gives a box's egress proxy its `lookup` and `dial` (box-egress.ts), the
-   *  tests' fake network. */
-  fauxEgress?: string;
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
-  /** With `faux` only: the platform this server takes itself to run on (tests: `darwin`, to take a Mac's path to a box's
-   *  network, box-egress-vm.ts, on another machine). */
-  fauxPlatform?: NodeJS.Platform;
   /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -300,9 +285,6 @@ export type ServeOptions = {
   minFreeBytes?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
-  /** Told the Docker box image's state at the start, when this server has a Docker box, then each change (box-image.ts):
-   *  the CLI says a first build in words, as it starts and as it ends. */
-  onBoxImage?: (state: ImageState) => void;
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
@@ -347,14 +329,11 @@ export type ServeOptions = {
   templates?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
-  /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
-   *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
-  box?: BoxHost;
 };
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxBox", FAUX_BOX_ENV], ["fauxEgress", FAUX_EGRESS_ENV], ["fauxMountinfo", FAUX_MOUNTINFO_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxMountinfo", FAUX_MOUNTINFO_ENV]] as const;
 
 /** The test switches a run's process gets, each module path resolved: empty outside tests. A test's in-process runner
  *  takes the same (test/support.mjs startInProcessRunner). */
@@ -597,7 +576,7 @@ async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
  *  env without the tool keys (offersEnvOf), and its capabilities made from both under its learning switch (`learning`,
  *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
- *  box offers (`boxes`, what the box registry set up at the start, boxes.ts), with whether a revision that names no
+ *  box offers (`boxes`, what the server found at the start, place-offers.ts), with whether a revision that names no
  *  model runs (needsOf). The server makes it once at its start and then remakes only the parts a write changes
  *  (startHolding), so a key saved later can make a harness, a provider or the default model available with no restart.
  *  `gradeModel` is its `--grade-model`. */
@@ -613,9 +592,6 @@ export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
  *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show;
  *  `gradeModel`, its `--grade-model`. */
-/** Why a Daytona box has no network although AGENTRUN_BOX_ALLOW names hosts: Daytona refused its domain list (`code`). */
-const noListReason = (code: string) =>
-  `Daytona did not keep a sandbox's domain list (${code}), so this server's Daytona boxes have no network until it starts again: Daytona takes a domain list on its tier 3 and 4 only. To keep them closed without trying, set ${BOX_ALLOW_ENV}=none`;
 
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes, gradeModel);
@@ -646,7 +622,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
-    runtimes: ["pi-durable-disk"],
+    /** What runs a run here (the contract's `runtimes`, informational): this server's runners, over its one store. */
+    runtimes: ["runner"],
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
     harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
@@ -691,8 +668,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       /** The browser a run's `browser` tool drives: the vendor it resolves to under the server's settings when the tool is
-       *  available here (tools[]), Browserbase's or Kernel's, else none. */
-      browser: browser?.available ? ((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS] === "kernel" ? "kernel" : "browserbase") : "none",
+       *  available here (tools[]), a browser provider's id (tool-plane.ts BROWSER_VENDOR_IDS), else none. */
+      browser: browser?.available ? ((resolved) => (BROWSER_VENDOR_IDS.includes(resolved ?? "") ? resolved! : "browserbase"))((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS]) : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
@@ -768,7 +745,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
-  // Canonical once, here: a box's mount source below it must then be its own canonical path, through no link (run-box.ts).
+  // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
@@ -988,124 +965,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
   };
-  // The boxes AGENTRUN_BOXES lists, docker when it is not set, each probed once (boxes.ts); runs execute in Docker's (place.ts). Under --faux, a faux
-  // box stands in for Docker, and nothing asks Docker.
-  // Under --faux, the tests' fake stands in for the VM provider's SDK (startServe's `fauxVm`), never the provider.
-  const boxes = await boxRegistry(env, options.faux && options.fauxVm ? { vmSdk: () => import(pathToFileURL(resolve(options.fauxVm!)).href) as Promise<Record<string, unknown>> } : {});
-  const fauxBox = options.faux && options.fauxBox ? await fauxBoxes(resolve(options.fauxBox), data) : undefined;
-  // The Docker box's image, asked of Docker now and pulled in the background when Docker has none (box-image.ts): docker
-  // is preparing until it is in, and unavailable if the pull fails. Its record tells the run's processes; with no Docker
-  // box here there is none, so no run waits on one an earlier start left.
-  let image: DockerImage | undefined;
-  // What a Docker box's programs reach, resolved once here (box-settings.ts boxNetworkOf): the setting's list, on a Docker
-  // daemon of this Linux machine's own; else none, and why. A run's process gets the list or none (RUN_BOX_ALLOW_ENV).
+  // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
+  // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
+  // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
+  const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker });
+  const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
   // server is on a host.
   const fauxMountinfo = options.faux ? (options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV]) : undefined;
   // Where Docker has this server's files (box-paths.ts): its own, on a host; its container's mount of the data directory,
   // for a server in a container given Docker's socket; or none, and docker is unavailable, saying why. Under --faux, a
-  // host's unless the test gives a container's mountinfo.
-  // Only on Linux: a container of a Docker's own is a Linux one, and a Mac server's boxes take its proxy container's network
-  // (box-egress-vm.ts), never a volume's subpath of its data.
-  const platform = options.faux && options.fauxPlatform ? options.fauxPlatform : process.platform;
-  const dockerPaths: DockerPaths = fauxBox || !boxes.provider("docker") || platform !== "linux" ? { here: true } : options.faux ? (fauxMountinfo ? await dockerPathsOf(env, data, { mountinfo: await readFile(fauxMountinfo, "utf8"), inContainer: true }) : { here: true }) : await dockerPathsOf(env, data);
-  const boxPaths = "paths" in dockerPaths ? dockerPaths.paths : undefined;
-  const egressParent = boxPaths ? egressParentOf(data) : undefined;
+  // host's unless the test gives a container's mountinfo. Only on Linux: a container of a Docker's own is a Linux one.
+  const dockerPaths: DockerPaths = fauxDocker || !docker || process.platform !== "linux" ? { here: true } : options.faux ? (fauxMountinfo ? await dockerPathsOf(env, data, { mountinfo: await readFile(fauxMountinfo, "utf8"), inContainer: true }) : { here: true }) : await dockerPathsOf(env, data);
   if ("reason" in dockerPaths) log?.(logLine("box_paths", { reason: dockerPaths.reason }));
-  const boxNetwork: DockerNetwork = fauxBox ? { allow: "none", reason: "a faux box (tests)" } : !boxes.provider("docker") ? { allow: "none", reason: "no Docker box on this server" } : "reason" in dockerPaths ? { allow: "none", reason: dockerPaths.reason } : egressParent && egressParentTooLong(egressParent) ? { allow: "none", reason: `the data directory's path is too long for a box's network socket (${egressParent} is over ${MAX_EGRESS_PARENT} bytes): give the server a shorter --data` } : await boxNetworkOf(env, { ...(boxPaths ? { mapped: true } : {}), ...(options.faux && options.fauxPlatform ? { platform: options.fauxPlatform } : {}) });
-  // The proxy directories runs that are gone left in /tmp, or, in a container, on the data directory's mount
-  // (box-egress.ts): a live run's, any server's, stays.
-  if (!fauxBox && boxes.provider("docker")) await sweepEgressDirs(undefined, undefined, egressParent).catch(() => 0);
-  // On a Mac whose Docker runs in a VM this server knows, the list is served by one proxy container inside that VM
-  // (box-egress-vm.ts): a box's network is the list once it is ready, and none, saying why, until then or when it can't start.
-  let egress: EgressContainer | undefined;
   // A run's Docker computer mounts the run's folder, and the computer's daemon, by this server's paths: as they are on
   // its Docker's own host, or as its named data volume's subpaths from a container of that Docker's (compose.yaml).
   // Any other layout, or a daemon of another machine (DOCKER_HOST, or the current context's endpoint: box-paths.ts
   // remoteDockerOnce), can't run one, and says so here (dockerComputerRefusal), where capabilities, the run's start
   // (dockerAnswers) and a place's box check all read it: no run starts only to fail at its create.
-  const dockerElsewhere = fauxBox || !boxes.provider("docker") ? undefined : dockerComputerRefusal(dockerPaths, await remoteDockerOnce(env));
+  const dockerElsewhere = fauxDocker || !docker ? undefined : dockerComputerRefusal(dockerPaths, await remoteDockerOnce(env));
   // From a container, a Docker computer keeps this server's allow-list only knowing the Docker host's own addresses: the
   // union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES (docker-host-addresses.ts), the same read the
   // runner beside this server takes. Said at the start with what was found; with none, Docker isn't offered, in words.
-  const hostAddresses = dockerElsewhere === undefined && boxPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
+  const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
   const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
-  // The addresses found, where an operator looks: capabilities' Docker entry.
-  const hostShown = hostAddresses && hostAddresses.addresses.length > 0 ? { host_addresses: hostAddresses.addresses } : {};
-  const dockerNetwork = (offer: BoxOffer): BoxOffer => {
-    if (!offer.available) return offer;
-    if (dockerRefused !== undefined) return { id: offer.id, available: false, state: "unavailable", reason: dockerRefused };
-    if (boxNetwork.allow === "none") return { ...offer, network: "none", network_reason: boxNetwork.reason };
-    const proxy = egress?.state();
-    return proxy && proxy.state !== "ready" ? { ...offer, network: "none", network_reason: proxy.reason } : { ...offer, network: "allowlist", ...hostShown };
-  };
-  // A Daytona box reaches the hosts AGENTRUN_BOX_ALLOW names, through Daytona's domain list, until Daytona cannot keep
-  // one here (an organization whose tier takes none): from then on each is made with no network, and capabilities say why.
-  let daytonaNoList: string | undefined;
-  const daytonaNetwork = (offer: BoxOffer): BoxOffer =>
-    !offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : daytonaNoList ? { ...offer, network: "none", network_reason: noListReason(daytonaNoList) } : { ...offer, network: "allowlist" };
-  // The VM box has no network whatever AGENTRUN_BOX_ALLOW names: its provider takes a host list, but has no read of a
-  // box's list back, so the server cannot check one held (run-box.ts ensureRemoteBox makes it blocked). Said, with why.
-  const vmNetwork = (offer: BoxOffer): BoxOffer => (!offer.available ? offer : boxAllow === "none" ? { ...offer, network: "none" } : { ...offer, network: "none", network_reason: VM_NO_LIST });
-  const offersNow = (): BoxOffer[] => boxes.offers().map((offer) => (fauxBox && offer.id === "docker" ? dockerNetwork({ id: "docker", available: true, reason: "a faux box (tests)" }) : offer.id === "docker" ? dockerNetwork(image ? withImage(offer, image.state()) : offer) : offer.id === "daytona" ? daytonaNetwork(offer) : offer.id === VM_PROVIDER.id ? vmNetwork(offer) : offer));
-  const imageLog = (state: ImageState, more: Record<string, number> = {}) => log?.(logLine("box_image", { image: image!.image, state: state.state, ...more, ...("reason" in state ? { reason: state.reason } : {}) }));
-  let boxOffers: BoxOffer[] = offersNow();
-  const boxImage = !fauxBox && boxes.provider("docker") ? boxImageOf(env) : undefined;
-  if (boxImage) {
-    image = await dockerImage(env, data, boxImage, {
-      warn: (message) => (log ? log(logLine("box_image", { image: boxImage, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
-      onChange: (state, ms) => {
-        boxOffers = offersNow();
-        imageLog(state, { ms });
-        options.onBoxImage?.(state);
-        // The box's state is in caps alone, not in the offers: recomposed now, or, while the start's probe of the offers
-        // has not ended, by that probe, which reads the box offers when it does.
-        if (offers) recompose();
-      },
-    });
-    stops.push(async () => void (await image?.close()));
-    options.onBoxImage?.(image.state());
-  } else await clearImage(data);
-  boxOffers = offersNow();
-  const runBoxes = fauxBox ?? boxes.provider("docker");
-  // Daytona's boxes are made, seeded, pulled and destroyed here, with the key this server holds; a run's process reaches
-  // its own through the relay below, which holds the key for it (box-relay.ts).
-  const remoteBoxes = boxes.provider("daytona");
-  // And the VM box's, the same way, with this server's SDK client: the relay's VM half makes a run's calls with it.
-  const vmBoxes = boxes.provider(VM_PROVIDER.id);
-  const vmClient = boxes.vmClient();
-  // What the provider says in an error is cut of every value this server holds (the VM token among them) before a run's
-  // process sees it.
-  const vmSecrets = () => [...serverSecrets(), ...VM_PROVIDER.keys.map((name) => env[name] ?? "").filter(Boolean)];
-  const vmRelayHalf = vmBoxes && vmClient ? vmRelay(vmClient as VmSdk, vmSecrets) : undefined;
-  // Daytona could not keep a run's box's domain list: said in the log and in capabilities, which recompose now.
-  // Daytona's own words go to the log, so a refusal for another cause is not taken silently for a tier that takes no list.
-  const onNoBoxList = (code: string, message: string) => {
-    daytonaNoList = code;
-    log?.(logLine("box_network", { box: "daytona", network: "none", refused: code, message }));
-    boxOffers = offersNow();
-    if (offers) recompose();
-  };
-  if (boxNetwork.allow !== "none" && boxNetwork.vm) {
-    const allow = boxNetwork.allow;
-    const egressLog = (state: ReturnType<EgressContainer["state"]>) => log?.(logLine("box_egress", { runtime: boxNetwork.vm!, state: state.state, ...("reason" in state ? { reason: state.reason } : {}) }));
-    egress = await startEgressContainer({
-      env, data, allow, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0,
-      warn: (message) => (log ? log(logLine("box_egress", { runtime: boxNetwork.vm!, warning: message })) : void process.stderr.write(`agentrun-serve: ${message}\n`)),
-      onChange: (state) => {
-        egressLog(state);
-        boxOffers = offersNow();
-        if (offers) recompose();
-      },
-    });
-    stops.push(() => egress!.close());
-    egressLog(egress.state());
-    boxOffers = offersNow();
-  }
+  // Each box with what it reaches (place-offers.ts withNetworks).
+  const boxOffers: BoxOffer[] = withNetworks(found, boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
   log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
-  if (image) imageLog(image.state());
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
@@ -1123,28 +1012,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const fauxOf = (): FauxComputers => (faux ??= fauxComputers({ viewerBase: ownOriginOf() }));
   /** Whether a computer on a provider that binds a folder of this machine (Docker) can be had here now: Settings →
    *  Computers' view and a run's start check (below) both ask it. Where AGENTRUN_BOXES lists Docker and it is no faux
-   *  box, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
+   *  Docker, its daemon is asked (docker-daemon.ts: a short `docker version`, its answer kept a while and asked again, so a
    *  daemon that stops after the start is seen, and one that is gone says so in noDockerWords); once it answers, the
    *  box's start-time answer stands. A box the start did not make keeps its reason ("start Docker, then restart
    *  AgentRun"): the start's checks of Docker (Docker elsewhere, this server's paths, host addresses, its network) ran
    *  without it, so a daemon that answers later is not taken. Else the box's start-time answer (boxOffers), with its
-   *  reason, which says how to fix it. */
+   *  reason, which says how to fix it. The provider whose computers run on this machine's container engine is the one
+   *  whose descriptor declares `local`. */
   const dockerDaemon = dockerDaemonCheck({ env });
   const dockerAnswers = async (provider: string): Promise<DockerDaemon> => {
     const box = boxAvailability(boxOffers).find((one) => one.id === provider);
-    if (provider === "docker" && !fauxBox && enabledBoxes(env).has("docker")) {
+    const local = COMPUTER_PROVIDERS.find((one) => one.id === provider)?.local === true;
+    if (local && !fauxDocker && (enabledBoxes(env) as ReadonlySet<string>).has(provider)) {
       const daemon = await dockerDaemon();
       if (!daemon.up || box?.available) return daemon;
     } else if (box?.available) return { up: true };
     return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
   };
   let computerRoutes: ComputerRoutes | undefined;
+  // The programs a provider runs on this machine (the phone's adb), looked for on PATH once, at the start, as the boxes
+  // probe Docker: a provider whose program is missing is not ready, and its words say what to install.
+  const hostWhy = hostCommandRefusals(COMPUTER_PROVIDERS, process.env.PATH);
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
+        hostWhy,
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
@@ -1156,16 +1051,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
-   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
+   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers', and whether a
+   *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
-  const computerReady = async (setting: { kind: string; provider?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
+  const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
+    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
-  const shellOf = async (setting: { kind: string; provider?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
+  const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
   const archil = createArchilRoutes({ store, sealKey, env: process.env });
+  /** Where a run of `revision` has its shell (shellOf): its computer setting as the claim reads it (computer-for-claim.ts
+   *  settingOf), else its place's computer, else the place its run would resolve to (fallbackPlace). The agent's tool
+   *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
+  const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
+    const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
+    return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
+  };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const run = await store.runs.get(runId);
@@ -1331,7 +1234,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runReadsDeps: RunReadsDeps = {
     runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey }),
     env,
-    runView: (_store, runId) => viewOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
@@ -1607,19 +1510,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The tools a learned draft of agent `id` may name, as a run's merge reads them (learning-run.ts draftTools): its
    *  current revision's, those the gate allows under the server's settings and the agent's own. `entry`: the agent as the
    *  caller already read it, so what it checks and what it copies are one revision's (a promotion). */
-  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; ask?: DraftAsk }> {
+  async function learnedDraftToolsOf(id: string, entry?: AgentEntry): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; ask?: DraftAsk }> {
     const revision = (entry ?? (await needAgent(id))).revision;
-    if (revision?.kind !== "agentic") return { tools: [], gated: {} };
-    const [{ learnedDraftTools, mcpGrantsListed }, { permissionOf }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
+    if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
+    const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { learnedAskFits }] = await Promise.all([import("./tools.js"), import("./tool-gate.js"), import("./learned-workflow.js")]);
     const server = settings.get();
     // The revision row's body is the agentic body JSON (store-backed RevisionRow types it as unknown).
     const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string };
     // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
     const rows = (body.tools ?? []).some((name) => /^mcp:[^/]+\/\*$/.test(name)) ? await store.mcp.servers().catch(() => []) : [];
     const listed = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
-    const { tools, gated, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => permissionOf(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask"), undefined, undefined, { mcp: true, approvers: await readApprovers(store.settings) });
+    const gate = (name: string) => permissionFrom(name, server as never, (body.toolSettings ?? {}) as never, body.approvals === "never" ? "never" : "ask");
+    // `deniedBy`: where each deny was set (the agent's tool settings, the server's), which a refused draft's words name.
+    const { tools, gated, deniedBy, asked } = learnedDraftTools(mcpGrantsListed(body.tools ?? [], (name) => listed.get(name) ?? []), (name) => gate(name).permission, undefined, (name) => gate(name).from, { mcp: true, approvers: await readApprovers(store.settings) });
     // #2424's card rule (learnedAskFits): a restored draft whose ask-set MCP tools would not all show is refused.
-    return { tools, gated, ask: { asked, fits: learnedAskFits } };
+    return { tools, gated, deniedBy, ask: { asked, fits: learnedAskFits } };
   }
   async function needAgent(id: string): Promise<AgentEntry> {
     const entry = ID.test(id) ? await agents.get(id) : null;
@@ -1836,7 +1741,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const model = picked.model;
     // Which model the agent got, where it is not the package's: a note, never a lack. The agent runs; only the package's
     // choice was not an option here (not_set_up_here would read as a run refused until the host has something).
-    const modelWarnings: InputIssue[] = "warning" in picked && picked.warning ? [{ field: "model", reason: "not_an_option", message: picked.warning }] : [];
+    // The model of each tier its subagents run on (packageTiers): the package's where this server runs it.
+    const tiers = await packageTiers(env, pkg.model, harness ?? DEFAULT_HARNESS, model);
+    const modelWarnings: InputIssue[] = [...("warning" in picked && picked.warning ? [picked.warning] : []), ...(tiers.warning ? [tiers.warning] : [])].map((message) => ({ field: "model", reason: "not_an_option", message }));
     const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
     // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
@@ -1845,7 +1752,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
     // never), else ask. Deny and pins hold either way.
     const chosenApprovals = approvals ?? pkg.approvals;
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
     const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
@@ -2188,23 +2095,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
   // again. A run whose journal cannot be read leaves it all tokens.
   const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
-  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
-  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
-  // none (a run whose cost is known, or one ended before the figure was kept).
-  const endedSoFar = new Map<string, number | undefined>();
-  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
-    const key = `${row.id} ${row.endedAt}`;
-    if (!endedSoFar.has(key)) {
-      // TODO(E3/store-reads): a run's kept so-far cost comes from the store (its row/journal), not a per-run RUN_META file
-      // (runStorePath is gone). Undefined until the usage route reads it over the store.
-      let usd: number | undefined;
-      {
-        usd = undefined;
-      }
-      endedSoFar.set(key, usd);
-    }
-    return endedSoFar.get(key);
-  };
   const metersOf = async (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -2262,7 +2152,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
-      const soFar = usd !== null || !read ? 0 : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const soFar = usd !== null || !read ? 0 : read.known.tokens + read.known.browser + read.known.others;
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
@@ -2629,7 +2519,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getAgent": {
         const entry = await needAgent(id);
         // The tools its current revision grants, as capabilities list them, each with its provider for this agent.
-        const tools = entry.revision ? agentTools(env, settings.get(), await toolingOf(entry.revision as unknown as Revision), caps.tools.map((tool) => tool.name)) : [];
+        // A tool of bash's family the agent's computer gives no shell for reads unavailable (runShellOf).
+        const revision = entry.revision as unknown as Revision | undefined;
+        const tools = revision ? agentTools(env, settings.get(), await toolingOf(revision), caps.tools.map((tool) => tool.name), await shellOfRevision(revision)) : [];
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
@@ -2804,6 +2696,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => computerOf(kept, env, family),
           hold: () => hold,
+          // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
+          // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
+          // For an ended run, nothing, and its row goes.
+          ended: () => screenWaitEnded(store.settings, run.id, run.terminal),
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
         return send(res, 200, view, { "cache-control": "no-store" });
@@ -3511,10 +3407,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     await installStopped;
-    // Before the store closes: the image's last record lands first (box-image.ts), never after the next server's start.
-    await image?.close();
-    // The box network proxy goes with the server that owns it (box-egress-vm.ts); its volume stays for the next start.
-    await egress?.close();
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;

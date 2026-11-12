@@ -1,12 +1,13 @@
 // Three guards of the recovery driver: nothing is dispatched once a stop or a deadline has passed during the
 // admission, a map that finished keeps no partial results, and a reserved file is reserved under every name.
+import { frozenEffectId } from '../dist/recovery/frozen-snapshot.js';
 import assert from 'node:assert/strict';
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore, recoveryBound, workspaceFiles, frozenEffectId, nodeAt } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, recoveryBound, workspaceFiles, nodeAt } from '@parcha/agentrun-dsl/recovery';
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };

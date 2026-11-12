@@ -6,7 +6,7 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
+import { type TimelineEvent, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
 import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
@@ -234,7 +234,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
 
 /** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
  *  as the run row's summary says them. */
-type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string };
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
@@ -251,6 +251,41 @@ function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: 
     else if (entry.kind === KINDS.raise) park = undefined;
   }
   return park;
+}
+
+/** The server's row of a run's pause at its cap, and its waiting row while it stands paused: the pause's own words are
+ *  its pending budget's `said`, which a client shows once as its banner, so these rows say no more (#1768). */
+export const BUDGET_PAUSED = "Paused at the run's cap";
+export const BUDGET_WAITING = "Waiting for you to raise the cap";
+
+/** `rows` with each pause at the run's cap shown (its agentrun.budget entry: the cap refused the next step for room, and
+ *  nothing was sent): the server's `phase` row "Paused at the run's cap" (origin server, `paused: true`, its id ending
+ *  NOTE_SUFFIX, so no message any turn took) where the pause came in the journal's order, kept as the run's history once
+ *  a raise clears it; and, after the pause the run stands at now, its `waiting` row "Waiting for you to raise the cap".
+ *  Each new row takes its time from the row before it. `ended`: the run is final (cancelled while paused, say), so it
+ *  waits on nothing and shows no waiting row. */
+export function withBudgetRows(rows: readonly TimelineEvent[], entries: readonly (JournalEntry & { conversationId?: unknown })[], { ended = false }: { ended?: boolean } = {}): TimelineEvent[] {
+  const parks = entries.filter((entry) => entry.kind === KINDS.budget).map((entry) => ({ id: Number(entry.id), conversation: Number(entry.conversationId ?? 1) }));
+  if (parks.length === 0) return [...rows];
+  const active = ended ? undefined : activePauseOf(entries);
+  const entryOf = (row: TimelineEvent): number => Number(row.id.split(":")[1]);
+  const out = [...rows];
+  for (const park of parks) {
+    // Before the first row of a later entry; else before a trailing usage row, the run's last.
+    let at = out.findIndex((row) => entryOf(row) > park.id);
+    if (at < 0) at = out.length > 0 && out[out.length - 1]!.kind === "usage" ? out.length - 1 : out.length;
+    const base = out[at - 1] ?? out[at];
+    const timestamp = base?.timestamp ?? new Date(0).toISOString();
+    const row = (id: string, kind: TimelineEvent["kind"], summary: string, more: Partial<TimelineEvent>): TimelineEvent => ({
+      id, timestamp, created_at: base?.created_at ?? timestamp, kind, summary, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+      tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, conversation_id: park.conversation,
+      ...(base?.seq !== undefined ? { seq: base.seq } : {}), ...more,
+    });
+    const shown = [row(`${park.conversation}:${park.id}${NOTE_SUFFIX}`, "phase", BUDGET_PAUSED, { origin: "server", paused: true })];
+    if (String(park.id) === active) shown.push(row(`${park.conversation}:${park.id}:waiting`, "waiting", BUDGET_WAITING, { text: BUDGET_WAITING }));
+    out.splice(at, 0, ...shown);
+  }
+  return out;
 }
 
 /** The id of the cap park a run stands at now (its agentrun.budget entry's), or undefined when it is not parked: a raise's
@@ -274,7 +309,8 @@ export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "m
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
     ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
     : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+  // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
 }
 
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
@@ -604,7 +640,7 @@ export const WITHHELD_TITLE = "Withheld: a sign-in this run used can't be read";
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
 
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+/** A run's `sign_in_handed` as read from its stored row: undefined when absent (never handed one); the hashes it names;
  *  MALFORMED for any other value. */
 export function handedMark(value: unknown): Handed | undefined {
   if (value === undefined) return undefined;
@@ -649,7 +685,7 @@ export async function handedPointers(signIns: SignInReader | undefined, agentId:
   return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
 }
 
-/** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+/** shown() for a run this server holds no Run for (an ended one a list reads from its row and journal alone): cut of
  *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in
  *  (handedPointers); `withheld` when that can't be read back here, as a load would hide the run. `browser` and `handed`
  *  come from the run's record (its plane's vendor browser and its `sign_in_handed` mark); `damaged` when the record was

@@ -34,7 +34,7 @@ const fail = (code, message) => ({ ok: false, error: { code, message } });
 const noToken = (value, what) => assert.ok(!JSON.stringify(value ?? null).includes(TOKEN), `${what} holds the token`);
 
 /** What a computer's preflight prints when it is as the image makes it. */
-const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none"].join("\n");
+const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none", "fuse present"].join("\n");
 
 /** A root channel that records each call and answers by the helper's verb (or "preflight"). */
 function fakeRoot(answers = {}) {
@@ -89,6 +89,20 @@ test("archilMount's preflight gives the helper back to root, 0755, a regular fil
 	const restore = script.indexOf('[ -f "$h" ] && [ ! -L "$h" ] && chown root:root "$h" && chmod 0755 "$h"');
 	assert.ok(restore > 0, script);
 	assert.ok(restore < script.indexOf("sha256sum"), "restored before the sha256 is read");
+});
+
+test("archilMount: a computer with no /dev/fuse is refused in those words alone, before the takeover or any mount", async () => {
+	// Daytona's GPU host (live 11-11): root, the helper and the client all as the image makes them, but no FUSE device.
+	const root = fakeRoot({ preflight: { exitCode: 0, output: GOOD_PREFLIGHT.replace("fuse present", "fuse absent") } });
+	let took = false;
+	const done = await archilMount({ root, mount: MOUNT, self: { id: "c", name: "c" }, releaseOlder: async () => ((took = true), ok({ released: [], kept: [], unproven: [] })), timeoutMs: 1000 });
+	assert.deepEqual(done, fail("refused", "this computer has no /dev/fuse, so the Archil folder can't be mounted"));
+	assert.deepEqual(root.verbs(), ["preflight"], "nothing after the preflight");
+	assert.equal(took, false, "no takeover");
+	assert.match(root.calls[0].argv[2], /echo "fuse \$\(\[ -c \/dev\/fuse \] && echo present \|\| echo absent\)"/);
+	// A preflight that says nothing of FUSE is an image other than the package's: refused as drift.
+	const silent = await archilMount({ root: fakeRoot({ preflight: { exitCode: 0, output: GOOD_PREFLIGHT.replace("\nfuse present", "") } }), mount: MOUNT, self: { id: "c", name: "c" }, releaseOlder: released(), timeoutMs: 1000 });
+	assert.match(silent.error.message, /the preflight did not find \/dev\/fuse/);
 });
 
 test("archilMount: preflight, the takeover, mount, then serve, each as root through the provider's own exec (no netlock: the tools' network is init's own namespace); the token on the mount's stdin alone", async () => {

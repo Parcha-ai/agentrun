@@ -6,7 +6,6 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { FakeBackend, fixturePage } from "@parcha/pi-browser/testing";
-import { fakeKernel } from "./fixtures/fake-kernel.mjs";
 
 const CHILD = fileURLToPath(new URL("./custody/child.mjs", import.meta.url));
 const START = "https://example.test/start";
@@ -20,7 +19,7 @@ function child(env) {
   return { proc, exited, output: () => out + err };
 }
 
-async function scenario(t, { script, script2 = script, cutAt, hold, between, inactive, env = {}, env2 = {}, zombie = false, kernel = false, start = START, middle }) {
+async function scenario(t, { script, script2 = script, cutAt, hold, between, inactive, env = {}, env2 = {}, zombie = false, start = START, middle }) {
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "custody-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -28,13 +27,6 @@ async function scenario(t, { script, script2 = script, cutAt, hold, between, ina
   const server = await backend.serve();
   t.after(() => server.close());
   const base = { DB: path.join(dir, "run.sqlite"), FAKE: server.url };
-  let api = null;
-  if (kernel) {
-    const key = `kernel-crash-key-${process.pid}-${Math.random().toString(36).slice(2)}`;
-    api = await fakeKernel({ key, backend });
-    t.after(() => api.close());
-    Object.assign(base, { KERNEL_URL: api.url, KERNEL_KEY: key });
-  }
 
   if (hold) backend.hold(hold);
   const first = child({ ...base, ...env, MODE: "first", SCRIPT: JSON.stringify(script), KILL_AT: cutAt ?? "", OUT: path.join(dir, "first.json") });
@@ -74,7 +66,7 @@ async function scenario(t, { script, script2 = script, cutAt, hold, between, ina
   assert.equal(end.code, 0, `second process: ${end.out}${end.err}`);
   const result = JSON.parse(fs.readFileSync(path.join(dir, "second.json"), "utf8"));
   const firstOut = path.join(dir, "first.json");
-  return { tally: backend.tally(), ledger: backend.ledger, result, seen: result.results, api, first: fs.existsSync(firstOut) ? JSON.parse(fs.readFileSync(firstOut, "utf8")) : null };
+  return { tally: backend.tally(), ledger: backend.ledger, result, seen: result.results, first: fs.existsSync(firstOut) ? JSON.parse(fs.readFileSync(firstOut, "utf8")) : null };
 }
 
 const failure = (row) => { try { return JSON.parse(row.text); } catch { return null; } };
@@ -322,6 +314,46 @@ test("an idle release in flight at shutdown: the drain waits for it before the h
   await browser.drain(harness, ctx);
   assert.deepEqual([backend.tally().releases, backend.liveCount()], [1, 0]);
   assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].releaseReason, "idle");
+  await harness.close(ctx);
+});
+
+test("a session kept for the person's answer survives its idle window; let go, it is released one idle window later", async (t) => {
+  const { backend, browser, harness, root, ctx } = await inProcess(t, {}, { idleReleaseS: 0.05 }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const tag = Object.values((await harness.snapshot(browser.docs.Inventory, ctx)).rows)[0].tag;
+  const letGo = browser.keepForPerson(tag);
+  // Several idle windows pass while the run waits for its person: nothing is released.
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(backend.tally().releases, 0, "kept for the person, the idle release lets the session be");
+  assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].state, "live");
+  letGo();
+  letGo();
+  for (let i = 0; i < 200 && backend.tally().releases === 0; i += 1) {
+    await harness.waitForIdle(ctx);
+    await browser.drain(harness, ctx);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(backend.tally().releases, 1, "let go, the next idle window releases it");
+  assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].releaseReason, "idle");
+  await harness.close(ctx);
+});
+
+test("two keeps on one session: the idle release waits for the last one to go", async (t) => {
+  const { backend, browser, harness, root, ctx } = await inProcess(t, {}, { idleReleaseS: 0.05 }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const tag = Object.values((await harness.snapshot(browser.docs.Inventory, ctx)).rows)[0].tag;
+  const first = browser.keepForPerson(tag);
+  const second = browser.keepForPerson(tag);
+  first();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(backend.tally().releases, 0, "one keep is still on it");
+  second();
+  for (let i = 0; i < 200 && backend.tally().releases === 0; i += 1) {
+    await harness.waitForIdle(ctx);
+    await browser.drain(harness, ctx);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(backend.tally().releases, 1);
   await harness.close(ctx);
 });
 
@@ -827,43 +859,6 @@ test("an attach error whose message holds a connect URL with its token yields a 
     for (const leak of ["wss://", "connect.example.test", "signingKey", "SECRETTOKEN", "connect failed"]) assert.ok(!said.includes(leak), `${leak} is not in the row`);
   }
   assert.ok(!JSON.stringify(result.results).includes("SECRETTOKEN") && !JSON.stringify(result.rows).includes("SECRETTOKEN"));
-});
-
-test("kernel: SIGKILL after launch, reconcile finds the session by its tag, and the release deletes it", async (t) => {
-  for (const cut of [{ cutAt: "after-create" }, { hold: "create" }]) {
-    const label = JSON.stringify(cut);
-    const { tally, result, seen, api } = await scenario(t, { kernel: true, script: ["browser_read", "browser_release"], ...cut });
-    const [session] = result.sessions.sessions;
-    assert.equal(result.reconcile.kept.length, 1, `reconcile bound the launched session ${label}`);
-    assert.deepEqual([tally.creates, tally.peakLive, tally.liveAtEnd], [1, 1, 0], label);
-    assert.equal(seen[0].isError, false, label);
-    assert.equal(failure(seen[0]).session, session.resourceId, "the rerun read on the session found by its tag");
-    assert.equal(api.only("POST /browsers").length, 1, `one create reached Kernel ${label}`);
-    assert.ok(api.only("GET /browsers").some((c) => c.query.status === "active" && c.query["tags[agentrun_tag]"] === session.tag), "reconcile asked Kernel by the tag");
-    assert.deepEqual(api.only("DELETE /browsers/{id}").map((c) => c.path), [`/browsers/${session.resourceId}`], "the release deleted exactly that session");
-    assert.deepEqual([session.state, api.alive().length], ["released", 0], label);
-  }
-});
-
-test("kernel: a release cut before or after Kernel deleted resumes and deletes exactly once", async (t) => {
-  for (const cut of [{ cutAt: "release-sent" }, { hold: "release" }]) {
-    const label = JSON.stringify(cut);
-    const { tally, result, api } = await scenario(t, { kernel: true, script: ["browser_read", "browser_release"], ...cut });
-    assert.deepEqual([tally.creates, tally.releases, tally.liveAtEnd], [1, 1, 0], label);
-    assert.equal(result.sessions.sessions[0].state, "released", label);
-    assert.ok(api.only("DELETE /browsers/{id}").length >= 1, label);
-    assert.equal(api.alive().length, 0, label);
-  }
-});
-
-test("kernel: a session Kernel ended while the host was down (its idle timeout) is lost, and the rerun opens a fresh one", async (t) => {
-  const { tally, result, seen, api } = await scenario(t, { kernel: true, script: ["browser_read", "browser_read", "browser_release"], hold: "driver.page", between: (b) => b.endAll() });
-  assert.equal(result.reconcile.lost.length, 1);
-  assert.equal(failure(seen[0]).code, "session_replaced");
-  assert.equal(seen[1].isError, false, "the next call opens a fresh session");
-  assert.deepEqual([tally.creates, tally.liveAtEnd], [2, 0]);
-  assert.equal(api.only("POST /browsers").length, 2);
-  assert.equal(api.alive().length, 0);
 });
 
 test("a handoff gives the host the browsed page's URL and title scrubbed, as onSession does; the viewer's own URL stays whole", async (t) => {

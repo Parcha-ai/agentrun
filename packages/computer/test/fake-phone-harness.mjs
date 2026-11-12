@@ -81,22 +81,23 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * list to send (a test makes a phone in between, or leaves a live one out, as a lagging listing would); `postAnswer`,
  * what POST /sessions answers in place of its 202: "503" (the phone is made, and a gateway answers 503), "empty" (the
  * phone is made, and the 202 holds no session), "503-unmade" (a 503, and nothing is made);
- * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `launchHidden`,
- * a launched app is reported in front (dumpsys) while the screen and the tree still show the launcher; `launchNothing`,
- * `am start` starts nothing at all; `twoPane`, Settings shows two panes, as Android does on a window 600 dp wide or
- * more: a row's page opens beside the list, which stays; `rowTapsMiss`, a tap on a Settings row does nothing. Either
- * leaves touch.tap with run 6's live words, and the case's words must tell them apart; `endLag`, a DELETE ends the
- * session asynchronously, as the live service did in run 7: it stays listed and readable as `closing` for endLag more
- * reads of it (GET /sessions/{id}), then is gone (404); `unlockEcho`, a wrong unlock code is answered with the code it
- * was given, twice, on the reply's first line; `onServer(service, stage)`, called with each request to the local adb
- * server before it is handled ("before") and before its answer goes back ("after"): a promise it answers holds the
- * request at that stage until it settles, so a test can order a disconnect against a connect.
+ * `code`, the unlock code the phone takes (default the one the API gives); `abi`, what getprop reports; `release`, the
+ * Android release it reports ("" for none); `launchHidden`, a launched app is reported in front (dumpsys) while the
+ * screen and the tree still show the launcher; `launchNothing`, `am start` starts nothing at all; `twoPane`, Settings
+ * shows two panes, as Android does on a window 600 dp wide or more: a row's page opens beside the list, which stays;
+ * `rowTapsMiss`, a tap on a Settings row does nothing. Either leaves touch.tap with run 6's live words, and the case's
+ * words must tell them apart; `endLag`, a DELETE ends the session asynchronously, as the live service did in run 7: it
+ * stays listed and readable as `closing` for endLag more reads of it (GET /sessions/{id}), then is gone (404);
+ * `unlockEcho`, a wrong unlock code is answered with the code it was given, twice, on the reply's first line;
+ * `onServer(service, stage)`, called with each request to the local adb server before it is handled ("before") and
+ * before its answer goes back ("after"): a promise it answers holds the request at that stage until it settles, so a
+ * test can order a disconnect against a connect.
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -355,6 +356,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			return ok("unlocked\n");
 		}
 		if (w[0] === "getprop" && w[1] === "ro.product.cpu.abi") return ok(`${abi}\n`);
+		if (w[0] === "getprop" && w[1] === "ro.build.version.release") return ok(`${release}\n`);
 		if (w[0] === "wm" && w[1] === "size") return ok(`Physical size: ${SCREEN.width}x${SCREEN.height}\n`);
 		if (w[0] === "wm" && w[1] === "density") return ok("Physical density: 160\n");
 		if (w[0] === "input" && w[1] === "tap") {
@@ -517,9 +519,9 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	function handle(service, options) {
 		if (options.transport !== undefined) {
 			const serial = [...transports].find(([, id]) => id === options.transport)?.[0];
-			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "phone", message: `the adb server refused host:transport-id: device not found` } };
+			if (serial === undefined || !phone.connected.has(serial)) return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server refused host:transport-id: device not found` } };
 			const shellService = /^shell(?:,v2)?(?:,raw)?:(.*)$/s.exec(service);
-			if (!shellService) return { ok: false, error: { code: "phone", message: `the adb server does not know ${service.split(":")[0]}` } };
+			if (!shellService) return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server does not know ${service.split(":")[0]}` } };
 			const ran = shellOn(serial, shellService[1]);
 			return { ok: true, value: ran.value.stdout.toString("utf8") };
 		}
@@ -530,7 +532,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (service === "host:devices-l") {
 			return { ok: true, value: [...transports].map(([endpoint, id]) => `${endpoint}          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:${id}\n`).join("") };
 		}
-		return { ok: false, error: { code: "phone", message: `the adb server does not know ${service}` } };
+		return { ok: false, error: { code: "vendor", vendor: "phone-harness", message: `the adb server does not know ${service}` } };
 	}
 	const serverCalls = [];
 
