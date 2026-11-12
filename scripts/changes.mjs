@@ -201,8 +201,8 @@ export function sectionDate(text, version) {
 /**
  * The release before `version`: the newest `v*` tag reachable from HEAD other than `v<version>`, its version, what changes/ held at it
  * (file name to text), and the package directories held at it (their manifest there says `"private": true`). The release workflow
- * folds every fragment its tag carries into the archives it publishes, so a fragment still in changes/ with that text shipped in that
- * release, for every package it names that the release published. Null when there is no such tag (or no repository).
+ * folds every fragment its tag carries into the archives it publishes, so a fragment of a name the tag carried shipped in that release,
+ * in the text the tag carried, for every package it names that the release published. Null when there is no such tag (or no repository).
  */
 export async function previousRelease(root, version) {
   let tag;
@@ -221,11 +221,19 @@ export async function previousRelease(root, version) {
   return { tag, version: tag.slice(1), carried, held };
 }
 
-/** Whether `fragment` shipped in `previous` (`previousRelease`) in the changelog `file`: its tag carried this exact file, so that
- *  release's fold took it, and the release published that changelog's package (the root's always). A package held at the tag and
- *  published now ships the fragment in this release, its first. */
-const shippedIn = (previous, fragment, file) => previous !== null && previous.carried.get(fragment.file) === fragment.text
-  && (file === 'CHANGELOG.md' || !previous.held.has(file.split('/')[1]));
+/** Whether the previous release (`previousRelease`) published the changelog `file`: the root's always, a package's unless it was
+ *  held at the tag. A package held at the tag and published now ships that tag's fragments in this release, its first. */
+const publishedAt = (previous, file) => file === 'CHANGELOG.md' || !previous.held.has(file.split('/')[1]);
+
+/** Accepts any package name: the text a tag carried passed the check then, and may name a package retired since (its bullet goes to
+ *  the root, as any name with no changelog of its own does). */
+const anyPackage = { has: () => true, *[Symbol.iterator]() {} };
+
+/** Whether `lines` hold `bullet` in `version`'s section. */
+function sectionHolds(lines, version, bullet) {
+  const at = lines.findIndex(line => isVersionHeading(line, version));
+  return at >= 0 && `${lines.slice(at + 1, sectionEnd(lines, at)).join('\n')}\n`.includes(`${bullet}\n`);
+}
 
 /**
  * Puts `bullets` into the published changelog `lines`, in place, under `version`'s section: at its end when it has one, else in a new
@@ -253,8 +261,9 @@ function addToSection(lines, version, date, bullets, newer) {
  * Unreleased section, which keeps its name and its entries.
  *
  * A fragment that the previous release's tag carried (`previousRelease`) shipped in that release: the release workflow folded it into
- * the archives at the tag, after the release pull request's fold. Its bullet goes into that release's section, under that release's
- * date from the root changelog, and never into this one, so main's changelogs end up saying what each release published. That holds
+ * the archives at the tag, after the release pull request's fold. Its bullet, in the text the tag carried, goes into that release's
+ * section, under that release's date from the root changelog, and never into this one, so main's changelogs end up saying what each
+ * release published: also when a pull request edited the fragment after the tag, or deleted it. That holds
  * per changelog: a package held at that tag and published now did not ship there, so its changelog gets the bullet in this release. A held
  * package's changelog has no sections: those bullets join its Unreleased in the fold's order with the rest. `options.previous` gives
  * that release (`previousRelease`'s shape, or null) for a `root` that is not the repository, as release-preflight's refold of a tag is.
@@ -271,13 +280,37 @@ export async function fold(root, version, date, options = {}) {
   // A fragment shipped in the previous release where that release published its changelog's package, and is this release's elsewhere.
   const shipped = new Set();
   const current = new Set();
-  for (const fragment of [...fragments].sort(foldOrder)) {
+  const filesOf = async fragment => {
     const files = new Set();
     for (const name of fragment.packages) files.add(await changelogFor(root, directories, name));
-    for (const file of files) {
-      const before = shippedIn(previous, fragment, file);
-      targets.get(file)[before ? 'before' : 'now'].push(fragment);
-      (before ? shipped : current).add(fragment);
+    return files;
+  };
+  // A fragment the tag carried is that release's by its file name, and its bullet is the text the tag carried, which is what the
+  // release published: a pull request that edited it since (a retired package dropped from its packages, say) changes neither.
+  const tagged = (file, text) => ({ file, text, ...parseFragment(text, `changes/${file} at ${previous.tag}`, anyPackage) });
+  for (const fragment of [...fragments].sort(foldOrder)) {
+    const was = previous?.carried.get(fragment.file);
+    if (was == null) {
+      for (const file of await filesOf(fragment)) targets.get(file).now.push(fragment);
+      current.add(fragment);
+      continue;
+    }
+    const then = tagged(fragment.file, was);
+    for (const file of await filesOf(then)) {
+      if (publishedAt(previous, file)) { targets.get(file).before.push(then); shipped.add(then); }
+      else { targets.get(file).now.push(fragment); current.add(fragment); }
+    }
+  }
+  // One the tag carried and a pull request deleted since (its only package retired, say) shipped all the same: its bullet goes into
+  // that release's section too, unless that section already holds it, as it does once this release's fold has taken it (the release
+  // workflow's fold at this release's tag sees every fragment of the previous tag deleted).
+  for (const [file, text] of previous?.carried ?? []) {
+    if (text === null || fragments.some(fragment => fragment.file === file)) continue;
+    const then = tagged(file, text);
+    for (const target of await filesOf(then)) {
+      if (!publishedAt(previous, target)) continue;
+      if (sectionHolds((await readFile(join(root, target), 'utf8')).split('\n'), previous.version, bulletOf(then.body))) continue;
+      targets.get(target).before.push(then); shipped.add(then);
     }
   }
   let previousDate;
@@ -300,7 +333,7 @@ export async function fold(root, version, date, options = {}) {
       appendToUnreleased(lines, [...before, ...now].sort(foldOrder).map(fragment => bulletOf(fragment.body)));
     } else {
       let touched = false;
-      if (before.length) { addToSection(lines, previous.version, previousDate, before.map(fragment => bulletOf(fragment.body)), version); touched = true; }
+      if (before.length) { addToSection(lines, previous.version, previousDate, [...before].sort(foldOrder).map(fragment => bulletOf(fragment.body)), version); touched = true; }
       const existing = lines.findIndex(line => isVersionHeading(line, version));
       const at = lines.findIndex(unreleasedHeading);
       if (existing >= 0) {
