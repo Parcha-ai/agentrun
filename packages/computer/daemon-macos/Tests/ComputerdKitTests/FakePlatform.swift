@@ -32,6 +32,8 @@ final class FakeOS: @unchecked Sendable {
 	var trusted = true
 	var screenRecording = true
 	var focusedID: Int?
+	/// The pid of the app in front; the fake app is pid 42.
+	var frontPID: Int32?
 	var frameHash = 0
 	var maxNodes: Int?
 	/// Called on every perform, set and post, so a test makes the UI react.
@@ -226,6 +228,8 @@ struct FakeWorkspace: Workspace {
 	let os: FakeOS
 
 	var backgroundLaunch: Feature { .on }
+
+	var frontmost: Int32? { os.with { $0.frontPID } }
 
 	func list() -> AppsListResult {
 		AppsListResult(apps: [App(id: "com.apple.Notes", name: "Notes"), App(id: "com.apple.Safari", name: "Safari")], foreground: "com.apple.Safari")

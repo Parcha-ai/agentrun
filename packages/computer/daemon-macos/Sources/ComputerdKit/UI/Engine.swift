@@ -400,7 +400,7 @@ public actor UIEngine {
 					try self.ax.perform(self.ax.pressAction, on: element!)
 					return .change
 				},
-			] + pointer(foreground) { route in
+			] + pointer(foreground, target) { route in
 				try await route.click(at: try self.center(ref, element!, in: target), button: .left, count: 1, in: target)
 				return .change
 			}
@@ -459,7 +459,7 @@ public actor UIEngine {
 			case .point(let p):
 				point = { target.toScreen(p) }
 			}
-			attempts = first + pointer(foreground) { route in
+			attempts = first + pointer(foreground, target) { route in
 				try await route.click(at: try point(), button: button, count: count, in: target)
 				return .change
 			}
@@ -485,7 +485,7 @@ public actor UIEngine {
 					try ax.insertText(text, on: typed!)
 					return readback
 				},
-			] + pointer(foreground) { route in
+			] + pointer(foreground, target) { route in
 				if let into, let element { try await self.focus(into, element, target: target, route: route) }
 				try await route.type(text, in: target)
 				return readback
@@ -500,7 +500,7 @@ public actor UIEngine {
 			}
 			// An item that reads disabled may work or not: a press of it that shows nothing goes on to keys.
 			press.tentative = menu?.enabled == false
-			attempts = [press] + pointer(foreground) { route in
+			attempts = [press] + pointer(foreground, target) { route in
 				try await route.key(chord, in: target)
 				return .change
 			}
@@ -511,7 +511,7 @@ public actor UIEngine {
 			case .ref(let ref): point = try center(ref, element!, in: target)
 			case .point(let p): point = target.toScreen(p)
 			}
-			attempts = pointer(foreground) { route in
+			attempts = pointer(foreground, target) { route in
 				try await route.scroll(at: point, dx: Double(dx ?? 0), dy: Double(dy ?? 0), in: target)
 				return .change
 			}
@@ -521,7 +521,7 @@ public actor UIEngine {
 			if let outside = path.first(where: { !window.contains($0) }) {
 				throw RPCError.invalid("(\(Int(outside.x)), \(Int(outside.y))) is outside the window, which is \(Int(window.w)) by \(Int(window.h)) points")
 			}
-			attempts = pointer(foreground) { route in
+			attempts = pointer(foreground, target) { route in
 				try await route.drag(path.map(target.toScreen), ms: ms ?? 300, in: target)
 				return .change
 			}
@@ -534,8 +534,11 @@ public actor UIEngine {
 		return Attempt(route: .semantic, off: off, run: run)
 	}
 
-	/// The background route, then the foreground one, for a step done by posting input.
-	func pointer(_ allowed: Bool, _ body: @escaping (any InputRoute) async throws -> Check) -> [Attempt] {
+	/// The background route, then the foreground one, for a step done by posting input. When the call allows the
+	/// foreground and the target's app is already in front, the foreground route goes first: the user's focus is there
+	/// already, and it raises the target's window and makes it key, which an app in front with several windows (Finder,
+	/// its desktop among them) needs for keys to reach that window.
+	func pointer(_ allowed: Bool, _ target: ResolvedTarget, _ body: @escaping (any InputRoute) async throws -> Check) -> [Attempt] {
 		var background: String?
 		if case .off(let reason) = platform.backgroundFeature { background = "ui.background is off here: \(reason)" }
 		var foreground: String?
@@ -548,10 +551,12 @@ public actor UIEngine {
 		}
 		let bg = platform.background
 		let fg = platform.foreground
-		return [
+		let routes = [
 			Attempt(route: .background, off: background) { try await body(bg) },
 			Attempt(route: .foreground, off: foreground, notAllowed: notAllowed) { try await body(fg) },
 		]
+		let inFront = allowed && foreground == nil && platform.workspace.frontmost == target.pid
+		return inFront ? routes.reversed() : routes
 	}
 
 	/// Takes the first route that can do the step; settles; checks. A route that turns out unable lets the next try. When

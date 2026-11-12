@@ -543,6 +543,24 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(os.entries.filter { $0 == "bg.key super+[" }.count, 1, "no second key")
 	}
 
+	func testKeysGoTheForegroundWayFirstWhenAllowedAndTheAppIsInFront() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry.hasSuffix(".key enter") { os.with { $0.elements[5]?.name = "Renaming" } }
+		}
+		os.with { $0.frontPID = 42 }
+		let front = try await engine.act(UiActParams(steps: [.key("enter")], foreground: true))
+		XCTAssertEqual(ran(front, 0)?.0, .foreground)
+		os.with { $0.elements[5]?.name = "Hello" }
+		let alone = try await engine.act(UiActParams(steps: [.key("enter")]))
+		XCTAssertEqual(ran(alone, 0)?.0, .background, "in front, but foreground not allowed")
+		os.with { $0.frontPID = 7 }
+		os.with { $0.elements[5]?.name = "Hello" }
+		let behind = try await engine.act(UiActParams(steps: [.key("enter")], foreground: true))
+		XCTAssertEqual(ran(behind, 0)?.0, .background, "another app in front: the background way first")
+	}
+
 	func testAStepThatShowsNothingStaysPutWithNoExpectOrNoRouteAllowed() async throws {
 		backMenuItemThatDoesNothing()
 		let engine = os.engine()

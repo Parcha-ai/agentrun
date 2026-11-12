@@ -209,6 +209,8 @@ public protocol InputRoute: Sendable {
 public protocol Workspace: Sendable {
 	/// apps.launch with background: true works here, or why not.
 	var backgroundLaunch: Feature { get }
+	/// The pid of the app in front, if any.
+	var frontmost: Int32? { get }
 	func list() -> AppsListResult
 	func launch(_ id: String, url: String?, background: Bool) async throws
 	func terminate(_ id: String) throws
