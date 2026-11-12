@@ -105,6 +105,11 @@ public protocol Accessibility: Sendable {
 	/// Inserts text at the element's caret, replacing its selection.
 	func insertText(_ text: String, on element: ElementHandle) throws
 	func focus(_ element: ElementHandle) throws
+	/// Selects the element, or the row or item it sits in, as a click on it would, where the app lets that selection be
+	/// set (a Finder file, a table row). Throws RouteUnavailable where it does not. Answers the element now selected.
+	func select(_ element: ElementHandle) throws -> ElementHandle
+	/// The element is selected now.
+	func isSelected(_ element: ElementHandle) -> Bool
 	/// Asks the element's scroll area to show it.
 	func scrollToVisible(_ element: ElementHandle) throws
 	/// The element with keyboard focus in the target's app.

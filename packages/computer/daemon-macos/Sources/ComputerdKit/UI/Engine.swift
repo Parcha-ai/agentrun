@@ -66,9 +66,18 @@ public actor UIEngine {
 		let snapshot: Snapshot
 		switch (ax.feature, platform.capture.feature) {
 		case (.on, _):
-			resolved = try ax.resolve(target)
-			try policy.check(resolved.app.id)
-			snapshot = try ax.snapshot(resolved, maxNodes: Limits.maxUiNodes)
+			var found = try ax.resolve(target)
+			try policy.check(found.app.id)
+			do {
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+			} catch let gone as RPCError where gone.kind == .notFound && target?.window == nil {
+				// A target that names no window is the app's main one: when the app swapped it between finding and
+				// reading it (a first-run window giving way to the real one), the look follows the new main window.
+				found = try ax.resolve(target)
+				try policy.check(found.app.id)
+				snapshot = try ax.snapshot(found, maxNodes: Limits.maxUiNodes)
+			}
+			resolved = found
 		case (.off, .on):
 			resolved = try platform.capture.resolve(target)
 			try policy.check(resolved.app.id)
@@ -372,10 +381,18 @@ public actor UIEngine {
 			switch at {
 			case .ref(let ref):
 				let actions = node!.actions
-				if button == .left && count == 1 {
-					first.append(semantic(actions.contains(ax.pressAction) ? nil : "\(ref) has no \(ax.pressAction)") {
+				if button == .left && count == 1 && actions.contains(ax.pressAction) {
+					first.append(semantic(nil) {
 						try self.ax.perform(self.ax.pressAction, on: element!)
 						return .change
+					})
+				} else if button == .left && count == 1 {
+					// No AXPress (a Finder file, a table row): a click on it selects it, so the semantic route selects
+					// it and reads the selection back. A point only when Accessibility cannot select it (a canvas).
+					first.append(semantic(nil) {
+						let selected = try self.ax.select(element!)
+						let ax = self.ax
+						return .readback { ax.isSelected(selected) }
 					})
 				} else if button == .right && count == 1 {
 					first.append(semantic(actions.contains(ax.menuAction) ? nil : "\(ref) has no \(ax.menuAction)") {

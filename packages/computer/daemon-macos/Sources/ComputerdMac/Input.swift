@@ -66,6 +66,37 @@ struct BackgroundRoute: InputRoute {
 		return wid
 	}
 
+	/// The target's window id, for input at a screen point: refused when another app's window is over the point, since
+	/// the click would land on that window (on a Mac mini, a Finder window under Computerd's own and Notes' sheet took
+	/// 24 s of clicks that renamed nothing). The foreground route raises the window first, so it is the way on.
+	func window(_ t: ResolvedTarget, at point: CGPoint) throws -> CGWindowID {
+		let wid = try window(t)
+		if let cover = Self.cover(at: point, over: wid, pid: t.pid) {
+			throw RouteUnavailable("window \(t.window.id) of \(t.app.id) is covered at (\(Int(point.x)), \(Int(point.y))) by \(cover)")
+		}
+		return wid
+	}
+
+	/// The app whose window is over the point, in front of the target's window; nil when nothing is. The app's own
+	/// windows (a sheet, a popover) do not count: they are where its own click goes. Only ordinary windows (layer 0)
+	/// count, so the menu bar, the Dock and transparent system overlays never refuse a click.
+	static func cover(at point: CGPoint, over wid: CGWindowID, pid: pid_t) -> String? {
+		func number(_ info: [String: Any], _ key: CFString) -> NSNumber? { info[key as String] as? NSNumber }
+		// On-screen windows, front to back.
+		let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+		for info in list {
+			if number(info, kCGWindowNumber)?.uint32Value == wid { return nil }
+			if number(info, kCGWindowOwnerPID)?.int32Value == pid { continue }
+			if number(info, kCGWindowLayer)?.intValue != 0 { continue }
+			if (number(info, kCGWindowAlpha)?.doubleValue ?? 1) == 0 { continue }
+			guard let dict = info[kCGWindowBounds as String] as? NSDictionary,
+				let rect = CGRect(dictionaryRepresentation: dict as CFDictionary), rect.contains(point)
+			else { continue }
+			return (info[kCGWindowOwnerName as String] as? String).map { "\($0)'s window" } ?? "another app's window"
+		}
+		return nil
+	}
+
 	/// Runs body with the app thinking it is active and, for keys, the window key inside it; nothing is raised. An
 	/// app already in front needs none of it.
 	static func withFocus(_ sky: SkyLight, _ pid: pid_t, _ wid: CGWindowID, key: Bool, settleMs: Double, _ body: () throws -> Void) throws {
@@ -127,10 +158,10 @@ struct BackgroundRoute: InputRoute {
 	}
 
 	func click(at point: Point, button: MouseButton, count: Int, in t: ResolvedTarget) async throws {
-		let wid = try window(t)
+		let screen = CGPoint(x: point.x, y: point.y)
+		let wid = try window(t, at: screen)
 		let sky = self.sky
 		let pid = t.pid
-		let screen = CGPoint(x: point.x, y: point.y)
 		let stamped = Self.location(screen, t)
 		let primer = CGPoint(x: -1, y: -1)
 		try await InputQueue.run {
@@ -160,10 +191,10 @@ struct BackgroundRoute: InputRoute {
 	}
 
 	func scroll(at point: Point, dx: Double, dy: Double, in t: ResolvedTarget) async throws {
-		let wid = try window(t)
+		let screen = CGPoint(x: point.x, y: point.y)
+		let wid = try window(t, at: screen)
 		let sky = self.sky
 		let pid = t.pid
-		let screen = CGPoint(x: point.x, y: point.y)
 		try await InputQueue.run {
 			// In pieces of at most 100 points, as a wheel sends them; dy > 0 shows what is below.
 			var (left, down) = (dx, dy)
@@ -184,10 +215,12 @@ struct BackgroundRoute: InputRoute {
 	}
 
 	func drag(_ path: [Point], ms: Int, in t: ResolvedTarget) async throws {
-		let wid = try window(t)
+		let points = dragPoints(path, ms: ms)
+		guard let start = points.first, let end = points.last else { throw RouteUnavailable("a drag needs a path") }
+		_ = try window(t, at: end)
+		let wid = try window(t, at: start)
 		let pid = t.pid
 		let sky = self.sky
-		let points = dragPoints(path, ms: ms)
 		let pauseMs = Double(ms) / Double(max(1, points.count - 1))
 		try await InputQueue.run {
 			guard let source = CGEventSource(stateID: .combinedSessionState) else { throw RouteUnavailable("the system made no event source") }

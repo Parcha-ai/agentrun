@@ -375,6 +375,26 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(since.diff, UiDiff(added: [], removed: [], changed: []), "the act's state already shows Later")
 	}
 
+	func testAClickOnARefWithNoPressSelectsIt() async throws {
+		os.add(9, "image", name: "draft.txt", frame: Rect(200, 300, 64, 64), parent: 2)
+		os.with { $0.elements[9]?.selectable = true }
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.click(.ref(ref(r, "draft.txt")), button: nil, count: nil)]))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true, "the selection read back")
+		XCTAssertTrue(os.entries.contains("ax.select 9"))
+		XCTAssertFalse(os.entries.contains { $0.hasPrefix("bg.click") }, "no point while the element is reachable")
+	}
+
+	func testObservingAnAppFollowsAWindowItSwappedMidLook() async throws {
+		os.swapAfterResolve = UiWindow(id: "8", title: "Notes", bounds: Rect(100, 50, 800, 600))
+		let r = try await os.engine().observe(UiObserveParams(target: Target(app: "com.apple.Notes")))
+		XCTAssertEqual(r.window.id, "8")
+		os.swapAfterResolve = UiWindow(id: "9", title: "Notes", bounds: Rect(100, 50, 800, 600))
+		_ = await throwsKind(.notFound) { try await self.os.engine().observe(UiObserveParams(target: Target(app: "com.apple.Notes", window: "8"))) }
+	}
+
 	func testAStepThatClosesItsWindowFollowsTheAppsNextWindow() async throws {
 		let engine = os.engine()
 		_ = try await engine.observe(UiObserveParams())

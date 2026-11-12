@@ -158,9 +158,16 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		return front
 	}
 
-	/// The app's windows as accessibility elements.
+	/// The app's windows as accessibility elements: its window list, then its focused and main windows, which an app's
+	/// first-run window (Notes' "Welcome to Notes") can be without being in the list.
 	func windows(_ pid: pid_t) -> [AXUIElement] {
-		AX.elements(AX.copy(AXUIElementCreateApplication(pid), kAXWindowsAttribute))
+		Self.windows(of: AXUIElementCreateApplication(pid))
+	}
+
+	static func windows(of root: AXUIElement) -> [AXUIElement] {
+		let listed = AX.elements(AX.copy(root, kAXWindowsAttribute))
+		let named = [kAXFocusedWindowAttribute, kAXMainWindowAttribute].compactMap { AX.element(AX.copy(root, $0)) }
+		return listed + named.filter { window in !listed.contains { CFEqual($0, window) } }
 	}
 
 	/// The accessibility element of a window the target names.
@@ -186,7 +193,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		let id = app.bundleIdentifier ?? "pid.\(pid)"
 		let root = AXUIElementCreateApplication(pid)
 		askForTree(root, pid)
-		let all = AX.elements(AX.copy(root, kAXWindowsAttribute))
+		let all = Self.windows(of: root)
 		let element: AXUIElement
 		if let wanted = target?.window {
 			guard let found = all.first(where: { sky.windowID($0).map { String($0) } == wanted }) else {
@@ -313,6 +320,37 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 
 	func focus(_ element: ElementHandle) throws {
 		try AX.check(AXUIElementSetAttributeValue(element.ax, kAXFocusedAttribute as CFString, kCFBooleanTrue), "focus")
+	}
+
+	func select(_ element: ElementHandle) throws -> ElementHandle {
+		// The element, then the two elements above it (a file's image sits in its item, a cell in its row): the first
+		// whose AXSelected can be set is set; else the first whose parent can take it as its selected children.
+		var chain: [AXUIElement] = [element.ax]
+		for _ in 0..<2 {
+			guard let parent = AX.element(AX.copy(chain[chain.count - 1], kAXParentAttribute)) else { break }
+			chain.append(parent)
+		}
+		for e in chain where Self.settable(e, kAXSelectedAttribute) {
+			try AX.check(AXUIElementSetAttributeValue(e, kAXSelectedAttribute as CFString, kCFBooleanTrue), "select")
+			return ElementHandle(ax: e)
+		}
+		for e in chain {
+			guard let parent = AX.element(AX.copy(e, kAXParentAttribute)), Self.settable(parent, kAXSelectedChildrenAttribute) else { continue }
+			try AX.check(AXUIElementSetAttributeValue(parent, kAXSelectedChildrenAttribute as CFString, [e] as CFArray), "select")
+			return ElementHandle(ax: e)
+		}
+		throw RouteUnavailable("neither it nor the row or item it sits in can be selected through Accessibility")
+	}
+
+	func isSelected(_ element: ElementHandle) -> Bool {
+		if AX.bool(AX.copy(element.ax, kAXSelectedAttribute)) == true { return true }
+		guard let parent = AX.element(AX.copy(element.ax, kAXParentAttribute)) else { return false }
+		return AX.elements(AX.copy(parent, kAXSelectedChildrenAttribute)).contains { CFEqual($0, element.ax) }
+	}
+
+	static func settable(_ e: AXUIElement, _ attribute: String) -> Bool {
+		var settable: DarwinBoolean = false
+		return AXUIElementIsAttributeSettable(e, attribute as CFString, &settable) == .success && settable.boolValue
 	}
 
 	func scrollToVisible(_ element: ElementHandle) throws {

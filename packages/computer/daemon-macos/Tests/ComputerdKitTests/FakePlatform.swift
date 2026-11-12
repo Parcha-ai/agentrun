@@ -16,6 +16,7 @@ final class FakeOS: @unchecked Sendable {
 		var actions: [String] = []
 		var settable = false
 		var textInput = false
+		var selectable = false
 	}
 
 	let lock = NSRecursiveLock()
@@ -24,6 +25,9 @@ final class FakeOS: @unchecked Sendable {
 	var window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600))
 	/// False once the app's last window closed: then no target resolves.
 	var hasWindow = true
+	/// Once set, the next resolve answers the window it had and then swaps in this one, as an app does when its
+	/// first-run window gives way to the real one between finding a window and reading it.
+	var swapAfterResolve: UiWindow?
 	var app = UiApp(id: "com.apple.Notes", name: "Notes", pid: 42)
 	var trusted = true
 	var screenRecording = true
@@ -92,12 +96,18 @@ struct FakeAX: Accessibility {
 			if let app = target?.app, app != os.app.id { throw RPCError.notFound("\(app) is not running") }
 			if let window = target?.window, window != os.window.id || !os.hasWindow { throw RPCError.notFound("no window \(window)") }
 			if !os.hasWindow { throw RPCError.notFound("\(os.app.id) has no window open") }
-			return ResolvedTarget(app: os.app, pid: 42, window: os.window)
+			let found = ResolvedTarget(app: os.app, pid: 42, window: os.window)
+			if let swap = os.swapAfterResolve {
+				os.swapAfterResolve = nil
+				os.window = swap
+			}
+			return found
 		}
 	}
 
 	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot {
-		os.with { os in
+		try os.with { os in
+			if target.window.id != os.window.id { throw RPCError.notFound("\(os.app.id) has no window \(target.window.id) any more: observe again") }
 			let cap = min(maxNodes, os.maxNodes ?? maxNodes)
 			var index: [Int: Int] = [:]
 			var nodes: [RawNode] = []
@@ -148,6 +158,16 @@ struct FakeAX: Accessibility {
 		os.with { $0.focusedID = id(element) }
 		os.record("ax.focus \(id(element))")
 	}
+
+	func select(_ element: ElementHandle) throws -> ElementHandle {
+		let ok = os.with { $0.elements[id(element)]?.selectable == true }
+		guard ok else { throw RouteUnavailable("not selectable") }
+		os.with { $0.elements[id(element)]?.flags.insert(.selected) }
+		os.record("ax.select \(id(element))")
+		return element
+	}
+
+	func isSelected(_ element: ElementHandle) -> Bool { os.with { $0.elements[id(element)]?.flags.contains(.selected) == true } }
 
 	func scrollToVisible(_ element: ElementHandle) throws {
 		os.record("ax.scrolltovisible \(id(element))")
