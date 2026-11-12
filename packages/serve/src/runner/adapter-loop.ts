@@ -27,6 +27,11 @@ import { raiseFollowUpId } from "../run-view.js";
  *  on its end (a fresh reopen). */
 const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold"]);
 
+/** What the run's learned workflow did when it ran first: answered (`text` its answer) or handed the job back (`text`
+ *  the agent's first input, runner/workflow-first.ts handbackText). */
+type Served = { readonly outcome: "answered" | "handed_back"; readonly text: string };
+/** A learned workflow's handback is the server's message to the agent, never the person's. */
+const HANDED_BACK_ORIGIN: MessageOrigin = { kind: "server", reason: "handed_back" };
 /** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
 const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
@@ -51,6 +56,8 @@ import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 import { budgetOf, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
+import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
+import { handbackText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData } from "./workflow-first.js";
 
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
@@ -121,6 +128,10 @@ export interface AdapterRunSpec {
   readonly stopSettleMs?: number;
   /** The run's agent: named to the end-of-run step (LoopDeps.endOfRun), which a spec without it cannot be asked. */
   readonly agentId?: string;
+  /** The learned workflow the run starts on, before its agent's first turn (runner/workflow-first.ts workflowFirstOf):
+   *  run once through the session's own learned_workflow tool (its gate, record, ledger and cap), its answer the run's
+   *  answer, or its handback the agent's first input. Absent: the agent takes the run from its first turn. */
+  readonly workflowFirst?: WorkflowFirst;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
    *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
@@ -723,6 +734,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** Set once the claim's last turn has ended and nothing more is sent: a message after it waits for the run's end, as one
    *  during the end-of-run turn does. */
   let turnsOver = false;
+  /** While the run's learned workflow runs first (AdapterRunSpec.workflowFirst): a message waits for it, then goes the way
+   *  any message goes once the workflow answered (the run is ending) or handed the job back (the agent's turn runs). */
+  let servingFirst: Promise<void> | undefined;
   /** The wait in the claim is over (an answer placed, a lapse, the run's end, park, restart or loss): its holds go. `of`:
    *  only while it is that wait's (a wait that settles late never ends a later one). */
   const endWait = (of?: object): void => {
@@ -907,6 +921,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!gate || !session) await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
+    if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The run's learned workflow is running first: nothing is sent to the agent until it answered or handed the job back.
+    if (servingFirst) await servingFirst;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
     // to answer. Left untaken, the run's end opens a completed run again with it as a new turn (store run-patch.ts
@@ -1677,9 +1694,98 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A reopen of a session still new whose message was never placed (the run stopped, parked or was lost meanwhile):
         // nothing is sent, least of all the input the person stopped.
         const firstUnplaced = firstInputPlaced !== undefined && !followedUp;
-        const placed = followedUp || (session!.state !== "idle" && !firstUnplaced);
-        if (followedUp || firstUnplaced) {
-          // The follow-up is the turn this claim runs, or there is none.
+        /** The run's learned workflow, run first (AdapterRunSpec.workflowFirst), once for the run: the person's input on the
+         *  record, then the workflow's call through the session's own learned_workflow tool as the loop wrapped it (its gate
+         *  with its ask, its record, its flush and booking, the stop's abort), under one call id (replay never: a call a
+         *  crash cut is ended interrupted and handed back, never run again), then the WORKFLOW_FIRST entry saying how it
+         *  ended, with its answer as the model's message when it answered, in one commit. pi keeps no record of the loop's
+         *  (its own entries are its record): its call goes on a record of its own for this step, the same entries. A claim
+         *  that finds the entry or the call's end takes it as it is. Undefined: the run is its agent's (the tool is not the
+         *  run's, or the gate denies it before anything is written); "park": the call waits for a person's approval. */
+        const serveFirst = async (first: WorkflowFirst): Promise<Served | "park" | undefined> => {
+          const learned = tools.find((tool) => tool.name === LEARNED_WORKFLOW_TOOL);
+          if (!learned) return undefined;
+          const [on, theRoot, theGate] = [harness!, root!, gate!];
+          const args = { name: first.name, input: first.input };
+          const call = { callId: WORKFLOW_FIRST_CALL, tool: LEARNED_WORKFLOW_TOOL, args };
+          const job = (text: string): Served => ({ outcome: "handed_back", text: handbackText(first.name, text, spec.input) });
+          const kept = findData<WorkflowFirstData>(await entriesOf(theGate.journal, theRoot.id, context), WORKFLOW_FIRST, () => true);
+          const rec = record ?? (await openCliRecord(on, theGate.journal, context, now, spec.cwd));
+          const ended = rec.endOf(WORKFLOW_FIRST_CALL);
+          if (kept?.outcome === "answered") return { outcome: "answered", text: ended?.output ?? "" };
+          // Handed back on an earlier claim whose handback never reached the agent (the session is still new): sent now.
+          if (kept) return job(ended?.output ?? "");
+          if (!ended) {
+            // A deny before anything is written leaves the run its agent's, as if the workflow were not there.
+            const before = await spec.gate?.({ callId: call.callId, tool: call.tool as never, args });
+            if (before === "deny" || typeof before === "object") return undefined;
+            if (spec.inputOrigin) await rec.input(spec.input, spec.inputOrigin);
+            else await rec.person(spec.input);
+          }
+          let answer: { text: string; isError: boolean };
+          if (ended) answer = { text: ended.output ?? (ended.status === "interrupted" ? endedAnswer(LEARNED_WORKFLOW_TOOL, ended).text : ""), isError: ended.status !== "done" };
+          else {
+            const verdict = await preIntentGate(spec, hooks, wrapUp, (asked) => rec.park(asked.callId, asked.tool, asked.args ?? {}, false, true))(call, context);
+            if (verdict !== "allow" && "park" in verdict) return "park";
+            if (verdict !== "allow") {
+              // Refused at its gate once the job was on the record (its ask declined, the cap's wrap-up): handed back in
+              // the gate's words, the call ended refused.
+              if (rec.unsentParked().includes(WORKFLOW_FIRST_CALL)) await rec.end(WORKFLOW_FIRST_CALL, "refused", verdict.deny);
+              else await rec.refused(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false, verdict.deny);
+              answer = { text: verdict.deny, isError: true };
+            } else {
+              // A CLI's record takes the call's start and end inside the wrapper; pi's step record here.
+              if (!record) await rec.start(WORKFLOW_FIRST_CALL, LEARNED_WORKFLOW_TOOL, args, false);
+              const got = await learned.call(args, { callId: WORKFLOW_FIRST_CALL, signal: stopAbort.signal } as never);
+              answer = { text: got.text, isError: got.isError === true };
+              if (!record) await rec.end(WORKFLOW_FIRST_CALL, stopAbort.signal.aborted ? "interrupted" : answer.isError ? "failed" : "done", answer.text);
+            }
+          }
+          if (stopAbort.signal.aborted) return undefined;
+          const outcome = answer.isError ? "handed_back" : "answered";
+          const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
+          await on.commit(async (tx) => {
+            if (outcome === "answered") await tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "model", text: answer.text, at: now() } as unknown as JsonValue });
+            await tx.appendEntry(theRoot.id, { kind: WORKFLOW_FIRST, data: data as unknown as JsonValue });
+          }, context);
+          return outcome === "answered" ? { outcome, text: answer.text } : job(answer.text);
+        };
+        // The run's learned workflow first, before anything is sent to its agent (runner/workflow-first.ts): its answer is
+        // the run's, or its handback is the agent's first input. Only while the session is new: a claim that finds a turn
+        // under way (the handback sent) never runs it again.
+        let served: Served | undefined;
+        if (spec.workflowFirst && !followedUp && !firstUnplaced && session!.state === "new") {
+          let release!: () => void;
+          servingFirst = new Promise<void>((resolve) => (release = resolve));
+          try {
+            const step = await serveFirst(spec.workflowFirst);
+            if (step === "park") {
+              await releaseHost(harness);
+              gate.seal(new Parked());
+              return { state: "parked" };
+            }
+            // A stop while it ran ends the run stopped, its call ended interrupted on the record; a lost claim leaves it.
+            const cutBy = stopReason as StopReason | undefined;
+            if (cutBy?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cutBy.cancel), [cutBy.commandId], await cutRows(claim, spec, "stopped"));
+            if (cutBy || deps.signal.aborted) return await interrupted(cutBy?.kind ?? "its claim's signal aborted");
+            served = step;
+            if (served?.outcome === "answered") turnsOver = true;
+            else if (served?.outcome === "handed_back") {
+              // The agent's first input: the handback, the server's (its row "AgentRun: …"), the job whole after it. Cut of
+              // every secret the runner holds: the workflow's words may quote what its steps read.
+              const text = deps.redact ? deps.redact(served.text) : served.text;
+              await record?.message(text, HANDED_BACK_ORIGIN);
+              await session!.send(text, { origin: HANDED_BACK_ORIGIN });
+            }
+          } finally {
+            servingFirst = undefined;
+            release();
+          }
+        }
+        const placed = served !== undefined || followedUp || (session!.state !== "idle" && !firstUnplaced);
+        if (served || followedUp || firstUnplaced) {
+          // The workflow answered, or handed back and its handback is the turn; the follow-up is the turn this claim runs,
+          // or there is none.
         } else if (session!.state === "new") {
           // A trigger's first input is its origin's (the launch's), never written as the person's.
           if (spec.inputOrigin) await record?.input(spec.input, spec.inputOrigin);
@@ -1688,8 +1794,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         else if (session!.state === "open_turn") await session!.recover();
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
-        // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold.
-        let turn: Promise<TurnEnd | "lapsed"> = placed ? session!.turnEnd() : idleTurnOf(harness, root);
+        // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold. None
+        // when the workflow answered: the run ends on its answer.
+        let turn: Promise<TurnEnd | "lapsed"> = served?.outcome === "answered" ? new Promise<never>(() => {}) : placed ? session!.turnEnd() : idleTurnOf(harness, root);
         // Set on every way out of the loop below but parkOn's, which returns before it is read.
         let data!: EndData;
         let failedWith: string | undefined;
@@ -1697,7 +1804,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let parkOn: string | undefined;
         /** The ask_person call the run waits on in its claim, while it does. */
         let waitingOn: string | undefined;
-        for (;;) {
+        if (served?.outcome === "answered") data = { state: "ended" };
+        else for (;;) {
           const end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const)]);
           if (end === "parked") {
             // Let the tool host go first (a browser's release, booked under the live claim), then seal.

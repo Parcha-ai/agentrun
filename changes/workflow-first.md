@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A learning agent now starts a run on its learned workflow before its own model takes a turn, when exactly one active learned workflow fits the run's input. A workflow fits when its input schema has a required field and the run's input passes that schema. If the workflow answers, its answer is the run's answer and the agent's model is never asked. If it hands back (an `escalate` node holds, a node fails, or its output fails its schema), the same run goes on to the agent, whose first input says which step handed back and why, what the workflow had, and then the job. The run's `metrics` say which path it took: `path` is `workflow`, `handed_back` or `agent`, with `learned_revision`, `workflow` and `workflow_digest`. Its cost includes the workflow's model nodes. A handed-back run's end-of-run turn asks for the workflow's next revision by its name. The reflect prompt asks that a workflow take the run's input as the run is given it, and that its model nodes name tier `fast` unless a step needs the agent's own judgment.
+A workflow whose last 10 workflow-first runs handed back more than 5 times is skipped until a new revision of it lands. `learned_workflow` set to ask still parks the run before any node runs. Set `workflow_first: false` on a run to send it to the agent from its first turn.

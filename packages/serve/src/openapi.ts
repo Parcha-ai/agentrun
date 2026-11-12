@@ -1986,6 +1986,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   RunCreate: {
     cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    workflow_first: {
+      type: "boolean",
+      description: "Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run's `metrics.path` says which: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.",
+      "x-agentrun-serve": "workflowfirst/1",
+    },
     archil_disk: {
       type: "object", additionalProperties: false, required: ["disk_id"],
       properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The disk id Archil returned when the disk was made (`dsk-` and 16 hex digits): Archil's API addresses disks by id, not by owner/name. In this server's Archil region (the account key's)." } },

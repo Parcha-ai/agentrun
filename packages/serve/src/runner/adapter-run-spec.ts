@@ -55,7 +55,10 @@ import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { wireName } from "../catalog.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { runMetrics } from "./metrics.js";
+import { bookedSpend, cliRunMetrics, runMetrics } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
+import { piShaped } from "../store-reads/journal.js";
+import { pastOf, pathMetrics, WORKFLOW_FIRST, workflowFirstOf } from "./workflow-first.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
@@ -590,6 +593,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   gate.learn(workflows);
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
+  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
+  const workflowFirst = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : undefined;
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
@@ -678,6 +683,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
+    ...(workflowFirst ? { workflowFirst } : {}),
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
@@ -690,12 +696,25 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     endPatch: async () => {
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
-      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
+      // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics).
+      const path = pathMetrics(launch, entries as never);
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
+      if (entries.some((entry) => entry.kind === WORKFLOW_FIRST)) {
+        // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its cost), so
+        // its cost is its booking's, as a CLI harness's run reads it: every model request of the run, the workflow's nodes
+        // and the agent's own after a handback, at what the session booked them at, with its decisions and paid calls.
+        const all = (await journalEntries(deps.journal(claim), context)) as never;
+        const booked = bookedSpend(all, "model");
+        const decisions = bookedSpend(all, "decisions").usd;
+        const metrics = cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model });
+        const total = booked.usd === null || decisions === null || paid === null ? null : booked.usd + decisions + paid;
+        return { costUsd: total, metrics: { ...metrics, ...path } };
+      }
+      const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
       const total = costUsd === null || paid === null ? null : costUsd + paid;
-      return { ...(total !== null ? { costUsd: total } : {}), metrics };
+      return { ...(total !== null ? { costUsd: total } : {}), metrics: { ...metrics, ...path } };
     },
     // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
     // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).

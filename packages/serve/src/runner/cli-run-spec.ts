@@ -61,6 +61,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { pastOf, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
@@ -499,6 +500,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), modelName: () => chosen.model.modelId });
     }
   }
+  // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
+  const workflowFirst = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : undefined;
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
@@ -546,6 +549,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
+    ...(workflowFirst ? { workflowFirst } : {}),
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
@@ -576,7 +580,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
       const total = costUsd === null || paid === null ? null : costUsd + paid;
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics };
+      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, entries as never) } };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.

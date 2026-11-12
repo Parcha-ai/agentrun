@@ -58,6 +58,9 @@ export interface RunLaunch {
    *  else AGENT_MODEL_STRONG), absent when it names none and the agent's own grades it; and `seedFailed`, why it starts with
    *  nothing learned when it does (SeedFailed). Absent when the run does not learn. */
   readonly learning?: { readonly given: readonly { readonly file: string; readonly name: string }[]; readonly seed: string | null; readonly section: string; readonly seedNotes?: number; readonly skills?: readonly string[]; readonly workflows?: readonly string[]; readonly notesOnly?: true; readonly gradeModel?: string; readonly seedFailed?: SeedFailed };
+  /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
+   *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
+  readonly workflowFirst?: false;
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -132,6 +135,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.boxAllowSet ? { box_allow_set: true } : {}),
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.notesOnly ? { notesOnly: true } : {}), ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}) } } : {}),
+    ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -179,6 +183,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null, section: "" } } : {}),
+    ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),

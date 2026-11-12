@@ -36,8 +36,9 @@ const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP
  *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. `workflows`, false
  *  for a run of a revision that says `learning: "notes"`: the prompt asks for notes and a skill alone, says to keep no
  *  workflow draft, and asks for none (`draftFor` and `described` are not said). */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean }): string {
-  const { dir, active, tools = [], draftFor = [], described = [], workflows = true } = options;
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; workflows?: boolean; handedBack?: string }): string {
+  const { dir, active, tools = [], draftFor = [], described = [], workflows = true, handedBack } = options;
+  if (handedBack !== undefined && !SKILL_NAME.test(handedBack)) throw new Error("the workflow that handed the run back must be a workflow's name");
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
@@ -105,6 +106,10 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
     ...(workflows ? [
       "A job that runs end to end as model and tool-call steps, from a defined input to a defined output, is a workflow draft,",
       "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
+      "A workflow whose input takes a run's input as the run is given it (the same field names, such as `content`) runs first",
+      "on later runs, before you: it answers alone, or ends on an `escalate` node and hands the case back to you with what it found.",
+      "Give each of its model nodes `\"tier\": \"fast\"` unless that step needs your own judgment: a node that names no tier runs on your model.",
+      ...(handedBack ? [handbackAsk(handedBack)] : []),
       ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
     ] : []),
     "",
@@ -155,6 +160,10 @@ const describedLines = (described: readonly { readonly name: string; readonly do
   });
   return lines.length ? ["What each tool a call node may run takes and gives:", ...lines] : [];
 };
+
+/** The one line that asks for a revision of the learned workflow that ran first on this run and handed it back. */
+const handbackAsk = (name: string): string =>
+  `Your learned workflow \`${name}\` ran first on this run and handed it back to you. If a change to it would have let it finish this case, give \`${name}\` again whole under its name with that change; if handing this case back was right, keep it as it is.`;
 
 /** The one line that asks for a workflow draft of a skill's job, by the skill's name. */
 const draftAsk = (names: readonly string[]): string => {

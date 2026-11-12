@@ -249,6 +249,28 @@ async function sideStream(models: RunModels, model: unknown, context: object, op
   return stream;
 }
 
+/** The most of a state's fields a handback names, and the longest value it shows whole: a longer one is named by its
+ *  size, never cut mid-value, so the run's redactor still finds a held value in what it shows. */
+const HANDBACK_FIELDS = 20;
+const HANDBACK_VALUE = 2_000;
+
+/** The steps a learned workflow ran, as one line after its words: each node's label, kind and status. */
+const stepsLine = (nodes: readonly LearnedNode[]): string =>
+  nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "";
+
+/** What a learned workflow that escalated says to whoever takes the job on: the step that handed it back and its own
+ *  words for why, the steps it ran, and what it had found (its state's top-level fields, each whole or named by its
+ *  size). A guard that fails is a handback, never a failure of the run: the agent finishes the job from here. */
+export function handedBackText(name: string, escalation: { kind: string; stage: string; summary: string; label?: string }, state: Record<string, unknown>, nodes: readonly LearnedNode[]): string {
+  const at = escalation.label ? ` at its step "${escalation.label}"` : "";
+  const why = escalation.summary?.trim() || escalation.kind;
+  const fields = Object.entries(state ?? {}).filter(([key]) => !key.startsWith("$")).slice(0, HANDBACK_FIELDS).map(([key, value]) => {
+    const text = typeof value === "string" ? value : JSON.stringify(value) ?? "null";
+    return `- ${key}: ${text.length > HANDBACK_VALUE ? `(${text.length} characters)` : text}`;
+  });
+  return [`The learned workflow ${name} handed the job back${at}: ${why}${stepsLine(nodes)}`, ...(fields.length ? ["What it had:", ...fields] : [])].join("\n");
+}
+
 /** The run's `learned_workflow` tool over `run.workflows`. */
 export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   const names = run.workflows.map(({ name }) => name);
@@ -393,10 +415,11 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);
-    if (result.status !== "complete") return refuse(`it ended ${result.status}`);
+    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes)), isError: true, nodes };
+    if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
     return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
   } catch (error) {
     if (signal?.aborted) throw error;
-    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true, nodes };
+    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes)}`, isError: true, nodes };
   }
 }
