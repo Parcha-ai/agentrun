@@ -51,9 +51,7 @@ on a harness the server does not run (409 `agent_not_runnable`).
 
 No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.
 
-`learning.*` are one agent's learning, recorded from a faux server with learning on (`learning-demo/`: `serve.mjs` starts
-agentrun-serve on `faux-refunds.mjs`, a refund-policy finder that works slowly until it has notes and reads each note first
-once it does; `seed.mjs` runs it six times; `record.mjs` records). Taylor Stitch's run keeps the first note, Brooklinen's
+`learning.*` are one agent's learning, recorded from a faux server with learning on (a refund-policy finder that works slowly until it has notes and reads each note first once it does, run six times). Taylor Stitch's run keeps the first note, Brooklinen's
 keeps a better one that replaces it, a person adds a note of their own, Kith's note is not kept (about one shop only), and
 three runs have nothing new. Then, in order: the agent, its learning, its runs and its stats; a person opens a note
 (`learning.note`), someone else saves a change to it (`learning.note-theirs`), the person's save on the version they
