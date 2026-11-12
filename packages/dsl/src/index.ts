@@ -5,8 +5,8 @@ export type {
 } from "./authoring.js";
 export {
   runWorkflow, validateWorkflow, workflowSha256,
-  WorkflowCodeError, WorkflowStateError,
-  WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure,
+  WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
+  WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue, isItemFailure,
 } from "./workflow.js";
 export { defineJob } from "./job.js";
