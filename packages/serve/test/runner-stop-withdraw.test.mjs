@@ -304,6 +304,22 @@ test("a stop row whose tries a failed resume raised is a stop all the same: the 
   assert.ok(!starts.includes("runner-b"), "the claim after the failed resume started no loop: it only ended the run");
 });
 
+test("an allow written just after a stop (its write raced the stop's) never runs the call: the runner reads the stop first, and the stopped end refuses the allow, the call withdrawn", { timeout: 60_000 }, async (t) => {
+  const { server, runner, spawn, sent } = await runOf(t);
+  await runner.close();
+  const ask = (await entriesOf(server)).find((entry) => entry.kind === "agentrun.ask").data;
+  // The two rows as the race leaves them, with no runner holding the run: the stop, then the allow.
+  const stop = await server.command("run-1", { kind: "stop" });
+  const allow = await server.command("run-1", { kind: "approve", body: { approval: ask.callId } });
+  assert.ok(allow.id > stop.id);
+  spawn("runner-b");
+  await stopped(server);
+  await staysWithdrawn(server, sent);
+  const rows = await server.commands("run-1", 0);
+  const allowRow = rows.find((row) => row.id === allow.id);
+  assert.ok(allowRow.refused !== null, `the stopped end refused the allow: ${JSON.stringify(allowRow)}`);
+});
+
 // Ported from turn-record-restart.test.mjs, whose server took a cancel and went down before its run's process ended the
 // run: a cancel is the run's end from its 202 on, whoever holds the run then. Here the cancel's row is written while no
 // runner holds the parked run (its runner gone); the next claim only ends it cancelled, never as its cut turn reads, and
