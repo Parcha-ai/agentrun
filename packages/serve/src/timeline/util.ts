@@ -14,8 +14,9 @@ export const saidSummary = (text: string): string => {
   const open = /^\s*(`{3,}|~{3,})[^\n`]*\n/.exec(text);
   if (!open) return firstLine(text);
   const body = text.slice(open[0].length);
-  // Its closing fence (CommonMark): the same character, at least as many of it as the opening fence, alone on its line.
-  const close = body.search(new RegExp(`^[ \\t]*\\${open[1]![0]}{${open[1]!.length},}[ \\t]*$`, "m"));
+  // Its closing fence (CommonMark): the same character, at least as many of it as the opening fence, alone on its line,
+  // indented at most 3 spaces (4 or a tab is code inside the fence, not its close).
+  const close = body.search(new RegExp(`^ {0,3}\\${open[1]![0]}{${open[1]!.length},}[ \\t]*$`, "m"));
   return (close >= 0 ? body.slice(0, close) : body).replace(/\s+/g, " ").trim() || firstLine(text);
 };
 export const firstSentence = (text: string): string => {

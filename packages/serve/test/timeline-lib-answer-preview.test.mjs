@@ -27,6 +27,12 @@ test("a closing fence longer than its opening one closes it (CommonMark); a shor
   assert.equal(answerOf('```json\n{"a":1}\n~~~\n{"b":2}\n```').summary, '{"a":1} ~~~ {"b":2}');
 });
 
+test("a closing fence indented 4 or more spaces, or by a tab, is code inside the fence, not its close; up to 3 spaces still closes it", () => {
+  assert.equal(answerOf('```json\n{"a":1}\n    ```\n{"b":2}\n```\nMore prose.').summary, '{"a":1} ``` {"b":2}');
+  assert.equal(answerOf('```json\n{"a":1}\n\t```\n{"b":2}\n```\nMore prose.').summary, '{"a":1} ``` {"b":2}');
+  assert.equal(answerOf('```json\n{"a":1}\n   ```\nMore prose.').summary, '{"a":1}');
+});
+
 test("plain words: the summary is still their first line, and inline code on that line is no fence", () => {
   assert.equal(answerOf("Done.\n\nThe report is in report.md.").summary, "Done.");
   assert.equal(answerOf("```npm test``` passes.\nMore below.").summary, "```npm test``` passes.");
