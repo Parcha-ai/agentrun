@@ -186,7 +186,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
         {stale && (
           <p role="alert" className="mt-3 flex items-center gap-3 text-body text-warning-text">
             Couldn't refresh this agent.
-            <Button size="sm" variant="outline" onClick={reread}>Retry</Button>
+            <Button size="sm" variant="outline" onClick={() => reread()}>Retry</Button>
           </p>
         )}
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
