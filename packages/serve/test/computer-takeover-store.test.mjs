@@ -138,24 +138,32 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     return { holds, releases, whenReleased, letGo, first, hold: { state: () => holds.at(-1).state() }, second: (more = {}) => begin(loopOf(), { ...options, ...more }) };
   };
   /** The run on a runner: its first look at the screen waits inside the shot until `letGo`; with `second`, its second look
-   *  waits too, until `letGoSecond`. */
+   *  waits too, until `letGoSecond`. `inSecondShot` settles once the second look is inside its shot: its call in flight. */
   const start = async ({ second = false } = {}) => {
     const hold = computerHold();
     let shotStarted;
     const inShot = new Promise((resolve) => (shotStarted = resolve));
+    let secondShotStarted;
+    const inSecondShot = new Promise((resolve) => (secondShotStarted = resolve));
     let letGo;
     const released = new Promise((resolve) => (letGo = resolve));
     let letGoSecond;
     const releasedSecond = second ? new Promise((resolve) => (letGoSecond = resolve)) : Promise.resolve();
     let shots = 0;
-    const held = heldHands({ screen: { shot: async () => { shots += 1; shotStarted(); await (shots === 1 ? released : releasedSecond); return { png: "AA==" }; } } }, hold);
+    const held = heldHands({ screen: { shot: async () => {
+      shots += 1;
+      if (shots === 1) shotStarted();
+      else secondShotStarted();
+      await (shots === 1 ? released : releasedSecond);
+      return { png: "AA==" };
+    } } }, hold);
     const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
     // Two looks: the second is the agent's next call, parked while the person holds the desktop. (A run whose agent
     // answers instead waits at its end for the hand-back: startEnding.)
     const spec = piAdapterSpec({ script: [{ call: "look" }, { call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
     await begin(createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer: { kind: "desktop", hold } })));
     await inShot;
-    return { hold, letGo, letGoSecond };
+    return { hold, letGo, letGoSecond, inSecondShot };
   };
   /** The run on a runner whose agent looks once and then answers in plain text: its look waits inside the shot until
    *  `letGo`, so the person's take meets it, and the agent's answer comes while the person holds the desktop. The spec's
@@ -399,8 +407,10 @@ test("the runner's change signal (onComputerHold): a take-over row, then a hand-
   ]);
   assert.deepEqual(await Promise.all(checks), [true, true, true], "each after its journal entry exists");
   off();
-  // A second take while the second look is in flight: another listener hears it, the unsubscribed one does not.
-  await world.until(async () => run.hold.state() === "agent" && (await world.hold()) === "agent", "the second look is in flight");
+  // A second take while the second look is in flight: another listener hears it, the unsubscribed one does not. The look
+  // must be inside its shot when the take lands; a take with no call in flight goes straight to person, never pending.
+  await world.until(async () => run.hold.state() === "agent" && (await world.hold()) === "agent", "the desktop is the agent's again");
+  await run.inSecondShot;
   await world.route("takeOverRunComputer");
   await world.until(async () => still.length === 4, "the second take is signalled to the listener still subscribed");
   assert.equal(still[3].state, "pending");
