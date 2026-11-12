@@ -4,9 +4,9 @@
 // takes the row with the call's answer. The server reads that answer once (Store.answerOf). Nothing is kept in a
 // server's memory, so any server answers the same.
 //
-// A write wakes its reader in this process (Store.watchCommands): the runner beside the server hands the row on at once,
-// and the server reads the answer as soon as it is in. A runner in another process finds the row at its next command
-// poll, and the server finds its answer at its own (CHANNEL_POLL_MS).
+// A write wakes its reader (Store.watchCommands), in this process or another (store/command-wake.ts: NOTIFY on Postgres,
+// a wake file beside a SQLite store's file): the runner hands the row on at once, and the server reads the answer as soon
+// as it is in. A wake is a hint: one lost costs the runner its next command poll, and the server its own (CHANNEL_POLL_MS).
 //
 // The journal contract (the runner writes it; the server's hold reads it, computer-held.ts):
 //   computer.call, `{ by, at, method, ok, ms, code?, steps?, expect? }`: row `by`'s call, as computer-calls.ts records one:
@@ -29,7 +29,7 @@ export const CALL_KIND = "computer.call";
 export const CALL_MS = 120_000;
 /** How long the server waits for a runner to take a call's row, on top of the call's own time. */
 export const TAKE_MS = 60_000;
-/** How often the server reads a call's row when no wake comes (a runner in another process). */
+/** How often the server reads a call's row when no wake comes (one lost). */
 export const CHANNEL_POLL_MS = 250;
 
 /** The computer protocol's methods (spec/computer/protocol.json; a test keeps the two equal). A call names one of them. */

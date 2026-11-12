@@ -11,6 +11,7 @@ import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreCon
 import { DEFAULT_TRANSACTION_DEADLINE_MS, type SqliteValue, type Statement, type StatementResult, type StoreConnection, type TransactionOptions, type Tx } from "../sqlite/connection.js";
 import type { Dialect } from "../dialect.js";
 import { postgresDialect } from "./dialect.js";
+import { PgWake, wakeChannel } from "./wake.js";
 
 /** Which store this is, as two opens of the same data agree on it (StoreConnection.where): "postgres:" and the URL's host
  *  (and port), database and the schema, read from the parsed URL, never its user, password or query. */
@@ -346,7 +347,16 @@ export class PgConnection implements StoreConnection {
     return columns;
   };
 
-  private constructor(pool: pg.Pool, owner: OwnerSession | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, leasePool: pg.Pool, ownerConfig: OwnerConfig | undefined) {
+  /** The command wake to the other processes on this schema (wake.ts): NOTIFY through the pool after a commit, and one
+   *  client of its own LISTENing while this store watches its commands. */
+  readonly wire: PgWake;
+
+  private constructor(url: string, pool: pg.Pool, owner: OwnerSession | undefined, schema: string, busyTimeoutMs: number, where: string, testClock: boolean, connectMs: number, leasePool: pg.Pool, ownerConfig: OwnerConfig | undefined) {
+    this.wire = new PgWake(
+      wakeChannel(schema),
+      () => new pg.Client({ connectionString: url, application_name: `agentrun-store-wake:${schema}`, connectionTimeoutMillis: connectMs, keepAlive: true, keepAliveInitialDelayMillis: KEEPALIVE_IDLE_S * 1_000 }),
+      (channel, text) => this.all("SELECT pg_notify(?, ?) AS sent", channel, text),
+    );
     this.#connectMs = connectMs;
     this.#pool = pool;
     this.#leasePool = leasePool;
@@ -469,7 +479,7 @@ export class PgConnection implements StoreConnection {
       each.on("error", () => undefined);
       each.on("connect", (fresh) => fresh.on("error", () => undefined));
     }
-    return new PgConnection(pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, leasePool, lock ? { url, waitMs, onLost: onOwnerLost, check: ownerCheck } : undefined);
+    return new PgConnection(url, pool, lock, schema, busyTimeoutMs, where, testClock, connectMs, leasePool, lock ? { url, waitMs, onLost: onOwnerLost, check: ownerCheck } : undefined);
   }
 
   /** `work`, counted in flight, refused after close. A connection it never got in time is StoreDeadline, naming the
@@ -731,6 +741,7 @@ export class PgConnection implements StoreConnection {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    await this.wire.close();
     await Promise.allSettled([...this.#inFlight]);
     await this.#pool.end().catch(() => undefined);
     await this.#leasePool.end().catch(() => undefined);

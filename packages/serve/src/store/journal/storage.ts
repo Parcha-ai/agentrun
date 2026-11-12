@@ -35,7 +35,7 @@ import {
   type TaskQuery,
   type TaskRecord,
 } from "@earendil-works/pi-durable";
-import { wakeCommands } from "../command-wake.js";
+import { type WakeAt, wakeCommands } from "../command-wake.js";
 import { PI_TABLE as T } from "../schema.js";
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { StoreConnection } from "../sqlite/connection.js";
@@ -202,8 +202,9 @@ export class RunStorage implements Journal {
   #staged: Staged | undefined;
   /** Commands staged to be taken, each with the record of its effect: taken only by the commit that stores that record. */
   readonly #takes = new Map<number, { readonly effect: number; readonly answer: string | null }>();
-  /** The store's identity (Store.where): where a commit that answers a command wakes the readers in this process. */
-  readonly #where: string | undefined;
+  /** The store's connection as its wake goes (command-wake.ts): where a commit that answers a command wakes its readers,
+   *  in this process and in the others. */
+  readonly #wake: WakeAt | undefined;
   /** Ids this journal minted and has not yet written: the only ones a staged take may name as its effect. */
   readonly #minted = new Set<number>();
   #closed = false;
@@ -215,9 +216,9 @@ export class RunStorage implements Journal {
 
   /** The journal of `claim`'s run on `db` (the store's connection, its schema in place). Its id namespace is read, and made
    *  on first use, by its first commit or mintId. `now`: the store's clock (epoch ms). */
-  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void, where?: string) {
+  constructor(db: JournalConnection, claim: JournalClaim, now: () => number = Date.now, onClose?: () => void, wake?: WakeAt) {
     this.#db = db;
-    this.#where = where;
+    this.#wake = wake;
     this.#dialect = db.dialect ?? SQLITE;
     this.#read = readsOf(db);
     this.#runId = claim.runId;
@@ -410,9 +411,9 @@ export class RunStorage implements Journal {
     if (patching && this.#staged === staged) this.#staged = undefined;
     // Taken with their effects, now durable: no longer waiting.
     for (const command of taking) this.#takes.delete(command);
-    // A command taken, or a run gone final (its leftover rows refused): the readers of those answers in this process wake.
-    if (this.#where !== undefined && (taking.length > 0 || (patching && ["ended", "stopped", "failed"].includes(staged?.run?.state ?? "")))) {
-      wakeCommands(this.#where, { runId: this.#runId, what: "answered" });
+    // A command taken, or a run gone final (its leftover rows refused): the readers of those answers wake.
+    if (this.#wake !== undefined && (taking.length > 0 || (patching && ["ended", "stopped", "failed"].includes(staged?.run?.state ?? "")))) {
+      wakeCommands(this.#wake, { runId: this.#runId, what: "answered" });
     }
     // COMMIT returned: the stored batches are durable (to the store's synchronous level; flush makes them so on disk).
     for (const [index, seq] of seqs.entries()) receive(index, seq);
