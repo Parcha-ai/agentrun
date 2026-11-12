@@ -138,11 +138,11 @@ for (const fail of Object.keys(FAILS)) {
   });
 }
 
-test("pi through the adapter: seven consecutive 429s (more than pi's default three retries) are waited out: pi-ai retries each attempt twice, pi the attempt, and the run completes with each failed attempt's answer at $0 and the price booked once", async (t) => {
-  const { requests, costs, booked, row } = await run(t, [{ say: "done" }], { fail: busy({ "retry-after-ms": "10" }), fails: 7, retry: FAST });
+test("pi through the adapter: twelve consecutive 429s (four attempts of three, past pi's default three retries) are waited out: pi-ai retries each attempt twice, pi the attempt, and the run completes with each failed attempt's answer at $0 and the price booked once", async (t) => {
+  const { requests, costs, booked, row } = await run(t, [{ say: "done" }], { fail: busy({ "retry-after-ms": "10" }), fails: 12, retry: FAST });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.equal(requests, 8, "seven 429s, then the answer");
-  assert.deepEqual(costs, [0, 0, PRICE], `two attempts of three 429s each read nothing booked; the third, a 429 and its answer, its price: ${JSON.stringify(costs)}`);
+  assert.equal(requests, 13, "twelve 429s, then the answer");
+  assert.deepEqual(costs, [0, 0, 0, 0, PRICE], `four attempts of three 429s each read nothing booked; the fifth, the answer, its price: ${JSON.stringify(costs)}`);
   assert.deepEqual(booked.filter((usd) => usd !== 0), [PRICE], `the price is booked once, every 429 at $0: ${JSON.stringify(booked)}`);
 });
 
