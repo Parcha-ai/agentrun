@@ -203,7 +203,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal(node.length, 2, JSON.stringify(booked));
     assert.ok(String(node[0].model).endsWith(tierPriced.model) && String(node[1].model).endsWith(own.model), `booked under each node's model: ${JSON.stringify(node)}`);
     assert.ok(near(node[0].usd, tierPriced.usd), `the fast node booked at ${tierPriced.model}'s price: ${node[0].usd} vs ${tierPriced.usd}`);
-    assert.ok(typeof node[1].usd === "number" && !near(node[1].usd, tierPriced.usd), `the node of no tier not at the fast price: ${JSON.stringify(node[1])}`);
+    assert.ok(near(node[1].usd, own.usd), `the node of no tier booked at ${own.model}'s price: ${node[1].usd} vs ${own.usd}`);
   });
 
   test(`a ${harness} run's learned fast node, where the host has no fast model, runs on the session's model at its price`, { timeout: 60_000 }, async (t) => {
