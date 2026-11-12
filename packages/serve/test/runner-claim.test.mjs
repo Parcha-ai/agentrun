@@ -129,7 +129,7 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
 // fence, so this one is kept, and made deterministic: the lease is one no stall outlasts (STEADY_LEASE), so the other runner
 // can only have the run through the close's release, never through the old claim lapsing, and nothing is read off a clock.
 // Each step is waited for by its event (a runner's "claimed": the claim held, its loop made), never by a poll.
-test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", async (t) => {
+test("a runner that closes stops its loop where it can resume and releases the run, still running; the other claims it at once", { timeout: 60_000 }, async (t) => {
   const timing = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
   const { server, runners: [one, two] } = await stores({ runners: 2 });
