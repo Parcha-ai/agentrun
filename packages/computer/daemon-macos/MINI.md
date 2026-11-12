@@ -44,7 +44,7 @@ packages/computer/daemon-macos/scripts/mini-bootstrap.sh
 The script:
 
 1. **Checks the Mac.** It needs macOS 26 or later, Xcode selected, and the auto-login user on the desktop.
-2. **Makes the signing identity, the first time only.** This is a self-signed code signing certificate, "Computerd Local
+2. **Makes the signing identity, the first time only** (`scripts/local-identity.sh`). This is a self-signed code signing certificate, "Computerd Local
    Signing", in a keychain of its own (`~/Library/Keychains/computerd-signing.keychain-db`). The keychain's password is
    in `~/.computerd-signing/keychain-password` (0600). The key lets codesign use it with no dialog, so signing works over
    SSH. The certificate is not trusted system-wide and does not need to be.

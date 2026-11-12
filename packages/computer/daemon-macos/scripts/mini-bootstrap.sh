@@ -30,9 +30,6 @@ app=/Applications/Computerd.app
 fixture=/Applications/UIFixture.app
 computerd="$app/Contents/Helpers/computerd"
 home="$HOME/Library/Application Support/Computerd"
-signing="$HOME/.computerd-signing"
-keychain="$HOME/Library/Keychains/computerd-signing.keychain-db"
-cn="Computerd Local Signing"
 
 say "this Mac"
 [[ "$(id -u)" != 0 ]] || die "run as the auto-login user, not root"
@@ -48,46 +45,9 @@ console="$(stat -f %Su /dev/console)"
 [[ "$console" == "$(id -un)" ]] || die "the logged-in desktop belongs to '$console': log in as $(id -un) (MINI.md: auto-login)"
 
 say "the signing identity"
-# Made once: a self-signed code signing certificate in a keychain of its own, whose password sits beside it, so
-# signing works over SSH with no prompt. The app's designated requirement then names this certificate, and macOS keeps
-# the Accessibility and Screen Recording grants across rebuilds.
-mkdir -p "$signing"
-chmod 700 "$signing"
-if [[ ! -f "$signing/keychain-password" ]]; then
-	(umask 077 && openssl rand -hex 24 >"$signing/keychain-password")
-fi
-password="$(cat "$signing/keychain-password")"
-if [[ ! -f "$keychain" ]]; then
-	security create-keychain -p "$password" "$keychain"
-	echo "made $keychain"
-fi
-security unlock-keychain -p "$password" "$keychain"
-security set-keychain-settings "$keychain" # no auto-lock: signing over SSH must not find it locked
-if ! security find-certificate -c "$cn" "$keychain" >/dev/null 2>&1; then
-	work="$(mktemp -d)"
-	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=$cn" \
-		-keyout "$work/key.pem" -out "$work/cert.pem" \
-		-addext "basicConstraints=critical,CA:false" \
-		-addext "keyUsage=critical,digitalSignature" \
-		-addext "extendedKeyUsage=critical,codeSigning" 2>/dev/null
-	# The legacy PKCS#12 ciphers: the only ones security import reads.
-	openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" -name "$cn" -out "$work/identity.p12" \
-		-passout "pass:$password" -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
-	security import "$work/identity.p12" -k "$keychain" -P "$password" -T /usr/bin/codesign >/dev/null
-	rm -rf "${work:?}"
-	# Lets codesign use the key with no "allow" dialog, which SSH could not answer.
-	security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
-	echo "made the identity '$cn'"
-fi
-# codesign looks for identities in the user's keychain search list.
-searched="$(security list-keychains -d user | tr -d '" ' | tr '\n' ' ')"
-if [[ " $searched " != *" $keychain "* ]]; then
-	# shellcheck disable=SC2086 # the list is paths without spaces, one word each
-	security list-keychains -d user -s "$keychain" $searched
-fi
-hash="$(security find-certificate -c "$cn" -Z "$keychain" | awk '/SHA-1 hash:/ { print $NF; exit }')"
-[[ -n "$hash" ]] || die "the identity '$cn' is not in $keychain"
-echo "identity '$cn', SHA-1 $hash"
+# Made the first time (scripts/local-identity.sh): the app's designated requirement then names this certificate, and
+# macOS keeps the Accessibility and Screen Recording grants across rebuilds.
+hash="$("$here/scripts/local-identity.sh")" || die "no signing identity (the lines above say why)"
 
 say "building Computerd.app and the ui fixture"
 build="$here/build"
