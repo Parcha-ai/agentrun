@@ -1075,7 +1075,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const shellHere = async (): Promise<ShellHere> => {
     if ((await shellOf({ kind: "none" })) === "local") return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const fresh = newAgentPlace(boxOffers);
-    let why = boxAvailability(boxOffers).find((one) => one.id === "docker")?.reason ?? "it is not set up";
+    let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
       const computer = { kind: "sandbox", provider: fresh.place.box };
       const ready = await computerReady(computer);
