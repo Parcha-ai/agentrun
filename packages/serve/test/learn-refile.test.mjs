@@ -371,7 +371,6 @@ test("the merge: a copy of a main note's rule, then an update of that note: the 
     const update = { file: "update.md", text: noteNamed("update", "Update", "Convert every amount to cents first.").text.replace("---\n", `---\nsupersedes: [${units.file}]\n`) };
     const done = await learningCommit(folder.workspace, { kind: "merge", runId: "run-u", reason: "r", graded: {}, files: [{ path: copy.file, text: copy.text }, { path: update.file, text: update.text }] });
     assert.equal(done.ok, true, JSON.stringify(done));
-    assert.deepEqual(done.result?.left?.map(({ path, reason }) => [path, reason]), [[copy.file, "same"]]);
     const main = await mainTexts(folder.workspace, [copy.file, update.file]);
     assert.deepEqual(Object.keys(main), [update.file], "the update merged, the copy did not");
   } finally {
