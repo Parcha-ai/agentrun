@@ -8,6 +8,15 @@ import {
 	type DaemonMethods,
 	JSONRPC_CODES,
 	MAX_LINE_BYTES,
+	type UiActParams,
+	type UiActResult,
+	type UiExpect,
+	type UiNode,
+	type UiObserveParams,
+	type UiObserveResult,
+	type UiRole,
+	type UiStep,
+	type UiTarget,
 } from "./protocol.js";
 import { type ComputerError, type ComputerErrorCode, fail, ok, type Result } from "./result.js";
 
@@ -153,5 +162,78 @@ export class DaemonClient implements ComputerClient {
 		const pending = [...this.#pending.values()];
 		this.#pending.clear();
 		for (const settle of pending) settle({ ok: false, error: gone });
+	}
+}
+
+/** What findNodes matches: every field given must hold. text is in the node's name or value. */
+export interface UiQuery {
+	role?: UiRole;
+	text?: string;
+	id?: string;
+}
+
+/** The nodes of an observation that match the query, in the observation's order. */
+export function findNodes(seen: Pick<UiObserveResult, "nodes">, { role, text, id }: UiQuery): UiNode[] {
+	return seen.nodes.filter(
+		(node) => (role === undefined || node.role === role) && (id === undefined || node.id === id) && (text === undefined || (node.name?.includes(text) ?? false) || (node.value?.includes(text) ?? false)),
+	);
+}
+
+/** The refused step of an act, with its index, or undefined when every step ran. A refused step is always the last. */
+export function refusedStep(result: Pick<UiActResult, "steps">): { index: number; kind: DaemonErrorKind; message: string } | undefined {
+	const index = result.steps.length - 1;
+	const last = result.steps[index];
+	return last !== undefined && "error" in last ? { index, ...last.error } : undefined;
+}
+
+export interface UiActOptions extends CallOptions {
+	expect?: UiExpect;
+	foreground?: boolean;
+	/** The state the steps' points were read from; default the last state this session saw. */
+	state?: string;
+}
+
+/**
+ * The ui group on one target, over any connection: observe and act with their types, and the last state each answered,
+ * so an act at a point carries the state the point was read from without the caller threading it.
+ */
+export class UiSession {
+	readonly #client: ComputerClient;
+	readonly #target: UiTarget | undefined;
+	#state: string | undefined;
+
+	constructor(client: ComputerClient, target?: UiTarget) {
+		this.#client = client;
+		this.#target = target;
+	}
+
+	/** The last state an observe or an act answered. */
+	get state(): string | undefined {
+		return this.#state;
+	}
+
+	async observe(params: Omit<UiObserveParams, "target"> = {}, options: CallOptions = {}): Promise<Result<UiObserveResult>> {
+		const seen = await this.#client.call("ui.observe", { ...this.#withTarget(), ...params }, options);
+		if (seen.ok) this.#state = seen.value.state;
+		return seen;
+	}
+
+	async act(steps: UiStep[], { expect, foreground, state, signal }: UiActOptions = {}): Promise<Result<UiActResult>> {
+		const atPoint = steps.some((step) => ("click" in step && Array.isArray(step.click)) || ("scroll" in step && Array.isArray(step.scroll)) || "drag" in step);
+		const from = state ?? (atPoint ? this.#state : undefined);
+		const params: UiActParams = {
+			...this.#withTarget(),
+			steps,
+			...(from === undefined ? {} : { state: from }),
+			...(expect === undefined ? {} : { expect }),
+			...(foreground === undefined ? {} : { foreground }),
+		};
+		const done = await this.#client.call("ui.act", params, signal === undefined ? {} : { signal });
+		if (done.ok) this.#state = done.value.state;
+		return done;
+	}
+
+	#withTarget(): { target?: UiTarget } {
+		return this.#target === undefined ? {} : { target: this.#target };
 	}
 }

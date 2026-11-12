@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
+import { conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
 import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -162,6 +162,31 @@ test("the line server: method not found, parse error, a request with no id, and 
 	assert.equal(invalid.error.data.kind, "invalid");
 	input.end();
 	driver.close();
+});
+
+test("UiSession: typed observe and act on a target, a point act carries the last state, findNodes and refusedStep", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const ui = new UiSession(c.client, { app: APP });
+	const seen = (await ui.observe()).value;
+	assert.equal(ui.state, seen.state);
+	const [save] = findNodes(seen, { role: "button", text: "Save" });
+	assert.equal(save.id, "save");
+	assert.deepEqual(findNodes(seen, { text: "nothing like it" }), []);
+	const saved = (await ui.act([{ press: save.ref }], { expect: { text: "Saved" } })).value;
+	assert.equal(saved.expect, "met");
+	assert.equal(ui.state, saved.state, "an act's state is the session's last");
+	assert.equal(refusedStep(saved), undefined);
+	const [wifi] = findNodes(seen, { id: "wifi" });
+	const [x, y, w, h] = wifi.bounds;
+	const clicked = (await ui.act([{ click: [x + Math.floor(w / 2), y + Math.floor(h / 2)] }])).value;
+	assert.deepEqual(clicked.steps, [{ route: "background", verified: false }], "the click carried the last state, unasked");
+	assert.equal(c.driver.calls.at(-1)[1].state, saved.state);
+	const next = findNodes(seen, { id: "next" })[0].ref;
+	await ui.act([{ press: next }], { expect: { text: "Second page" } });
+	const stale = (await ui.act([{ press: save.ref }])).value;
+	assert.deepEqual(refusedStep(stale), { index: 0, kind: "stale", message: refusedStep(stale).message });
+	await c.close();
 });
 
 test("the CLI answers hello and ui.observe on stdin and stdout", async () => {

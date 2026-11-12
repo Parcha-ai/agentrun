@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { PassThrough, type Readable, type Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
+import { type AttachSocket, socketStreams } from "./attach.js";
 import { DaemonClient } from "./client.js";
 import { type FakeApp, type FakeEffect, type FakeElement, UI_FIXTURE } from "./conformance/ui-fixture.js";
 import {
@@ -211,8 +212,8 @@ export class FakeUiDriver implements UiSource {
 		const state = this.#running.get(id);
 		const app = this.apps.get(id);
 		if (state === undefined || app === undefined) return fail("not_found", `${id} is not running: launch it with apps.launch`);
-		const window = `${id}#main`;
-		if (target?.window !== undefined && target.window !== window) return fail("not_found", `${id} has no window ${target.window}; its window is ${window}`);
+		const windowId = `${id}#main`;
+		if (target?.window !== undefined && target.window !== windowId) return fail("not_found", `${id} has no window ${target.window}; its window is ${windowId}`);
 		const screen = app.screens[state.screen];
 		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, ...element }) => {
 			const value = state.values.get(element.key) ?? element.value;
@@ -222,7 +223,7 @@ export class FakeUiDriver implements UiSource {
 		const between = Date.now() < state.animateUntil;
 		return ok({
 			app: { id, name: app.name },
-			window: { id: window, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: state.bounds },
+			window: { id: windowId, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: state.bounds },
 			elements,
 			frame: between ? `between:${this.#frames++}` : state.screen,
 		});
@@ -396,6 +397,12 @@ export function serveUiLines(driver: FakeUiDriver, input: Readable, output: Writ
 		for (const controller of running.values()) controller.abort();
 		output.end();
 	});
+}
+
+/** Serves a driver over an attach socket (spec/computer/attach.md): the driver's end of the binding, as a driver that dialed out. */
+export function serveUiSocket(driver: FakeUiDriver, socket: AttachSocket): void {
+	const { readable, writable } = socketStreams(socket);
+	serveUiLines(driver, readable, writable);
 }
 
 /** A connection over a real line stream to a driver: its client after hello. Closing it leaves the driver's apps running. */
