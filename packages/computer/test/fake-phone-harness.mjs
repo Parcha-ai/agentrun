@@ -91,13 +91,14 @@ const json = (status, body, headers = {}) => new Response(JSON.stringify(body), 
  * `unlockEcho`, a wrong unlock code is answered with the code it was given, twice, on the reply's first line;
  * `onServer(service, stage)`, called with each request to the local adb server before it is handled ("before") and
  * before its answer goes back ("after"): a promise it answers holds the request at that stage until it settles, so a
- * test can order a disconnect against a connect.
+ * test can order a disconnect against a connect; `density`, what `wm density` reports (160 is one pixel per point; the
+ * screen, its tree and its input stay in pixels either way).
  *
  * Tasks are as a live Android 15 keeps them (run 5): Settings' search is another package's activity
  * (com.android.settings.intelligence) on top of Settings' own task. A force-stop of Settings leaves it there, a plain
  * `am start` of Settings resumes that task, search in front, and only `--activity-clear-task` starts Settings afresh.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", launchHidden = false, launchNothing = false, twoPane = false, rowTapsMiss = false, endLag = 0, unlockEcho = false, onServer, density = 160, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -358,7 +359,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 		if (w[0] === "getprop" && w[1] === "ro.product.cpu.abi") return ok(`${abi}\n`);
 		if (w[0] === "getprop" && w[1] === "ro.build.version.release") return ok(`${release}\n`);
 		if (w[0] === "wm" && w[1] === "size") return ok(`Physical size: ${SCREEN.width}x${SCREEN.height}\n`);
-		if (w[0] === "wm" && w[1] === "density") return ok("Physical density: 160\n");
+		if (w[0] === "wm" && w[1] === "density") return ok(`Physical density: ${density}\n`);
 		if (w[0] === "input" && w[1] === "tap") {
 			tap(Number(w[2]), Number(w[3]));
 			return ok();

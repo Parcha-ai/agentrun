@@ -1,8 +1,11 @@
 export * from "./protocol.js";
 export * from "./result.js";
 export * from "./provider.js";
+export * from "./ui-engine.js";
+export * from "./attach.js";
+export * from "./phone-ui.js";
 export * from "./mount.js";
-export { type CallOptions, DaemonClient, type DaemonStream } from "./client.js";
+export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";

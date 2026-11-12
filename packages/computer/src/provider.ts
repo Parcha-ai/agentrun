@@ -139,9 +139,10 @@ export interface AllowCapability {
 }
 
 /**
- * Who answers a computer's methods. pid1: computerd init is the computer's main process, so its exit ends the computer.
- * child: the vendor's own agent is the main process and starts init at boot; init's exit does not end the computer.
- * none: no computerd runs; the provider answers the methods itself, from our server (adb, the vendor's API).
+ * Whether computerd init runs in the computer, and so keeps init's promises about programs; who answers the wire is
+ * hello's business. pid1: init is the computer's main process, so its exit ends the computer. child: the vendor's own
+ * agent is the main process and starts init at boot; init's exit does not end the computer. none: no init runs; the
+ * provider answers the methods itself (adb, the vendor's API), or a driver on the machine does (an attached Mac).
  */
 export type DaemonMode = "pid1" | "child" | "none";
 

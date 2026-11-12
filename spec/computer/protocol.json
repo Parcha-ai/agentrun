@@ -1,12 +1,11 @@
 {
   "$comment": "Generated from packages/computer/src/protocol.ts by node scripts/generate-computer-spec.mjs.",
-  "protocolVersion": "0.1",
+  "protocolVersion": "0.2",
   "methods": [
     "apps.install",
     "apps.launch",
     "apps.list",
     "apps.terminate",
-    "apps.ui_tree",
     "deadline.extend",
     "exec.run",
     "files.list",
@@ -35,7 +34,9 @@
     "tar.pull.read",
     "tar.push.begin",
     "tar.push.end",
-    "tar.push.write"
+    "tar.push.write",
+    "ui.act",
+    "ui.observe"
   ],
   "jsonrpc": {
     "version": "2.0",
@@ -63,7 +64,14 @@
     "maxActions": 100,
     "maxBatchWaitMs": 300000,
     "maxKeyRepeat": 100,
-    "maxUiNodes": 5000
+    "maxUiNodes": 5000,
+    "maxSteps": 100,
+    "maxExpectMs": 60000,
+    "defaultExpectMs": 5000,
+    "maxSettleMs": 3000,
+    "minImageEdge": 256,
+    "maxImageEdge": 2048,
+    "defaultImageEdge": 1568
   },
   "errorKinds": [
     "aborted",
@@ -74,6 +82,7 @@
     "limit",
     "not_dir",
     "not_found",
+    "stale",
     "timeout",
     "unsupported"
   ],
@@ -87,7 +96,7 @@
     "input.touch",
     "apps",
     "apps.install",
-    "apps.ui_tree",
+    "ui",
     "cdp",
     "stream",
     "downloads"
@@ -97,6 +106,15 @@
     "stream",
     "downloads"
   ],
+  "features": {
+    "apps.background": "apps.launch with background: true opens an app without bringing it to the front",
+    "ui.tree": "ui.observe reads the window's elements; off, it answers the window's image with no nodes (ui.image on) or is refused",
+    "ui.image": "ui.observe returns the window's image",
+    "ui.background": "steps run as input posted to the app itself: the user's pointer and focus stay where they are",
+    "ui.foreground": "steps run as the computer's own input, which moves the pointer and the focus (only when a call allows it)",
+    "ui.page": "steps in a web page run through the page itself, by the browser's DevTools or its scripting",
+    "ui.nav": "the nav step: back, home and app_switch"
+  },
   "keys": [
     "enter",
     "tab",
@@ -130,5 +148,42 @@
     "alt",
     "super",
     "capslock"
+  ],
+  "uiRoles": [
+    "window",
+    "dialog",
+    "menu",
+    "menuitem",
+    "toolbar",
+    "tab",
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "checkbox",
+    "radio",
+    "switch",
+    "slider",
+    "combobox",
+    "progressbar",
+    "list",
+    "listitem",
+    "table",
+    "row",
+    "cell",
+    "scrollarea",
+    "image",
+    "text",
+    "heading",
+    "group",
+    "generic"
+  ],
+  "uiFlags": [
+    "focused",
+    "disabled",
+    "selected",
+    "checked",
+    "secure",
+    "offscreen"
   ]
 }

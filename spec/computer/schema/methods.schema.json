@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://agentrun.ai/spec/computer/0.1/methods.schema.json",
-  "title": "AgentRun computer protocol 0.1: methods",
+  "$id": "https://agentrun.ai/spec/computer/0.2/methods.schema.json",
+  "title": "AgentRun computer protocol 0.2: methods",
   "$comment": "Generated from packages/computer/src/protocol.ts (DaemonMethods) by node scripts/generate-computer-spec.mjs. Each property of DaemonMethods is a method: its params and its result.",
   "$ref": "#/definitions/DaemonMethods",
   "definitions": {
@@ -42,13 +42,23 @@
       "additionalProperties": false
     },
     "AppsLaunchParams": {
-      "description": "apps.launch and apps.terminate.",
       "title": "AppsLaunchParams",
       "type": "object",
       "properties": {
         "id": {
+          "description": "A bundle id or a package name: \"com.apple.Notes\", \"com.android.settings\".",
           "type": "string",
           "title": "id"
+        },
+        "url": {
+          "description": "Open this in the app: a deep link, or a page in a browser.",
+          "type": "string",
+          "title": "url"
+        },
+        "background": {
+          "description": "Open it without bringing it to the front (feature apps.background). Without the feature, refused as `unsupported`.",
+          "type": "boolean",
+          "title": "background"
         }
       },
       "required": [
@@ -80,6 +90,20 @@
         "apps",
         "foreground"
       ]
+    },
+    "AppsTerminateParams": {
+      "title": "AppsTerminateParams",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "title": "id"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
     },
     "ComputerKind": {
       "description": "What a computer is (its machine kind): the shape its tools take. Kind sets which groups are Core.",
@@ -117,6 +141,7 @@
         "limit",
         "not_dir",
         "not_found",
+        "stale",
         "timeout",
         "unsupported"
       ],
@@ -671,7 +696,7 @@
           "type": "object",
           "properties": {
             "params": {
-              "$ref": "#/definitions/AppsLaunchParams",
+              "$ref": "#/definitions/AppsTerminateParams",
               "title": "params"
             },
             "result": {
@@ -685,15 +710,15 @@
           ],
           "title": "apps.terminate"
         },
-        "apps.ui_tree": {
+        "ui.observe": {
           "type": "object",
           "properties": {
             "params": {
-              "$ref": "#/definitions/StrictEmpty",
+              "$ref": "#/definitions/UiObserveParams",
               "title": "params"
             },
             "result": {
-              "$ref": "#/definitions/UiTreeResult",
+              "$ref": "#/definitions/UiObserveResult",
               "title": "result"
             }
           },
@@ -701,7 +726,25 @@
             "params",
             "result"
           ],
-          "title": "apps.ui_tree"
+          "title": "ui.observe"
+        },
+        "ui.act": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "$ref": "#/definitions/UiActParams",
+              "title": "params"
+            },
+            "result": {
+              "$ref": "#/definitions/UiActResult",
+              "title": "result"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "title": "ui.act"
         },
         "deadline.extend": {
           "type": "object",
@@ -745,7 +788,6 @@
         "apps.launch",
         "apps.list",
         "apps.terminate",
-        "apps.ui_tree",
         "deadline.extend",
         "exec.run",
         "files.list",
@@ -774,7 +816,9 @@
         "tar.pull.read",
         "tar.push.begin",
         "tar.push.end",
-        "tar.push.write"
+        "tar.push.write",
+        "ui.act",
+        "ui.observe"
       ]
     },
     "DeadlineExtendParams": {
@@ -805,6 +849,25 @@
       },
       "required": [
         "at"
+      ]
+    },
+    "Device": {
+      "description": "What the machine is, the same fields on every OS. Its CPU is hello's arch, its OS's version hello's osVersion.",
+      "title": "Device",
+      "type": "object",
+      "properties": {
+        "maker": {
+          "type": "string",
+          "title": "maker"
+        },
+        "model": {
+          "type": "string",
+          "title": "model"
+        }
+      },
+      "required": [
+        "maker",
+        "model"
       ]
     },
     "Empty": {
@@ -897,6 +960,35 @@
         "timedOut",
         "truncated"
       ]
+    },
+    "FeatureOff": {
+      "description": "A feature that is off, and why: \"Screen Recording is not granted to Computerd\".",
+      "title": "FeatureOff",
+      "type": "object",
+      "properties": {
+        "off": {
+          "type": "string",
+          "title": "off"
+        }
+      },
+      "required": [
+        "off"
+      ]
+    },
+    "Features": {
+      "title": "Features",
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FeatureOff"
+          },
+          {
+            "const": true,
+            "type": "boolean"
+          }
+        ]
+      }
     },
     "FileEntry": {
       "title": "FileEntry",
@@ -1242,7 +1334,6 @@
       "enum": [
         "apps",
         "apps.install",
-        "apps.ui_tree",
         "cdp",
         "downloads",
         "exec",
@@ -1252,7 +1343,8 @@
         "input.touch",
         "processes",
         "screen",
-        "stream"
+        "stream",
+        "ui"
       ],
       "type": "string"
     },
@@ -1289,7 +1381,7 @@
           "title": "os"
         },
         "osVersion": {
-          "description": "The OS's own version as the computer says it: a phone's Android release (getprop ro.build.version.release), such\nas \"15\". Absent where the computer does not say one.",
+          "description": "The OS's own version as the computer says it, with its build or API level when the driver knows it: \"15\",\n\"15 (API 35)\", \"26.1 (25B78)\". Absent where the computer does not say one.",
           "type": "string",
           "title": "osVersion"
         },
@@ -1322,6 +1414,21 @@
           ],
           "type": "string",
           "title": "fence"
+        },
+        "screen": {
+          "description": "The main screen, in points. Absent on a computer with no screen.",
+          "$ref": "#/definitions/ScreenSize",
+          "title": "screen"
+        },
+        "features": {
+          "description": "What this computer's groups can and cannot do here, by the names in FEATURES. A feature that is off says why, in\nwords a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.",
+          "$ref": "#/definitions/Features",
+          "title": "features"
+        },
+        "device": {
+          "description": "The machine, for a person and a run's record: \"Apple\", \"MacBook Pro\"; \"Google\", \"Pixel 9\".",
+          "$ref": "#/definitions/Device",
+          "title": "device"
         }
       },
       "required": [
@@ -1345,7 +1452,7 @@
               "title": "type"
             },
             "at": {
-              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
               "type": "array",
               "items": [
                 {
@@ -1403,7 +1510,7 @@
               "title": "type"
             },
             "at": {
-              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
               "type": "array",
               "items": [
                 {
@@ -1461,7 +1568,7 @@
             "path": {
               "type": "array",
               "items": {
-                "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+                "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
                 "type": "array",
                 "items": [
                   {
@@ -1510,7 +1617,7 @@
               "title": "type"
             },
             "at": {
-              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
               "type": "array",
               "items": [
                 {
@@ -1637,7 +1744,7 @@
               "title": "type"
             },
             "at": {
-              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
               "type": "array",
               "items": [
                 {
@@ -1677,7 +1784,7 @@
               "title": "type"
             },
             "at": {
-              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
               "type": "array",
               "items": [
                 {
@@ -1715,7 +1822,7 @@
             "path": {
               "type": "array",
               "items": {
-                "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+                "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
                 "type": "array",
                 "items": [
                   {
@@ -1752,7 +1859,7 @@
               "title": "type"
             },
             "at": {
-              "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+              "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
               "type": "array",
               "items": [
                 {
@@ -2487,6 +2594,30 @@
         "width"
       ]
     },
+    "ScreenSize": {
+      "description": "A screen's size in points, and how many pixels a point holds (2 on a Retina Mac, 2.625 on many phones, 1 on Xvfb).",
+      "title": "ScreenSize",
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number",
+          "title": "width"
+        },
+        "height": {
+          "type": "number",
+          "title": "height"
+        },
+        "scale": {
+          "type": "number",
+          "title": "scale"
+        }
+      },
+      "required": [
+        "height",
+        "scale",
+        "width"
+      ]
+    },
     "ScreenWatchParams": {
       "description": "The live view's frames (screen.watch): the next frame after the caller's ack, once the screen changed. `after` is\nthe seq of the last frame the caller has whole, 0 for none; an older one gets the newest frame at once.",
       "title": "ScreenWatchParams",
@@ -2575,7 +2706,7 @@
           "title": "height"
         },
         "cursor": {
-          "description": "Pixels of the full screenshot, origin top left. A region shot never changes this space.",
+          "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
           "type": "array",
           "items": [
             {
@@ -2768,32 +2899,178 @@
       ],
       "additionalProperties": false
     },
+    "UiActParams": {
+      "title": "UiActParams",
+      "type": "object",
+      "properties": {
+        "target": {
+          "description": "Where keys and typing without a ref go. Default: the state's app and window, else the app in front.",
+          "$ref": "#/definitions/UiTarget",
+          "title": "target"
+        },
+        "state": {
+          "description": "The state the steps' points were read from. A step at a point needs it.",
+          "type": "string",
+          "title": "state"
+        },
+        "steps": {
+          "description": "At most MAX_STEPS; their drag ms add up to at most MAX_BATCH_WAIT_MS. No steps and an expect is a wait.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UiStep"
+          },
+          "title": "steps"
+        },
+        "expect": {
+          "description": "What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\nit holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\nname or value holds the text. gone: the opposite of each. At least one of text and ref.",
+          "$ref": "#/definitions/UiExpect",
+          "title": "expect"
+        },
+        "foreground": {
+          "description": "Let steps take the foreground route, which moves the user's pointer and focus. Default false.",
+          "type": "boolean",
+          "title": "foreground"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "UiActResult": {
+      "title": "UiActResult",
+      "type": "object",
+      "properties": {
+        "steps": {
+          "description": "One per step tried, in order. A refused step is the last: the steps after it do not run.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UiStepResult"
+          },
+          "title": "steps"
+        },
+        "state": {
+          "description": "The state after the steps, once the window settled (at most MAX_SETTLE_MS).",
+          "type": "string",
+          "title": "state"
+        },
+        "changed": {
+          "description": "The window's nodes or image changed between before the first step and the settled state.",
+          "type": "boolean",
+          "title": "changed"
+        },
+        "expect": {
+          "description": "Whether the expect held in time. Absent with no expect, or when a step was refused.",
+          "enum": [
+            "met",
+            "unmet"
+          ],
+          "type": "string",
+          "title": "expect"
+        }
+      },
+      "required": [
+        "changed",
+        "state",
+        "steps"
+      ]
+    },
+    "UiExpect": {
+      "description": "What the caller expects to see once the steps ran, checked on the computer against the whole window, polled until\nit holds or timeoutMs passes. text: some node's name or value holds it. ref: the element exists. Both: that element's\nname or value holds the text. gone: the opposite of each. At least one of text and ref.",
+      "title": "UiExpect",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "title": "text"
+        },
+        "ref": {
+          "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
+          "type": "string",
+          "title": "ref"
+        },
+        "gone": {
+          "type": "boolean",
+          "title": "gone"
+        },
+        "timeoutMs": {
+          "description": "Default DEFAULT_EXPECT_MS, at most MAX_EXPECT_MS.",
+          "type": "integer",
+          "title": "timeoutMs"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UiImage": {
+      "description": "A window's image, whole: at most MAX_CHUNK_BYTES before base64 (the driver lowers JPEG quality until it fits).",
+      "title": "UiImage",
+      "type": "object",
+      "properties": {
+        "format": {
+          "enum": [
+            "jpeg",
+            "png"
+          ],
+          "type": "string",
+          "title": "format"
+        },
+        "width": {
+          "description": "Pixels. The image covers the window: a pixel is window.bounds' width / width points.",
+          "type": "number",
+          "title": "width"
+        },
+        "height": {
+          "type": "number",
+          "title": "height"
+        },
+        "data": {
+          "description": "base64.",
+          "type": "string",
+          "title": "data"
+        }
+      },
+      "required": [
+        "data",
+        "format",
+        "height",
+        "width"
+      ]
+    },
     "UiNode": {
       "title": "UiNode",
       "type": "object",
       "properties": {
-        "role": {
-          "description": "The platform's class as given: \"android.widget.Button\", \"XCUIElementTypeButton\".",
+        "ref": {
+          "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
           "type": "string",
+          "title": "ref"
+        },
+        "role": {
+          "$ref": "#/definitions/UiRole",
           "title": "role"
         },
+        "name": {
+          "description": "What a person reads it as: its label, title or text.",
+          "type": "string",
+          "title": "name"
+        },
+        "value": {
+          "description": "What it holds: a text field's text, a slider's value. A secure field's value is never sent.",
+          "type": "string",
+          "title": "value"
+        },
+        "desc": {
+          "description": "What else it says, beside its name: a row's secondary text (\"Mobile, Wi-Fi, hotspot\"), a help tag.",
+          "type": "string",
+          "title": "desc"
+        },
         "id": {
-          "description": "resource-id or accessibilityIdentifier.",
+          "description": "The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier.",
           "type": "string",
           "title": "id"
         },
-        "text": {
-          "description": "Visible text or value.",
-          "type": "string",
-          "title": "text"
-        },
-        "label": {
-          "description": "content-desc or accessibilityLabel.",
-          "type": "string",
-          "title": "label"
-        },
         "bounds": {
-          "description": "In screenshot pixels (iOS points times scale).",
+          "description": "In window points.",
           "type": "array",
           "items": [
             {
@@ -2817,68 +3094,562 @@
           "maxItems": 4,
           "title": "bounds"
         },
-        "enabled": {
-          "type": "boolean",
-          "title": "enabled"
+        "parent": {
+          "description": "The nearest node above it in this list; absent at the top. A node comes after its parent.",
+          "type": "string",
+          "title": "parent"
         },
-        "clickable": {
-          "type": "boolean",
-          "title": "clickable"
-        },
-        "focused": {
-          "type": "boolean",
-          "title": "focused"
-        },
-        "selected": {
-          "type": "boolean",
-          "title": "selected"
-        },
-        "checked": {
-          "type": "boolean",
-          "title": "checked"
-        },
-        "scrollable": {
-          "type": "boolean",
-          "title": "scrollable"
-        },
-        "children": {
+        "flags": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/UiNode"
+            "enum": [
+              "checked",
+              "disabled",
+              "focused",
+              "offscreen",
+              "secure",
+              "selected"
+            ],
+            "type": "string"
           },
-          "title": "children"
+          "title": "flags"
+        },
+        "actions": {
+          "description": "The platform's own action names, for the perform step: \"AXShowMenu\", \"ACTION_LONG_CLICK\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "actions"
         }
       },
       "required": [
         "bounds",
-        "children",
-        "enabled",
+        "ref",
         "role"
       ]
     },
-    "UiTreeResult": {
-      "title": "UiTreeResult",
+    "UiObserveParams": {
+      "title": "UiObserveParams",
       "type": "object",
       "properties": {
-        "root": {
-          "$ref": "#/definitions/UiNode",
-          "title": "root"
+        "target": {
+          "description": "Which app and window. A bundle id or package name, and a window id from ui.observe. Omitted: the app in front, its main window.",
+          "$ref": "#/definitions/UiTarget",
+          "title": "target"
+        },
+        "full": {
+          "description": "Every node. Without it, only the nodes that can be acted on or that have a name, and their parents.",
+          "type": "boolean",
+          "title": "full"
+        },
+        "image": {
+          "description": "The window's image (feature ui.image), true at DEFAULT_IMAGE_EDGE. Without the feature, refused as `unsupported`.",
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "maxEdge": {
+                  "type": "integer",
+                  "title": "maxEdge"
+                }
+              },
+              "required": [
+                "maxEdge"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "image"
+        },
+        "since": {
+          "description": "A state this connection observed before: the result says what changed since it.",
+          "type": "string",
+          "title": "since"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UiObserveResult": {
+      "title": "UiObserveResult",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "This observation's id, such as \"s7\". A step's points are read against the state they came from.",
+          "type": "string",
+          "title": "state"
+        },
+        "app": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "id"
+            },
+            "name": {
+              "type": "string",
+              "title": "name"
+            },
+            "pid": {
+              "type": "number",
+              "title": "pid"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "title": "app"
+        },
+        "window": {
+          "description": "bounds in screen points: where the window sits.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "id"
+            },
+            "title": {
+              "type": "string",
+              "title": "title"
+            },
+            "bounds": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "number",
+                  "title": "x"
+                },
+                {
+                  "type": "number",
+                  "title": "y"
+                },
+                {
+                  "type": "number",
+                  "title": "w"
+                },
+                {
+                  "type": "number",
+                  "title": "h"
+                }
+              ],
+              "minItems": 4,
+              "maxItems": 4,
+              "title": "bounds"
+            }
+          },
+          "required": [
+            "bounds",
+            "id"
+          ],
+          "title": "window"
         },
         "nodes": {
-          "description": "How many nodes the tree holds, at most MAX_UI_NODES.",
-          "type": "number",
+          "description": "In order, a node after its parent.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/UiNode"
+          },
           "title": "nodes"
         },
+        "diff": {
+          "description": "Against since, by ref. Absent when since was not given or the driver no longer holds it.",
+          "type": "object",
+          "properties": {
+            "added": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "added"
+            },
+            "removed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "removed"
+            },
+            "changed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "changed"
+            }
+          },
+          "required": [
+            "added",
+            "changed",
+            "removed"
+          ],
+          "title": "diff"
+        },
+        "image": {
+          "description": "A window's image, whole: at most MAX_CHUNK_BYTES before base64 (the driver lowers JPEG quality until it fits).",
+          "$ref": "#/definitions/UiImage",
+          "title": "image"
+        },
+        "empty": {
+          "description": "Why nodes is empty though the window is not: the tree is off here (feature ui.tree), in words. The result then\ncarries the window's image, asked for or not, so a caller can still act at points.",
+          "type": "string",
+          "title": "empty"
+        },
         "truncated": {
+          "description": "Nodes were left out: past MAX_UI_NODES, or to keep the reply within the line limit.",
           "type": "boolean",
           "title": "truncated"
         }
       },
       "required": [
+        "app",
         "nodes",
-        "root",
-        "truncated"
+        "state",
+        "truncated",
+        "window"
       ]
+    },
+    "UiRole": {
+      "title": "UiRole",
+      "enum": [
+        "button",
+        "cell",
+        "checkbox",
+        "combobox",
+        "dialog",
+        "generic",
+        "group",
+        "heading",
+        "image",
+        "link",
+        "list",
+        "listitem",
+        "menu",
+        "menuitem",
+        "progressbar",
+        "radio",
+        "row",
+        "scrollarea",
+        "searchbox",
+        "slider",
+        "switch",
+        "tab",
+        "table",
+        "text",
+        "textbox",
+        "toolbar",
+        "window"
+      ],
+      "type": "string"
+    },
+    "UiRoute": {
+      "description": "The ways a driver can make a step happen, best first. A step's result says which one ran.",
+      "title": "UiRoute",
+      "enum": [
+        "background",
+        "foreground",
+        "page",
+        "semantic"
+      ],
+      "type": "string"
+    },
+    "UiStep": {
+      "description": "One action. A step that names a ref acts on its element; a step at a point needs the act's state, and is refused as\n`stale` when what is under the point is no longer what that state saw.",
+      "title": "UiStep",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "press": {
+              "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
+              "type": "string",
+              "title": "press"
+            }
+          },
+          "required": [
+            "press"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "set": {
+              "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
+              "type": "string",
+              "title": "set"
+            },
+            "value": {
+              "type": "string",
+              "title": "value"
+            }
+          },
+          "required": [
+            "set",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "perform": {
+              "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
+              "type": "string",
+              "title": "perform"
+            },
+            "action": {
+              "type": "string",
+              "title": "action"
+            }
+          },
+          "required": [
+            "action",
+            "perform"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "click": {
+              "anyOf": [
+                {
+                  "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
+                  "type": "array",
+                  "items": [
+                    {
+                      "type": "integer",
+                      "title": "x"
+                    },
+                    {
+                      "type": "integer",
+                      "title": "y"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "click"
+            },
+            "button": {
+              "enum": [
+                "left",
+                "right"
+              ],
+              "type": "string",
+              "title": "button"
+            },
+            "count": {
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "type": "integer",
+              "title": "count"
+            }
+          },
+          "required": [
+            "click"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "title": "type"
+            },
+            "into": {
+              "description": "A driver's name for one element, such as \"@e12\". It stays good while its element exists, across states and steps;\nonce the element is gone, a step naming it is refused as `stale`. Refs are opaque and start with \"@\".",
+              "type": "string",
+              "title": "into"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "title": "key"
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "nav": {
+              "enum": [
+                "app_switch",
+                "back",
+                "home"
+              ],
+              "type": "string",
+              "title": "nav"
+            }
+          },
+          "required": [
+            "nav"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "scroll": {
+              "anyOf": [
+                {
+                  "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
+                  "type": "array",
+                  "items": [
+                    {
+                      "type": "integer",
+                      "title": "x"
+                    },
+                    {
+                      "type": "integer",
+                      "title": "y"
+                    }
+                  ],
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "title": "scroll"
+            },
+            "dx": {
+              "type": "integer",
+              "title": "dx"
+            },
+            "dy": {
+              "type": "integer",
+              "title": "dy"
+            }
+          },
+          "required": [
+            "scroll"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "drag": {
+              "type": "array",
+              "items": {
+                "description": "In screen and input, pixels of the full screenshot, origin top left (a region shot never changes this space). In ui,\nthe window's points, origin at its top left.",
+                "type": "array",
+                "items": [
+                  {
+                    "type": "integer",
+                    "title": "x"
+                  },
+                  {
+                    "type": "integer",
+                    "title": "y"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "title": "drag"
+            },
+            "ms": {
+              "type": "integer",
+              "title": "ms"
+            }
+          },
+          "required": [
+            "drag"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "UiStepResult": {
+      "title": "UiStepResult",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "route": {
+              "$ref": "#/definitions/UiRoute",
+              "title": "route"
+            },
+            "verified": {
+              "type": "boolean",
+              "title": "verified"
+            }
+          },
+          "required": [
+            "route",
+            "verified"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/definitions/DaemonErrorKind",
+                  "title": "kind"
+                },
+                "message": {
+                  "type": "string",
+                  "title": "message"
+                }
+              },
+              "required": [
+                "kind",
+                "message"
+              ],
+              "title": "error"
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ]
+    },
+    "UiTarget": {
+      "description": "Which app and window. A bundle id or package name, and a window id from ui.observe. Omitted: the app in front, its main window.",
+      "title": "UiTarget",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "title": "app"
+        },
+        "window": {
+          "type": "string",
+          "title": "window"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
