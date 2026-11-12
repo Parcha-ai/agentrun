@@ -76,15 +76,15 @@ test("no package's build builds, or skips building, a dependency: each compiles 
 
 // A build of some workspaces goes through the same order: the set, in dependency order (`--only`). npm's own `-w a -w b`
 // order is the workspaces' directory order, which built decisions before dsl once no package built its dependencies itself.
-test("a subset builds in dependency order: dsl before decisions, pi before pi-durable-agent", async () => {
+test("a subset builds in dependency order: dsl before decisions, the kernel before a harness", async () => {
   const mod = await ordering();
   assert.ok(mod?.subsetOrder, 'scripts/build-workspaces.mjs exports subsetOrder');
   // Given in directory order, the order npm's -w would build them in.
-  const built = ['@parcha/agentrun-decisions', '@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/pi-browser', '@parcha/pi-durable-agent', '@parcha/pi-durable-disk'];
+  const built = ['@parcha/agentrun-decisions', '@parcha/agentrun-dsl', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/pi-browser'];
   const order = mod.subsetOrder(mod.workspaces(), built, () => true);
   assert.deepEqual([...order].sort(), [...built].sort(), 'the set, each once, nothing else');
   const at = (name) => order.indexOf(name);
-  for (const [later, earlier] of [['@parcha/agentrun-decisions', '@parcha/agentrun-dsl'], ['@parcha/pi-durable-agent', '@parcha/agentrun-pi']]) {
+  for (const [later, earlier] of [['@parcha/agentrun-decisions', '@parcha/agentrun-dsl'], ['@parcha/agentrun-harness-claude', '@parcha/agentrun-kernel']]) {
     assert.ok(at(earlier) >= 0 && at(earlier) < at(later), `${later} after ${earlier}: ${order.join(', ')}`);
   }
 });
@@ -162,26 +162,17 @@ test('a package a build is asked for counts as stale, so a current dependency be
   assert.deepEqual(mod.withStaleDeps(packagesAB, ['a', 'c'], stale).sort(), ['a', 'b', 'c'], '--only a,c: b is built between them');
 });
 
-test('serve reads the console build and pi reads its demo sources, never the demo-data.ts its own build writes', async () => {
+test('serve reads the console build', async () => {
   const mod = await ordering();
   const dir = mkdtempSync(join(tmpdir(), 'build-workspaces-reads-'));
   try {
     const touch = (path, text, at) => { mkdirSync(join(dir, path, '..'), { recursive: true }); writeFileSync(join(dir, path), text); utimesSync(join(dir, path), at, at); };
     touch('packages/serve/src/a.ts', 'a', 100);
-    touch('packages/pi/src/a.ts', 'a', 100);
-    touch('packages/pi/src/demo-data.ts', 'generated', 100);
-    touch('examples/typed-research.ts', 'e', 100);
     touch('apps/console/dist/index.html', 'console', 100);
     const serve = { name: '@parcha/agentrun-serve', dir: join(dir, 'packages/serve') };
-    const pi = { name: '@parcha/agentrun-pi', dir: join(dir, 'packages/pi') };
-    const [s0, p0] = [mod.inputsOf(serve, dir), mod.inputsOf(pi, dir)];
+    const s0 = mod.inputsOf(serve, dir);
     touch('apps/console/dist/index.html', 'console 2', 120);
     assert.notEqual(mod.inputsOf(serve, dir), s0, 'a rebuilt console is an input of serve');
-    assert.equal(mod.inputsOf(pi, dir), p0, 'and not of pi');
-    touch('packages/pi/src/demo-data.ts', 'generated', 150);
-    assert.equal(mod.inputsOf(pi, dir), p0, 'a rewritten demo-data.ts is no input');
-    touch('examples/typed-research.ts', 'e2', 160);
-    assert.notEqual(mod.inputsOf(pi, dir), p0, 'the example it is generated from is');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

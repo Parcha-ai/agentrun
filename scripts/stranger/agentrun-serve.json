@@ -3,10 +3,7 @@
   "install": [
     "dsl",
     "jev",
-    "pi",
     "pi-browser",
-    "pi-durable-disk",
-    "pi-durable-agent",
     "decisions",
     "run-adapters",
     "run-adapters-claude-agent",
@@ -17,10 +14,7 @@
   "companions": [
     "@parcha/agentrun-dsl",
     "@parcha/agentrun-jev",
-    "@parcha/agentrun-pi",
     "@parcha/pi-browser",
-    "@parcha/pi-durable-disk",
-    "@parcha/pi-durable-agent",
     "@parcha/agentrun-decisions",
     "@parcha/agentrun-kernel",
     "@parcha/agentrun-harness-claude",
