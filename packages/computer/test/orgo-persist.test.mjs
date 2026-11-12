@@ -381,7 +381,7 @@ function holdOnce(when) {
 const OWNED_MAX = "9999-12-31T23:59:59.000Z";
 const epochOf = (entry) => entry.labels["agentrun.epoch"];
 
-test("Orgo: two processes' attaches of one agent's computer under one run's claims at epochs 1 and 2 race; whichever ledger write of the epoch-1 attach lands last, the ledger ends at epoch 2 and the epoch-1 attach is refused (Linux and Windows)", async () => {
+test("Orgo: two processes' attaches of one agent's computer under one run's claims at epochs 1 and 2 race: an epoch-1 take that lands last is fenced, one that holds the entry keeps epoch 2 off until it settles, one whose marker went stale and was taken over fails its settle; the ledger ends at epoch 2 (Linux and Windows)", async () => {
 	// Two providers over one ledger and one Orgo: two processes, so nothing but the ledger orders them.
 	const kinds = [
 		["linux", (ledger) => {
@@ -393,13 +393,18 @@ test("Orgo: two processes' attaches of one agent's computer under one run's clai
 			return { provider: made.provider, other: desktop("windows", { fake: made.fake, ledger }).provider, api: made.fake.api, spec: windowsSpec(), wake: "start" };
 		}],
 	];
-	// The epoch-1 attach's take (run-1's entry to run-2's at epoch 1), or its mark as held (after its take and checks).
+	// The epoch-1 attach's take (run-1's entry to run-2's at epoch 1, busy), or its settle (its marker cleared, after its
+	// take, wake and checks): held there with its marker in force, or with its marker gone stale meanwhile, as when the
+	// process holding it stalls past BUSY_MS.
+	const takes = (was, entry) => epochOf(entry) === "1" && entry.labels["agentrun.run"] === "run-2" && was.labels["agentrun.run"] === "run-1";
+	const settles = (was, entry) => epochOf(was) === "1" && was.labels["agentrun.run"] === "run-2" && was.busy !== undefined && entry.busy === undefined;
 	const holds = [
-		["its take", (was, entry) => epochOf(entry) === "1" && entry.labels["agentrun.run"] === "run-2" && was.labels["agentrun.run"] === "run-1"],
-		["its mark as held", (was, entry) => epochOf(entry) === "1" && was.labels["agentrun.run"] === "run-2" && was.detachedAt !== undefined && entry.detachedAt === undefined],
+		["its take", takes, false],
+		["its settle", settles, false],
+		["its settle, its marker gone stale", settles, true],
 	];
 	for (const [os, make] of kinds) {
-		for (const [what, when] of holds) {
+		for (const [what, when, stale] of holds) {
 			const held = holdOnce(when);
 			const ledger = storeLedger({ gate: held.gate });
 			const { provider, other, api, spec, wake } = make(ledger);
@@ -407,19 +412,61 @@ test("Orgo: two processes' attaches of one agent's computer under one run's clai
 			assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 			const lower = provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
 			await held.reached;
+			if (stale) ledger.rows.get(ref.id).busy.since = new Date(0).toISOString();
 			const higher = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
-			assert.equal(higher.ok, true, `${os}, ${what}: ${JSON.stringify(higher)}`);
-			held.open();
-			const lost = await lower;
-			assert.equal(lost.ok, false, `${os}, ${what}`);
-			assert.equal(lost.error.code, "refused");
-			assert.match(lost.error.message, /fenced/, `${os}, ${what}`);
+			if (what === "its settle") {
+				// The epoch-1 attach holds the entry until it settles it: the epoch-2 one is refused meanwhile, and attaches after.
+				assert.match(higher.error?.message ?? "", /busy \(being attached\)/, `${os}, ${what}`);
+				held.open();
+				assert.equal((await lower).ok, true, `${os}, ${what}`);
+				assert.equal((await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } })).ok, true, `${os}, ${what}`);
+			} else {
+				assert.equal(higher.ok, true, `${os}, ${what}: ${JSON.stringify(higher)}`);
+				held.open();
+				// Its take re-reads and is fenced; its settle finds the entry changed, an error, never ok.
+				const lost = await lower;
+				assert.equal(lost.ok, false, `${os}, ${what}`);
+				assert.equal(lost.error.code, "refused");
+				assert.match(lost.error.message, stale ? /fenced: .*ledger entry changed while this being attached \(run "run-2" at epoch 1\) held it/ : /fenced/, `${os}, ${what}`);
+			}
 			const row = ledger.rows.get(ref.id);
-			assert.deepEqual([row.labels["agentrun.run"], epochOf(row), row.detachedAt], ["run-2", "2", undefined], `${os}, ${what}: the higher epoch stays`);
+			assert.deepEqual([row.labels["agentrun.run"], epochOf(row), row.detachedAt, row.busy], ["run-2", "2", undefined, undefined], `${os}, ${what}: the higher epoch stays, settled`);
 			assert.equal(api.computers.get(ref.id).status, "running", `${os}, ${what}: the epoch-2 attach's computer runs on`);
 			assert.equal(calls(api, wake).length, 1, `${os}, ${what}: woken once`);
 			assert.equal(calls(api, wake === "resume" ? "suspend" : "stop").length, 1, `${os}, ${what}: the lost attach put nothing back`);
 		}
+	}
+});
+
+test("Orgo: an attach or detach whose busy marker went stale and was taken over answers with an error, never ok, and settles nothing over the entry its taker holds (Linux and Windows)", async () => {
+	const kinds = [
+		["linux", (ledger) => {
+			const made = linux({ ledger });
+			return { provider: made.provider, other: linux({ api: made.api, channel: made.channel, ledger }).provider, spec: linuxSpec() };
+		}],
+		["windows", (ledger) => {
+			const made = desktop("windows", { ledger });
+			return { provider: made.provider, other: desktop("windows", { fake: made.fake, ledger }).provider, spec: windowsSpec() };
+		}],
+	];
+	for (const [os, make] of kinds) {
+		// The detach's settle (its marker cleared, marked detached) held while its marker goes stale and an attach takes over.
+		const held = holdOnce((was, entry) => was.busy?.doing === "being detached" && entry.busy === undefined);
+		const ledger = storeLedger({ gate: held.gate });
+		const { provider, other, spec } = make(ledger);
+		const ref = (await provider.create(spec)).value;
+		const detach = provider.release(ref, "detach");
+		await held.reached;
+		ledger.rows.get(ref.id).busy.since = new Date(0).toISOString();
+		const attached = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+		assert.equal(attached.ok, true, `${os}: ${JSON.stringify(attached)}`);
+		held.open();
+		const lost = await detach;
+		assert.equal(lost.ok, false, `${os}: the detach whose settle found the entry changed is an error`);
+		assert.match(lost.error.message, /fenced: .*ledger entry changed while this being detached .* held it/, os);
+		const row = ledger.rows.get(ref.id);
+		assert.deepEqual([row.labels["agentrun.run"], row.detachedAt, row.busy], ["run-2", undefined, undefined], `${os}: the attach's entry, held, never marked detached by the lost detach`);
+		assert.deepEqual(await other.release(ref, "detach"), { ok: true, value: undefined }, `${os}: the entry is free, not left busy`);
 	}
 });
 
@@ -490,10 +537,12 @@ test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs
 		assert.equal(newer.value.notes?.some((note) => /was replaced/.test(note)) ?? false, false, "the epoch-2 attach replaced nothing");
 		assert.deepEqual([epochOf(ledger.rows.get(ref.id)), ledger.rows.get(ref.id).busy], ["2", undefined]);
 	}
-	// Two processes, the epoch-2 attach taking the computer after the epoch-1 one resumed it and before its stop: the
-	// newer replaces the daemon; the older's stop, landing after, finds the entry not its claim's and stops nothing.
+	// Two processes, the epoch-1 attach stalled past BUSY_MS right before its stop, so the epoch-2 attach takes the entry
+	// over and replaces the daemon: the older's renew, landing after, finds the entry changed, and it stops nothing and
+	// puts nothing back to sleep.
 	{
-		const lowerMarks = holdOnce((was, entry) => entry.busy !== undefined && was.labels["agentrun.run"] === "run-2" && epochOf(was) === "1");
+		const replacing = (was, entry) => entry.busy?.doing === "its daemon being replaced by an attach" && epochOf(entry) === "1";
+		const lowerMarks = holdOnce(replacing);
 		const ledger = storeLedger({ gate: lowerMarks.gate });
 		const { api, channel, provider } = linux({ ledger });
 		const other = linux({ api, channel, ledger }).provider;
@@ -503,18 +552,20 @@ test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs
 		box.init.version = "0.0.1";
 		const lower = provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
 		await lowerMarks.reached;
+		ledger.rows.get(ref.id).busy.since = new Date(0).toISOString();
 		const higher = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
 		assert.equal(higher.ok, true, JSON.stringify(higher));
 		assert.match(higher.value.notes[0], /was replaced/);
 		const started = box.init;
 		lowerMarks.open();
 		const lost = await lower;
-		assert.match(lost.error?.message ?? "", /fenced: .*daemon needs replacing.*another claim has taken it since/);
+		assert.match(lost.error?.message ?? "", /daemon needs replacing, since .*, and is left as it is: fenced: .*ledger entry changed/);
+		assert.match(lost.error.message, /runs on, not suspended again/);
 		assert.equal(box.stopped, 1, "the epoch-1 attach stopped nothing");
 		assert.equal(box.init, started, "the init the epoch-2 attach started runs on");
 		assert.deepEqual([api.computers.get(ref.id).status, epochOf(ledger.rows.get(ref.id)), ledger.rows.get(ref.id).busy], ["running", "2", undefined], "nor did it put the computer back to sleep");
 	}
-	// Two processes, the epoch-1 attach marking first: the epoch-2 attach is refused while the daemon is replaced, and
+	// Two processes, the epoch-1 attach holding the entry: the epoch-2 attach is refused while the daemon is replaced, and
 	// attaches once it is, the epoch-1 attach's init kept.
 	{
 		const ledger = storeLedger();
@@ -528,7 +579,7 @@ test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs
 		let during;
 		ledger.swap = async (was, entry) => {
 			const swapped = await swap(was, entry);
-			if (entry.busy !== undefined && during === undefined) during = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+			if (entry.busy?.doing === "its daemon being replaced by an attach" && during === undefined) during = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
 			return swapped;
 		};
 		const lower = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
@@ -630,7 +681,7 @@ test("Orgo: while a failed attach puts an agent's computer back to sleep, anothe
 		let newer;
 		ledger.swap = async (was, entry) => {
 			const swapped = await swap(was, entry);
-			if (entry.busy !== undefined && newer === undefined) newer = await second.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
+			if (/put back/.test(entry.busy?.doing ?? "") && newer === undefined) newer = await second.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
 			return swapped;
 		};
 		const failed = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
@@ -649,6 +700,42 @@ test("Orgo: while a failed attach puts an agent's computer back to sleep, anothe
 
 // provider.persistence (Full) runs in the computer (env, files, a process): the Linux fake has no daemon to run it, and
 // the case is written for a POSIX shell, so on Windows it skips. It runs live; the tests above cover the same steps.
+test("Orgo: a delete under a claim deletes an agent's computer only while it carries exactly that claim and no attach or detach holds it; a later claim's, a busy one and a run's computer are left as they are (Linux and Windows)", async () => {
+	const kinds = [
+		["linux", () => {
+			const made = linux();
+			return { ...made, other: linux({ api: made.api, channel: made.channel, ledger: made.ledger }).provider, spec: linuxSpec(), run: { image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: LABELS } };
+		}],
+		["windows", () => {
+			const made = desktop("windows");
+			return { ...made, api: made.fake.api, other: desktop("windows", { fake: made.fake, ledger: made.ledger }).provider, spec: windowsSpec(), run: { image: "windows", lifetimeMs: 30 * 60_000, network: "open", labels: LABELS } };
+		}],
+	];
+	const exists = (api, id) => api.computers.has(id) && !api.computers.get(id).deleted;
+	for (const [os, make] of kinds) {
+		const { api, provider, other, ledger, spec, run } = make();
+		// Made under run-1's claim at epoch 1 (LABELS); a later claim (epoch 2) took it: the epoch-1 claim's delete is fenced.
+		const adopted = (await provider.create(spec)).value;
+		assert.equal((await other.attach({ id: adopted.id }, { claim: { run: "run-1", epoch: 2 } })).ok, true, os);
+		const fenced = await provider.release(adopted, "delete", { claim: { run: "run-1", epoch: 1 } });
+		assert.match(fenced.error?.message ?? "", /fenced: .* carries run "run-1" at epoch 2, not this claim's \(run "run-1" at epoch 1\)/, os);
+		assert.equal(exists(api, adopted.id), true, `${os}: the later claim's computer runs on`);
+		assert.equal(epochOf(ledger.rows.get(adopted.id)), "2", os);
+		// One an attach holds (busy) is left too.
+		ledger.rows.get(adopted.id).busy = { since: new Date().toISOString(), doing: "being attached" };
+		assert.match((await provider.release(adopted, "delete", { claim: { run: "run-1", epoch: 2 } })).error?.message ?? "", /busy \(being attached\)/, os);
+		assert.equal(exists(api, adopted.id), true, os);
+		delete ledger.rows.get(adopted.id).busy;
+		// Still the claim's: deleted, its entry gone.
+		assert.deepEqual(await provider.release(adopted, "delete", { claim: { run: "run-1", epoch: 2 } }), { ok: true, value: undefined }, os);
+		assert.deepEqual([exists(api, adopted.id), ledger.rows.has(adopted.id)], [false, false], os);
+		// A run's computer is no claim's to delete this way.
+		const runs = (await provider.create(run)).value;
+		assert.match((await provider.release(runs, "delete", { claim: { run: "run-1", epoch: 1 } })).error?.message ?? "", /a run's computer: a delete under a claim is an agent's own computer's alone/, os);
+		assert.equal(exists(api, runs.id), true, os);
+	}
+});
+
 test("the conformance suite's Core persistence cases, provider.owner and provider.detach, pass on the Linux, Windows and macOS fakes", async () => {
 	const { runConformance, conformanceCases } = await import("../dist/conformance/index.js");
 	const cases = conformanceCases.filter(({ id }) => ["provider.owner", "provider.detach"].includes(id));

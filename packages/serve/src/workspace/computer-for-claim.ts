@@ -14,13 +14,13 @@
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
-import type { BrowserSpec, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
+import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
-import { type AgentComputerHold, agentComputerOf, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
+import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
@@ -390,6 +390,8 @@ async function ownedStart(
   const record = await agentComputerOf(store, agentId);
   const found = listed.value.find((info) => info.ref.id === record?.id) ?? listed.value[0];
   let ref: { readonly id: string; readonly name: string };
+  /** Whether this claim made the computer, or attached the one the agent had. */
+  let made: boolean;
   if (found) {
     const holder = found.labels[RUN_LABEL];
     if (found.state === "running" && holder !== undefined && holder !== claim.runId) {
@@ -402,20 +404,20 @@ async function ownedStart(
     const attached = await provider.attach({ id: found.ref.id }, { claim: { run: claim.runId, epoch: claim.epoch }, ...call });
     if (!attached.ok) throw new Error(attached.error.message);
     ref = { id: found.ref.id, name: found.ref.name };
+    made = false;
     note(`Attached this agent's computer ${ref.name}, kept from its last run.`);
   } else {
     const created = await provider.create(spec, call);
     if (!created.ok) throw new Error(created.error.message);
     ref = { id: created.value.id, name: created.value.name };
+    made = true;
     note(record
       ? `This agent's computer ${record.name} is gone (deleted outside this server): made a new one, ${ref.name}, which later runs get back.`
       : `Made this agent's own computer ${ref.name}: later runs get it back.`);
   }
+  // The computer is acquired: its cleanup is in place before anything else is awaited, and whatever fails from here (the
+  // hold lost to a later claim included) lets go of exactly what this claim acquired.
   const computer = { provider: context.provider, image: context.image, ...ref };
-  // A later claim of this run (or another run, this one's row ended) that took the hold over while this one attached
-  // has the computer: its record is that claim's to write.
-  if (!(await hold.holds())) throw new Error(`fenced: this agent's computer ${ref.name} was taken over by a later claim while run ${claim.runId}'s claim at epoch ${claim.epoch} attached it; it is left to that claim`);
-  await keepAgentComputer(store, agentId, computer, "held", { run: claim.runId });
   // The hold is marked letting go first, so no claim takes it over while the computer is detached. A claim that took it
   // over since (a later claim of this run, resumed, or another run once this one's row ended) has the computer now: it
   // is left as it is.
@@ -426,12 +428,35 @@ async function ownedStart(
     await keepAgentComputer(store, agentId, computer, "detached");
     await reconcileAgentComputer(store, agentId, async () => provider, hold);
   };
-  const connected = await provider.connect(ref);
-  if (!connected.ok) {
-    await detach().catch(() => undefined);
-    throw new Error(connected.error.message);
+  // A launch that fails: a computer this claim made is deleted under its claim, so one a later claim has taken since (a
+  // resume whose owner's listing found it) is left to that claim, and the record goes where it names it; one it attached
+  // is detached as at the run's end, where the hold is still this claim's. Throws `error`, with what was let go.
+  const abandon = async (error: unknown): Promise<never> => {
+    const words = error instanceof Error ? error.message : String(error);
+    if (!made) {
+      const undone = await detach().then(
+        () => undefined,
+        (failed: unknown) => (failed instanceof Error ? failed.message : String(failed)),
+      );
+      throw new Error(undone === undefined ? words : `${words}; and ${ref.name} could not be detached: ${undone}`);
+    }
+    const deleted = await provider.release(ref, "delete", { claim: { run: claim.runId, epoch: claim.epoch } });
+    if (deleted.ok) await forgetAgentComputer(store, agentId, ref.id).catch(() => undefined);
+    throw new Error(`${words}; ${ref.name}, which this claim made, ${deleted.ok ? "was deleted" : `was not deleted (${deleted.error.message})`}`);
+  };
+  let connected: ComputerConnection;
+  try {
+    // A later claim of this run (or another run, this one's row ended) that took the hold over while this one attached
+    // or made the computer has it now: its record is that claim's to write.
+    if (!(await hold.holds())) throw new Error(`fenced: this agent's computer ${ref.name} was taken over by a later claim while run ${claim.runId}'s claim at epoch ${claim.epoch} ${made ? "made" : "attached"} it; it is left to that claim`);
+    await keepAgentComputer(store, agentId, computer, "held", { run: claim.runId });
+    const opened = await provider.connect(ref);
+    if (!opened.ok) throw new Error(opened.error.message);
+    connected = opened.value;
+  } catch (error) {
+    return abandon(error);
   }
-  const { client, hello } = connected.value;
+  const { client, hello } = connected;
   return {
     id: ref.id,
     groups: hello.groups,
@@ -444,7 +469,7 @@ async function ownedStart(
     },
     ...(watching(provider) ? { watch: (signal: AbortSignal) => watching(provider)!.watch(ref, { signal }) } : {}),
     async release() {
-      await connected.value.close().catch(() => undefined);
+      await connected.close().catch(() => undefined);
       await detach();
     },
   };

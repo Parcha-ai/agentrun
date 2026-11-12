@@ -46,8 +46,8 @@ export interface OrgoLedgerEntry {
 	/** When the computer was detached, ISO time; absent while a run holds it. */
 	detachedAt?: string;
 	/**
-	 * While something stops, suspends or replaces what runs in the computer (underEntry: a failed attach's put-back, a
-	 * daemon's replacement, a detach), when it began, ISO time, and what it is: no attach takes the computer meanwhile.
+	 * While an attach or detach holds the computer (takeEntry to settleEntry), when its current step began, ISO time, and
+	 * what it is doing: no other attach or detach takes it meanwhile.
 	 */
 	busy?: { since: string; doing: string };
 }
@@ -88,98 +88,103 @@ async function ledgerCall<T>(what: "read" | "written", call: () => T | Promise<T
 /** The run and epoch these labels say, in words, for a claim that lost its computer to another. */
 export const holderOf = (labels: Record<string, string>) => `run ${JSON.stringify(labels[RUN_LABEL] ?? "")} at epoch ${labels[EPOCH_LABEL] ?? "none"}`;
 
-/**
- * An agent's computer's ledger entry taken for an attach, before anything is done to the computer: read, held to the
- * claim (claimProblem), then swapped to carry the claim's run and epoch only while it is still the entry read. Two
- * claims of one run that read the same entry never both write it: the one whose swap finds it changed reads it again
- * and is held to the claim again, so a lower epoch never writes over a higher one and is refused (fenced). When it was
- * detached is kept until the attach is done (settleEntry), so an attach that fails leaves it detached. The value is the
- * entry as taken; with no claim, the entry as read.
- */
-export async function takeEntry(ledger: OrgoLedger, ref: ComputerRef, ownerHash: string, claim?: ComputerClaim): Promise<Result<OrgoLedgerEntry>> {
-	for (let tries = 1; ; tries++) {
-		const read = await ledgerCall("read", () => ledger.get(ref.id));
-		if (!read.ok) return read;
-		const entry = read.value;
-		if (entry === undefined) return fail("refused", lostEntry(ref.name));
-		if (busyNow(entry)) return fail("refused", `${ref.name} is busy (${entry.busy?.doing}): attach it again in a moment`);
-		if (claim === undefined) return ok(entry);
-		const fenced = claimProblem(ref.name, ownerHash, entry, claim);
-		if (fenced !== undefined) return fail("refused", fenced);
-		// A busy marker older than BUSY_MS is work that died: the claim takes the entry without it.
-		const { busy: _stale, ...unmarked } = entry;
-		const taken = { ...unmarked, labels: { ...entry.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) } };
-		if (sameEntry(taken, entry)) return ok(taken);
-		const swapped = await ledgerCall("written", () => ledger.swap(entry, taken));
-		if (!swapped.ok) return swapped;
-		if (swapped.value) return ok(taken);
-		if (tries >= SWAP_TRIES) return fail("refused", `${ref.name}'s ledger entry changed under each of ${SWAP_TRIES} tries to take it for this claim; nothing changed`);
-	}
-}
-
-/**
- * An attached agent's computer marked held (no longer detached) in the ledger, only while its entry still carries the
- * labels takeEntry gave it: read again, and swapped while it is still that read. One another claim took while this
- * attach ran is refused (fenced), so attach answers ok only while the ledger names its own claim.
- */
-export async function settleEntry(ledger: OrgoLedger, ref: ComputerRef, taken: OrgoLedgerEntry): Promise<Result<void>> {
-	for (let tries = 1; ; tries++) {
-		const read = await ledgerCall("read", () => ledger.get(ref.id));
-		if (!read.ok) return read;
-		const entry = read.value;
-		if (entry === undefined) return fail("refused", lostEntry(ref.name));
-		if (!sameEntry({ id: entry.id, labels: entry.labels }, { id: taken.id, labels: taken.labels })) {
-			return fail("refused", `fenced: ${ref.name} was taken by ${holderOf(entry.labels)} while this attach (${holderOf(taken.labels)}) ran; it is that claim's now, left as it is`);
-		}
-		if (entry.detachedAt === undefined) return ok(undefined);
-		const { detachedAt: _detachedAt, ...held } = entry;
-		const swapped = await ledgerCall("written", () => ledger.swap(entry, held));
-		if (!swapped.ok) return swapped;
-		if (swapped.value) return ok(undefined);
-		if (tries >= SWAP_TRIES) return fail("refused", `${ref.name}'s ledger entry changed under each of ${SWAP_TRIES} tries to mark it held; it was not marked`);
-	}
-}
-
-/** How long a busy marker keeps every attach off the computer: the most a suspend, stop or daemon replacement is waited
- *  on. A marker older is work that died, and is ignored. */
+/** How long a busy marker keeps every other attach and detach off the computer: the most one step of an attach or detach
+ *  (a resume, a suspend, a stop, a daemon's replacement) is waited on, since each step renews it. A marker older is an
+ *  attach or detach that died, and is taken over. */
 export const BUSY_MS = 15 * 60_000;
 
 /** Whether an entry carries a busy marker still in force. */
 const busyNow = (entry: OrgoLedgerEntry) => entry.busy !== undefined && Date.now() - Date.parse(entry.busy.since) < BUSY_MS;
 
 /**
- * `work` that stops, suspends or replaces what runs in an agent's computer, run under its ledger entry: only once the
- * entry, still carrying `labels` (the ones this attach's claim gave it, takeEntry; undefined: whatever it carries, for a
- * detach, which has no claim) and no busy marker in force, is swapped to carry one saying `doing`. Until the marker is
- * cleared after `work`, every attach is refused at takeEntry and every other underEntry finds it busy, so a newer claim
- * never takes the computer between the check and the work and then has its programs ended or the computer put to sleep
- * under it, and two of these never overlap. The marker is cleared from the marked entry alone (one a stale marker let
- * another claim take is that claim's), with `after` applied (a detach marks it detached). Undefined, with nothing run,
- * when another claim has taken it since (it runs on as that claim's), it is busy, or the ledger can't be read or written.
+ * An agent's computer's ledger entry as one attach, detach or delete under a claim holds it, from takeEntry to
+ * settleEntry (a delete: until it forgets the entry): the entry as last written by it, its busy marker in force. One rule
+ * keeps them all apart: nothing is done to the computer but under this marker, renewed (renewEntry) right before each
+ * step that wakes, stops, suspends or replaces what runs in it, and only its holder settles the entry, every write a swap
+ * from the entry it last wrote. A holder whose swap finds the entry changed (its marker went stale and another took it,
+ * or it was removed) has lost it: it does nothing more to the computer, and its settle is an error, never a success.
  */
-export async function underEntry<T>(
-	ledger: OrgoLedger,
-	ref: ComputerRef,
-	labels: Record<string, string> | undefined,
-	doing: string,
-	work: () => Promise<T>,
-	after: (done: T, entry: OrgoLedgerEntry) => OrgoLedgerEntry = (_done, entry) => entry,
-): Promise<T | undefined> {
-	const read = await ledgerCall("read", () => ledger.get(ref.id));
-	const entry = read.ok ? read.value : undefined;
-	if (entry === undefined || busyNow(entry)) return undefined;
-	if (labels !== undefined && !sameEntry({ id: entry.id, labels: entry.labels }, { id: ref.id, labels })) return undefined;
-	const marked: OrgoLedgerEntry = { ...entry, busy: { since: new Date().toISOString(), doing } };
-	const swapped = await ledgerCall("written", () => ledger.swap(entry, marked));
-	if (!swapped.ok || !swapped.value) return undefined;
-	let done: { value: T } | undefined;
-	try {
-		done = { value: await work() };
-		return done.value;
-	} finally {
-		const { busy: _done, ...cleared } = marked;
-		await ledgerCall("written", () => ledger.swap(marked, done === undefined ? cleared : after(done.value, cleared)));
+export interface EntryLease {
+	entry: OrgoLedgerEntry;
+}
+
+/**
+ * An agent's computer's ledger entry taken, before anything is done to the computer, for an attach (under `claim`, held
+ * to it, claimProblem) or a detach (no claim): read, refused while another holds it busy, then swapped to carry a busy
+ * marker saying `doing` (and the claim's run and epoch) only while it is still the entry read. Two claims of one run that
+ * read the same entry never both write it: the one whose swap finds it changed reads it again and is held to the claim
+ * again, so a lower epoch never writes over a higher one and is refused (fenced). When it was detached is kept until the
+ * holder settles it (settleEntry), so an attach that fails leaves it detached. `only`: the entry is taken only while it
+ * carries exactly the claim's run and epoch (a delete under a claim, which never takes a computer another claim has).
+ */
+export async function takeEntry(ledger: OrgoLedger, ref: ComputerRef, ownerHash: string, claim: ComputerClaim | undefined, doing: string, { only = false } = {}): Promise<Result<EntryLease>> {
+	for (let tries = 1; ; tries++) {
+		const read = await ledgerCall("read", () => ledger.get(ref.id));
+		if (!read.ok) return read;
+		const entry = read.value;
+		if (entry === undefined) return fail("refused", lostEntry(ref.name));
+		if (busyNow(entry)) return fail("refused", `${ref.name} is busy (${entry.busy?.doing}): try again in a moment`);
+		if (claim !== undefined) {
+			const fenced = only ? notClaims(ref.name, entry, claim) : claimProblem(ref.name, ownerHash, entry, claim);
+			if (fenced !== undefined) return fail("refused", fenced);
+		}
+		// A busy marker older than BUSY_MS is an attach or detach that died: this one takes the entry over.
+		const { busy: _stale, ...unmarked } = entry;
+		const taken: OrgoLedgerEntry = {
+			...unmarked,
+			...(claim === undefined ? {} : { labels: { ...entry.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) } }),
+			busy: { since: new Date().toISOString(), doing },
+		};
+		const swapped = await ledgerCall("written", () => ledger.swap(entry, taken));
+		if (!swapped.ok) return swapped;
+		if (swapped.value) return ok({ entry: taken });
+		if (tries >= SWAP_TRIES) return fail("refused", `${ref.name}'s ledger entry changed under each of ${SWAP_TRIES} tries to take it; nothing changed`);
 	}
+}
+
+/** Why an entry that does not carry exactly `claim`'s run and epoch is not that claim's to delete, in words; else undefined. */
+const notClaims = (name: string, entry: OrgoLedgerEntry, claim: ComputerClaim) =>
+	entry.labels[RUN_LABEL] === claim.run && entry.labels[EPOCH_LABEL] === String(claim.epoch)
+		? undefined
+		: `fenced: ${name} carries ${holderOf(entry.labels)}, not this claim's (${holderOf({ [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) })}): another claim has it, so it is left as it is`;
+
+/** Why a holder's swap found its entry changed, in words: it has lost the computer, which it leaves as it is. */
+const lostLease = (ref: ComputerRef, lease: EntryLease) =>
+	`fenced: ${ref.name}'s ledger entry changed while this ${lease.entry.busy?.doing ?? "attach"} (${holderOf(lease.entry.labels)}) held it (its busy marker went stale and another took it, or it was removed): the computer is left as it is`;
+
+/**
+ * The held entry's busy marker renewed, saying `doing` from now, only while the entry is still the one this holder last
+ * wrote: right before each step that wakes, stops, suspends or replaces what runs in the computer, so a holder that lost
+ * the entry never does that step to a computer another holds.
+ */
+export async function renewEntry(ledger: OrgoLedger, ref: ComputerRef, lease: EntryLease, doing: string): Promise<Result<void>> {
+	const renewed: OrgoLedgerEntry = { ...lease.entry, busy: { since: new Date().toISOString(), doing } };
+	const swapped = await ledgerCall("written", () => ledger.swap(lease.entry, renewed));
+	if (!swapped.ok) return swapped;
+	if (!swapped.value) return fail("refused", lostLease(ref, lease));
+	lease.entry = renewed;
+	return ok(undefined);
+}
+
+/**
+ * The held entry settled by its holder alone: its busy marker cleared, with `settle` applied (an attach marks it held, no
+ * longer detached; a detach marks it detached), swapped only while the entry is still the one this holder last wrote. A
+ * swap that finds it changed is an error: the holder lost the entry, and its attach or detach does not answer ok.
+ */
+export async function settleEntry(ledger: OrgoLedger, ref: ComputerRef, lease: EntryLease, settle: (entry: OrgoLedgerEntry) => OrgoLedgerEntry = (entry) => entry): Promise<Result<void>> {
+	const { busy: _done, ...cleared } = lease.entry;
+	const settled = settle(cleared);
+	const swapped = await ledgerCall("written", () => ledger.swap(lease.entry, settled));
+	if (!swapped.ok) return swapped;
+	if (!swapped.value) return fail("refused", lostLease(ref, lease));
+	lease.entry = settled;
+	return ok(undefined);
+}
+
+/** `done`, or, where the settle after it failed, that failure: with done's own words first when done had failed too. */
+export function andSettled<T>(done: Result<T>, settled: Result<void>): Result<T> {
+	if (settled.ok) return done;
+	return done.ok ? settled : fail(done.error.code, `${done.error.message}; and ${settled.error.message}`);
 }
 
 /**

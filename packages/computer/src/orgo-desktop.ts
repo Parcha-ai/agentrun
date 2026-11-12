@@ -38,12 +38,13 @@ import { ORGO_API_URL, type OrgoRest, orgoRest } from "./orgo-channel.js";
 import {
 	COMPUTER_ID,
 	claimProblem,
+	andSettled,
+	type EntryLease,
 	inTurn,
 	filterProblem,
 	type LabelsFile,
 	labelProblem,
 	labelsOf,
-	lostEntry,
 	NAME_MAX,
 	NO_DEADLINE,
 	nameParts,
@@ -59,8 +60,8 @@ import {
 	sameComputer,
 	settleEntry,
 	show,
+	renewEntry,
 	takeEntry,
-	underEntry,
 	withDeadline,
 } from "./orgo-names.js";
 import { encodePng } from "./phone-harness.js";
@@ -99,6 +100,7 @@ import {
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseContext,
 	type ReleaseHow,
 	runLifetimeMs,
 } from "./provider.js";
@@ -755,15 +757,6 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		}
 	}
 
-	/** An agent's computer's ledger entry; a computer with none is refused in words (lostEntry). */
-	async #entry(ref: ComputerRef): Promise<Result<OrgoLedgerEntry>> {
-		const entries = await this.#entries();
-		if (!entries.ok) return entries;
-		const entry = entries.value.get(ref.id);
-		return entry === undefined ? fail("refused", lostEntry(ref.name)) : ok(entry);
-	}
-
-
 	/** A deleted computer's ledger entry, gone; best effort, since the computer is gone whatever the ledger says. */
 	async #forget(id: string): Promise<void> {
 		try {
@@ -771,6 +764,24 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		} catch {
 			// A stale entry names a computer Orgo no longer has: list never shows it.
 		}
+	}
+
+	/**
+	 * An agent's computer deleted under `claim` (ReleaseContext): its entry taken first, only while it carries exactly the
+	 * claim's run and epoch and no attach or detach holds it (takeEntry, only), so a claim that made it and lost it never
+	 * deletes it from under a later claim. A delete Orgo refused lets the entry go again; one Orgo took forgot it already.
+	 */
+	#claimedDelete(ref: ComputerRef, name: string, claim: ComputerClaim, signal?: AbortSignal): Promise<Result<void>> {
+		const owner = nameParts(name)?.owner;
+		if (owner === undefined) return Promise.resolve(fail("refused", `${ref.name} is a run's computer: a delete under a claim is an agent's own computer's alone, so it is left as it is`));
+		return inTurn(this.#owning, ref.id, async () => {
+			const taken = await takeEntry(this.#ledger, ref, owner, claim, "being deleted", { only: true });
+			if (!taken.ok) return taken;
+			const deleted = await this.#delete(ref, signal);
+			if (deleted.ok) return deleted;
+			const left = await this.#entries();
+			return left.ok && !left.value.has(ref.id) ? deleted : andSettled(deleted, await settleEntry(this.#ledger, ref, taken.value));
+		});
 	}
 
 	/** DELETE, tried again while Orgo answers 409 computer_waking, then the wait until Orgo no longer has the computer. */
@@ -858,13 +869,13 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	/**
 	 * The check of a computer attach did not make: its labels file held to its name, who its programs run as, and the
 	 * hello its screen answers. A computer that does not run is refused: reading it would wake it. An agent's own computer
-	 * is the exception: attaching it is asking for it. Its ledger entry is taken for the claim first (takeEntry), before
-	 * anything is done to the computer, so a claim of the same run below the epoch it carries is fenced however the two
-	 * attaches interleave; one that was detached is then started (#wake); under a claim it carries the claim's run and
-	 * epoch from then on; and it is marked held in the ledger last (settleEntry), only while the ledger still names this
-	 * claim. An attach that started it and then fails stops it again, as it was found (#putBack). This process's
-	 * attaches and detaches of one agent's computer are taken in turn; another process's are kept off by the ledger
-	 * (underEntry), so no attach stops another's computer under it.
+	 * is the exception: attaching it is asking for it. Its ledger entry is taken for the claim first, busy (takeEntry),
+	 * before anything is done to the computer, so a claim of the same run below the epoch it carries is fenced however the
+	 * two attaches interleave; one that was detached is then started (#wake); under a claim it carries the claim's run and
+	 * epoch from then on; and it is marked held in the ledger last (settleEntry), by this attach alone, while the entry is
+	 * still the one it holds. An attach that started it and then fails stops it again, as it was found (#putBack). This
+	 * process's attaches and detaches of one agent's computer are taken in turn; another process's are refused while this
+	 * one holds the entry, so no attach or detach stops another's computer under it.
 	 */
 	async #attached(record: OrgoComputer, signal?: AbortSignal, claim?: ComputerClaim): Promise<Result<AttachedComputer>> {
 		const ref = { id: record.id, name: record.name };
@@ -879,13 +890,14 @@ export class OrgoDesktopProvider implements ComputerProvider {
 			// Read again after waiting: the attach or detach before this one may have started or stopped it.
 			const now = waited ? await this.#own(ref, signal) : ok(record);
 			if (!now.ok) return now;
-			const taken = await takeEntry(this.#ledger, ref, owner, claim);
+			const taken = await takeEntry(this.#ledger, ref, owner, claim, "being attached");
 			if (!taken.ok) return taken;
+			const lease = taken.value;
 			const woke = now.value.status !== "running";
-			const attached = await this.#started(now.value, parts, taken.value, woke, signal, claim);
-			if (!attached.ok) return woke ? this.#putBack(ref, taken.value, attached.error) : attached;
-			const settled = await settleEntry(this.#ledger, ref, taken.value);
-			return settled.ok ? attached : settled;
+			const attached = await this.#started(now.value, parts, lease, woke, signal, claim);
+			if (!attached.ok && woke) return this.#putBack(ref, lease, attached.error);
+			// Marked held (no longer detached) once attached; a failed attach that woke nothing leaves it as it was.
+			return andSettled(attached, await settleEntry(this.#ledger, ref, lease, attached.ok ? ({ detachedAt: _held, ...held }) => held : undefined));
 		});
 	}
 
@@ -893,16 +905,21 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	 * An agent's own computer, its entry taken: started when it was not running; under a claim, its labels file carries
 	 * the claim's run and epoch from now on, as the ledger does; then checked.
 	 */
-	async #started(record: OrgoComputer, parts: Parts, taken: OrgoLedgerEntry, woke: boolean, signal?: AbortSignal, claim?: ComputerClaim): Promise<Result<AttachedComputer>> {
+	async #started(record: OrgoComputer, parts: Parts, lease: EntryLease, woke: boolean, signal?: AbortSignal, claim?: ComputerClaim): Promise<Result<AttachedComputer>> {
 		const ref = { id: record.id, name: record.name };
 		if (woke) {
 			const woken = await this.#wake(ref, record.status, signal);
 			if (!woken.ok) return woken;
 		}
 		if (claim !== undefined) {
+			// Its labels file is written under the claim only while this attach still holds the entry, however long the wake took.
+			if (woke) {
+				const renewed = await renewEntry(this.#ledger, ref, lease, "being attached");
+				if (!renewed.ok) return renewed;
+			}
 			const read = await this.#readLabels(ref, signal);
 			if (!read.ok) return read;
-			const written = await this.#writeLabels(ref, { ...read.value, labels: taken.labels }, signal);
+			const written = await this.#writeLabels(ref, { ...read.value, labels: lease.entry.labels }, signal);
 			if (!written.ok) return written;
 		}
 		return this.#checked(record, parts, signal);
@@ -913,10 +930,12 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	 * stops it, so it is left as it was found; its ledger entry still says when it was detached (takeEntry kept it). One
 	 * another claim has taken since is that claim's, and runs on. Never signalled: it outlives an abort.
 	 */
-	async #putBack(ref: ComputerRef, taken: OrgoLedgerEntry, error: ComputerError): Promise<Result<never>> {
-		const stopped = await underEntry(this.#ledger, ref, taken.labels, "being put back to sleep by an attach that failed", () => this.#stop(ref));
-		if (stopped === undefined) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since, or is working on it`);
-		return fail(error.code, `${error.message}; ${ref.name}, which this attach started, ${stopped.ok ? "was stopped again, as it was found" : `could not be stopped again (${stopped.error.message})`}`);
+	async #putBack(ref: ComputerRef, lease: EntryLease, error: ComputerError): Promise<Result<never>> {
+		const renewed = await renewEntry(this.#ledger, ref, lease, "being put back to sleep by an attach that failed");
+		if (!renewed.ok) return fail(error.code, `${error.message}; ${ref.name} runs on, not stopped again: ${renewed.error.message}`);
+		const stopped = await this.#stop(ref);
+		const failed = fail(error.code, `${error.message}; ${ref.name}, which this attach started, ${stopped.ok ? "was stopped again, as it was found" : `could not be stopped again (${stopped.error.message})`}`);
+		return andSettled(failed, await settleEntry(this.#ledger, ref, lease));
 	}
 
 	/** The labels file held to the name, who its programs run as, and the hello its screen answers: #attached's check. */
@@ -1056,7 +1075,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	 * agent's own Windows computer alone: Orgo's stop archives its disk, and it reads frozen. A Mac has no agent's
 	 * computer to detach (Orgo's stop takes none). No stop: a run's computer is deleted. Either forgets the pointer.
 	 */
-	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal, claim }: ReleaseContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete" && how !== "detach") return fail("invalid", `release is "stop", "delete" or "detach", not ${String(how)}`);
@@ -1065,9 +1084,10 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		if (!read.ok) return read.error.code === "not_found" && how === "delete" ? ok(undefined) : read;
 		if (read.value.status === "deleted") return how === "delete" ? ok(undefined) : fail("not_found", `${ref.name} is deleted: there is nothing to detach`);
 		if (!this.#ours(read.value, ref.name)) return fail("not_found", `no Orgo ${this.#profile.os} computer of this provider is ${ref.name} (${ref.id}), so it is left as it is`);
-		if (how === "delete") return this.#dropPointer(ref, await this.#delete(ref, signal));
-		if (nameParts(read.value.name)?.owner === undefined) return fail("refused", `${ref.name} is a run's computer, not an agent's own: it is deleted at its release, never detached`);
-		return this.#dropPointer(ref, await this.#detach(ref, read.value.status, signal));
+		if (how === "delete") return this.#dropPointer(ref, await (claim === undefined ? this.#delete(ref, signal) : this.#claimedDelete(ref, read.value.name, claim, signal)));
+		const owner = nameParts(read.value.name)?.owner;
+		if (owner === undefined) return fail("refused", `${ref.name} is a run's computer, not an agent's own: it is deleted at its release, never detached`);
+		return this.#dropPointer(ref, await this.#detach(ref, owner, read.value.status, signal));
 	}
 
 	/** A released computer's pointer is no longer where any client moved it: the next client starts with none. */
@@ -1078,20 +1098,17 @@ export class OrgoDesktopProvider implements ComputerProvider {
 
 	/**
 	 * An agent's own Windows computer kept with its disk: stopped, read back frozen, and marked detached in the ledger. In
-	 * turn with this process's attaches, and under the ledger entry (underEntry), so no attach starts it while it stops,
-	 * and none takes the entry before it is marked detached. `status`: Orgo's, read before the turn.
+	 * turn with this process's attaches, and holding the ledger entry from before the stop until it is marked detached
+	 * (takeEntry, settleEntry), so no attach starts it meanwhile and an attach under way refuses this detach. `status`:
+	 * Orgo's, read before the turn; `owner`: the name's owner hash.
 	 */
-	async #detach(ref: ComputerRef, status: string, signal?: AbortSignal): Promise<Result<void>> {
+	async #detach(ref: ComputerRef, owner: string, status: string, signal?: AbortSignal): Promise<Result<void>> {
 		return inTurn(this.#owning, ref.id, async (waited) => {
-			const entry = await this.#entry(ref);
-			if (!entry.ok) return entry;
-			const stop = async (): Promise<Result<void>> => {
-				const now = waited ? await this.#own(ref, signal) : ok({ status });
-				if (!now.ok) return now;
-				return now.value.status === "frozen" ? ok(undefined) : this.#stop(ref, signal);
-			};
-			const detached = await underEntry(this.#ledger, ref, undefined, "being detached", stop, (done, kept) => (done.ok ? { ...kept, detachedAt: kept.detachedAt ?? new Date().toISOString() } : kept));
-			return detached ?? fail("refused", `${ref.name} is busy (another attach or detach is working on it): detach it again in a moment`);
+			const taken = await takeEntry(this.#ledger, ref, owner, undefined, "being detached");
+			if (!taken.ok) return taken;
+			const now = waited ? await this.#own(ref, signal) : ok({ status });
+			const stopped = !now.ok ? now : now.value.status === "frozen" ? ok(undefined) : await this.#stop(ref, signal);
+			return andSettled(stopped, await settleEntry(this.#ledger, ref, taken.value, stopped.ok ? (entry) => ({ ...entry, detachedAt: entry.detachedAt ?? new Date().toISOString() }) : undefined));
 		});
 	}
 

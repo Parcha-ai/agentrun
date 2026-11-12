@@ -414,6 +414,16 @@ export interface AttachContext extends CallContext {
  */
 export type ReleaseHow = "stop" | "delete" | "detach";
 
+/**
+ * release's context: with a claim (a provider that declares persistence), a delete of an agent's computer is that claim's
+ * alone: done only while the computer still carries exactly the claim's run and epoch and no attach or detach holds it,
+ * else refused in words (fenced, or busy) with the computer as it was. So a claim that made the computer and lost it
+ * deletes it only where no later claim has taken it. A provider with no persistence has no agent's computer to fence.
+ */
+export interface ReleaseContext extends CallContext {
+	claim?: ComputerClaim;
+}
+
 /** A live connection to a computer's daemon. */
 export interface ComputerConnection {
 	client: ComputerClient;
@@ -449,8 +459,9 @@ export interface ComputerProvider {
 	/**
 	 * Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. A
 	 * "detach" is refused in words, the computer as it was, on a provider with no persistence and on a run's computer.
+	 * context.claim: a delete under that claim alone (ReleaseContext).
 	 */
-	release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>>;
+	release(ref: ComputerRef, how: ReleaseHow, context?: ReleaseContext): Promise<Result<void>>;
 	/**
 	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. A
 	 * ttlMs that would move it earlier, or past that cap, is refused in words with the deadline unchanged: an extend

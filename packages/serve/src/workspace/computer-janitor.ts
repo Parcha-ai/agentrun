@@ -108,13 +108,13 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     attach: (target, context) => provider.attach(target, context),
     network: (ref, policy, context) => provider.network(ref, policy, context),
     connect: (ref) => provider.connect(ref),
-    release(ref, how) {
+    release(ref, how, context) {
       const agent = ownedBy.get(ref.id);
-      if (how !== "delete" || agent === undefined || settings === undefined) return provider.release(ref, how);
+      if (how !== "delete" || agent === undefined || settings === undefined) return provider.release(ref, how, context);
       // Asked again under the hold: the agent may want it back since ownerGone was read (this server's owners carry no
       // idle TTL, so that is the one reason the sweep deletes one).
       const due = async () => !agents || !(await wantsOn({ agents }, agent, provider.id));
-      return deleteUnderHold({ settings, runs: store.runs }, agent, ref.id, due, () => provider.release(ref, how));
+      return deleteUnderHold({ settings, runs: store.runs }, agent, ref.id, due, () => provider.release(ref, how, context));
     },
     async list(labels, context) {
       const listed = await provider.list(labels, context);

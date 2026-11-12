@@ -76,6 +76,13 @@ export async function keepAgentComputer(store: Settings, agentId: string, comput
   await store.settings.put(recordKey(agentId), recordOf(computer, state, extra));
 }
 
+/** The agent's record goes, where it still names the computer `id` (a removeIf on the record as read): a record a later
+ *  claim wrote of another computer is kept. */
+export async function forgetAgentComputer(store: { settings: Pick<Store["settings"], "get" | "removeIf"> }, agentId: string, id: string): Promise<void> {
+  const record = await agentComputerOf(store, agentId);
+  if (record?.id === id) await store.settings.removeIf(recordKey(agentId), record);
+}
+
 type Holding = { settings: Pick<Store["settings"], "get" | "putIfAbsent" | "replaceIf" | "removeIf"> };
 const holdKey = (agentId: string): string => `agent_computer_hold:${agentId}`;
 
@@ -206,10 +213,7 @@ export async function deleteUnderHold(
   try {
     if (!(await due())) return { ok: false, error: { code: "refused", message: `the agent ${agentId} wants its computer again, so it is kept` } };
     const removed = await remove();
-    if (removed.ok) {
-      const record = await agentComputerOf(store, agentId);
-      if (record?.id === id) await store.settings.removeIf(recordKey(agentId), record);
-    }
+    if (removed.ok) await forgetAgentComputer(store, agentId, id);
     return removed;
   } finally {
     await hold.letGo();

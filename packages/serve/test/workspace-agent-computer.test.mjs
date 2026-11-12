@@ -97,9 +97,13 @@ function keeperProvider(root, computers, calls) {
       if (computers.get(id)?.state !== "running") return { ok: false, error: { code: "refused", message: `${id} is not running` } };
       return { ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: DESKTOP_GROUPS }, close: async () => {} } };
     },
-    async release(ref, how) {
-      calls.push(["release", ref.id, how]);
+    async release(ref, how, { claim } = {}) {
+      calls.push(["release", ref.id, how, ...(claim ? [claim] : [])]);
       const one = computers.get(ref.id);
+      // A delete under a claim, as Orgo's: only while the computer carries exactly that claim's run and epoch.
+      if (how === "delete" && claim && one && (one.labels["agentrun.run"] !== claim.run || one.labels["agentrun.epoch"] !== String(claim.epoch))) {
+        return { ok: false, error: { code: "refused", message: `fenced: ${one.name} carries run "${one.labels["agentrun.run"]}" at epoch ${one.labels["agentrun.epoch"]}, not this claim's` } };
+      }
       if (how === "delete") {
         computers.delete(ref.id);
         return { ok: true, value: undefined };
@@ -341,6 +345,68 @@ test("a resume that lands while an older claim attaches fences that claim before
   provider.release = release;
   await (await claim("run-1", 3)).release();
   assert.deepEqual(calls.filter(([verb]) => verb === "attach").map(([, , claimed]) => claimed.epoch), [1, 2, 3]);
+});
+
+test("a claim that loses its hold to a resume while it makes the computer deletes the one it made, under its claim; one the resume found and took is left to the resume", async () => {
+  // The resume lands while the epoch-1 claim's create is under way: it finds no computer and makes its own; the epoch-1
+  // claim's, made after, is a second desktop, deleted.
+  {
+    const { store, computers, calls, provider, claim } = await setup();
+    const create = provider.create;
+    let resumed;
+    provider.create = async (spec) => {
+      if (spec.labels["agentrun.epoch"] === "1" && resumed === undefined) resumed = await claim("run-1", 2);
+      return create(spec);
+    };
+    await assert.rejects(claim("run-1", 1), (error) => /fenced: .* taken over by a later claim while run run-1's claim at epoch 1 made it; .*computer-c-3, which this claim made, was deleted/.test(error.message));
+    assert.deepEqual(calls.filter(([verb, , how]) => verb === "release" && how === "delete").map(([, id, , claimed]) => [id, claimed]), [["c-3", { run: "run-1", epoch: 1 }]], "exactly the desktop it made, under its claim");
+    assert.deepEqual([...computers.keys()], ["c-1"], "the resume's desktop alone is left");
+    assert.equal(computers.get("c-1").state, "running");
+    const record = await agentComputerOf(store, "agent-1");
+    assert.deepEqual([record.id, record.state], ["c-1", "held"], "the resume's record stands");
+    assert.equal(store.rows.get("agent_computer_hold:agent-1").epoch, 2);
+    await resumed.release();
+  }
+  // The resume lands once the epoch-1 claim's create is done: its owner's listing finds that desktop and takes it under
+  // epoch 2, so the epoch-1 claim's delete is fenced and the desktop runs on, the resume's.
+  {
+    const { store, computers, provider, claim } = await setup();
+    const create = provider.create;
+    let resumed;
+    provider.create = async (spec) => {
+      const made = await create(spec);
+      if (spec.labels["agentrun.epoch"] === "1" && resumed === undefined) resumed = await claim("run-1", 2);
+      return made;
+    };
+    await assert.rejects(claim("run-1", 1), (error) => /computer-c-1, which this claim made, was not deleted \(fenced: /.test(error.message));
+    assert.deepEqual([[...computers.keys()], computers.get("c-1").state, computers.get("c-1").labels["agentrun.epoch"]], [["c-1"], "running", "2"]);
+    assert.deepEqual([(await agentComputerOf(store, "agent-1")).id, (await agentComputerOf(store, "agent-1")).state], ["c-1", "held"]);
+    await resumed.release();
+    assert.equal(computers.get("c-1").state, "stopped");
+  }
+});
+
+test("a launch whose record cannot be saved lets go of exactly what it acquired: a desktop it made is deleted, one it attached is detached; the hold goes", async () => {
+  const { store, computers, calls, claim } = await setup();
+  const put = store.settings.put;
+  let fails = 1;
+  store.settings.put = async (key, value) => {
+    if (key === "agent_computer:agent-1" && value.state === "held" && fails-- > 0) throw new Error("the store is down");
+    return put(key, value);
+  };
+  await assert.rejects(claim("run-1"), (error) => /the store is down; computer-c-1, which this claim made, was deleted/.test(error.message));
+  assert.deepEqual(calls.filter(([verb]) => verb === "release").map(([, id, how, claimed]) => [id, how, claimed]), [["c-1", "delete", { run: "run-1", epoch: 1 }]]);
+  assert.equal(computers.size, 0, "no desktop left running");
+  assert.equal(await agentComputerOf(store, "agent-1"), undefined);
+  assert.equal(store.rows.has("agent_computer_hold:agent-1"), false, "the hold goes");
+  // The next run makes one and keeps it; the one after attaches it, and its save fails: the desktop is detached again.
+  await (await claim("run-2")).release();
+  fails = 1;
+  await assert.rejects(claim("run-3"), /the store is down/);
+  const [kept] = [...computers.values()];
+  assert.equal(kept.state, "stopped", "detached, not left running");
+  assert.equal((await agentComputerOf(store, "agent-1")).state, "detached");
+  assert.equal(store.rows.has("agent_computer_hold:agent-1"), false);
 });
 
 test("an archive or an edit while a run holds the computer deletes nothing then, nor does the janitor; the run's end detaches it, then deletes it", async () => {
