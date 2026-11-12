@@ -644,6 +644,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let refusals = 0;
   /** The claim's first delivery is done (LoopDeps.delivered): every row the runner read is with the loop. */
   let delivered = false;
+  /** The calls this run's journal had asked about and not answered when the claim first read it (askStands). */
+  let standing: Promise<ReadonlySet<string>> | undefined;
   /** The run is parking at its cap (the early pause, from its commit on): a raise row is left for the next claim. */
   let pausing = false;
   /** Resolved once the claim's Harness is open and its root known: a command's check reads the journal through it. */
@@ -1359,10 +1361,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const now = await spec.gate({ callId: toolContext.callId, tool: name as never, args: (args ?? {}) as Record<string, unknown> }, { replayed: true });
               if (now === "deny") return { text: setToDenyText(asked, undefined, "server", "unknown"), isError: true };
               if (typeof now === "object") return { text: now.deny, isError: true };
-              // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
+              // Set to ask since (or asked, and answered before the crash; or asked and not answered yet, whatever the
+              // setting says now: askStands): asked as any call is, as main's gate parked a
               // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
               // the claim lets it go; a deny says the earlier attempt may have taken effect.
-              if (now === "ask") {
+              if (now === "ask" || (now === "allow" && (await askStands(toolContext.callId)))) {
                 const call = { callId: toolContext.callId, tool: name, args: (args ?? {}) as Record<string, unknown> };
                 const answer = await answerOf(call, mcp?.priceOf(name) ?? spec.approvalPrice?.({ ...call, tool: name as never }) ?? null, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
@@ -1894,7 +1897,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const asked = spec.gate?.askedAs?.(tool) ?? tool;
       // Main's words for a tool set to deny (tool-gate's deniedText, from its one copy in refusal-words.ts).
       if (decision === "deny") return { deny: setToDenyText(asked, undefined, "server", replayed ? "unknown" : "no") };
-      if (decision === "allow") return "allow";
+      // A call a person was asked about waits for their answer, whatever its setting says since (askStands).
+      if (decision === "allow" && !(spec.gate && (await askStands(call.callId)))) return "allow";
       // The card shows the call's input, and beside it what the gate says the call would do that the person approves too
       // (a learned workflow's MCP calls set to ask: askedFor).
       const shown = await spec.gate?.askedFor?.(tool, call.args);
@@ -1970,6 +1974,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       await new Promise<void>((resolve) => (wakeInbox = resolve));
     }
+  }
+
+  /** Whether a person was asked about this call and has not answered yet (an ask in the journal, no answer): its card is
+   *  theirs, so the call waits for that answer (answerOf) even when its tool's setting reads allow by now, and runs on
+   *  their allow, its rows reading so. Let through on the setting alone, it ran with its ask unanswered, which the run's
+   *  end reads withdrawn: its rows said "Not run: the run ended while it waited" of a call that ran. A deny set since still
+   *  refuses it first. Read from the journal once a claim: an ask written later in the claim parks it, and an answer
+   *  written later is read by answerOf itself. */
+  async function askStands(callId: string): Promise<boolean> {
+    standing ??= (async () => {
+      const conversation = await harness!.root(context);
+      const entries = await entriesOf(gate!.journal, conversation.id, context);
+      const answered = new Set(entries.filter((entry) => entry.kind === KINDS.answer).map((entry) => (entry.data as unknown as AnswerData).callId));
+      return new Set(entries.filter((entry) => entry.kind === KINDS.ask).map((entry) => (entry.data as unknown as AskData).callId).filter((id) => !answered.has(id)));
+    })();
+    // A read that failed (a seal while it ran) is read again by the next call, never kept.
+    const read = standing;
+    return (await read.catch((error: unknown) => {
+      if (standing === read) standing = undefined;
+      throw error;
+    })).has(callId);
   }
 
   /** A call parked from inside its run (a rerun asked again): held unrun until its signal aborts (the pass ends on the
