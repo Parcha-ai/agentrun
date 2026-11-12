@@ -88,7 +88,8 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { costCsv, learningCostQuery } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -476,6 +477,7 @@ export const ROUTES: readonly Route[] = [
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
@@ -3048,6 +3050,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // launch, journal and learning end.
         const { counts, impact, notes } = await agentLearningOverStore(store, id);
         return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, notes));
+      }
+      case "getLearningCost": {
+        await needAgent(id);
+        // The agent's cost per run over the one store (agentCostOverStore): each ended run's figures and path, aggregates only.
+        const { limit, csv } = learningCostQuery(url);
+        const cost = await agentCostOverStore(store, id, limit);
+        if (csv) {
+          res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-disposition": `attachment; filename="${id}-cost-per-run.csv"` });
+          return void res.end(costCsv(cost.runs));
+        }
+        return send(res, 200, { agent: id, ...cost });
       }
       case "listLearningNotes":
       case "listLearningLog":
