@@ -42,7 +42,8 @@ export const CHECKOUT_MS = COMMAND_MAX_MS;
  *  commits back at most, past which the run is told there is no merge base and the base's diff is the two-dot one. A merge
  *  base found is taken only when no shallow edge lies outside its ancestry: a history cut short can show an older common
  *  commit (a long branch that merged an old side branch) while the path to the true merge base is cut off, so the fetch
- *  deepens until every edge is at or behind the merge base it found. */
+ *  deepens until every edge is at or behind the merge base it found. Each fetch runs with git's auto maintenance off: a
+ *  fetch otherwise starts a detached gc that writes into .git/objects while the checkout's removal deletes it. */
 const DEPTH = 50;
 const DEEPENS = 6;
 
@@ -61,7 +62,7 @@ if [ -n "\${auth:-}" ]; then export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$s
 auth=
 rm -rf "\${dir:?}"
 git init -q "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && git remote add origin "$url" || exit 10
-fetch() { git fetch -q --no-tags --no-recurse-submodules origin "$@" "$head" \${base:+"$base"}; }
+fetch() { git -c maintenance.auto=false -c gc.auto=0 fetch -q --no-tags --no-recurse-submodules origin "$@" "$head" \${base:+"$base"}; }
 fetch --depth=${DEPTH} || exit 11
 mb=
 settled() {

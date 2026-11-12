@@ -132,16 +132,24 @@ test("a caller's abort ends its own wait only, and the build goes on for the oth
 	assert.equal(fake.calls().length, before, "an aborted signal calls no docker");
 });
 
+/**
+ * The bound of the tests that stop a held step. The flight's one bound covers each docker the fake starts before the
+ * held one (an inspect, a build or pull), and on a busy machine starting each can take most of a second: the bound
+ * leaves room for them, so the held step is what runs it out.
+ */
+const HELD_BOUND_MS = 5_000;
+
 test("a build past its bound is stopped, in words, and the next call builds again; the first caller's bound is the flight's", async () => {
 	const fake = fakeImageDocker({ "build-hold": "" });
 	const started = Date.now();
-	const late = ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 1_000 });
+	const late = ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: HELD_BOUND_MS });
 	const joined = ensureImage({ recipe: RECIPE }, { docker: fake.docker, timeoutMs: 60_000 });
-	const message = `the build of ${TAG} did not finish within 1 s, so it was stopped: call again to build it again`;
+	const message = `the build of ${TAG} did not finish within 5 s, so it was stopped: call again to build it again`;
 	assert.deepEqual(failure(await late), { code: "timeout", message });
 	assert.deepEqual(failure(await joined), { code: "timeout", message }, "a caller that joined shares the flight's bound");
-	assert.ok(Date.now() - started < 10_000, "the bound ends the build");
-	await until(() => !alive(fake.builds()[0].pid), "the stopped build's docker to end", 5_000);
+	assert.ok(Date.now() - started < 30_000, "the bound ends the build");
+	// The stopped build was recorded as it started, and its docker ends: waited on as such, not on the clock.
+	await until(() => fake.builds().length === 1 && !alive(fake.builds()[0].pid), "the stopped build's docker to end", 10_000);
 	fake.clear("build-hold");
 	assert.deepEqual(await ensureImage({ recipe: RECIPE }, { docker: fake.docker }), { ok: true, value: TAG });
 	assert.equal(fake.builds().length, 2);
@@ -340,9 +348,9 @@ test("a build or pull that fails, and whose second inspect the bound stops, fail
 		[{ image: IMAGE }, "pull", IMAGE],
 	]) {
 		const fake = fakeImageDocker({ [`${step}-fail`]: `odd ${RAW}`, "then-inspect-hold": "" });
-		assert.deepEqual(failure(await ensureImage(source, { docker: fake.docker, timeoutMs: 1_000 })), {
+		assert.deepEqual(failure(await ensureImage(source, { docker: fake.docker, timeoutMs: HELD_BOUND_MS })), {
 			code: "timeout",
-			message: `docker image inspect ${tag} did not answer within 1 s, so it was stopped: call again`,
+			message: `docker image inspect ${tag} did not answer within 5 s, so it was stopped: call again`,
 		}, step);
 	}
 });

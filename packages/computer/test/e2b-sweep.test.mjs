@@ -27,7 +27,12 @@ function sink() {
 	return stream;
 }
 
-async function sweep(argv, fake, { env = ENV, waitMs = 200, pollMs = 5 } = {}) {
+/**
+ * The sweep, with a read-back that waits on the fake's own condition (a killed sandbox gone after its lingering reads),
+ * bounded at 10 s: a busy machine slows the polls, never the count of reads the fake lingers for. A test of the bound
+ * itself (a sandbox that never goes) gives its own short waitMs.
+ */
+async function sweep(argv, fake, { env = ENV, waitMs = 10_000, pollMs = 5 } = {}) {
 	const stdout = sink();
 	const stderr = sink();
 	const { main } = await import("../dist/conformance/e2b-sweep.js");
@@ -79,7 +84,8 @@ test("--after exits 1 naming a sandbox that is still there after the wait", asyn
 	const file = fileIn();
 	assert.equal((await sweep(["--before", file], fake)).code, 0);
 	const stuck = fake.add(ofRun());
-	const ran = await sweep(["--after", file], fake);
+	// It never goes, so the bound is what ends the wait: a short one.
+	const ran = await sweep(["--after", file], fake, { waitMs: 200 });
 	assert.equal(ran.code, 1);
 	assert.deepEqual(JSON.parse(ran.stdout), { swept: 1, gone: 0, stillThere: [stuck.id], leftAlone: 0 });
 });

@@ -180,7 +180,7 @@ line. A store whose secrets were sealed with another key refuses to start, and t
 sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
-`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
+`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 24.22.3 and Debian 13
 (trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
@@ -750,6 +750,23 @@ computer is made with the GPUs asked.
   Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
+
+**An agent's own computer.** `computer: {"kind": "desktop", "provider": "orgo", "persistent": true}` gives the agent
+one computer that it keeps between runs, instead of a fresh one for each run:
+
+- Its first run makes it. Each run's end detaches it rather than deleting it (an Orgo Linux desktop is suspended, with
+  its memory and disk). The agent's next run attaches it again, with what was on it.
+- The run's timeline says which happened. If the computer was deleted outside this server, the next run makes a new
+  one and says so.
+- One run at a time. A run that finds the computer held by another run that is still going is refused at its start,
+  naming that run.
+- Only where the provider keeps one for the kind and image (`GET /v2/computers`: the provider's `persistent`); anything
+  else is 422. A computer that mounts the run's folder can't be kept, so a persistent computer never mounts it.
+- `GET /v2/agents/{agent_id}` shows it as `own_computer`: its provider, id and name, and whether a run holds it, it is
+  detached, or it is being deleted.
+- Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
+- The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
+  account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
