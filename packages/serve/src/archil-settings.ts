@@ -92,6 +92,22 @@ export async function storeAgentDisk(store: { settings: Pick<Settings, "put"> },
   await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, ...(disk.removing ? { removing: true } : {}) });
 }
 
+/** The settings key of the agent disk run `runId` first resolved to (its launch record is written once, before any disk). */
+export const runDiskKey = (runId: string): string => `${ARCHIL_SETTINGS_KEY}.run.${runId}`;
+
+/** The agent disk run `runId` first resolved to, or undefined when none is kept: a later claim of the same run (a reopened
+ *  one) uses that disk or is refused, never another. */
+export async function runDiskKept(store: { settings: Pick<Settings, "get"> }, runId: string): Promise<string | undefined> {
+  const read = await store.settings.get(runDiskKey(runId));
+  const id = typeof read === "object" && read !== null ? (read as Record<string, unknown>).diskId : undefined;
+  return typeof id === "string" && ARCHIL_DISK_ID.test(id) ? id : undefined;
+}
+
+/** Keeps disk `diskId` as the one run `runId` mounts. */
+export async function keepRunDisk(store: { settings: Pick<Settings, "put"> }, runId: string, diskId: string): Promise<void> {
+  await store.settings.put(runDiskKey(runId), { diskId });
+}
+
 /** Forgets agent `agentId`'s disk `diskId`, only while the agent's stored disk is still that one: its next run that uses
  *  it makes a new one, and a disk stored since (a run's, after an earlier removal) is kept. */
 export async function forgetAgentDisk(store: { settings: Pick<Settings, "get" | "remove"> }, agentId: string, diskId: string): Promise<void> {

@@ -108,7 +108,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   const control = { region: settings.region, key: () => apiKey, ...(options.mount?.baseUrl ? { baseUrl: options.mount.baseUrl } : {}), ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}) };
   let chosen: RunDisk;
   try {
-    chosen = await runDiskOf({ store: options.run.store, agentId: options.run.agentId, ...(options.run.launch ? { launch: options.run.launch } : {}), control, signal: options.signal });
+    chosen = await runDiskOf({ store: options.run.store, agentId: options.run.agentId, ...(options.mount ? { runId: options.mount.runId } : {}), ...(options.run.launch ? { launch: options.run.launch } : {}), control, signal: options.signal });
   } catch (error) {
     held.clear();
     throw error;
