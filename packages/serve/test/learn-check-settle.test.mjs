@@ -115,3 +115,13 @@ for (const lines of [10, INDEX_LINES - 1, INDEX_LINES]) {
     assert.ok(cases > 2000, `${cases} answers read`);
   });
 }
+
+test("a copy of a seed note's rule, then an update of that note: the update holds the rule, the copy is its alternate", () => {
+  const base = seedOf(3);
+  const rule = "Old rule number 1.";
+  const result = checkProposal({ base, changes: [change({ file: "copy.md", body: rule, supersedes: [] }), change({ file: "update.md", body: rule, supersedes: ["old-1.md"] })] });
+  assert.deepEqual(result.problems.map(({ rule: name, path }) => [name, path]), [["duplicate", "copy.md"]]);
+  const after = checkProposal({ base, changes: [change({ file: "update.md", body: rule, supersedes: ["old-1.md"] })] });
+  assert.equal(after.ok, true, "what is left passes");
+  assert.deepEqual(after.notes.map(({ file }) => file), ["update.md"]);
+});

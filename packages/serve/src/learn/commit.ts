@@ -231,9 +231,14 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
       return Array.isArray(note) ? [] : note.supersedes;
     })]);
     const rules = new Map<string, string>();
-    for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active" && !going.has(one.file))) {
+    // Every rule main's active notes hold, whoever this merge supersedes: an update of that holder takes the rule over
+    // from an earlier note of this merge that repeated it, whatever their order.
+    const onMainRules = new Map<string, string>();
+    for (const note of snapshotNotes(snapshot).filter((one) => one.status === "active")) {
       const text = parseNoteFile(note.file, await body(note.file, blobOf(snapshot, note.file)!));
-      if (!Array.isArray(text)) rules.set(ruleOf(text.body), note.file);
+      if (Array.isArray(text)) continue;
+      onMainRules.set(ruleOf(text.body), note.file);
+      if (!going.has(note.file)) rules.set(ruleOf(text.body), note.file);
     }
     for (const { path, text } of newNotes) {
       const note = parseNoteFile(path, text);
@@ -248,8 +253,13 @@ async function settledNotes(change: Extract<LearningChange, { kind: "merge" }>, 
       }
       const holder = rules.get(rule);
       if (holder !== undefined && holder !== path && !note.supersedes.includes(holder)) {
-        left.push({ path, reason: "same" });
-        continue;
+        const original = onMainRules.get(rule);
+        // An update of the rule's holder on main, after a copy of it: the update holds the rule, the copy is the repeat.
+        if (original === undefined || holder === original || !note.supersedes.includes(original) || held.has(path)) {
+          left.push({ path, reason: "same" });
+          continue;
+        }
+        left.push({ path: holder, reason: "same" });
       }
       rules.set(rule, path);
     }

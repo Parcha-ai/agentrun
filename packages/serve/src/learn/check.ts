@@ -355,6 +355,16 @@ export function checkProposal(input: CheckInput): ProposalCheck {
       const rule = ruleOf(note.body);
       const holder = rules.get(rule);
       if (holder !== undefined && !note.supersedes.includes(holder)) {
+        // An update of the holder the seed has, after a copy of its rule: the update holds the rule, the copy is its
+        // alternate (else the update is dropped as the copy's duplicate, and the copy as the seed's, on the next pass).
+        const original = input.base.rules?.get(rule);
+        const at = holders.findIndex((one) => one.file === holder);
+        if (original !== undefined && holder !== original && at >= 0 && note.supersedes.includes(original)) {
+          alternates.push([holders[at]!, note.file]);
+          holders[at] = note;
+          rules.set(rule, note.file);
+          continue;
+        }
         alternates.push([note, holder]);
         continue;
       }

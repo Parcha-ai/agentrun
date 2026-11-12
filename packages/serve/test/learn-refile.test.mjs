@@ -358,6 +358,27 @@ test("the merge's own computation settles each note against the main it commits 
   }
 });
 
+// #2256 review (PRRT_kwDOUmdVMs62ayl3): a copy of a main note's rule, then an update of that note: the update holds the rule.
+test("the merge: a copy of a main note's rule, then an update of that note: the update merges, the copy is left out", async (t) => {
+  const data = mkdtempSync(join(tmpdir(), "learn-refile-update-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const units = noteNamed("units", "Units", "Convert every amount to cents first.");
+    assert.equal((await learningCommit(folder.workspace, { kind: "person", action: "created", file: units.file, text: units.text, ifMatch: null })).ok, true);
+    const copy = noteNamed("copy", "Copy", "convert every amount  to CENTS first.");
+    const update = { file: "update.md", text: noteNamed("update", "Update", "Convert every amount to cents first.").text.replace("---\n", `---\nsupersedes: [${units.file}]\n`) };
+    const done = await learningCommit(folder.workspace, { kind: "merge", runId: "run-u", reason: "r", graded: {}, files: [{ path: copy.file, text: copy.text }, { path: update.file, text: update.text }] });
+    assert.equal(done.ok, true, JSON.stringify(done));
+    assert.deepEqual(done.result?.left?.map(({ path, reason }) => [path, reason]), [[copy.file, "same"]]);
+    const main = await mainTexts(folder.workspace, [copy.file, update.file]);
+    assert.deepEqual(Object.keys(main), [update.file], "the update merged, the copy did not");
+  } finally {
+    await folder.end();
+  }
+});
+
 test("re-filing an update to a skill main holds retires that skill in the same write: no old SKILL.md stays active beside the note", async (t) => {
   const old = { file: SKILL.file, text: "---\nname: report-format\ndescription: How every report is laid out\n---\nStart every report with STATUS.\n" };
   const { end, notes, skills } = await refileRun(t, { skill: old });
