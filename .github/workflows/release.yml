@@ -45,7 +45,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
       - name: Install OIDC-capable npm
         run: npm install --global npm@11.21.0 --ignore-scripts
       - name: The tagged commit passed CI on main
@@ -55,6 +55,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
+      - name: Fold the fragments the tag carries into this version
+        # A pull request that merged after the release pull request's fold, and before the tag, left its changes/ fragment at the tag;
+        # its code is in this release. The fold puts those into this version's sections, uncommitted, before anything is built or
+        # packed, so the published changelogs list everything the archives ship. release-preflight checks the tree is the tag plus
+        # this fold. The next release pull request's fold moves them into this version's section on main (docs/releasing.md).
+        run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"
       - run: npm ci --ignore-scripts
       - run: npm run build
       # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
@@ -154,7 +160,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.3'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'

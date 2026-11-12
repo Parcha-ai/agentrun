@@ -35,6 +35,7 @@ test("createProvider() names the variable it needs, and makes no request without
 		sandboxClass: "COMPUTER_DAYTONA_CLASS",
 		user: "COMPUTER_DAYTONA_USER",
 		snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
+		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });

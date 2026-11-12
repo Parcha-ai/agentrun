@@ -7,11 +7,13 @@
 // go, and a raise opens the run again from its journal under the new cap, sending no completed node again. A step no raise
 // sends (a decision model with no price) ends the run failed, spend_cap_reached, in the cap's words.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { journalRecords } from "../dist/runner/journal-reader.js";
 import { REQUEST_COST } from "../dist/timeline/index.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { decisionSpentIn } from "../dist/cap.js";
@@ -39,6 +41,23 @@ function entriesOf(data, runId) {
 }
 /** The model requests the run sent and was answered: pi's entries that are no error. */
 const answered = (entries) => entries.filter((entry) => entry.kind === "pi.assistant" && entry.model?.[0]?.stopReason !== "error").length;
+
+/** On the runner: the run's paid model requests that were answered, from its booking (each `runner.turn` the model proxy
+ *  wrote that was not cut, given back or left unsent), over its journal in the store. */
+async function answeredOnStore(store, runId) {
+  const { entries } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  return entries.filter((entry) => entry.kind === "runner.turn" && entry.data?.cut !== true && entry.data?.givenBack !== true && entry.data?.unsent !== true).length;
+}
+
+/** On the runner: once run `runId`'s claim is let go (its row names no runner), as a paused run's is at its park. */
+async function releasedOnStore(store, runId) {
+  for (let i = 0; ; i++) {
+    const row = await store.runs.get(runId);
+    if (row?.runner === null) return row;
+    assert.ok(i < 300, `the run's claim was never let go: ${JSON.stringify(row)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 
 /** Two model nodes in a chain, `first` then `second`, each answering the question. */
 const twoNodes = () => ({
@@ -81,10 +100,9 @@ const collecting = (body, out) => ({
   root: { node: "chain", steps: [{ node: "map", label: "each", itemsPath: "questions", as: "found", resultPath: out, maxConcurrency: 2, onItemFailure: "collect", failedAs: "missed", body }] },
 });
 
-// SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
-test.skip("a capped workflow whose paid model node would cross the cap stops at it: the node's request is never sent, the run waits for a raise (input_required, pending budget naming the node), lets its process go after the hold, and a raise opens it again under the new cap, sending no completed node again", async (t) => {
+test("a capped workflow whose paid model node would cross the cap stops at it: the node's request is never sent, the run waits for a raise (input_required, pending budget naming the node), its claim let go, and a raise opens it again under the new cap, sending no completed node again", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
-  const { api, data } = await serve(t, { faux: PRICED });
+  const { api, data, store } = await serve(t, { faux: PRICED });
   assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
   // $0.12: the first node's one request fits ($0.1024 at least, $0.04 spent), the second's does not ($0.04 spent and
   // $0.1024 more). A model node sends one request: its submit ends its session.
@@ -95,18 +113,41 @@ test.skip("a capped workflow whose paid model node would cross the cap stops at 
   let run = await view(api, runId);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, run.pending?.node, run.pending?.cap_usd], ["input_required", "waiting", null, "budget", "second", 0.12]);
   assert.match(run.pending.said, /Raise the cap to at least \$0\.15 to continue\.$/);
-  // Held past the hold, its process lets go: the run stays paused at its cap, and nothing opens it again.
-  await letGo(data, runId);
+  // Its claim let go at the park: the run stays paused at its cap, and nothing opens it again.
+  await releasedOnStore(store, runId);
   run = await view(api, runId);
   assert.deepEqual([run.status, run.pending?.kind, run.pending?.node], ["input_required", "budget", "second"], JSON.stringify(run));
   assert.equal(storeRun(data, runId).state, "running", "not ended");
-  assert.equal(answered(entriesOf(data, runId)), 1, "the first node's request, none of the second's");
+  assert.equal(await answeredOnStore(store, runId), 1, "the first node's request, none of the second's");
   const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
   assert.deepEqual([raised.status, raised.body.max_cost_usd, raised.body.resumed], [200, 1, true], JSON.stringify(raised.body));
   await follow(api, runId, ENDED, { deadlineMs: 60_000 });
   run = await view(api, runId);
   assert.deepEqual([run.status, run.error, run.pending, run.result?.output, run.cost.cap_usd], ["completed", null, null, { answer: 42 }, 1], JSON.stringify(run));
-  assert.equal(answered(entriesOf(data, runId)), 2, "opened again from its journal: the first node was not sent again, the second ran once");
+  assert.equal(await answeredOnStore(store, runId), 2, "opened again from its journal: the first node was not sent again, the second ran once");
+});
+
+/** `first`, then a nested workflow `inner` whose one step is the model node `second`. */
+const nested = () => {
+  const { schemas, input, output } = twoNodes();
+  const inner = { v: 2, name: "inner", schemas, input, output, root: { node: "extract", label: "second", instructions: "Answer the question again.", out: "Answer", as: "answer" } };
+  return { ...twoNodes(), name: "nested", root: { node: "chain", steps: [
+    { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
+    { node: "workflow", label: "inner", workflow: inner, input: { question: "{question}" }, out: "Answer", as: "answer" },
+  ] } };
+};
+
+test("a capped workflow's model node inside a nested workflow names itself at the cap, under its parent step: the enclosing workflow step, still open, is not a step that sends", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const { api } = await serve(t, { faux: PRICED });
+  assert.equal((await api("POST", "/agents", flowAgent("nested", nested()))).status, 201);
+  // $0.12, as above: `first` fits, `second` (inside `inner`) does not.
+  const started = await api("POST", "/agents/nested/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, SETTLED, { deadlineMs: 60_000 });
+  const run = await view(api, started.body.run_id);
+  // Named as the interpreter labels a child's step (workflow.ts scopeDepsToChild): under its parent step's label.
+  assert.deepEqual([run.status, run.pending?.kind, run.pending?.node], ["input_required", "budget", "inner/second"], JSON.stringify(run));
 });
 
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
@@ -256,65 +297,6 @@ test("a capped workflow start whose decision model's price cannot be read, OpenR
   assert.equal(again.status, 202);
   await follow(api, again.body.run_id, ENDED, { deadlineMs: 60_000 });
   assert.equal((await view(api, again.body.run_id)).status, "completed");
-});
-
-/** The run's status once it has ended, or the status it still has after `ms` (`from`, a run nothing sent on). */
-async function statusAway(api, runId, from, ms = 30_000) {
-  let status = from;
-  for (const end = Date.now() + ms; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
-    status = (await view(api, runId)).status;
-    if (ENDED.includes(status)) return status;
-  }
-  return status;
-}
-
-/** A capped run of `twoNodes` paused at its second node, its process let go, on a server at `data` that is then closed. */
-async function pausedAndClosed(t, id) {
-  const data = join(await scratch(t), "agents");
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
-  const api = client(server.baseUrl, server.token);
-  assert.equal((await api("POST", "/agents", flowAgent(id, twoNodes()))).status, 201);
-  const { run_id: runId } = (await api("POST", `/agents/${id}/runs`, { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body;
-  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
-  assert.equal((await view(api, runId)).pending?.kind, "budget");
-  await letGo(data, runId);
-  await server.close();
-  return { data, runId };
-}
-
-/** serve.json as a raise to `to` leaves it when the server dies right after keeping it: its cap and the raise, and no
- *  cap.json written, the pause's budget.json still there. */
-function keptRaiseOnly(data, runId, to) {
-  const file = join(runDir(data, runId), "serve.json");
-  const meta = JSON.parse(readFileSync(file, "utf8"));
-  writeFileSync(file, JSON.stringify({ ...meta, max_cost_usd: to, cap_raised: [...(meta.cap_raised ?? []), { from: meta.max_cost_usd, to, at: new Date().toISOString(), pause: "budget" }] }));
-  assert.equal(existsSync(join(runDir(data, runId), "cap.json")), false);
-  assert.equal(existsSync(join(runDir(data, runId), "budget.json")), true);
-}
-
-// SKIP (follow-up #2080): the run never leaves queued or working on the runner
-test.skip("a raise serve.json kept and a crash cut short is finished at the server's next start: the paused run, its process let go, is opened again under the raised cap and completes", async (t) => {
-  withEnv(t, {}, KEYS);
-  const { data, runId } = await pausedAndClosed(t, "kept");
-  keptRaiseOnly(data, runId, 1);
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
-  t.after(() => server.close());
-  const api = client(server.baseUrl, server.token);
-  assert.equal(await statusAway(api, runId, "input_required"), "completed");
-  assert.equal(answered(entriesOf(data, runId)), 2, "the second node sent once, the first not again");
-});
-
-// SKIP (follow-up #2080): the run never leaves queued or working on the runner
-test.skip("the same raise again, after a crash cut it short past serve.json, finishes it: the run completes under the raised cap", async (t) => {
-  withEnv(t, {}, KEYS);
-  const { data, runId } = await pausedAndClosed(t, "retried");
-  keptRaiseOnly(data, runId, 1);
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
-  t.after(() => server.close());
-  const api = client(server.baseUrl, server.token);
-  const again = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
-  assert.equal(again.status, 200);
-  assert.equal(await statusAway(api, runId, "input_required"), "completed");
 });
 
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner

@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { checkChrome, findChrome } from "../dist/chrome.js";
-import { LocalBrowserProvider } from "../dist/local.js";
+import { LocalBrowserProvider } from "../dist/local-chrome.js";
 
 const chrome = findChrome({ PATH: process.env.PATH, CHROME_PATH: process.env.CHROME_PATH });
 const checked = chrome ? await checkChrome(chrome) : undefined;

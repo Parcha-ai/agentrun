@@ -1,12 +1,10 @@
+import { WorkflowInvalidError } from '../dist/workflow.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import {
-  defineWorkflow, runTypedWorkflow, runWorkflow, workflowSha256, validateWorkflow,
-  WorkflowSchemaConversionError, WorkflowInvalidError,
-} from '../dist/index.js';
+import { defineWorkflow, runTypedWorkflow, runWorkflow, workflowSha256, validateWorkflow, WorkflowSchemaConversionError } from '../dist/index.js';
 
 const Request = z.strictObject({ subject: z.string() });
 const Brief = z.strictObject({ summary: z.string(), sources: z.array(z.string()) });

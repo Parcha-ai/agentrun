@@ -13,8 +13,9 @@
 // refused for having no model key (none is saved here); only a refusal for its computer or its place is asserted on.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
@@ -32,20 +33,24 @@ const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "E2B_API_KEY", "DAYTONA_AP
 
 /** A fake `docker` first on PATH, so the server's start-time probe of the Docker box (boxes.ts: `docker version`) never
  *  reaches a real one: it names a daemon's version when `answers`, else fails as a CLI with no daemon does. Every other
- *  call is a quiet success (an image it is asked about is there). */
-async function fakeDocker(t, answers) {
+ *  call is a quiet success (an image it is asked about is there). With `adb`, a fake `adb` beside it, which the server
+ *  only looks for on PATH (the phone provider's host command); without it, no folder of PATH holds an adb. */
+async function fakeDocker(t, answers, adb = true) {
   const bin = join(await scratch(t), "bin");
   await mkdir(bin);
   const version = answers ? "echo 27.0.0-fake; exit 0" : "echo 'Cannot connect to the Docker daemon' >&2; exit 1";
   await writeFile(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then ${version}; fi\nexit 0\n`, { mode: 0o755 });
   await chmod(join(bin, "docker"), 0o755);
-  return `${bin}:${process.env.PATH}`;
+  if (adb) await writeFile(join(bin, "adb"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const rest = (process.env.PATH ?? "").split(delimiter).filter((folder) => adb || !existsSync(join(folder, "adb")));
+  return [bin, ...rest].join(delimiter);
 }
 
-/** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not); on the real models
- *  (no --faux) unless `faux`; in Mode 2 when `archil`; with the template packages in `templates`, when given. */
-async function server(t, { archil, docker = false, faux = false, templates }) {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker) }, UNSET);
+/** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not), and an `adb` on PATH
+ *  unless `adb` is false; on the real models (no --faux) unless `faux`; in Mode 2 when `archil`; with the template
+ *  packages in `templates`, when given. */
+async function server(t, { archil, docker = false, faux = false, adb = true, templates }) {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb) }, UNSET);
   const { api } = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
   if (archil) {
     const saved = await api("PUT", "/workspace/archil", ARCHIL);
@@ -96,12 +101,12 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
-test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start in checkGpu's words: daytona-gpu's H100 takes no Archil mount, and a type Daytona does not give is refused (409)", async (t) => {
+test("Mode 2: a Daytona sandbox's GPUs are checked at the save and the run's start: a GPU computer can't mount the run's folder yet, said with what to use instead, and a type Daytona does not give is refused (409)", async (t) => {
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
   for (const [name, gpu, words] of [
-    // daytona-gpu's user is not root and it has no Archil client, and Mode 2's folder is an Archil mount.
-    ["gpu-unmounted", { type: "H100", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven/],
+    // Daytona's GPU host gives no /dev/fuse, and Mode 2's folder is an Archil mount.
+    ["gpu-unmounted", { type: "H100", count: 1 }, /^A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no \/dev\/fuse\. Use a GPU computer from the library, or this sandbox without a GPU\.$/],
     ["gpu-refused", { type: "T4", count: 1 }, /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers: H100\b/],
   ]) {
     const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", gpu } });
@@ -137,6 +142,23 @@ for (const boxAllow of ["none", undefined, "pypi.org"]) {
   });
 }
 
+// The phone provider drives its phone with adb on this machine. With no adb on PATH at the server's start, Settings →
+// Computers says so in words of what to install, its key saved or not, and the run is refused at its start in the same
+// words, as Docker's box is when no docker answers.
+const NO_ADB = "adb isn't installed on this server (no adb command on PATH): install Android platform-tools, then restart AgentRun";
+test("a cloud phone on a server with no adb on its PATH is not ready in Settings, and its run is refused at its start in words", async (t) => {
+  const api = await server(t, { adb: false });
+  const saved = await api("PUT", "/computers/phone-harness/keys", { PHONE_HARNESS_API_KEY: "fake-test-key" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual([saved.body.ready, saved.body.why], [false, NO_ADB]);
+  const listed = (await api("GET", "/computers")).body.kinds.find((one) => one.kind === "phone").providers.find((one) => one.id === "phone-harness");
+  assert.deepEqual([listed.ready, listed.why], [false, NO_ADB]);
+  const said = await saveAndStart(api, "phone-no-adb", { computer: { kind: "phone", provider: "phone-harness" } });
+  assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
+  assert.equal(said.refused[0][2], `This agent's computer is a Phone harness phone, and this server cannot run it: ${NO_ADB}.`);
+  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+});
+
 // Local Chrome declares "open" and "allow", never "none" (public addresses from this machine, through its egress proxy):
 // under none, the operator's word for no network at all, a browser on it is refused at the start in the same words, by
 // its own name; under the default list (open) or the operator's own (that list) it is not refused for its network.
@@ -145,7 +167,7 @@ for (const boxAllow of ["none", undefined, "pypi.org"]) {
   test(`a Local Chrome browser is ${refused ? "refused at its run's start in words" : "not refused for its network"} where AGENTRUN_BOX_ALLOW is ${boxAllow ?? "unset"}`, async (t) => {
     withEnv(t, boxAllow === undefined ? {} : { AGENTRUN_BOX_ALLOW: boxAllow }, ["AGENTRUN_BOX_ALLOW"]);
     const api = await server(t, {});
-    const said = await saveAndStart(api, `local-${boxAllow ?? "unset"}`.replace(/\./g, "-"), { computer: { kind: "browser", provider: "local" } });
+    const said = await saveAndStart(api, `local-${boxAllow ?? "unset"}`.replace(/\./g, "-"), { computer: { kind: "browser", provider: "local-chrome" } });
     if (!refused) {
       assert.ok(!said.refused.some((one) => /AGENTRUN_BOX_ALLOW/.test(one[2])), `the run is not refused for its network: ${JSON.stringify(said)}`);
       return;
