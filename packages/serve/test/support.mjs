@@ -690,6 +690,11 @@ export async function whenFree(send) {
   }
 }
 
+/** `api` (a serve's client), each call sent again through whenFree while the store answers home_busy: what a test uses to
+ *  make an agent or start a run, so the store's contention with another write (a runner's commit, a CLI's install) is
+ *  never its red. A test that means to read home_busy itself calls `api`, never this. */
+export const retried = (api) => (...args) => whenFree(() => api(...args));
+
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
  *  once its page is final, any other status on the first page that leaves no change behind it. */
 export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000 } = {}) {

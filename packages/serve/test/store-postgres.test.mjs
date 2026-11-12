@@ -738,15 +738,18 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   await queued(store);
   await store.close();
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
-  // one answer, which the migration keeps as it is.
+  // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
+  // again from 0003 (0004 on runs.outcome's check runs twice unharmed).
   await sql(schema, "DROP INDEX commands_one_answer");
-  await sql(schema, "DELETE FROM schema_migrations WHERE version = 3");
+  await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");
   const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
   const first = await answer("approve", "call-1");
   const second = await answer("deny", "call-1");
   const other = await answer("deny", "call-2");
   let words = "";
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), (error) => {
+  // A store that opens anyway is closed before the case fails: left open, its pool and owner lock keep the file's process
+  // alive past its last case, and the whole Postgres job waits on it to its limit instead of failing this case by name.
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }).then((opened) => opened.close()), (error) => {
     words = error.message;
     return true;
   });
