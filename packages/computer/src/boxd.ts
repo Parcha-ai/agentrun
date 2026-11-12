@@ -150,6 +150,15 @@ export interface BoxdTimeouts {
 	listedMs: number;
 }
 
+/** A machine create gave up on that its cleanup could not delete: what onCleanupFailed is told. */
+export interface BoxdCleanupFailure {
+	/** The name create gave the machine, which is also its name label. */
+	name: string;
+	/** The machine's id, when boxd's late answer carried one. */
+	id?: string;
+	message: string;
+}
+
 export interface BoxdProviderOptions {
 	/** The boxd API key. The caller passes it; this provider never reads it from the environment or puts it in a computer. */
 	apiKey: string;
@@ -180,6 +189,12 @@ export interface BoxdProviderOptions {
 	 * written in the same call that makes the machine. The janitor still ends a computer at its deadline. Default false.
 	 */
 	deleteTimer?: boolean;
+	/**
+	 * Called when a machine that landed after create gave up on it (an abort, or createMs passed) could not be deleted, or
+	 * could not be looked for: with its name, its id when boxd answered with one, and what failed in words. The janitor
+	 * still deletes such a machine by its deadline label. What it throws is dropped. Default: nothing is called.
+	 */
+	onCleanupFailed?: (left: BoxdCleanupFailure) => void;
 	/**
 	 * Who the daemon runs as, uid:gid in numbers, never root. Default 2510:2510 (TOOL_USER), a uid no process of the
 	 * machine image holds: init refuses to start while another process does.
@@ -279,6 +294,8 @@ const STAGING = "/tmp/agentrun-computerd-";
 const DELETE_TIMER_SLACK_S = 300;
 /** The clock skew between this host and boxd that create's read-back of the backstop allows, in seconds. */
 const CLOCK_SKEW_S = 120;
+/** How many times the cleanup of a machine that landed late tries its delete before it reports the machine left. */
+const LATE_DELETE_TRIES = 3;
 /** Where init's own words go: root's, in /run, which only root writes. */
 const INIT_LOG = "/run/agentrun-computerd.log";
 /** Public anycast resolvers, by address: TCP to 443, and DNS over UDP to 53, over IPv4 and IPv6. */
@@ -434,6 +451,14 @@ function networkOf(machine: BoxdMachine): NetworkPolicy {
 	return { other: `an egress allowlist of ${allow.length} entries, which this provider never makes` };
 }
 
+/** Every idle timer of a machine that is not off, as create leaves them: one that is on would freeze or end a computer before its deadline. */
+function idleDrift(machine: BoxdMachine): string[] {
+	const found: string[] = [];
+	const timers = { "auto-suspend": machine.idle?.suspendAfter, "auto-hibernate": machine.idle?.hibernateAfter, "auto-destroy": machine.idle?.destroyAfter };
+	for (const [field, actual] of Object.entries(timers)) if (actual !== 0) found.push(`${field}: declared ${show(0)}, read back ${show(actual)}`);
+	return found;
+}
+
 const policyWords = (policy: NetworkPolicy) => (typeof policy === "string" ? policy : "other" in policy ? policy.other : JSON.stringify(policy));
 
 /** What create made before the machine: its deadlines, its labels, and the daemon with its sha256. */
@@ -463,6 +488,7 @@ export class BoxdProvider implements ComputerProvider {
 	/** The same API, for create alone: bounded by createMs, and never sent twice. */
 	readonly #creator: BoxdMachines;
 	readonly #deleteTimer: boolean;
+	readonly #onCleanupFailed: ((left: BoxdCleanupFailure) => void) | undefined;
 	readonly #org: string | undefined;
 	readonly #prefix: string;
 	readonly #name: RegExp;
@@ -493,6 +519,7 @@ export class BoxdProvider implements ComputerProvider {
 			desktop = {},
 			maxLifetimeMs = DEFAULT_MAX_MS,
 			deleteTimer = false,
+			onCleanupFailed,
 			daemonUser = TOOL_USER,
 			timeouts = {},
 			probeTargets = DEFAULT_PROBE_TARGETS,
@@ -523,6 +550,7 @@ export class BoxdProvider implements ComputerProvider {
 		}
 		// Every setting the SDK would otherwise read from the environment is given: the key, the address and the region.
 		if (typeof deleteTimer !== "boolean") throw new Error("deleteTimer is true or false");
+		if (onCleanupFailed !== undefined && typeof onCleanupFailed !== "function") throw new Error("onCleanupFailed is a function");
 		const client = new Boxd({ apiKey, baseURL: baseUrl, region, timeout: merged.requestMs });
 		// create's own client: the SDK bounds every call by its client's timeout, so create gets createMs, and no retry.
 		const creator = new Boxd({ apiKey, baseURL: baseUrl, region, timeout: merged.createMs, maxRetries: 0 })?.machines;
@@ -535,6 +563,7 @@ export class BoxdProvider implements ComputerProvider {
 		this.#machines = machines;
 		this.#creator = creator;
 		this.#deleteTimer = deleteTimer;
+		this.#onCleanupFailed = onCleanupFailed;
 		this.#org = org;
 		this.#prefix = namePrefix;
 		this.#name = namePattern(namePrefix);
@@ -667,12 +696,8 @@ export class BoxdProvider implements ComputerProvider {
 		await Promise.resolve();
 		if (!created.ok) {
 			if (!answered && (created.error.code === "aborted" || created.error.code === "timeout")) {
-				// One that lands is deleted by its id; one whose answer never comes, by its name label.
-				creating.then(
-					(machine) => this.#delete(machine.id),
-					() => this.#deleteNamed(name, this.#timeouts.listedMs),
-				);
-				return fail(created.error.code, `${created.error.message}; a machine it makes after this is deleted as it lands`);
+				void this.#cleanLate(creating, name);
+				return fail(created.error.code, `${created.error.message}; a machine it makes after this is deleted as it lands, and one that cannot be is the janitor's by its deadline label`);
 			}
 			// A create boxd refused made nothing. One that failed otherwise (a deadline the SDK gave up at, a connection lost)
 			// may have, or may still: create looks for its name until one shows or listedMs passes, and deletes it.
@@ -681,6 +706,42 @@ export class BoxdProvider implements ComputerProvider {
 			return fail(created.error.code, `boxd did not create the machine: ${created.error.message}${swept}`);
 		}
 		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256 } });
+	}
+
+	/**
+	 * After create's caller has its answer: a machine that lands is deleted by its id, and one whose answer never comes by
+	 * its name label. A delete that fails is tried LATE_DELETE_TRIES times; a machine still there, or a listing that
+	 * could not say, is told to onCleanupFailed. Never throws.
+	 */
+	async #cleanLate(creating: Promise<BoxdMachine>, name: string): Promise<void> {
+		let left: BoxdCleanupFailure | undefined;
+		try {
+			let machine: BoxdMachine | undefined;
+			try {
+				machine = await creating;
+			} catch {
+				machine = undefined;
+			}
+			if (machine === undefined) {
+				const swept = await this.#deleteNamed(name, this.#timeouts.listedMs);
+				if (swept.includes("may be left")) left = { name, message: swept.replace(/^; /, "") };
+			} else {
+				let deleted = await this.#delete(machine.id);
+				for (let tries = 1; !deleted.ok && tries < LATE_DELETE_TRIES; tries++) {
+					await pause(Math.min(this.#timeouts.pollMs * 2, RELEASE_POLL_MAX_MS));
+					deleted = await this.#delete(machine.id);
+				}
+				if (!deleted.ok) left = { name, id: machine.id, message: `the machine ${machine.id} landed after create gave up on it and could not be deleted (${deleted.error.message}); the janitor deletes it by its deadline label` };
+			}
+		} catch (error) {
+			left = { name, message: `the cleanup after create gave up failed: ${words(error)}` };
+		}
+		if (left === undefined) return;
+		try {
+			this.#onCleanupFailed?.(left);
+		} catch {
+			// The caller's own handler: nothing here depends on it.
+		}
 	}
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until boxd reads it gone. */
@@ -832,9 +893,7 @@ export class BoxdProvider implements ComputerProvider {
 		const network = networkOf(machine);
 		if (network !== spec.network) found.push(`network: declared ${policyWords(spec.network as NetworkPolicy)}, read back ${policyWords(network)}`);
 		if (machine.networking?.isolated !== true) mismatch("isolated", true, machine.networking?.isolated);
-		if (machine.idle?.suspendAfter !== 0) mismatch("auto-suspend", 0, machine.idle?.suspendAfter);
-		if (machine.idle?.hibernateAfter !== 0) mismatch("auto-hibernate", 0, machine.idle?.hibernateAfter);
-		if (machine.idle?.destroyAfter !== 0) mismatch("auto-destroy", 0, machine.idle?.destroyAfter);
+		found.push(...idleDrift(machine));
 		const deleteAt = machine.deleteAt instanceof Date ? machine.deleteAt.getTime() : machine.deleteAt;
 		if (!this.#deleteTimer && deleteAt !== null && deleteAt !== undefined) mismatch("delete-after", null, machine.deleteAt);
 		if (this.#deleteTimer) {
@@ -1023,7 +1082,8 @@ export class BoxdProvider implements ComputerProvider {
 
 	/**
 	 * The drift check of a computer attach did not make: its spec read back from boxd and held to what check() allows,
-	 * and, when it runs, its daemon, as at create. One that drifts is refused and left as it is.
+	 * its idle timers off and no delete timer before the most it may live, and, when it runs, its daemon, as at create.
+	 * One that drifts is refused and left as it is.
 	 */
 	async #attached(machine: BoxdMachine, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
 		const name = machine.labels[NAME_LABEL] as string;
@@ -1038,6 +1098,16 @@ export class BoxdProvider implements ComputerProvider {
 		const spec = { image, lifetimeMs: 1, network: typeof network === "object" ? "open" : network, labels } as ComputerSpec;
 		found.push(...this.check(spec).map(({ field, message }) => `${field}: ${message}, read back from the computer`));
 		if (machine.networking?.isolated !== true) found.push("isolated: declared true, read back false");
+		// The timers, as they read now: none that would freeze the computer, and no delete before the most it may live. A
+		// delete timer at or past that is the deleteTimer backstop, whichever provider's options made the computer.
+		found.push(...idleDrift(machine));
+		const deleteAt = machine.deleteAt instanceof Date ? machine.deleteAt.getTime() : machine.deleteAt;
+		if (deleteAt !== null && deleteAt !== undefined) {
+			const most = isoOf(machine.labels[MAX_LABEL]);
+			if (most === undefined || !(deleteAt >= most.getTime())) {
+				found.push(`delete-after: boxd deletes it at ${show(machine.deleteAt)}, before the most it may live (${MAX_LABEL} reads ${show(machine.labels[MAX_LABEL])})`);
+			}
+		}
 		let kind: AttachedComputer["spec"]["kind"];
 		let notes: string[] = [];
 		if (RUNNING.has(machine.status)) {

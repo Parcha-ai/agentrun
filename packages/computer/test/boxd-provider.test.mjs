@@ -289,6 +289,120 @@ test("a create whose answer never comes within createMs is given up on, and the 
 	assert.equal(fake.deletes.length, 1);
 });
 
+test("a machine that landed late and cannot be deleted is tried three times, then told to onCleanupFailed with its id", async () => {
+	const left = [];
+	let deletes = 0;
+	const { fake, provider } = setup(
+		{ onCleanupFailed: (one) => left.push(one) },
+		{
+			create: "hold",
+			onStep: (step) => {
+				if (step !== "machines.delete") return;
+				deletes++;
+				throw new Error("boxd is unavailable");
+			},
+		},
+	);
+	const controller = new AbortController();
+	const pending = provider.create(SPEC, { signal: controller.signal });
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	controller.abort();
+	const made = await pending;
+	assert.equal(made.error.code, "aborted");
+	assert.match(made.error.message, /deleted as it lands, and one that cannot be is the janitor's by its deadline label/);
+	assert.deepEqual(left, [], "nothing is told before the machine lands");
+	await fake.release();
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(deletes, 3, "the delete was tried three times");
+	const machine = only(fake);
+	assert.equal(machine.deleted, false);
+	assert.equal(left.length, 1);
+	assert.equal(left[0].id, machine.id);
+	assert.equal(left[0].name, machine.name);
+	assert.match(left[0].message, /could not be deleted \(.*boxd is unavailable.*\); the janitor deletes it by its deadline label/);
+	assert.ok(isFinite(Date.parse(machine.labels[DEADLINE])), "the machine left carries the deadline label the janitor reads");
+});
+
+test("a late delete that fails once is tried again, and a cleanup that works tells onCleanupFailed nothing; a handler that throws is dropped", async () => {
+	const left = [];
+	let deletes = 0;
+	const { fake, provider } = setup(
+		{ timeouts: { ...TIMEOUTS, createMs: 50 }, onCleanupFailed: (one) => left.push(one) },
+		{
+			create: "hold",
+			onStep: (step) => {
+				if (step === "machines.delete" && ++deletes === 1) throw new Error("boxd is unavailable");
+			},
+		},
+	);
+	assert.equal((await provider.create(SPEC)).error.code, "timeout");
+	await fake.release();
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(deletes, 2);
+	assert.equal(only(fake).deleted, true);
+	assert.deepEqual(left, []);
+
+	const throwing = setup(
+		{
+			timeouts: { ...TIMEOUTS, createMs: 50 },
+			onCleanupFailed: () => {
+				throw new Error("the host's handler failed");
+			},
+		},
+		{
+			create: "hold",
+			onStep: (step) => {
+				if (step === "machines.delete") throw new Error("boxd is unavailable");
+			},
+		},
+	);
+	const unhandled = [];
+	const note = (error) => unhandled.push(error);
+	process.on("unhandledRejection", note);
+	try {
+		assert.equal((await throwing.provider.create(SPEC)).error.code, "timeout");
+		await throwing.fake.release();
+		await new Promise((resolve) => setTimeout(resolve, 150));
+	} finally {
+		process.off("unhandledRejection", note);
+	}
+	assert.deepEqual(unhandled, []);
+	assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: fakeBoxd().Boxd, onCleanupFailed: "log" }), /onCleanupFailed is a function/);
+});
+
+test("attach refuses a computer whose timers changed since create: standby, hibernation, auto-destroy, or a delete before the most it may live", async () => {
+	const { fake, provider } = setup();
+	const made = await provider.create(SPEC);
+	assert.ok(made.ok, made.ok ? "" : made.error.message);
+	const machine = only(fake);
+	assert.ok((await provider.attach({ id: made.value.id })).ok, "as create left it, it attaches");
+	const refused = async (change, words) => {
+		const before = structuredClone({ idle: machine.idle, deleteAt: machine.deleteAt });
+		change();
+		for (const ref of [{ id: made.value.id }, { labels: { [NAME]: machine.name } }]) {
+			const attached = await provider.attach(ref);
+			assert.equal(attached.ok, false, words.source);
+			assert.equal(attached.error.code, "refused");
+			assert.match(attached.error.message, words);
+			assert.match(attached.error.message, /left as it is/);
+		}
+		Object.assign(machine, before);
+	};
+	await refused(() => (machine.idle.hibernateAfter = 14_400), /auto-hibernate: declared 0, read back 14400/);
+	await refused(() => (machine.idle.suspendAfter = 900), /auto-suspend: declared 0, read back 900/);
+	await refused(() => (machine.idle.destroyAfter = 3_600), /auto-destroy: declared 0, read back 3600/);
+	const most = Date.parse(machine.labels[MAX_LABEL]);
+	await refused(() => (machine.deleteAt = new Date(most - 1_000)), /delete-after: boxd deletes it at .*before the most it may live/);
+	await refused(() => (machine.deleteAt = new Date(Date.now() + 60_000)), /delete-after: boxd deletes it at /);
+	assert.equal(fake.deletes.length, 0, "a refused attach deletes nothing");
+	// A delete timer at or past the most it may live is the deleteTimer backstop: it ends nothing early.
+	machine.deleteAt = new Date(most + 300_000);
+	const kept = await provider.attach({ id: made.value.id });
+	assert.ok(kept.ok, kept.ok ? "" : kept.error.message);
+	machine.deleteAt = null;
+	assert.ok((await provider.attach({ id: made.value.id })).ok);
+});
+
 test("deleteTimer writes boxd's delete timer with the machine, past the most it may live, and holds the read-back to it", async () => {
 	const { fake, provider } = setup({ deleteTimer: true, maxLifetimeMs: 3_600_000 });
 	const made = await provider.create(SPEC);

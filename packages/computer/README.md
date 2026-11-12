@@ -2460,6 +2460,7 @@ them from the environment.
 | `namePrefix` | what every machine's name starts with, before 12 hex digits | `computer-` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
 | `deleteTimer` | a backstop: boxd deletes every machine 5 minutes past create's time plus `maxLifetimeMs`, whatever the host does, written in the same call that makes it | `false` |
+| `onCleanupFailed` | a function, for a host that builds the provider in code: called with `{ name, id?, message }` when a machine that landed after create gave up on it could not be deleted | none |
 | `daemonUser` | uid:gid the daemon runs as; never root, never the image's own user (1000) | `2510:2510` |
 | `daemonPath`, `desktop`, `timeouts`, `probeTargets` | as on E2B | |
 
@@ -2476,7 +2477,9 @@ computerd is a `child`, as on Daytona and E2B:
    `vcpu`). With `deleteTimer`, `deleteAfter` too. create has a client of its own, bounded by `createMs` and never sent
    twice. The create is raced against the caller's signal, never cancelled: one that lands after create gave up is
    deleted by its id; one whose answer never said what it made (the SDK's deadline, a lost connection) is looked for by
-   its name label until it shows or `listedMs` (60 s) passes, and deleted.
+   its name label until it shows or `listedMs` (60 s) passes, and deleted. After an abort or `createMs`, that cleanup
+   runs once create has answered: its delete is tried three times, and a machine it could not delete, or could not look
+   for, is told to `onCleanupFailed`. The janitor deletes such a machine by its deadline label.
 2. `machines.waitUntilReady`, then `machines.setEgressAllow(id, ["none"])` (the machine reaches nothing) and
    `machines.setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may
    work for a long time with none, so neither standby nor hibernation may freeze them. Then `machines.get` reads it
@@ -2533,7 +2536,8 @@ on neither loopback.
   or abort at any step deletes the machine and waits until boxd reads it gone; create never returns ok once its signal
   has aborted.
 - `attach({ id })` or `attach({ labels })` reads the spec back from boxd and, for a running machine, the daemon, as at
-  create; one that drifts is refused and left as it is. Only a machine with `agentrun.computer=1` whose name is the one
+  create; one that drifts is refused and left as it is. The timers are read too: standby, hibernation or auto-destroy
+  switched on since create, or a delete timer before the most the computer may live, is drift. Only a machine with `agentrun.computer=1` whose name is the one
   its label records, with this provider's prefix, counts.
 - `list(labels)` asks boxd for the provider's label and the labels given, in its org. `running`, `suspended` (standby,
   which wakes on the next call) and the states on the way to running are `running`; `hibernated`, `stopped` and
