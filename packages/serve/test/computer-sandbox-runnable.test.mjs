@@ -17,7 +17,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import { scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
+import { asOwner, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
 const { blockersOf } = await import("../dist/runnable.js");
 const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
@@ -48,10 +48,11 @@ async function fakeDocker(t, answers, adb = true) {
 
 /** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not), and an `adb` on PATH
  *  unless `adb` is false; on the real models (no --faux) unless `faux`; in Mode 2 when `archil`; with the template
- *  packages in `templates`, when given. */
-async function server(t, { archil, docker = false, faux = false, adb = true, templates }) {
+ *  packages in `templates`, when given; its client sends every request from the owner's session when `owner`. */
+async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false }) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb) }, UNSET);
-  const { api } = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
+  const started = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
+  const api = owner ? asOwner(started) : started.api;
   if (archil) {
     const saved = await api("PUT", "/workspace/archil", ARCHIL);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -287,6 +288,42 @@ async function saveWithTools(api, id, setting, tools) {
   const onTools = (one) => one.field.startsWith("definition.tools");
   return { made, warned: (made.body.warnings ?? []).filter(onTools), refused: (started.body?.error?.fields ?? []).filter(onTools), started };
 }
+
+// The browser tool of an agent whose computer is a browser opens its sessions on that computer (tools.ts
+// browserComputer), so its keys are the computer's, saved in Settings → Computers (Local Chrome needs none): the save
+// warns of nothing on the tool and the run starts, with no Tool keys entry and no browser key where the server starts.
+// With the computer's key not saved, the refusal is the computer's, naming Settings → Computers, never Tool keys. The
+// computer registry is the package's (no --faux), and the model key a fake one where the server starts.
+for (const [provider, keys] of [["browserbase", { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" }], ["local-chrome", undefined]]) {
+  test(`an agent whose computer is a ${provider} browser, with the browser tool and no Tool keys entry, is saved with no warning on the tool and its run starts`, async (t) => {
+    withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY"]);
+    const api = await server(t, { owner: true });
+    if (keys) {
+      const saved = await api("PUT", `/computers/${provider}/keys`, keys);
+      assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    }
+    const said = await saveWithTools(api, `browser-on-${provider}`, { computer: { kind: "browser", provider } }, ["browser", "ask_person"]);
+    assert.equal(said.made.status, 201, JSON.stringify(said.made.body));
+    assert.deepEqual(said.made.body.warnings, [], JSON.stringify(said.made.body.warnings));
+    assert.equal(said.started.status, 202, JSON.stringify(said.started.body));
+    // The Screen tab reads the run's browser as that computer, not off for want of a Tool keys entry.
+    const screen = await api("GET", `/runs/${said.started.body.run_id}/computer`);
+    assert.equal(screen.status, 200, JSON.stringify(screen.body));
+    assert.deepEqual([screen.body.state, screen.body.kind], ["none", "browser"], JSON.stringify(screen.body));
+  });
+}
+
+test("an agent whose computer is a Browserbase browser with no key saved is refused for its computer, naming Settings → Computers, never Tool keys", async (t) => {
+  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key" }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY"]);
+  const api = await server(t, {});
+  const said = await saveWithTools(api, "browser-unkeyed", { computer: { kind: "browser", provider: "browserbase" } }, ["browser"]);
+  assert.equal(said.made.status, 201, JSON.stringify(said.made.body));
+  assert.equal(said.started.status, 409, JSON.stringify(said.started.body));
+  const fields = said.started.body.error.fields;
+  assert.deepEqual(fields.map((one) => one.field), ["definition.computer"], JSON.stringify(fields));
+  assert.match(fields[0].message, /Settings → Computers/);
+  assert.doesNotMatch(JSON.stringify(said.started.body), /Tool keys/);
+});
 
 for (const setting of [{ computer: { kind: "none" } }, { place: { mode: "runner" } }]) {
   test(`Mode 2: an agent with ${JSON.stringify(setting)} and bash is saved and its run is not refused for bash: it runs on Archil's serverless exec`, async (t) => {

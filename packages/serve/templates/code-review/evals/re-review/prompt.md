@@ -8,7 +8,7 @@ Review this pull request again. Its head is now 6f708192a3b4c5d6e7f8091a2b3c4d5e
 previous_findings:
 
 ```json
-[{"fingerprint": "src/users.js:displayname:null-deref", "path": "src/users.js", "line": 3, "severity": "high", "claim": "user can be undefined when no user has the id, so user.name throws", "state": "active", "reply": null}]
+[{"fingerprint": "src/users.js:displayname:null-deref", "path": "src/users.js", "line": 3, "priority": "P1", "failure": "user can be undefined when no user has the id, so user.name throws", "state": "active", "reply": null}]
 ```
 
 ```diff

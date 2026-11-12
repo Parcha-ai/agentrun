@@ -2659,7 +2659,9 @@ it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `key
 fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
-`prepareImage` (a provider that builds or pulls its image before a run), `local` (a computer on this host), and
+`prepareImage` (a provider that builds or pulls its image before a run), `imageEnv` (the server's environment variable
+that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
+(a computer on this host), and
 `ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
 `ProviderModule` is:
