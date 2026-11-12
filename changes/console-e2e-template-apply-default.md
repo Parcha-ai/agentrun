@@ -2,4 +2,4 @@
 packages: repo
 kind: fix
 ---
-The console's template-apply e2e flow picks a choice list's default by its words ("medium (default)"), not by a value the default no longer sends.
+The console's template-apply e2e flow picks "high", a choice other than the default, instead of the "medium" value the default choice no longer sends (the e2e had failed since the default stopped sending it).
