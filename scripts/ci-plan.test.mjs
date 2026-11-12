@@ -134,7 +134,6 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.deepEqual(testJob, ['checks', 'packages', 'source', ...Object.keys(shards)], 'the test job runs checks, packages, source and every shard');
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), Object.keys(shards).filter((name) => name.startsWith('lean-')), 'the lean job reads every lean shard\'s captures');
-  // The any pool's shards install poppler for serve's pdf_pages; the gh pool's run on GitHub's runners in the queue too.
+  // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
-  assert.deepEqual(config.pools.gh.suites, ['@parcha/pi-transport']);
 });

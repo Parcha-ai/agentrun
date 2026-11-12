@@ -1516,6 +1516,9 @@ test("a wait's marker is its ask's, never the last row: a question's waiting row
   assert.equal(waitMarkerOf(answered, null, true, "Learning"), "row_2:waiting", "the answer shown after it: still the question's");
   assert.equal(waitMarkerOf(answered, { kind: "approval", id: "call_8" }, true, "Learning"), "approval:call_8");
   assert.equal(waitMarkerOf(answered, { kind: "budget", at: "2026-11-10T00:00:00.000Z" }, true, "Learning"), "budget:2026-11-10T00:00:00.000Z");
+  // A pause anew at a higher cap with no row between (the runner writes none for a refused step) is a wait of its own.
+  assert.equal(waitMarkerOf(answered, { kind: "budget", at: "2026-11-10T00:00:00.000Z", cap_usd: 0.12 }, true, "Learning"), "budget:2026-11-10T00:00:00.000Z:0.12");
+  assert.notEqual(waitMarkerOf(answered, { kind: "budget", at: "2026-11-10T00:00:00.000Z", cap_usd: 0.13 }, true, "Learning"), "budget:2026-11-10T00:00:00.000Z:0.12");
   assert.equal(waitMarkerOf(answered, { kind: "browser", asked_at: "2026-11-10T00:01:00.000Z" }, true, "Learning"), "browser:2026-11-10T00:01:00.000Z");
   assert.equal(waitMarkerOf(answered, { kind: "computer", asked_at: "2026-11-10T00:02:00.000Z" }, true, "Learning"), "computer:2026-11-10T00:02:00.000Z");
   assert.equal(waitMarkerOf([...answered, { id: "row_6", kind: "assistant", agent_label: "Learning" }], null, false, "Learning"), "row_4", "a stop: its last row that shows (no phase, no learning's)");
