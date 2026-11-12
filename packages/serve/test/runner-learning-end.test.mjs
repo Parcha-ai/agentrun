@@ -422,6 +422,8 @@ test("a run's workflow draft calling an MCP tool set to deny is left out naming 
 
 // LS-07: a learned workflow may run judge nodes on a run with decision providers, so the end-of-run prompt allows them
 // there (the draft check's own `decisions`, skills.ts draftDecisionProviders) and keeps its ban on a run with none.
+const { decisionProvidersIn } = await import("../dist/decisions.js");
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const judgeDraft = `\`\`\`\`workflow check\n---\ndescription: Checks a claim; use when asked whether a claim is right\nexample: {"claim":"Six times seven is 42."}\n---\n${JSON.stringify({
   v: 2, name: "check",
   schemas: { In: { type: "object", required: ["claim"], properties: { claim: { type: "string" } } }, Check: { type: "object", required: ["right"], properties: { right: { type: "boolean", description: "Is the claim right?" } } } },
@@ -435,7 +437,8 @@ test("on a run with decision providers the end-of-run prompt allows judge nodes 
       const seed = await seedOf(dir, "agent-1");
       return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
     });
-    const providers = { providers: { jev: { decide: async () => ({}) } }, default: "jev" };
+    const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "faux-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
+    assert.ok(providers?.providers.jev, "setup: the faux Jev");
     await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { script: [{ say: "The job's answer." }, { say: `${REFLECTED}\n\n${judgeDraft}` }, { say: REFLECTED }] });
     const row = await w.ended();
     const turn = await w.turnOf(row);
