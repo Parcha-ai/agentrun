@@ -127,18 +127,19 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
-    // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
-    // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
-    const prior = await deps.store.learning.proposal(input.runId);
-    const round = prior ? prior.round + 1 : 1;
     // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
     // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be
     // read, or a start that could not be made from it; a start that records none names no reason.
     if (seedFailed(start)) {
       const failed = start.seedFailed;
       const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
-      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) }, ...(round > 1 ? { round } : {}) } }] };
+      // Every end of it: the first's drop stands for a later one (the store keeps one a round, so it adds nothing new).
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
+    // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
+    // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
+    const prior = await deps.store.learning.proposal(input.runId);
+    const round = prior ? prior.round + 1 : 1;
     const kept = prior?.proposal as { job_cost_usd?: unknown; look_back_usd?: unknown } | null | undefined;
     const spent = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const before = prior ? { job_cost_usd: spent(kept?.job_cost_usd), look_back_usd: spent(kept?.look_back_usd), looked: prior.turn !== null } : undefined;
