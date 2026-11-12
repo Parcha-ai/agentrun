@@ -211,11 +211,14 @@ const HELLO_TIMEOUT_MS = 30_000;
 /** Ids a list() inspect takes at once, so its argv and output stay bounded however many computers match. */
 const INSPECT_BATCH = 50;
 /** Only the fields list() reads, in inspect's own shape: a whole inspect is kilobytes a container, and execFile's
- *  output is capped. The user and init's command are an allowlist's read-back: its relay, and its proxy's user. */
+ *  output is capped. The user and init's command are an allowlist's read-back: its relay, and its proxy's user.
+ *  Docker runs the template on the inspect's JSON as a map and a missing key fails the whole inspect, so a field Docker
+ *  leaves out when empty is read with index, which reads null: HostConfig.Mounts is absent from a container made with no
+ *  --mount (one the label filter matches yet this provider never made), and one such container would fail the list. */
 const LIST_FORMAT =
 	'{"Id":{{json .Id}},"Name":{{json .Name}},"State":{"Running":{{json .State.Running}}},' +
 	'"Config":{"Labels":{{json .Config.Labels}},"User":{{json .Config.User}},"Cmd":{{json .Config.Cmd}}},' +
-	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}},"Mounts":{{json .HostConfig.Mounts}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}},"Mounts":{{json .Mounts}}}';
+	'"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}},"Mounts":{{json (index .HostConfig "Mounts")}}},"NetworkSettings":{"Networks":{{json .NetworkSettings.Networks}}},"Mounts":{{json .Mounts}}}';
 /** The longest lifetime: 30 days. A computer meant to live longer is asked for again. No extend(): the deadline is a
  *  container label, and a label cannot change after create. */
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;

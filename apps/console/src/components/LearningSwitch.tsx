@@ -30,13 +30,28 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
  *  holds it, on when the form says so, else as the definition was saved (`saved`). Put back off on an agent that never
  *  said, it says nothing again, so the switch alone makes no new revision. `error` and `warning`: a refused save's and a
  *  save's, for the field. */
-export function LearningField({ fields, onFields, saved, server, error, warning }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: boolean; server?: "on" | "off"; error?: string; warning?: string }) {
-  const on = (fields.learning ?? saved) === true;
+export function LearningField({ fields, onFields, saved, server, error, warning }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: boolean | "notes"; server?: "on" | "off"; error?: string; warning?: string }) {
+  const value = fields.learning ?? saved;
+  const on = value === true || value === "notes";
+  // A value equal to the saved one is no change of the form's, so choosing back what was saved makes no new revision.
+  // Back to a saved true or "notes" is sent as that value (an undefined key would read as removing the field); off on an
+  // agent that never said stays undefined, saying nothing.
+  const pick = (next: boolean | "notes") => onFields({ learning: next === false && saved === undefined ? undefined : next });
   return (
     <div>
       <div className="mb-2"><span className="caps text-small font-semibold">Learning</span></div>
       <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server}
-        onChange={(next) => onFields({ learning: next ? true : saved === undefined ? undefined : false })} />
+        onChange={(next) => pick(next ? (saved === "notes" ? "notes" : true) : false)} />
+      {on && (
+        <fieldset aria-label="What it learns" className="mt-2 space-y-2">
+          {([[true, "Notes, skills and workflows", "Once a job repeats, it can learn it as a workflow and run it as one step."], ["notes", "Notes and skills only", "It never runs a learned workflow, and is never asked to draft one."]] as const).map(([kind, label, note]) => (
+            <label key={String(kind)} className={cn("flex items-start gap-3 border px-3 py-2.5", value === kind && "border-foreground")}>
+              <input type="radio" name="learning-kind" className="mt-1 accent-primary" checked={value === kind} onChange={() => pick(kind)} />
+              <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
+            </label>
+          ))}
+        </fieldset>
+      )}
       {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}
       {warning && <p className="mt-2 font-mono text-small text-warning-text">{warning}</p>}
     </div>

@@ -35,7 +35,7 @@ import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./ho
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, seedOf } from "./learning.js";
+import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, type LearningMode, learningOf, learnsOf, seedOf } from "./learning.js";
 import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, writeNote } from "./learning-routes.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -492,9 +492,11 @@ export const ROUTES: readonly Route[] = [
  *  learning/); sign-ins/ only as the agent's `sign_ins`, never a pointer. */
 /** A run's computer as GET /computer reads it with no viewer open: kind browser where its agent has the browser tool, its
  *  kept plane's (a run from before the plane names none, and is Browserbase's where it grants the tool) checked again as a
- *  launch would be; off, saying why, where it has none or its browser resolves unavailable here.
+ *  launch would be; off, saying why, where it has none or its browser resolves unavailable here. Where the agent's
+ *  computer is a browser, that browser, whose keys are the computer's (checked at the run's start), never the plane's.
  *  TODO: the agent's own `computer: {kind, provider?}` setting once definitions carry it (desktop, phone). */
-function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+function computerOf(kept: KeptBrowser, env: NodeJS.ProcessEnv, family: LiveFamily = "computer"): ComputerOf {
+  if (kept === ON_COMPUTER) return { kind: "browser" };
   const browser = kept === undefined ? undefined : recheckPlane({ browser: kept }, env).browser;
   if (browser === undefined) return { off: family === "browser" ? "this run's agent has no browser tool" : "this run's agent has no computer" };
   return isUnavailable(browser) ? { off: whyUnavailable(browser) } : { kind: "browser" };
@@ -503,17 +505,24 @@ function computerOf(kept: Plane["browser"], env: NodeJS.ProcessEnv, family: Live
 /** The run's kept browser vendor, over the store, as computerOf reads it: the vendor its launch plane resolved at start
  *  (the same source the runner's claim reads), normalized to the vendor name (keptVendor) so recheckPlane re-resolves it as
  *  a vendor, not a stored no-key sentinel; with no browser in the plane, the default vendor when the run's revision grants
- *  the browser tool, else none. */
-async function keptBrowserOf(store: Store, runId: string): Promise<Plane["browser"]> {
+ *  the browser tool, else none. A revision that grants the tool to an agent whose computer is a browser is ON_COMPUTER:
+ *  the tool's sessions are that computer's (tools.ts browserComputer), whatever the plane says. */
+async function keptBrowserOf(store: Store, runId: string): Promise<KeptBrowser> {
+  const runRow = await store.runs.get(runId);
+  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
+  const body = revision?.body as { tools?: readonly string[]; computer?: { kind?: string } } | undefined;
+  const granted = (body?.tools ?? []).includes("browser");
+  if (granted && body?.computer?.kind === "browser") return ON_COMPUTER;
   const row = await store.runs.launch(runId).catch(() => undefined);
   const plane = row ? readLaunchBody(row.body)?.plane : undefined;
   const kept = plane ? keptVendor(plane).browser : undefined;
   if (kept !== undefined) return kept;
-  const runRow = await store.runs.get(runId);
-  const revision = runRow ? await store.agents.revision(runRow.revisionId) : undefined;
-  const granted = ((revision?.body as { tools?: readonly string[] } | undefined)?.tools ?? []).includes("browser");
   return granted ? "browserbase" : undefined;
 }
+
+/** keptBrowserOf's answer for a run whose browser is its agent's browser computer. */
+const ON_COMPUTER = Symbol("the agent's browser computer");
+type KeptBrowser = Plane["browser"] | typeof ON_COMPUTER;
 
 const ownedReadAt = (agentId: string): OwnedReadAt => (owned) => (owned === SIGN_INS_DIR ? `/v2/agents/${agentId}` : ROUTES.some((r) => r.method === "GET" && r.pattern.test(`/agents/${agentId}/${owned}`)) ? `/v2/agents/${agentId}/${owned}` : undefined);
 
@@ -789,7 +798,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
   const learningOfAgent = async (entry: { agent: { id: string }; revision?: { kind: string; body: unknown } | null }): Promise<{ pending: number } | undefined> => {
-    if (learning === "off" || entry.revision?.kind !== "agentic" || (entry.revision.body as { learning?: unknown }).learning !== true) return undefined;
+    if (learning === "off" || entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return undefined;
     const pending = await pendingCount(data, entry.agent.id);
     return pending === undefined ? undefined : { pending };
   };
