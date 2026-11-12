@@ -352,7 +352,7 @@ const browserTool: ToolEntry = {
   // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, planeBrowser, planeComputer, releaseOlderBrowsers }, { cdpDriver }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, releaseOlderBrowsers }, { cdpDriver }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -598,6 +598,9 @@ const browserTool: ToolEntry = {
         await view.close();
         hands.close();
         await viewers.released();
+        // The download sockets this run's sessions hold go with it, released or left to the next claim (whose attach
+        // opens its own): one left open would keep the process from exiting.
+        if ("browser" in made) await closeHeldSockets(made.browser);
       }
     });
     return { tools, extensions: [extension] };

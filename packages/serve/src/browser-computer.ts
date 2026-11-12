@@ -65,6 +65,8 @@ const goneCode = (error: unknown) => {
 /** What a session holds in this process, by provider and session id: its download-behaviour socket. */
 const sockets = new Map<string, CdpSession>();
 const opening = new Map<string, Promise<void>>();
+/** The sockets each run's browser (the ClaimBrowser its provider is over) opened, by the same keys: let go with the run. */
+const heldBy = new WeakMap<ClaimBrowser, Set<string>>();
 /** Who saves to a saved sign-in now, by provider and pointer. */
 type Saver = { tag: string; owner: string; running?: () => Promise<boolean>; settle?: () => Promise<void> };
 const savers = new Map<string, Saver>();
@@ -111,6 +113,8 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
   const features = computer.features;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const held = (id: string) => `${computer.provider}|${id}`;
+  const mine = heldBy.get(computer) ?? new Set<string>();
+  heldBy.set(computer, mine);
   const caps: ProviderCaps = {
     profiles: features.profiles !== undefined && options.signIn !== undefined,
     // What a session is created with that its record may say: Verified where the provider offers stealth; no proxy,
@@ -127,6 +131,7 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
   const endSocket = (id: string) => {
     sockets.get(held(id))?.close();
     sockets.delete(held(id));
+    mine.delete(held(id));
   };
 
   const provider: BrowserProvider = {
@@ -198,7 +203,10 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
         if (!pending) {
           pending = (async () => {
             const socket = await cdpCall(url, "Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads.path, eventsEnabled: true }).catch(() => undefined);
-            if (socket) sockets.set(held(ref.id), socket);
+            if (socket) {
+              sockets.set(held(ref.id), socket);
+              mine.add(held(ref.id));
+            }
           })().finally(() => opening.delete(held(ref.id)));
           opening.set(held(ref.id), pending);
         }
@@ -288,6 +296,20 @@ export function planeBrowser(provider: ComputerProvider, run: { readonly runId: 
   if (!isBrowserProvider(provider)) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: the ${provider.id} provider gives no browser.`));
   const spec = { image: BROWSER_IMAGE, lifetimeMs: provider.capabilities().maxLifetimeMs, network: "open" as const, labels: run ? runLabels(run.runId, run.epoch) : {} };
   return claimBrowser(provider, spec).browser;
+}
+
+/** When the run's process lets the run go: closes the download sockets its browser's sessions hold, released or not (a
+ *  runner that closes leaves a session to the next claim, whose attach opens its own). An open socket would keep the
+ *  process from exiting. A socket still opening is closed once it opens. */
+export async function closeHeldSockets(computer: ClaimBrowser): Promise<void> {
+  const mine = heldBy.get(computer);
+  if (!mine) return;
+  await Promise.all([...opening.keys()].filter((key) => key.startsWith(`${computer.provider}|`)).map((key) => opening.get(key)));
+  for (const key of mine) {
+    sockets.get(key)?.close();
+    sockets.delete(key);
+  }
+  mine.clear();
 }
 
 /** Tests only: forgets every session's socket and saver this process holds. */
