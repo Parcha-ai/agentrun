@@ -5,9 +5,10 @@
 // most 10 min.
 // The provider reads no environment: this module reads these names and passes them in as options.
 import { randomBytes } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PHONE_IMAGE } from "../descriptors/phone-harness.js";
 import { type AdbTransport, adbCli, create, type PhoneHarnessProvider, type PhoneLedger, type PhoneLedgerEntry, type PhoneProviderOptions } from "../phone-harness.js";
 
@@ -209,14 +210,19 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 	};
 }
 
+/** The ui fixture as an Android app (npm run build:ui-fixture), beside the compiled modules: a run installs it on its phones. */
+export const UI_FIXTURE_APK = fileURLToPath(new URL("../ui-fixture.apk", import.meta.url));
+
 export interface PhoneModuleOptions extends Pick<PhoneProviderOptions, "fetch" | "now" | "sleep" | "baseUrl" | "phoned"> {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	/** The adb runner; default the CLI the settings name. */
 	adb?: AdbTransport | string;
+	/** The ui fixture's APK; default UI_FIXTURE_APK. Installed on each phone when it is there. */
+	uiFixture?: string;
 }
 
-function optionsOf({ env = process.env, adb, ...rest }: PhoneModuleOptions): PhoneProviderOptions {
+function optionsOf({ env = process.env, adb, uiFixture = UI_FIXTURE_APK, ...rest }: PhoneModuleOptions): PhoneProviderOptions {
 	if (env[PHONE_ENV.live] !== "1") throw new Error(`a conformance run rents a cloud phone, billed by the minute: set ${PHONE_ENV.live}=1 to run it`);
 	const settings = settingsFromEnv(env);
 	if (!settings.apiKey) throw new Error(`set ${PHONE_ENV.key} to the phone harness API key`);
@@ -229,6 +235,9 @@ function optionsOf({ env = process.env, adb, ...rest }: PhoneModuleOptions): Pho
 		adb: adb !== undefined && typeof adb !== "string" ? adb : adbCli(adb ?? settings.adb ?? "adb", { env: Object.fromEntries(Object.entries(env).filter(([name]) => !(Object.values(PHONE_ENV) as string[]).includes(name))) }),
 		ledger: fileLedger(settings.ledgerPath ?? join(tmpdir(), "agentrun-phone-ledger.json")),
 		maxLifetimeMs: RUN_MAX_LIFETIME_MS,
+		// The Full ui cases act on the fixture. Without its APK they skip, each saying it is not installed, and the
+		// report's notes say why (conformanceNotes).
+		apks: existsSync(uiFixture) ? [uiFixture] : [],
 		...rest,
 	};
 }
@@ -248,6 +257,9 @@ export function conformanceImage(): string {
 	return PHONE_IMAGE;
 }
 
-export const conformanceNotes = [
+export const conformanceNotes: string[] = [
 	"phone-harness: a temporary cloud Android emulator, driven over adb; a phone is billed by the minute, and lives at most 10 min in a run",
+	existsSync(UI_FIXTURE_APK)
+		? `phone-harness: each phone gets the ui fixture installed (${UI_FIXTURE_APK}) for the Full ui cases`
+		: `phone-harness: the ui fixture's APK is not at ${UI_FIXTURE_APK} (npm run build:ui-fixture builds it), so the Full ui cases skip: no phone has the fixture`,
 ];

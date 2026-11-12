@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { duplexPair } from "node:stream";
@@ -481,7 +481,7 @@ test("a phone that holds phoned's jar already is not pushed it again: the jar's 
 test("a push that fails or lands changed is refused in words, no phoned starts, and the transport is let go", async () => {
 	for (const [fault, words] of [
 		["pushFails", /^adb push of phoned to the phone failed: adb: error: failed to copy/],
-		["pushCorrupts", /^phoned reached the phone changed: its sha256 there is not the jar's/],
+		["pushCorrupts", /^phoned reached the phone changed: its sha256 there is not the file's/],
 	]) {
 		const { provider, fake } = await setup({ [fault]: true });
 		const refused = await provider.connect((await provider.create(SPEC)).value);
@@ -492,6 +492,47 @@ test("a push that fails or lands changed is refused in words, no phoned starts, 
 		assert.equal(fake.phone.files.has(REMOTE), false, `${fault}: nothing is left under the jar's own name`);
 		assert.equal(fake.phone.connected.size, 0, fault);
 	}
+});
+
+test("the apks option's APKs install before phoned starts, each pushed once under its sha256; a refused or missing one fails connect in words", async () => {
+	const apk = join(dir, "fixture.apk");
+	writeFileSync(apk, "an APK's bytes, which the fake phone never opens");
+	const sha = createHash("sha256").update(readFileSync(apk)).digest("hex");
+	const remote = `/data/local/tmp/apk-${sha.slice(0, 16)}.apk`;
+	const { provider, fake } = await setup({}, { apks: [apk] });
+	const { value: ref } = await provider.create(SPEC);
+	const first = await provider.connect(ref);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.deepEqual(fake.phone.installed, [sha], "the APK, whole, installed");
+	const shells = fake.shells();
+	assert.ok(shells.indexOf(`pm install -r ${remote} 2>&1`) < shells.indexOf(`sha256sum ${REMOTE} 2>/dev/null`), `installed before phoned's jar is placed: ${shells.join(" | ")}`);
+	assert.equal(fake.phone.phoned.length, 1);
+	await first.value.close();
+	const again = await provider.connect(ref);
+	assert.equal(again.ok, true, JSON.stringify(again));
+	assert.equal(fake.adbCalls().filter((argv) => argv[2] === "push" && argv[3] === apk).length, 1, "the phone held the APK under its name: one push");
+	assert.deepEqual(fake.phone.installed, [sha, sha], "a phoned started afresh installs the APK again");
+	await again.value.close();
+
+	const refusing = await setup({ installFails: true }, { apks: [apk] });
+	const refused = await refusing.provider.connect((await refusing.provider.create(SPEC)).value);
+	assert.equal(refused.ok, false);
+	assert.deepEqual([refused.error.code, refused.error.vendor], ["vendor", "phone-harness"]);
+	assert.match(refused.error.message, /^the APK fixture\.apk did not install on the phone: Failure \[INSTALL_FAILED_UPDATE_INCOMPATIBLE: /);
+	assert.deepEqual(refusing.fake.phone.phoned, [], "no phoned starts on a phone that refused an APK");
+	assert.equal(refusing.fake.phone.connected.size, 0, "and the transport is let go");
+
+	const corrupt = await setup({ pushCorrupts: true }, { apks: [apk] });
+	const changed = await corrupt.provider.connect((await corrupt.provider.create(SPEC)).value);
+	assert.match(changed.error.message, /^the APK fixture\.apk reached the phone changed: /);
+	assert.deepEqual(corrupt.fake.phone.installed, [], "an APK that landed changed is never installed");
+
+	const gone = join(dir, "no-such.apk");
+	const missing = await setup({}, { apks: [gone] });
+	const notThere = await missing.provider.connect((await missing.provider.create(SPEC)).value);
+	assert.equal(notThere.error.code, "not_found");
+	assert.equal(notThere.error.message, `the APK no-such.apk, which the provider's apks option names, is not at ${gone} (ENOENT)`);
+	await assert.rejects(create({ apiKey: KEY, apks: apk }), /options\.apks .* is not a list of APK paths/);
 });
 
 test("without phoned's jar, connect is not_found in words naming the build; a phoned that never says hello is refused naming its log on the phone", async () => {
@@ -966,4 +1007,28 @@ test("the conformance module reads its own COMPUTER_PHONE_HARNESS_* names, never
 	assert.match((await drifted.connect(twin)).error.message, /hello: the daemon reports version \S+, expected 0\.0\.0-drift$/);
 	await drifted.release(twin, "delete");
 	assert.equal(await conformance.conformanceImage(), "android");
+});
+
+test("a conformance run installs the ui fixture's APK on its phones when it is built, and its notes say whether it is", async () => {
+	const env = { COMPUTER_PHONE_HARNESS_API_KEY: KEY, AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1", COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "fixture-ledger.json") };
+	const apk = join(dir, "ui-fixture.apk");
+	writeFileSync(apk, "the fixture's bytes");
+	const installs = async (uiFixture) => {
+		const fake = fakePhoneHarness({ clock: fakeClock() });
+		const provider = await conformance.createProvider({ env, fetch: fake.fetch, adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR, uiFixture });
+		const ref = (await provider.create(SPEC)).value;
+		const connected = await provider.connect(ref);
+		assert.equal(connected.ok, true, JSON.stringify(connected));
+		await connected.value.close();
+		await provider.release(ref, "delete");
+		return fake.phone.installed;
+	};
+	assert.deepEqual(await installs(apk), [createHash("sha256").update(readFileSync(apk)).digest("hex")], "the fixture, installed on the run's phone");
+	assert.deepEqual(await installs(join(dir, "not-built.apk")), [], "no APK, nothing installed: the Full ui cases skip");
+	assert.match(conformance.UI_FIXTURE_APK, /[/\\]dist[/\\]ui-fixture\.apk$/);
+	const built = existsSync(conformance.UI_FIXTURE_APK);
+	assert.ok(
+		conformance.conformanceNotes.some((note) => note.includes(conformance.UI_FIXTURE_APK) && (built ? /gets the ui fixture installed/ : /npm run build:ui-fixture builds it/).test(note)),
+		conformance.conformanceNotes.join("\n"),
+	);
 });

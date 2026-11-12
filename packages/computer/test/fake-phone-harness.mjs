@@ -121,9 +121,10 @@ function says(words) {
  * The phone's phoned: `startPhoned({ jar, log, transport })` starts it when exec: names a jar the phone holds, and
  * answers the provider's end of its stdio (default the stand-in above, with `phonedVersion`, `abi` and `release`);
  * `pushFails`, adb push fails; `pushCorrupts`, a pushed jar lands with other bytes. The provider pushes PHONED_JAR
- * (give it as the provider's phoned option).
+ * (give it as the provider's phoned option). `pm install -r` installs a file the phone holds (phone.installed, by its
+ * sha256), or answers pm's Failure line with `installFails`.
  */
-export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", phonedVersion = PHONED_VERSION, startPhoned, pushFails = false, pushCorrupts = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
+export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = false, loseRecovery = false, cancelPost, stall, onList, postAnswer, others = [], code, abi = "x86_64", release = "15", phonedVersion = PHONED_VERSION, startPhoned, pushFails = false, pushCorrupts = false, installFails = false, endLag = 0, unlockEcho = false, onServer, clock = fakeClock() } = {}) {
 	const requests = [];
 	const adbCalls = [];
 	const sessions = new Map(others.map((s) => [s.id, { ...s }]));
@@ -235,7 +236,7 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 	 * end of its stdio, which a test destroys as a phone that kills phoned does }), in order; calls: every
 	 * request the stand-in phoneds read.
 	 */
-	const phone = { connected: new Set(), unlocked: new Set(), files: new Map(), phoned: [], calls: [] };
+	const phone = { connected: new Set(), unlocked: new Set(), files: new Map(), phoned: [], calls: [], installed: [] };
 	const expected = code ?? ADB_CODE;
 	const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -270,6 +271,13 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			phone.files.delete(w[1]);
 			phone.files.set(w[2], sum);
 			return result();
+		}
+		// pm install -r <file> 2>&1: Success, or pm's Failure line (installFails) for a file the phone holds.
+		if (w[0] === "pm" && w[1] === "install" && w[2] === "-r" && w[4] === "2>&1") {
+			if (!phone.files.has(w[3])) return result(`Error: Unable to open file: ${w[3]}\nConsider using a file under /data/local/tmp/\n`, 1);
+			if (installFails) return result("Performing Streamed Install\nFailure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package ai.agentrun.uifixture signatures do not match newer version; ignoring!]\n", 1);
+			phone.installed.push(phone.files.get(w[3]));
+			return result("Performing Streamed Install\nSuccess\n");
 		}
 		// What the live probe times phoned against: `input` (taps and swipes, which change nothing here) and a dump of the
 		// tree to the terminal, as uiautomator writes it.

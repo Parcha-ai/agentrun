@@ -31,6 +31,11 @@ The jar is reproducible for a given pin: the same sources, version and build too
 build-tools version's d8 writes other bytes, so moving the pin changes the jar's sha256 (a frozen live run pins it).
 Its version is this package's, so the provider refuses a phone whose phoned reports another (`drift.version`).
 
+`npm run build:ui-fixture` builds the conformance suite's ui fixture (`src/conformance/ui-fixture.ts`) as an Android
+app from `../fixture-android/` with the same pin: one Activity of plain views in a 320 by 320 point window, no
+resources, linked by aapt2 and signed by apksigner with a debug key made for that build, at `dist/ui-fixture.apk`. A
+conformance run on the phone harness installs it on each phone (the provider's `apks` option) so the Full ui cases run.
+
 `npm run test:phoned` runs the JVM tests (`src/test`), with the host JDK alone, and then the TypeScript client against
 phoned's real core over a scripted phone (`src/fake`, `test/phoned/`).
 

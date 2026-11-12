@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
@@ -380,6 +381,11 @@ export interface PhoneProviderOptions {
 	daemonVersion?: string;
 	/** phoned, the phone's driver, as its jar (npm run build:phoned); default this package's dist/phoned.jar. */
 	phoned?: string;
+	/**
+	 * APK files installed on each phone before phoned starts there (`pm install -r`), as the conformance run installs the
+	 * ui fixture (npm run build:ui-fixture). Default none. A connect that cannot install one fails in words.
+	 */
+	apks?: string[];
 }
 
 /** The phone-harness provider from its options alone; throws in words when one is missing or wrong. */
@@ -436,8 +442,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	 */
 	readonly #daemons = new Map<string, Promise<Result<Phoned>>>();
 	readonly #phonedPath: string;
-	/** phoned's jar, read once: its bytes' sha256 names it on the phone. */
-	#jar: Promise<Result<{ path: string; sha256: string }>> | undefined;
+	readonly #apks: readonly string[];
+	/** Each file the provider puts on its phones (phoned's jar, the APKs), read once: its bytes' sha256 names it there. */
+	readonly #files = new Map<string, Promise<Result<PhoneFile>>>();
 
 	constructor(options: PhoneProviderOptions) {
 		const { apiKey, platform = "android" } = options ?? ({} as PhoneProviderOptions);
@@ -452,6 +459,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			throw new Error("options.adb is the adb CLI's path, or a transport with run(), server() and open()");
 		}
 		this.#phonedPath = options.phoned ?? DEFAULT_PHONED_PATH;
+		const apks = options.apks ?? [];
+		if (!Array.isArray(apks) || !apks.every((path) => typeof path === "string" && path !== "")) throw new Error(`options.apks ${show(options.apks)} is not a list of APK paths`);
+		this.#apks = [...apks];
 		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
 		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
@@ -972,42 +982,76 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok({ client, hello, close: () => client.closed() });
 	}
 
-	/** phoned's jar and its sha256, read once; not_found in words when the package was built without it. */
-	#phonedJar(): Promise<Result<{ path: string; sha256: string }>> {
-		this.#jar ??= readFile(this.#phonedPath).then(
-			(bytes) => ok({ path: this.#phonedPath, sha256: createHash("sha256").update(bytes).digest("hex") }),
-			(error: NodeJS.ErrnoException) => {
-				this.#jar = undefined;
-				return fail("not_found", `phoned, the phone's driver, is not at ${this.#phonedPath} (${error.code ?? error.message}): build it with npm run build:phoned, or give the provider's phoned option`);
-			},
-		);
-		return this.#jar;
+	/** A file the provider puts on its phones, and its sha256, read once; not_found in the words missing gives. */
+	#fileAt(path: string, missing: (why: string) => string): Promise<Result<PhoneFile>> {
+		let read = this.#files.get(path);
+		if (read === undefined) {
+			read = readFile(path).then(
+				(bytes) => ok({ path, sha256: createHash("sha256").update(bytes).digest("hex") }),
+				(error: NodeJS.ErrnoException) => {
+					this.#files.delete(path);
+					return fail("not_found", missing(error.code ?? error.message));
+				},
+			);
+			this.#files.set(path, read);
+		}
+		return read;
 	}
 
 	/**
-	 * Starts phoned on the phone and says hello. The jar goes to the phone under its sha256 only when the phone lacks it,
-	 * pushed beside its name and then moved there, so a jar of that name is always whole. phoned runs as the shell user
-	 * through app_process (scrcpy's way in), on adb's exec: service, whose socket carries its stdin and stdout raw; its
-	 * stderr goes to a log beside the jar.
+	 * Puts file on the phone at remote, a name that holds its sha256, only when the phone lacks it there: pushed beside
+	 * that name and then moved to it, so a file of that name is always whole. what names it in the errors.
 	 */
-	async #startPhoned(transport: string, adb: AdbRun, onPhone: (service: string, id: string) => Promise<Result<string>>, ended: () => void): Promise<Result<Phoned>> {
-		const jar = await this.#phonedJar();
-		if (!jar.ok) return jar;
-		const remote = `${PHONE_TMP}/phoned-${jar.value.sha256.slice(0, 16)}.jar`;
+	async #place(transport: string, adb: AdbRun, onPhone: OnPhone, file: PhoneFile, remote: string, what: string): Promise<Result<void>> {
 		const have = await onPhone(`shell:sha256sum ${remote} 2>/dev/null`, transport);
 		if (!have.ok) return have;
-		if (!have.value.startsWith(jar.value.sha256)) {
-			const pushed = await adb(["push", jar.value.path, `${remote}.part`], { timeoutMs: PUSH_TIMEOUT_MS });
-			if (!pushed.ok) return pushed;
-			if (pushed.value.exitCode !== 0) return vendorFail("phone-harness",`adb push of phoned to the phone failed: ${redactWords(pushed.value.stderr.trim().split("\n")[0] || `exit code ${pushed.value.exitCode}`)}`);
-			// Checked before it takes the jar's name: a jar under that name is always whole.
-			const landed = await onPhone(`shell:sha256sum ${remote}.part`, transport);
-			if (!landed.ok) return landed;
-			if (!landed.value.startsWith(jar.value.sha256)) return vendorFail("phone-harness", `phoned reached the phone changed: its sha256 there is not the jar's (${redactWords(landed.value.trim().split("\n")[0] ?? "")})`);
-			const moved = await onPhone(`shell:mv ${remote}.part ${remote} && echo moved`, transport);
-			if (!moved.ok) return moved;
-			if (moved.value.trim() !== "moved") return vendorFail("phone-harness", `phoned could not be put in place on the phone: ${redactWords(moved.value.trim().split("\n")[0] ?? "")}`);
+		if (have.value.startsWith(file.sha256)) return ok(undefined);
+		const pushed = await adb(["push", file.path, `${remote}.part`], { timeoutMs: PUSH_TIMEOUT_MS });
+		if (!pushed.ok) return pushed;
+		if (pushed.value.exitCode !== 0) return vendorFail("phone-harness", `adb push of ${what} to the phone failed: ${redactWords(pushed.value.stderr.trim().split("\n")[0] || `exit code ${pushed.value.exitCode}`)}`);
+		// Checked before it takes its name: a file under that name is always whole.
+		const landed = await onPhone(`shell:sha256sum ${remote}.part`, transport);
+		if (!landed.ok) return landed;
+		if (!landed.value.startsWith(file.sha256)) return vendorFail("phone-harness", `${what} reached the phone changed: its sha256 there is not the file's (${redactWords(landed.value.trim().split("\n")[0] ?? "")})`);
+		const moved = await onPhone(`shell:mv ${remote}.part ${remote} && echo moved`, transport);
+		if (!moved.ok) return moved;
+		if (moved.value.trim() !== "moved") return vendorFail("phone-harness", `${what} could not be put in place on the phone: ${redactWords(moved.value.trim().split("\n")[0] ?? "")}`);
+		return ok(undefined);
+	}
+
+	/** The apks option's APKs, each put on the phone like phoned's jar and installed there with `pm install -r`. */
+	async #install(transport: string, adb: AdbRun, onPhone: OnPhone): Promise<Result<void>> {
+		for (const path of this.#apks) {
+			const what = `the APK ${basename(path)}`;
+			const apk = await this.#fileAt(path, (why) => `${what}, which the provider's apks option names, is not at ${path} (${why})`);
+			if (!apk.ok) return apk;
+			const remote = `${PHONE_TMP}/apk-${apk.value.sha256.slice(0, 16)}.apk`;
+			const placed = await this.#place(transport, adb, onPhone, apk.value, remote, what);
+			if (!placed.ok) return placed;
+			const installed = await onPhone(`shell:pm install -r ${remote} 2>&1`, transport);
+			if (!installed.ok) return installed;
+			// pm says Success on a line of its own, else Failure [INSTALL_FAILED_…: why].
+			if (!/^Success$/m.test(installed.value)) {
+				const said = installed.value.split("\n").find((line) => /Failure|Error|Exception/.test(line)) ?? installed.value.trim().split("\n")[0] ?? "";
+				return vendorFail("phone-harness", `${what} did not install on the phone: ${redactWords(said.trim()) || "pm install answered nothing"}`);
+			}
 		}
+		return ok(undefined);
+	}
+
+	/**
+	 * Starts phoned on the phone and says hello, after installing the apks option's APKs. The jar goes to the phone under
+	 * its sha256 (#place). phoned runs as the shell user through app_process (scrcpy's way in), on adb's exec: service,
+	 * whose socket carries its stdin and stdout raw; its stderr goes to a log beside the jar.
+	 */
+	async #startPhoned(transport: string, adb: AdbRun, onPhone: OnPhone, ended: () => void): Promise<Result<Phoned>> {
+		const installed = await this.#install(transport, adb, onPhone);
+		if (!installed.ok) return installed;
+		const jar = await this.#fileAt(this.#phonedPath, (why) => `phoned, the phone's driver, is not at ${this.#phonedPath} (${why}): build it with npm run build:phoned, or give the provider's phoned option`);
+		if (!jar.ok) return jar;
+		const remote = `${PHONE_TMP}/phoned-${jar.value.sha256.slice(0, 16)}.jar`;
+		const placed = await this.#place(transport, adb, onPhone, jar.value, remote, "phoned");
+		if (!placed.ok) return placed;
 		const stream = await this.#adb.open(`exec:CLASSPATH=${remote} app_process / ai.agentrun.phoned.android.Main 2>${remote.slice(0, -".jar".length)}.log`, { timeoutMs: ADB_TIMEOUT_MS, transport });
 		if (!stream.ok) return stream;
 		const socket = stream.value;
@@ -1029,6 +1073,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok({ client, hello: hello.value, end });
 	}
 }
+
+/** A file the provider puts on its phones: where it is here, and its sha256. */
+interface PhoneFile {
+	path: string;
+	sha256: string;
+}
+
+/** A shell service on the phone by its transport id, as the adb server's socket runs it: its output, whole. */
+type OnPhone = (service: string, id: string) => Promise<Result<string>>;
 
 /** phoned on one phone: its connection, its hello, and how to end it (closing its stdin, which ends it). */
 interface Phoned {
