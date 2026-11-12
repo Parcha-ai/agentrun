@@ -209,9 +209,9 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
   }
 
   /** The disk row put back as the agent's, when it is still this removal's (marked removing, naming `diskId`). */
-  async function giveBack(agentId: string, diskId: string): Promise<void> {
+  async function giveBack(agentId: string, diskId: string, pending: boolean): Promise<void> {
     const now = await agentDiskOf(store, agentId);
-    if (now?.diskId === diskId && now.removing) await storeAgentDisk(store, agentId, { diskId });
+    if (now?.diskId === diskId && now.removing) await storeAgentDisk(store, agentId, { diskId, ...(pending ? { pending: true as const } : {}) });
   }
 
   async function removeAgentDiskNow(agent: RemovingAgent, signal?: AbortSignal): Promise<AgentArchilView & { removed: { disk_id: string } | null }> {
@@ -219,7 +219,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     const disk = settings === undefined ? undefined : await agentDiskOf(store, agent.id);
     if (settings === undefined || disk === undefined) return { ...(await agentView(agent.id)), removed: null };
     if (!agent.archived && !agent.external) throw new ApiError("precondition_failed", `the agent ${agent.id} is not archived: archive it first (POST /v2/agents/${agent.id}/archive), then remove its disk`);
-    await storeAgentDisk(store, agent.id, { diskId: disk.diskId, removing: true });
+    await storeAgentDisk(store, agent.id, { diskId: disk.diskId, removing: true, ...(disk.pending ? { pending: true as const } : {}) });
     try {
       const live = await agent.liveOn(disk.diskId);
       if (live > 0) throw new ApiError("precondition_failed", `${live} live run${live === 1 ? " is" : "s are"} on the agent ${agent.id}'s disk ${disk.diskId}: stop ${live === 1 ? "it" : "them"} first`);
@@ -230,7 +230,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
         throw new ApiError("upstream_failed", `Archil did not remove the agent's disk ${disk.diskId}: ${describe(error).split(key).join("[the key]")}`);
       }
     } catch (error) {
-      await giveBack(agent.id, disk.diskId);
+      await giveBack(agent.id, disk.diskId, disk.pending === true);
       throw error;
     }
     await forgetAgentDisk(store, agent.id, disk.diskId);
