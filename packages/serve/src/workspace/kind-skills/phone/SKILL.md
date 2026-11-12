@@ -61,6 +61,14 @@ const page = await settings.press(about.ref, { expect: { text: "Android version"
 return { met: page.expect, lines: page.after.outline.split("\n").filter((line) => /version/i.test(line)) };
 ```
 
+**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
+there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+
+```js
+const page = JSON.parse(await tools.computer_observe({ app: "com.android.settings" }));
+const about = page.elements.find((node) => node.name === "About phone");
+```
+
 ## How to work: observe, then act by ref, then check
 
 1. **Observe** first. Find your target by its name, role or id, and note its ref. A list row is often an unnamed

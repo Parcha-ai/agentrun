@@ -2871,7 +2871,7 @@ screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.08 | $0.14 | about $0.013 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 | `expected` (the default) | Either | as `strict` | as `strict` until #2504 lands | as `strict` until #2504 lands |
 

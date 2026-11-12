@@ -8,7 +8,7 @@
 // screenshot and act's steps are raw input at its pixels: the surface's fallback, said in its answers.
 import type { JsonValue } from "../../types.js";
 import type { ToolDef } from "./defs.js";
-import { COMPUTER_TOOL_SCHEMAS, computerDeclarations } from "./computer-surface.generated.js";
+import { ACT_STEPS, COMPUTER_TOOL_SCHEMAS, computerDeclarations } from "./computer-surface.generated.js";
 import { answerOf, type CapabilityKind, type Executor, needsKindWords } from "./hands.js";
 import { HANDOFF_TOOL, handoffDef, handoffExecutor } from "./handoff.js";
 
@@ -17,15 +17,17 @@ export const COMPUTER_TOOLS = ["computer_observe", "computer_act", "computer_scr
 /** The tool a host runs itself: a script runs in the host's isolate, over the same port. */
 export const SCRIPT_TOOL = "computer_script";
 
-const OBSERVE = `Look at an app on the computer: its window's elements, one line each, as @e12 button "Save", indented under their parents, below a head line with the state's id (state s7). Act on an element by its ref with computer_act. image: true adds the window's image, for what the elements don't say (a picture, a canvas, a layout). With no app, the app in front. On a computer with no element tree, it answers a screenshot instead: act at its pixels.`;
+// The words are short on purpose: every request of a run with a computer carries them. The kind skill (desktop-computer,
+// phone-computer) teaches how to work; a description says only what its tool does.
+const OBSERVE = `An app's window as its elements, one line each (@e12 button "Save"), under a head line naming the state (s7). With no ui group: a screenshot.`;
 
-const ACT = `Run steps on an app, in order: press (an element's own action: the surest), set (a field's text, a switch's "on"), click, type, key (a chord: "enter", "super+s"), scroll, drag, nav (back, home, app_switch), perform. A step names an element by its ref from computer_observe, or a point in the window's points; a step at a point is read against a state (the app's last observe when you give none) and is refused as stale once the window changed under it. expect waits after the steps until a text shows (with gone: until it is gone); no steps and an expect is a wait. Each step says its route (semantic, page, background, foreground) and whether a readback verified it, and the answer ends with whether the window changed and the new state. observe: true adds the new outline, one call instead of two. The first refused step stops the rest. Several known steps go in one call; for longer known sequences, or reading many elements, use computer_script.`;
+const ACT = `Run steps on an app, each on an element's ref or at a point in the window (refused as stale once the window changed under it). The answer says how each step ran and whether the window changed. The first refused step stops the rest. steps: UiStep[]\n\`\`\`ts\n${ACT_STEPS}\n\`\`\``;
 
-const SCREENSHOT = "A screenshot of the computer's whole screen, as an image, in screen pixels. region: only that part, [x, y, w, h], still in the whole screen's pixels. computer_observe with image: true shows one app's window, beside its elements: prefer it.";
+const SCREENSHOT = "The whole screen as an image, or a region of it.";
 
 /** computer_script's words: what a script is, and the `computer` object's declarations for these groups. */
 const scriptWords = (groups: readonly string[]): string =>
-  `Run JavaScript against the computer: the body of an async function, with \`computer\` bound. Use it for steps you already know (one script instead of many calls) and to read what you need out of an observation; return only what your next decision needs (a few fields, a short outline), never whole observations. text(...) and image(...) show words and images (an Image from observe or screen.shot) beside the returned value. A refused step throws with the computer's words. No network, no keys: only the computer. The \`computer\` object:\n\n\`\`\`ts\n${computerDeclarations(groups)}\n\`\`\``;
+  `Run JavaScript with \`computer\` bound: many steps in one call. Return only what you need; text() and image() show words and pictures. A refused step throws.\n\`\`\`ts\n${computerDeclarations(groups)}\n\`\`\``;
 
 /** The tools a computer with `groups` offers: observe and act with the ui group, or a screen (observe) and input (act)
  *  without it; the screenshot with a screen; the script with any of them. */

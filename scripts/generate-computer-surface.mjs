@@ -74,19 +74,48 @@ for (const name of reachedWire) if (reachedApi.has(name)) throw new Error(`${nam
 /** A declaration's text with its doc comment, without `export`, and `(typeof X)[number]` as X's literals. */
 const textOf = (node, source) => {
   const text = node.getFullText(source).replace(/^\s*\n/, '').replace(/^(\s*)export /m, '$1');
-  return text.trim().replace(/\(typeof (\w+)\)\[number\]/g, (_whole, name) => {
+  return expanded(text.trim());
+};
+const indent = (text) => text.replace(/\t/g, '  ');
+// What a model reads is the compact form: no comments (the tool descriptions and the kind skill say what they would),
+// each declaration on one line, and a union that takes any string (Key) as string. Every token of it is in every
+// request of a run with a computer; spec/computer/computer.d.ts keeps the whole text, comments and all.
+const printer = ts.createPrinter({ removeComments: true, omitTrailingSemicolon: false });
+const anyString = (node) => ts.isTypeAliasDeclaration(node) && ts.isUnionTypeNode(node.type) && node.type.types.some((each) => each.kind === ts.SyntaxKind.StringKeyword);
+// The types computer_act's own schema already spells out (a script's steps are the tool's): named once there, and
+// here only by where to read them. computer_script is offered only beside computer_act (computerToolsFor).
+const SAID_BY_ACT = { UiStep: "computer_act's steps", UiExpect: "computer_act's expect" };
+// Closed lists the model reads elsewhere (a role in every outline, the kind and OS in its kind skill): a string here.
+const AS_STRING = new Set(['UiRole', 'ComputerKind', 'ComputerOs']);
+/** A declaration or a member as a model reads it: one line, no comments, no `export`, `(typeof X)[number]` expanded. */
+const compactOf = (node, source) => {
+  const name = ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node) ? node.name.text : undefined;
+  if (name && Object.hasOwn(SAID_BY_ACT, name)) return `type ${name} = object; // ${SAID_BY_ACT[name]}`;
+  if (anyString(node) || AS_STRING.has(name)) return `type ${name} = string;`;
+  return printedOf(node, source);
+};
+/** A node printed on one line, with no comments, and a type AS_STRING names as `string`. */
+function printedOf(node, source) {
+  const line = expanded(printer.printNode(ts.EmitHint.Unspecified, node, source).replace(/^export /, '').replace(/\s*\n\s*/g, ' '));
+  return line.replace(new RegExp(`\\b(${[...AS_STRING].join('|')})\\b`, 'g'), 'string');
+}
+/** `(typeof X)[number]` as X's literals. */
+function expanded(text) {
+  return text.replace(/\(typeof (\w+)\)\[number\]/g, (_whole, name) => {
     const values = protocol[name];
     if (!Array.isArray(values) || values.length === 0) throw new Error(`(typeof ${name})[number]: dist/protocol.js has no array ${name}`);
     return values.map((value) => JSON.stringify(value)).join(' | ');
   });
-};
-const indent = (text) => text.replace(/\t/g, '  ');
+}
 // Each type with the types it names, so a computer's declarations hold only what its members reach.
 const listed = new Set([...wireNames, ...apiNames]);
 const typeList = [...wireNames.map((name) => [name, wireTypes.get(name), wire]), ...apiNames.map((name) => [name, apiTypes.get(name), api])].map(([name, node, source]) => ({
   name,
   text: indent(textOf(node, source)),
+  compact: compactOf(node, source),
   uses: [...referencesOf(node)].filter((used) => used !== name && listed.has(used)),
+  // What its compact form names: nothing, where it is the tool's; never a type it reads as `string`.
+  compactUses: Object.hasOwn(SAID_BY_ACT, name) ? [] : [...referencesOf(node)].filter((used) => used !== name && listed.has(used) && !AS_STRING.has(used)),
 }));
 
 // Computer's members, each with the groups its JSDoc names (`@group ui`; there with any of them), or none: always there.
@@ -95,10 +124,13 @@ const members = computerNode.members.map((member) => {
   const tag = ts.getJSDocTags(member).find((each) => each.tagName.text === 'group');
   const groups = typeof tag?.comment === 'string' ? tag.comment.trim().split(/\s+/).filter(Boolean) : [];
   if (tag && groups.length === 0) throw new Error(`Computer.${member.name?.getText(api)}: @group names no group`);
-  for (const group of groups) if (!protocol.GROUPS.includes(group)) throw new Error(`Computer.${member.name?.getText(api)}: @group ${group} is not one of the protocol's groups`);
+  // `@unless ui`: not there on a computer with that group (raw input, where ui's steps reach the same).
+  const unlessTag = ts.getJSDocTags(member).find((each) => each.tagName.text === 'unless');
+  const unless = typeof unlessTag?.comment === 'string' ? unlessTag.comment.trim().split(/\s+/).filter(Boolean) : [];
+  for (const group of [...groups, ...unless]) if (!protocol.GROUPS.includes(group)) throw new Error(`Computer.${member.name?.getText(api)}: @group or @unless ${group} is not one of the protocol's groups`);
   const text = member.getFullText(api).replace(/^\s*\n/, '').split('\n').map((line) => line.replace(/^\t/, '')).join('\n').trim().replace(/\t/g, '  ');
   const uses = [...referencesOf(member)].filter((used) => listed.has(used));
-  return { ...(groups.length > 0 ? { groups } : {}), uses, text: text.replace(/\n/g, '\n  ') };
+  return { ...(groups.length > 0 ? { groups } : {}), ...(unless.length > 0 ? { unless } : {}), uses, text: text.replace(/\n/g, '\n  '), compact: compactOf(member, api) };
 });
 const computerDoc = textOf(computerNode, api).split('\ninterface Computer')[0].trim();
 
@@ -125,24 +157,31 @@ const declarations = (keep) => {
     '/** The computer this script drives. */\ndeclare const computer: Computer;',
   ].join('\n\n');
 };
-const dts = `${HEADER}\n// The \`computer\` object a script drives. A member marked @group exists only on a computer that declares that group.\n\n${declarations(() => true)}\n`;
+const dts = `${HEADER}\n// The \`computer\` object a script drives. A member marked @group exists only on a computer that declares that group, and one marked @unless only on a computer that does not.\n\n${declarations(() => true)}\n`;
 
 // --- the tools' schemas -------------------------------------------------------------------------------------------
 const program = TJS.programFromConfig(resolve(root, 'packages/computer/tsconfig.json'), [apiPath]);
 const generator = TJS.buildGenerator(program, { required: true, strictNullChecks: true, ref: false, aliasRef: false, titles: false, noExtraProps: true, ignoreErrors: false });
 if (!generator) throw new Error('packages/computer did not compile for the schema generator');
-// Inline, a type's doc repeats at every use: the long ones a tool's schema says in a few words instead, keyed by how
-// they start. A key that no longer matches fails the generator, so the list can't go stale.
+// A parameter's doc that is a type's doc (expect's is UiExpect's) is long and written for the protocol: the schema says
+// it in a few words instead, keyed by how it starts. A key that no longer matches fails the generator, so the list can't
+// go stale.
 const SHORT = {
-  "A driver's name for one element": 'An element\'s ref from computer_observe, as "@e12".',
-  'In screen and input, pixels of the full screenshot': "[x, y]: in the window's points (an element's bounds); with no ui group, in screenshot pixels.",
+  'What the caller expects to see': 'Wait after the steps until a text shows (with ref: in that element; gone: until it is gone), at most timeoutMs.',
 };
 const shortened = new Set();
-/** A tool's schema: inline (no $ref), closed, its long repeated docs short, and without the $schema line and the
- *  top-level description a tool's parameters never carry (the tool's own description says it). */
+/** A schema with no description anywhere: below a tool's own parameters the types say it, and the tool's description
+ *  and the kind skill say the rest. */
+const bare = (value) => {
+  if (Array.isArray(value)) return value.map(bare);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'description').map(([key, entry]) => [key, bare(entry)]));
+};
+/** A tool's schema: inline (no $ref), closed, a description only on its own parameters (short), and without the
+ *  $schema line and the top-level description a tool's parameters never carry (the tool's own description says it). */
 const schemaOf = (name) => {
   const { $schema: _schema, description: _description, ...schema } = generator.getSchemaForSymbol(name);
-  return JSON.parse(JSON.stringify(schema), (key, value) => {
+  const tidy = JSON.parse(JSON.stringify(schema), (_key, value) => {
     // A tuple ([x, y]) comes out as draft-04's list of items, which model APIs refuse: one items schema when its
     // members are alike (a Point's numbers), else 2020-12's prefixItems.
     if (value && typeof value === 'object' && Array.isArray(value.items)) {
@@ -151,16 +190,24 @@ const schemaOf = (name) => {
       const { items: _items, ...rest } = value;
       return alike ? { ...rest, items: items[0] } : { ...rest, prefixItems: items };
     }
-    if (key !== 'description' || typeof value !== 'string') return value;
-    const start = Object.keys(SHORT).find((each) => value.startsWith(each));
-    if (!start) return value.replace(/\n/g, ' ');
-    shortened.add(start);
-    return SHORT[start];
+    return value;
   });
+  const properties = Object.fromEntries(Object.entries(tidy.properties ?? {}).map(([property, { description, ...rest }]) => {
+    if (typeof description !== 'string') return [property, bare(rest)];
+    const start = Object.keys(SHORT).find((each) => description.startsWith(each));
+    if (start) shortened.add(start);
+    return [property, { description: start ? SHORT[start] : description.replace(/\n/g, ' '), ...bare(rest) }];
+  }));
+  return { ...tidy, properties };
 };
 const schemas = Object.fromEntries(Object.entries(TOOL_ARGS).map(([tool, name]) => [tool, schemaOf(name)]));
 if (!JSON.stringify(schemas.computer_act).includes('"press"')) throw new Error('computer_act did not take the protocol\'s steps');
 for (const start of Object.keys(SHORT)) if (!shortened.has(start)) throw new Error(`SHORT["${start}"] matches no description: remove it`);
+// A step as JSON Schema is nine closed objects, about four times its TypeScript: computer_act's description declares the
+// steps instead (ACT_STEPS), once, and the schema takes a list of objects. The computer refuses a step it can't read,
+// in words, as it does a script's.
+schemas.computer_act.properties.steps.items = { type: 'object' };
+const actSteps = ['UiStep', 'UiRef', 'Point'].map((name) => printedOf(wireTypes.get(name), wire)).join(' ');
 
 const kernel = `${HEADER}
 // The computer's per-step tools' schemas and the \`computer\` object's declarations, split by group.
@@ -168,17 +215,19 @@ const kernel = `${HEADER}
 /** Each per-step tool's parameters, as JSON Schema. */
 export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in ${Object.keys(TOOL_ARGS).map((tool) => JSON.stringify(tool)).join(' | ')}]: object } = ${JSON.stringify(schemas, null, 2)};
 
-/** The types \`computer\` names, in order, each with the types it names. */
-const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] = ${JSON.stringify(typeList.map(({ name, uses, text }) => ({ name, uses, text })), null, 2)};
-/** Computer's doc comment. */
-const DOC = ${JSON.stringify(computerDoc)};
-/** Computer's members, each with the groups it needs one of and the types it names. */
-const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; text: string }[] = ${JSON.stringify(members, null, 2)};
+/** computer_act's steps, declared once in its description: its schema takes a list of objects. */
+export const ACT_STEPS = ${JSON.stringify(actSteps)};
+
+/** The types \`computer\` names, in order, each with the types it names, in the compact form a model reads: one line,
+ *  no comments (spec/computer/computer.d.ts has them). */
+const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] = ${JSON.stringify(typeList.map(({ name, compactUses, compact }) => ({ name, uses: compactUses, text: compact })), null, 2)};
+/** Computer's members, each with the groups it needs one of, the groups it is not there with, and the types it names. */
+const MEMBERS: readonly { groups?: readonly string[]; unless?: readonly string[]; uses: readonly string[]; text: string }[] = ${JSON.stringify(members.map(({ groups, unless, uses, compact }) => ({ ...(groups ? { groups } : {}), ...(unless ? { unless } : {}), uses, text: compact })), null, 2)};
 
 /** The declarations a script on a computer with these groups reads: the types its members reach, Computer with only
- *  the members its groups offer, and \`declare const computer\`. */
+ *  the members its groups offer, and \`declare const computer\`, one line each. */
 export function computerDeclarations(groups: readonly string[]): string {
-  const members = MEMBERS.filter((member) => member.groups === undefined || member.groups.some((group) => groups.includes(group)));
+  const members = MEMBERS.filter((member) => (member.groups === undefined || member.groups.some((group) => groups.includes(group))) && !member.unless?.some((group) => groups.includes(group)));
   const uses = new Map(TYPES.map((type) => [type.name, type.uses]));
   const reached = new Set<string>();
   const visit = (name: string): void => {
@@ -189,9 +238,9 @@ export function computerDeclarations(groups: readonly string[]): string {
   for (const member of members) for (const used of member.uses) visit(used);
   return [
     ...TYPES.filter((type) => reached.has(type.name)).map((type) => type.text),
-    \`\${DOC}\\ninterface Computer {\\n\${members.map((member) => \`  \${member.text}\`).join("\\n")}\\n}\`,
-    "/** The computer this script drives. */\\ndeclare const computer: Computer;",
-  ].join("\\n\\n");
+    \`interface Computer { \${members.map((member) => member.text).join(" ")} }\`,
+    "declare const computer: Computer;",
+  ].join("\\n");
 }
 `;
 

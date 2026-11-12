@@ -4,7 +4,8 @@
 // core (core.ts): a script's call, a per-step tool and the claim's MCP endpoint return the same values.
 //
 // A member of Computer marked `@group <name> [<name> ...]` exists only on a computer that declares one of those groups
-// (its hello), so a model is never offered what the computer can't do. The steps are the protocol's own (UiStep): one step language for a
+// (its hello), and one marked `@unless <name>` only on a computer that doesn't, so a model is never offered what the
+// computer can't do, nor two ways to do one thing. The steps are the protocol's own (UiStep): one step language for a
 // script, a tool call and the wire.
 import type { ComputerKind, ComputerOs, FileType, InputAction, Point, Rect, ScreenSize, UiExpect, UiNode, UiRef, UiRoute, UiStep } from "../protocol.js";
 
@@ -165,8 +166,9 @@ export interface Computer {
 		/** A screenshot, as an image; with region, only that part, in the whole screen's pixels. */
 		shot(options?: { region?: Rect }): Promise<Image>;
 	};
-	/** Raw input at screenshot pixels, for a computer with no ui group.
-	 *  @group input.pointer input.touch input.keys */
+	/** Raw input at screenshot pixels, for a computer with no ui group: with one, an app's steps reach the same.
+	 *  @group input.pointer input.touch input.keys
+	 *  @unless ui */
 	readonly input: {
 		act(actions: InputAction[]): Promise<InputResult>;
 	};
@@ -189,42 +191,42 @@ export interface Computer {
 
 /** computer_observe: observe an app's window (or, with no ui group, the screen). */
 export interface ObserveArgs {
-	/** The app's id. Default: the app in front. */
+	/** Default: the app in front. */
 	app?: string;
-	/** Add an image. Default false where the computer has a ui group; always on where it has none. */
+	/** Add the window's picture (always, with no ui group). */
 	image?: boolean;
-	/** Every element, not only those that can be acted on or have a name. */
+	/** Every element, not only named or actionable ones. */
 	full?: boolean;
 }
 
 /** computer_act: run steps on an app, and check a condition after them. */
 export interface ActArgs {
-	/** The app's id. Default: the app the state is of, else the app in front. */
+	/** Default: the state's app, else the app in front. */
 	app?: string;
-	/** The state the steps' points were read from: needed for a step at a point. */
+	/** The state a step's point was read from. Default: the last observed. */
 	state?: string;
-	/** The steps, run in order. Empty with an expect: only wait for it.
+	/** Run in order. Empty with an expect: only wait.
 	 *  @maxItems 100 */
 	steps: UiStep[];
 	expect?: UiExpect;
-	/** Let steps take the foreground route, which moves the user's pointer and focus. */
+	/** Allow moving the person's pointer and focus. */
 	foreground?: boolean;
-	/** Observe again after the steps. */
+	/** Return the new outline. */
 	observe?: boolean;
 }
 
 /** computer_screenshot: a screenshot of the screen, or of a region of it. */
 export interface ScreenshotArgs {
-	/** Only this part of the screen, in the whole screen's pixels. */
+	/** [x, y, w, h] in screen pixels. */
 	region?: Rect;
 }
 
 /** computer_script: run JavaScript against the `computer` object. */
 export interface ScriptArgs {
-	/** The script: the body of an async function. `computer` is bound; `return` a value, or call text() and image(). */
+	/** An async function's body; `return` what you need. */
 	code: string;
-	/** A few words on what the script does, for the run's timeline. */
+	/** For the run's timeline. */
 	title?: string;
-	/** The longest the script may run, in ms: default 120000, at most 600000. */
+	/** Default 120000, at most 600000. */
 	timeoutMs?: number;
 }

@@ -42,6 +42,9 @@ export function computerCodemode(computer: ScriptComputer): Extension {
   return createCodemodeExtension({
     sandbox,
     models: false,
+    // No tool listed again in the system prompt's codemode section: every tool is offered as itself (code mode "on"),
+    // computer_script's description declares `computer` once, and a script finds any other with searchTools().
+    inlineBudget: 0,
     globals: [{
       name: COMPUTER_CALL_GLOBAL,
       spread: true,

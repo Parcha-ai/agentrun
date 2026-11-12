@@ -76,6 +76,21 @@ test("a point read against a state the window has left is refused as stale, in t
   assert.match(JSON.stringify(stale.structured ?? stale.text), /stale/, stale.text);
 });
 
+test("a step the computer can't read is refused in words, by the tool and by a script alike: computer_act's schema types no step", async () => {
+  const { tools } = await fakeRun();
+  const act = tools.find((tool) => tool.name === "computer_act");
+  assert.deepEqual(act.inputSchema.properties.steps.items, { type: "object" }, "the steps are declared in the description, once");
+  assert.match(act.description, /type UiStep = \{ press: UiRef; \}/);
+  const byTool = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ tap: "@e1" }] });
+  const byScript = await call(tools, "computer_script", { code: `return await computer.app(${JSON.stringify(UI_FIXTURE.id)}).act([{ tap: "@e1" }]);` });
+  for (const [how, answer] of [["tool", byTool], ["script", byScript]]) {
+    const words = `${answer.text} ${JSON.stringify(answer.structured ?? null)}`;
+    assert.equal(answer.isError, true, `${how}: ${words}`);
+    assert.match(words, /steps\[0\] names no step: a step is exactly one of press, set/, `${how}: ${words}`);
+    assert.doesNotMatch(words, /"route":"semantic"/, `${how}: nothing ran`);
+  }
+});
+
 test("the claim's MCP server on the fake ui driver answers the per-step tool's value as structuredContent", async () => {
   const { tools } = await fakeRun();
   const mcp = computerMcp(tools);

@@ -78,6 +78,9 @@ test("code mode is on beside the session's tools, and its script drives the comp
   const offered = offeredTools(requests[0]);
   assert.ok(offered.includes(PI_CODEMODE_TOOL), `code mode is offered: ${JSON.stringify(offered)}`);
   assert.ok(offered.includes("read"), `the session's own tools stay offered (on, not only): ${JSON.stringify(offered)}`);
+  const system = JSON.stringify(requests[0].system ?? "");
+  assert.match(system, /Tools scripts can call/, "the codemode section is there");
+  assert.doesNotMatch(system, /### `/, `no tool is declared twice: the codemode section lists none of the offered tools: ${system.slice(0, 400)}`);
   const result = lastResult(requests);
   assert.equal(result.isError, false, result.text);
   assert.match(result.text, /"width":\s*1280/, `the script's value reached the model: ${result.text}`);

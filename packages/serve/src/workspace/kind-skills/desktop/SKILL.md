@@ -65,6 +65,14 @@ const saved = await notes.key("super+s", { expect: { text: "Saved" } });
 return { saved: saved.expect, state: saved.state };
 ```
 
+**Your harness's own code mode.** pi's `codemode` binds `computer` as computer_script does. Codex's `exec` does not:
+there, call the tools, each answering its value as JSON text, or call `tools.computer_script` with the code above.
+
+```js
+const notes = JSON.parse(await tools.computer_observe({ app: "com.apple.Notes" }));
+const title = notes.elements.find((node) => node.role === "textbox" && node.name === "Title");
+```
+
 ## How to work: observe, then act by ref, then check
 
 1. **Observe** the app first. Find your target by its name and role, and note its ref.

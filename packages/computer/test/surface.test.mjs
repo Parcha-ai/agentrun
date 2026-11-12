@@ -204,6 +204,11 @@ test("a script's computer answers what the core answers, and has only the comput
 	assert.equal(JSON.stringify(viaScript), JSON.stringify(viaTool.value));
 	const names = await runScript(surfaceOf({ groups: ["exec"] }).surface, "return Object.keys(computer)");
 	assert.deepEqual([...names], ["card", "shell"]);
+	// A ui computer's script has no raw input: its app's steps reach the same, at window points.
+	const ui = await runScript(surfaceOf({ groups: ["ui", "screen", "input.pointer", "input.keys"] }).surface, "return Object.keys(computer)");
+	assert.deepEqual([...ui], ["card", "app", "screen"]);
+	const raw = await runScript(surfaceOf({ groups: ["screen", "input.pointer"] }).surface, "return Object.keys(computer)");
+	assert.deepEqual([...raw], ["card", "screen", "input"]);
 });
 
 test("a script finds elements in the last observation with no call, and a point step carries its state", async () => {
