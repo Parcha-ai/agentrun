@@ -1,12 +1,12 @@
-// A workflow revision's run, on the run's journal in the one store: the DSL's durable runner (agentrun-pi's workflow task),
+// A workflow revision's run, on the run's journal in the one store: the DSL's durable runner (the workflow task, workflow/task.ts),
 // never the agent loop (copied from @parcha/pi-durable-agent's workflow.ts; the per-run
-// store file reads are gone with that file). It loads @parcha/agentrun-dsl and @parcha/agentrun-pi only inside the
-// functions that need them.
+// store file reads are gone with that file). It loads @parcha/agentrun-dsl only inside the functions that need
+// it.
 import type { Context } from "@earendil-works/chord";
 import type { Storage } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl";
 import type { GraphDiff, NodeState, WorkflowGraph } from "@parcha/agentrun-dsl/graph";
-import type { createWorkflowExtension, WorkflowCaller, WorkflowOutcome } from "@parcha/agentrun-pi/durable";
+import type { createWorkflowExtension, WorkflowCaller, WorkflowOutcome } from "./workflow/task.js";
 
 /** A workflow run that can't be read here, in words. */
 export class WorkflowRunUnread extends Error {

@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { DockerProvider } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
 import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";

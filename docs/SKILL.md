@@ -10,7 +10,7 @@ with a console in the browser. Ask the person before each step that changes thei
 
 ## 1. Check Node
 
-`node --version` must be 24.11 or newer. If it is not, say so and stop: with nvm,
+`node --version` must be 24.22.3 or newer. If it is not, say so and stop: with nvm,
 `nvm install 24 && nvm use 24`.
 
 ## 2. Start it

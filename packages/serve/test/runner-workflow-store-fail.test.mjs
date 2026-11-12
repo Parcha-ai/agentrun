@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
-import { nodeRunner, taskScope } from "@parcha/agentrun-pi/durable";
+import { nodeRunner } from "../dist/workflow/node-runner.js";
+import { taskScope } from "../dist/workflow/node.js";
 import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 

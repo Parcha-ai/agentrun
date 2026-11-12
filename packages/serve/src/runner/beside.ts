@@ -60,7 +60,9 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const runs = env ?? runEnv(process.env);
   const { dockerPathsForRuns } = await import("../box-paths.js");
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
-  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
+  const { PROVIDERS } = await import("@parcha/agentrun-computer");
+  const { hostCommandRefusals } = await import("../computers.js");
+  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; any other runner's runs never do.
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });
@@ -71,8 +73,10 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
   const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.error(`agentrun-serve runner: ${line}`) }) : undefined;
+  // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
+  const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
-  return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await store.close(); seal.release(); } };
+  return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
 }
 
 /** A server and one runner beside it, both in this process, as the CLI's start composes them (cli.ts): the runner holds
