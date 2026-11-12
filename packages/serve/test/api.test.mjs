@@ -141,8 +141,7 @@ test("a token given on a data directory that has a .token from an earlier start 
   assert.equal((await stat(join(data, ".token"))).mode & 0o777, 0o600);
 });
 
-// SKIP (follow-up #2080): an agent's revision id is now a UUID from the store, not the sha256 of its definition this test expects.
-test.skip("an agent is created from a definition and skills, read back with its ETag, and listed newest first, page by page", async (t) => {
+test("an agent is created from a definition and skills, read back with its ETag, and listed newest first, page by page", async (t) => {
   const { api, data } = await serve(t);
   const created = await api("POST", "/agents", { ...agent("reporter", { description: "Writes reports.", skills: ["cite"], model: "faux/faux-1", thinking: "high" }), skills: { "cite/SKILL.md": "# Cite\n" } });
   assert.equal(created.status, 201);
@@ -151,7 +150,7 @@ test.skip("an agent is created from a definition and skills, read back with its 
   assert.deepEqual(created.body.runs, { count: 0, live: 0 });
   assert.deepEqual(created.body.skills, [{ path: "cite/SKILL.md", sha256: createHash("sha256").update("# Cite\n").digest("hex"), size_bytes: 7 }]);
   assert.equal(created.body.kind, "agentic");
-  assert.match(created.body.revision, /^[0-9a-f]{64}$/);
+  assert.match(created.body.revision, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "the store's revision id, a UUIDv7");
   assert.equal(created.body.revisions, 1);
   assert.equal(created.body.home_etag, `"${created.body.revision}"`, "the ETag is the current revision");
   assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", harness: "pi", skills: ["cite"], tools: [], approvals: "ask" });

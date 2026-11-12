@@ -30,7 +30,7 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -42,13 +42,15 @@ import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 
 export const ASK_TOOL = "ask_person";
-/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }` for the run's
- *  environment, the vendor its plane names (`browserbase`, `kernel`) and the saved sign-in it was handed for that
- *  vendor (`{ provider, ref, save }`, or undefined), in place of that vendor's (the tests' fake backend). */
+/** Under `--faux` only: a module whose default export gives the browser's `{ computer, driver }` for the run's
+ *  environment, the vendor its plane names and the saved sign-in it was handed for that vendor (`{ provider, ref, save }`,
+ *  or undefined): a browser computer provider and a driver in place of the vendor's and the raw-CDP driver (the tests'
+ *  fake backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
 /** Under `--faux` only: a module whose default export is the fetch a run's first saved sign-in is made with on the runner,
  *  in place of the browser vendors' REST APIs (the tests' fake). Absent under --faux, none is made: no network. */
@@ -112,9 +114,9 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
    *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
-  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
-   *  and the sign-in verify the runner saves. */
-  store?: LiveViewerStore & Pick<Store, "runs" | "signIns">;
+  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
+   *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
   /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
    *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
@@ -135,7 +137,8 @@ export type ToolHost = {
    *  folder at `where.work`. */
   workspace?: Workspace;
   /** The agent's computer, where it is a browser (computer-for-claim.ts): the browser tool opens its sessions through the
-   *  claim's provider and drives each over its CDP URL with pi-browser's raw-CDP driver, in place of the plane's vendor. */
+   *  claim's provider, whatever the tool plane picked. Absent: the plane's vendor, opened the same way (browser-computer.ts
+   *  planeBrowser). */
   browserComputer?: ClaimBrowser;
 };
 
@@ -274,16 +277,6 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
   },
 });
 
-/** The Browserbase contexts a run's browser may open: its agent's saved sign-in's alone, by its profile name, never one
- *  made here (nothing a run makes is kept for its agent). */
-export const keptContexts = (ref: string | undefined) => ({
-  clear: false,
-  resolve: async (key: string) => {
-    if (ref && key.endsWith(`|profile:${SIGN_IN_KEY}`)) return ref;
-    throw new Error("this run's browser has no saved sign-in to open");
-  },
-});
-
 /** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
 function cutStrings<T>(value: T, cut: (text: string) => string): T {
   if (typeof value === "string") return cut(value) as T;
@@ -313,13 +306,6 @@ function answersCutInside(tool: ToolRegistration, cut: (text: string) => string)
   } as ToolRegistration;
 }
 
-/** Kernel's provider, opening the agent's saved profile (`ref`, its name at Kernel) where a session asks for the
- *  profile `default`: the policy, the session's record and the model see only that name. */
-export const keptProfile = <P extends { create(spec: { profile?: { name: string; save: boolean } }, signal: AbortSignal): unknown }>(provider: P, ref: string): P => ({
-  ...provider,
-  create: (spec, signal) => provider.create(spec.profile?.name === SIGN_IN_KEY ? { ...spec, profile: { ...spec.profile, name: ref } } : spec, signal),
-});
-
 /** `provider`, its sessions' profile as this launch was handed it, whatever the policy a conversation was made with (a
  *  follow-up's was made under an earlier launch, which may have had no sign-in, or another lease): with a sign-in, every
  *  session opens on the profile `default`, saving only as `kept.save` says; without one, none asks for a profile. */
@@ -344,15 +330,17 @@ export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: 
     return verifyRunSignIn(store, sealKey, claim, kept, Number.isFinite(ended) ? ended : Date.now());
   };
 
-/** A hosted browser driven through Stagehand, on pi-browser's durable adapter: Browserbase or Kernel (headless), the one
- *  the run's plane names (tool-plane.ts: picked, else Browserbase where the server holds its keys, else Kernel), kept
- *  for the run's life; a plane that names none (a run kept from before the pick) is Browserbase. Its sessions' custody
- *  lives in the run's own store. No recording; the owner watches it live, takes it over and hands it back, and the agent
- *  may ask them to (browser-live.ts, browser-person.ts). A session the run still holds is released when the run is let
- *  go. Where the plane says unavailable (its vendor's key gone since), each call is refused, saying why.
- *  Its session time is the run's spend, held under its cap before it runs (browser-cost.ts). A run handed its agent's
- *  saved sign-in for that vendor (sign-ins.ts, over its pipe) opens every session on it, as the profile `default`,
- *  saving only where it holds the agent's save lease; one that saved says so in its run directory. */
+/** A browser on pi-browser's durable adapter, its sessions a browser computer provider's of the computer registry
+ *  (browser-computer.ts), each driven over its CDP URL by pi-browser's raw-CDP driver: the agent's computer, where it is
+ *  a browser (the claim's, computer-for-claim.ts), else the one the run's plane names (tool-plane.ts: picked, else
+ *  Browserbase where the server holds its keys, else Kernel), kept for the run's life; a plane that names none (a run kept
+ *  from before the pick) is Browserbase. Its sessions' custody lives in the run's own store. No recording; the owner
+ *  watches it live, takes it over and hands it back, and the agent may ask them to (browser-live.ts, browser-person.ts).
+ *  A session the run still holds is released when the run is let go. Where the plane says unavailable (its vendor's key
+ *  gone since), each call is refused, saying why. Its session time is the run's spend, held under its cap before it runs
+ *  (browser-cost.ts). A run on the plane's vendor handed its agent's saved sign-in for that vendor (sign-ins.ts) opens
+ *  every session on it, as the profile `default`, saving only where it holds the agent's save lease; one that saved says
+ *  so in its run directory. */
 const browserTool: ToolEntry = {
   summary: "Drive a hosted browser, Browserbase's or Kernel's (picked in tool settings, else whichever's key the server holds): open pages, read and screenshot them, and act on them.",
   // Which vendor's keys it needs is the plane's to say (tool-plane.ts BROWSER_KEYS): neither alone is required.
@@ -364,42 +352,55 @@ const browserTool: ToolEntry = {
   // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, releaseOlderBrowsers }, { cdpDriver }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
       import("@parcha/pi-browser/live-view"),
       import("./browser-live.js"),
       import("./browser-person.js"),
+      import("./browser-computer.js"),
+      import("@parcha/pi-browser/driver/cdp"),
     ]);
     // The agent's computer, where it is a browser, wins over the plane's pick: the run's sessions are that provider's,
-    // opened through the claim and driven over their CDP URL by the raw-CDP driver, with no pi-browser vendor provider,
-    // saved sign-in or plane check of their own.
+    // opened through the claim, with no saved sign-in or plane check of their own.
     const computer = host.browserComputer;
-    const planeVendor = planeOf(host.env).browser ?? "browserbase";
+    const planeVendor: string = planeOf(host.env).browser ?? "browserbase";
     const vendor = computer?.provider ?? planeVendor;
-    const refused = !computer && isUnavailable(planeVendor) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(planeVendor)}.`)) : undefined;
+    const planeRefused = !computer && isUnavailable(planeVendor as Resolution) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(planeVendor)}.`)) : undefined;
     // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
     // (sign-ins-store.ts runSignIn), never from the process; on the old per-run process, over its own secrets' pipe.
     // An agent with none saved has its first made at the vendor now, over this run's own claim keys (host.env), as main's
     // launch makes it: never the process's environment, so one run's keys never make another's.
     const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
     const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
-    const handed = computer ? undefined : host.claim ? (refused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
-    const kept = !refused && handed?.provider === vendor ? handed : undefined;
-    const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
-    const parts = computer
-      ? { provider: (await import("./browser-computer.js")).claimBrowserProvider(computer), driver: (await import("@parcha/pi-browser/driver/cdp")).cdpDriver() }
-      : faux
-      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { provider: unknown; driver: unknown } }).default(host.env, vendor, kept)
-      : {
-          provider: refused
-            ? undefined
-            : vendor === "kernel"
-              ? ((kernel) => (kept ? keptProfile(kernel, kept.ref) : kernel))((await import("@parcha/pi-browser/providers/kernel")).kernelProvider({ env: host.env, headless: true }))
-              : (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env, profiles: keptContexts(kept?.ref) }),
-          driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver(),
-        };
+    const handed = computer ? undefined : host.claim ? (planeRefused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
+    const kept = !planeRefused && handed?.provider === vendor ? handed : undefined;
+    // Tests only (--faux): the faux browser's computer provider and driver stand in for the plane vendor's and the raw-CDP
+    // driver. The agent's browser computer is still the claim's, so a test hands the claim a faux provider of its own.
+    const faux = !computer && host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
+    const stand = faux ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv, vendor: string, signIn?: typeof kept) => { computer: unknown; driver: unknown } }).default(host.env, vendor, kept) : undefined;
+    // The session's browser: the claim's (the agent's computer), else the plane's vendor on the run's tool keys, opened
+    // the same way under the run's labels. One that cannot be made refuses each call, in its words.
+    const made = planeRefused
+      ? { refused: planeRefused }
+      : await (async (): Promise<{ browser: ClaimBrowser } | { refused: InstanceType<typeof BrowserFailureError> }> => {
+          try {
+            if (computer) return { browser: computer };
+            const provider = stand ? (stand.computer as Parameters<typeof planeBrowser>[0]) : await planeComputer(vendor, host.env);
+            const plane = planeBrowser(provider, host.claim);
+            if (host.claim && !stand) await releaseOlderBrowsers(provider, host.claim);
+            return { browser: plane };
+          } catch (error) {
+            if (error instanceof BrowserFailureError) return { refused: error };
+            return { refused: new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${error instanceof Error ? error.message : String(error)}.`)) };
+          }
+        })();
+    const refused = "refused" in made ? made.refused : undefined;
+    const parts = {
+      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(host.env.BROWSERBASE_CONNECT_BASE_URL ? { connectBaseUrl: host.env.BROWSERBASE_CONNECT_BASE_URL } : {}), ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
+      driver: stand ? stand.driver : cdpDriver(),
+    };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
     const handedProvider = parts.provider ? asHanded(parts.provider as Parameters<typeof asHanded>[0], kept) : undefined;
     // The owner's live view (browser-live.ts): pi-browser's own viewer on a loopback port of this process's, over every
@@ -428,6 +429,11 @@ const browserTool: ToolEntry = {
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
       redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
+      // session opens (onSessions, below).
+      waitEnded: (at, why) => {
+        if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
+      },
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
@@ -494,6 +500,8 @@ const browserTool: ToolEntry = {
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
+      if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
       await saved?.(row, change);
       await onSession(row, change);
     };
@@ -558,14 +566,19 @@ const browserTool: ToolEntry = {
     // (live, or held for a hand-over), the run waits for the answer in its claim, so the session, its live viewer and its
     // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
     // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
-    // the cap for that time, the run parks (its release lets the browser go).
+    // the cap for that time, the run parks (its release lets the browser go). While it waits, pi-browser's idle release
+    // keeps its hands off those sessions (keepForPerson): the person's window (AGENTRUN_BROWSER_PERSON_WAIT_MIN), not the
+    // browser's few-minute idle window, decides when the browser goes.
     host.personWait?.(async (harness, callId, since) => {
       if (refused) return undefined;
       const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
       const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
       if (!open.length) return undefined;
+      const keeps = open.map((tag) => browser.keepForPerson(tag));
+      const letGo = () => { for (const keep of keeps.splice(0)) keep(); };
       const waited = await hands.wait(callId, open, since);
-      return "refused" in waited ? undefined : waited;
+      if ("refused" in waited) { letGo(); return undefined; }
+      return { lapsed: waited.lapsed, confirmed: waited.confirmed, drop: () => { waited.drop(); letGo(); } };
     });
     host.beforeRelease(async (harness) => {
       try {
@@ -585,6 +598,9 @@ const browserTool: ToolEntry = {
         await view.close();
         hands.close();
         await viewers.released();
+        // The download sockets this run's sessions hold go with it, released or left to the next claim (whose attach
+        // opens its own): one left open would keep the process from exiting.
+        if ("browser" in made) await closeHeldSockets(made.browser);
       }
     });
     return { tools, extensions: [extension] };
