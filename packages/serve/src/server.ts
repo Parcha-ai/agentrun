@@ -284,15 +284,6 @@ export type ServeOptions = {
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
-  /** A test's seam: awaited by a stop between its mark and its abort, so a test can hold a stop in flight there. */
-  beforeAbort?: (runId: string) => Promise<void> | void;
-  /** A test's seam: awaited by a completed run's reopen for a follow-up, after the run reads open again and before its
-   *  process is launched, so a test can hold a reopen there. */
-  beforeReopenLaunch?: (runId: string) => Promise<void> | void;
-  /** A test's seam: the host's memory, in bytes, that the runs' limit reads (host.ts), in place of this host's. */
-  hostMemory?: number;
-  /** A test's seam: told each run read in from its store (runs.ts onRunLoad). */
-  onRunLoad?: (runId: string) => void;
   /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
    *  AGENT_MODEL_STRONG, else each run's agent's own model). */
   gradeModel?: string;
@@ -1291,8 +1282,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const targets = triggerTargets(store, triggerDeps);
   const expected = digest(`Bearer ${token}`);
-  // The old per-run-process test hooks (beforeAbort/beforeReopenLaunch/onRunLoad …) are the runner's now
-  // (E2r), not the server's: a run executes in a runner process, not here. TODO(E2r): the equivalents on the runner's loop.
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
