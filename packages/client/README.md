@@ -2,7 +2,7 @@
 
 A typed TypeScript client for an AgentRun server you host yourself, the open platform's server: one method per operation of
 its API, typed from the OpenAPI document it serves, plus waiting for a run and following its timeline. No dependencies: it
-uses `fetch`, on Node.js 22.19 or newer.
+uses `fetch`, on Node.js 24.22.3 or newer.
 
 ## Install
 

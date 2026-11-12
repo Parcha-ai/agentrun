@@ -11,7 +11,9 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { archilDisk, archilWorkspace, learningKey, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { archilDisk, archilWorkspace, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { runHands } from "../dist/workspace/run-tools.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { PATH, suite } from "./workspace-conformance.mjs";
 
@@ -270,6 +272,86 @@ test("archil: the exec image is the workspace's, pinned by digest, copied when i
   for (const bad of [{ baseImage: "" }, { baseImage: "debian:trixie" }, { baseImage: "debian@sha256:short" }, { imageId: IMAGE_ID }, { imageId: IMAGE_ID, digest: "latest" }, { imageId: "short", digest: DIGEST }, { baseImage: `x@${DIGEST}`, imageId: IMAGE_ID }]) {
     assert.throws(() => archilWorkspace(plain, ROOT, { image: bad }), /pinned by digest/, JSON.stringify(bad));
   }
+});
+
+const DENY = { egress: { default: "deny" } };
+const execNetworks = (disk) => disk.calls.filter((call) => call.op === "exec").map((call) => call.network);
+const PLAN_REFUSAL = { status: 403, code: "network_plan_required", message: "network policies need the Developer plan" };
+
+test("archil: an exec asked for no network is sent with its egress denied; one not asked is sent with none", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT);
+  const denied = await workspace.exec(["sh", "-c", "echo ran"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.equal(text(denied.stdout), "ran\n");
+  assert.equal(denied.stderr, "", "no warning when the policy was taken");
+  await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+  assert.deepEqual(execNetworks(disk), [DENY, undefined]);
+});
+
+test("archil: a plan that takes no network policy (403 network_plan_required) runs the command with the network open and says so in one line, Archil's words included", async () => {
+  const disk = new FakeArchilDisk();
+  disk.refuseNetwork = PLAN_REFUSAL;
+  const workspace = archilWorkspace(disk, ROOT);
+  const seen = [];
+  const ran = await workspace.exec(["sh", "-c", "echo ran; echo own >&2"], { env: ENV, timeoutMs: 10_000, network: "deny", onOutput: ({ stream, data }) => seen.push([stream, text(data)]) });
+  assert.equal(text(ran.stdout), "ran\n", "the command ran, once");
+  const [warning, ...rest] = ran.stderr.split("\n");
+  assert.match(warning, /^agentrun: this command ran with the network open\. Archil refused the exec's network policy \(403 network_plan_required\): .*network policies need the Developer plan$/);
+  assert.deepEqual(rest, ["own", ""], "the program's own stderr after the one line");
+  assert.deepEqual(seen.find(([stream]) => stream === "stderr")?.[1], ran.stderr, "the stream a caller reads carries the line too");
+  assert.deepEqual(execNetworks(disk), [DENY, undefined], "refused with the policy (nothing ran), then run without it");
+  // The refusal is remembered: a later exec is not sent with the policy again, and says the same.
+  const again = await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.match(again.stderr, /^agentrun: this command ran with the network open\. .*network_plan_required/);
+  assert.deepEqual(execNetworks(disk), [DENY, undefined, undefined]);
+  // An exec that asked for no policy says nothing of it.
+  assert.equal((await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 })).stderr, "");
+});
+
+test("archil: an exec cancelled while Archil refuses its network policy is not started with the network open", async () => {
+  const disk = new FakeArchilDisk();
+  let answer;
+  disk.refuseNetwork = { ...PLAN_REFUSAL, answered: new Promise((resolve) => { answer = resolve; }) };
+  const workspace = archilWorkspace(disk, ROOT);
+  const controller = new AbortController();
+  const cancelled = workspace.exec(["sh", "-c", "echo ran"], { env: ENV, timeoutMs: 10_000, network: "deny", signal: controller.signal });
+  while (disk.calls.filter((call) => call.op === "exec").length === 0) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(cancelled, (error) => error.name === "AbortError");
+  answer();
+  // The queue's next exec runs after the cancelled one has settled: by then a fallback would have been sent.
+  const next = await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" });
+  assert.match(next.stderr, /^agentrun: this command ran with the network open\./, "the refusal is still remembered");
+  assert.deepEqual(execNetworks(disk), [DENY, undefined], "the cancelled command was never sent again; only the next one ran");
+  assert.deepEqual(disk.calls.filter((call) => call.op === "exec").map((call) => call.command.includes("'echo ran'")), [true, false]);
+});
+
+test("archil: a 403 that names no network (a refused key, the exec allowance spent) still fails the exec, in words, and runs nothing", async () => {
+  const disk = new FakeArchilDisk();
+  disk.refuseNetwork = { status: 403, code: "Forbidden", message: "exec allowance spent" };
+  const workspace = archilWorkspace(disk, ROOT);
+  await refused(workspace.exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" }), "UNAVAILABLE");
+  assert.deepEqual(execNetworks(disk), [DENY], "no second call with the network open");
+});
+
+test("archil: a run's shell under a bash policy runs each command with no network; with no policy, or the server's own execs, with Archil's default", async () => {
+  const shellNetworks = async (bashPolicy) => {
+    const disk = new FakeArchilDisk();
+    const workspace = archilWorkspace(disk, ROOT);
+    const run = await runHands(workspace, undefined, { mode: 2, context: BACKGROUND_CONTEXT, ...(bashPolicy === undefined ? {} : { bashPolicy }) });
+    await run.hands.exec("true", { timeoutS: 10 });
+    await run.executors.bash({ command: "true" }, {});
+    // The server's own exec on the folder (a checkout's fetch): the run's Workspace itself, not the shell's.
+    await workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 });
+    return execNetworks(disk);
+  };
+  assert.deepEqual(await shellNetworks("read-only"), [DENY, DENY, undefined], "the shell's two paths (the kernel's hands, pi's bash) deny egress; the server's own exec does not");
+  assert.deepEqual(await shellNetworks(undefined), [undefined, undefined, undefined], "no policy: no network field at all");
+});
+
+test("a Workspace that cannot deny a command's network refuses the exec and runs nothing", async () => {
+  const { root } = scratch();
+  await assert.rejects(localWorkspace(root).exec(["true"], { env: ENV, timeoutMs: 10_000, network: "deny" }), (error) => error.code === "REFUSED" && /cannot deny its network/.test(error.message));
 });
 
 test("archil: a timeout over 295 s is refused (Archil cuts a call at 300 s), and no call is made", async () => {
@@ -658,6 +740,9 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     assert.equal(keyCalls, 3, "the key is asked for on every call, never kept from an earlier one");
     await assert.rejects(disk.exec({ ...exec, image: { imageId: IMAGE_ID, digest: `sha256:${"00".repeat(32)}` } }), /digest/);
     assert.equal(seen.filter((r) => r.url === "/api/exec").length, 1, "an image whose digest is not the pinned one runs nothing");
+    // The network policy goes in the body as Archil's ExecDiskRequest names it (disk@1.12.0's `network`), its one field
+    // picked: nothing else a network object carries rides along.
+    await disk.exec({ mounts: exec.mounts, queueMs: 1_000, command: "true", network: { egress: { default: "deny", allow: ["*"] }, extra: true } });
     // A redirect is not followed (the key would go with it), and a read that never answers gives up.
     const before = seen.length;
     await assert.rejects(disk.getRange("agents/a/runs/r/work/moved.txt", "bytes=0-1"));
@@ -686,6 +771,7 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
       ["GET", `/api/images/${IMAGE_ID}`, null],
       ["POST", "/api/exec", null],
       ["GET", `/api/images/${IMAGE_ID}`, null],
+      ["POST", "/api/exec", null],
     ]);
     assert.ok(seen.every((r) => r.auth === "Bearer loopback-dummy"), "the key, as a bearer token, on every call");
     assert.match(seen[0].agent, /^archil-js\//, "disks.get is the SDK's");
@@ -703,6 +789,7 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
       command: "true",
       imageId: IMAGE_ID,
     });
+    assert.deepEqual(JSON.parse(seen[5].body).network, { egress: { default: "deny" } });
   } finally {
     process.env = realEnv;
     for (const [name, value] of Object.entries(saved)) {
