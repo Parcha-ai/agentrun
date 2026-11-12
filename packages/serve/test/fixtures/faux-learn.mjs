@@ -7,7 +7,7 @@
 //   (a later run of the agent adds none);
 // - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
 // A user message that starts "Review: " is a reviewer's word on the run's answer: the end-of-run turn answers it as a note,
-// `reviewed.md`, its body the review's words. A later end-of-run turn of the same run (a follow-up's: its prompt says it
+// `reviewed.md`, its body the review's words (superseding the note a "Wrong: <file>" in it names). A later end-of-run turn of the same run (a follow-up's: its prompt says it
 // looked back before) answers that note alone.
 // On pi, "Fail the job." has the job's turn fail (the model's error), and the end-of-run turn is answered all the same.
 // A user message "Remember for next time: <text>" is what a person asks the agent to keep: on pi the job turn writes it
@@ -67,7 +67,9 @@ const remembered = (users) => {
  *  note the end-of-run turn gives for it (one, the newest review's). */
 const reviewed = (users) => {
   const review = users.findLast((text) => text.startsWith("Review: "));
-  return review ? [["reviewed.md", note("What the reviewer said", "The reviewer's answer for a case like this one", `${review.slice("Review: ".length)}\n`)]] : [];
+  // A review that says "Wrong: <file>" corrects a note an earlier round added: the note supersedes it.
+  const wrong = review && /Wrong: (\S+\.md)/.exec(review)?.[1];
+  return review ? [["reviewed.md", note("What the reviewer said", "The reviewer's answer for a case like this one", `${review.slice("Review: ".length)}\n`, wrong ? `supersedes: [${wrong}]\n` : "")]] : [];
 };
 /** The end-of-run turn's whole answer, from the instructions in `system` and the conversation's user messages. A later
  *  look-back of the same run (its prompt says it looked back before: a follow-up's) keeps only what a review taught. */

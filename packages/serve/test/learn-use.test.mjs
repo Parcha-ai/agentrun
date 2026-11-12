@@ -39,6 +39,8 @@ test("a \"use\" run starts from what its agent learned and keeps nothing: no end
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([view.learning?.state, view.learning?.reason], ["dropped", "use"], JSON.stringify(view.learning));
   assert.equal(typeof view.learning.detail, "string");
+  const read = (await api("GET", `/runs/${runId}/learning`)).body;
+  assert.deepEqual([read?.state, read?.reason], ["dropped", "use"], `the learning route reads what the run view does: ${JSON.stringify(read)}`);
   assert.equal(await store.learning.proposal(runId), undefined, "no proposal kept");
   assert.equal(await store.runs.get(`${runId}-learning`), undefined, "no learning run");
 

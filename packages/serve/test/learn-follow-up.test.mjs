@@ -76,3 +76,15 @@ test("a follow-up to a run whose first look-back kept nothing still looks back: 
   assert.deepEqual(git(repoOf(data, "blank"), ["ls-tree", "--name-only", "main"]).split("\n"), ["MEMORY.md", "reviewed.md"]);
   assert.equal((await store.learning.proposal(runId, 1))?.proposal.reason, "empty", "the first round's drop stands");
 });
+
+test("a review that corrects a note the first round added is merged: the second round supersedes it, which only main (not the run's seed) holds", { timeout: 150_000 }, async (t) => {
+  const { api, data } = await serve(t, { learning: "on", faux: LEARN });
+  await made(api, learner("corrected", { plan: PLAN }));
+  const runId = await started(api, "corrected", "Classify Acme Diner.");
+  assert.equal((await ended(api, runId)).view.learning?.state, "merged");
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: `${REVIEW} Wrong: check-units.md` })).status, 202);
+  const second = await ended(api, runId);
+  assert.equal(second.view.learning?.state, "merged", JSON.stringify(second.view.learning));
+  const repo = repoOf(data, "corrected");
+  assert.match(git(repo, ["show", "main:check-units.md"]), /superseded/i, "the first round's note is retired by the second's");
+});

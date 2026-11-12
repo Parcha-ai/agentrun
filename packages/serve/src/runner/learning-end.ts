@@ -120,7 +120,10 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     check: async ({ runId, agentId, turn, outcome, refuse }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
-      return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse });
+      // A later round checks against the main the earlier rounds merged into, not the seed the run started from: a note
+      // round 1 added and a reviewer corrected is a supersedes target round 2 may name.
+      const seed = round > 1 ? ((await mainOf(deps, agentId)) ?? start.seed) : start.seed;
+      return checkedOf(deps, { runId, agentId, seed, turn, outcome, refuse });
     },
     // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
     newRunId: () => learningRunIdOf(runId, round),
@@ -302,6 +305,16 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   // words name.
   const { tools, gated, deniedBy, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
   return { tools, gated, deniedBy, asked };
+}
+
+/** The commit main of the agent's learning folder is at now; none for a folder with no main yet. */
+async function mainOf(deps: LearningEndDeps, agentId: string): Promise<string | undefined> {
+  const folder = deps.learningFolder(agentId);
+  try {
+    return (await readSnapshot(folder.workspace))?.main ?? undefined;
+  } finally {
+    await folder.end();
+  }
 }
 
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there

@@ -10,6 +10,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { said } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
@@ -375,17 +376,25 @@ async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunc
   return launch ? learningStartOf(launch) : undefined;
 }
 
+/** The learning of a run that only uses what its agent learned (`learning: "use"`): seeded while it runs, as a run that
+ *  learns is; dropped `use` once it ended, since it is never asked what to keep. */
+export function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: boolean, at: string): RunLearningEnd {
+  return terminal ? { state: "dropped", reason: "use", detail: said.use, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
+}
+
 /** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
  *  run's learning end (runLearningEnd), the notes it was given and the seed it started from as its launch records them,
  *  what it held for its owner's OK as it stands on its agent's folder's main (`statuses`, learning-routes.ts statusesOf,
  *  read only when it held something; none: as the merge wrote it), settled once the run is final. Null when the run kept
  *  no learning. */
 export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[], statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>) {
-  const end = await runLearningEnd(store, runId);
-  if (!end) return null;
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
+  // A run that only uses what its agent learned keeps no proposal: its learning is its start (seeded, then dropped `use`
+  // once it ended), the same words its run view gives.
+  const end = (await runLearningEnd(store, runId)) ?? (started?.use && row ? usedOnly(started, settled, timeOf(row.endedAt ?? row.startedAt)) : null);
+  if (!end) return null;
   const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];

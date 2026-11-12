@@ -48,7 +48,7 @@ import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kerne
 import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
+import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -379,12 +379,6 @@ function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: 
  *  many notes its seed held, until its end-of-run turn starts; then looking back. */
 function underWay(started: NonNullable<RunLaunch["learning"]>, reflect: Reflect | undefined, at: string): RunLearning {
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
-}
-
-/** The learning of a run that only uses what its agent learned (`learning: "use"`): seeded while it runs, as a run that
- *  learns is; dropped `use` once it ended, since it is never asked what to keep. */
-function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: boolean, at: string): RunLearning {
-  return terminal ? { state: "dropped", reason: "use", detail: said.use, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
 }
 
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept; a cap's room noted when it has
