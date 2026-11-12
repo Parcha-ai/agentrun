@@ -23,7 +23,7 @@ import { STEADY_LEASE } from "./runner-support.mjs";
 import { answerFlow, scratch, serve, withEnv } from "./support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { heldField, heldRoute } = await import("../dist/computer-held-routes.js");
+const { heldField, heldRoute, runComputerRead } = await import("../dist/computer-held-routes.js");
 const { HOLD_MAX_MINUTES, HOLD_MINUTES, heldIn, holdIssues, holdOf } = await import("../dist/computer-held.js");
 const { CALL_KIND, PROTOCOL_METHODS } = await import("../dist/computer-channel.js");
 const { callRecordOf, MAX_RECORDED_CALLS, recordedClient, recordingCalls, unrecorded } = await import("../dist/computer-calls.js");
@@ -377,6 +377,33 @@ test("the protocol's methods are the spec's, and a call row names one with its p
   assert.equal((await sendCommand(sink, "run-1", { kind: "computer_call", body: { method: "hello", params: "{\"a\":\"\\u0000\"}", answers: false } })).kind, "computer_call");
   await assert.rejects(sendCommand(sink, "run-1", { kind: "computer_start", body: { x: 1 } }), /carries nothing/);
   assert.equal((await sendCommand(sink, "run-1", { kind: "computer_release" })).kind, "computer_release");
+});
+
+test("the run read's computer field reads the run's journal at most once, and never for a sandbox run that holds nothing", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-held-read-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const runOf = async (id, computer, hold) => {
+    await store.agents.create({ id: `agent-${id}`, name: id }, { id: `rev-${id}`, kind: "agentic", body: { computer } });
+    await store.runs.create({ id, agentId: `agent-${id}`, revisionId: `rev-${id}` }, { body: { input: { content: "x" }, title: "x", place: { mode: "runner" }, ...(hold ? { hold: { minutes: 5 } } : {}) } });
+  };
+  await runOf("box", { kind: "sandbox", provider: "docker" });
+  await runOf("held-box", { kind: "sandbox", provider: "docker" }, true);
+  await runOf("desk", { kind: "desktop", provider: "e2b" });
+  await runOf("held-desk", { kind: "desktop", provider: "e2b" }, true);
+  /** The field as a running run's GET reads it, and how many times it read the run's journal. */
+  const reads = async (id) => {
+    let count = 0;
+    const read = await runComputerRead(store, id, { status: "running" }, { context: ctx, entries: async () => (count += 1, []) });
+    return [read.computer?.state, count];
+  };
+  assert.deepEqual(await reads("box"), ["ready", 0], "a sandbox is never taken over, and holds nothing");
+  assert.deepEqual(await reads("held-box"), ["ready", 1], "a held sandbox reads its hold");
+  assert.deepEqual(await reads("desk"), ["ready", 1], "a desktop reads who drives");
+  assert.deepEqual(await reads("held-desk"), ["ready", 1], "who drives and the hold, from one read");
 });
 
 test("served: hold on a run's create, the run read's computer.held, and the three routes, each refusing in words where the run is not up", async (t) => {
