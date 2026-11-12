@@ -68,7 +68,7 @@ test("an OpenCode that is not the pinned build is unavailable as that, with serv
 test("with only OPENROUTER_API_KEY, opencode is offered on OpenAI's model through OpenRouter, and its run's requests go to OpenRouter's Responses API with the key as a bearer token and the model's whole id", { skip, timeout: 60_000 }, async (t) => {
   // codex's route (provider.ts' providerFor and modelOn): opencode has no OpenRouter path of its own.
   const KEY = `not-a-secret-${"openrouter"}`;
-  assert.deepEqual(await opencodeOf({ OPENROUTER_API_KEY: KEY }), { id: "opencode", available: true, steer: false, keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"], default_model: "openai/gpt-6-sol", run_memory_mib: 704 }, "OpenRouter's default for opencode, as codex's");
+  assert.deepEqual(await opencodeOf({ OPENROUTER_API_KEY: KEY }), { id: "opencode", available: true, steer: false, keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"], default_model: "openai/gpt-6.1-sol", run_memory_mib: 704 }, "OpenRouter's default for opencode, as codex's");
   // The run, on the stand-in for `opencode serve`, through the adapter's real proxy to a fake upstream standing in for
   // openrouter.ai: nothing leaves this machine.
   const before = { s: env.AGENTRUN_OPENCODE_STANDIN };
@@ -97,5 +97,5 @@ test("with only OPENROUTER_API_KEY, opencode is offered on OpenAI's model throug
   const result = await runWorkflow(doc, {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] }) });
   assert.equal(result.status, "complete", JSON.stringify(result.error ?? null));
   assert.ok(seen.length >= 1, "a model request reached OpenRouter");
-  for (const request of seen) assert.deepEqual(request, { url: "https://openrouter.ai/api/v1/responses", authorization: `Bearer ${KEY}`, model: "openai/gpt-6-sol" });
+  for (const request of seen) assert.deepEqual(request, { url: "https://openrouter.ai/api/v1/responses", authorization: `Bearer ${KEY}`, model: "openai/gpt-6.1-sol" });
 });

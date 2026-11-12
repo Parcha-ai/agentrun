@@ -9,7 +9,7 @@ import { codexAdapter } from "@parcha/agentrun-harness-codex";
 
 const runNode = createHarnessRunner(
   codexAdapter({
-    model: "gpt-5.4-mini",
+    model: "gpt-6-luna",
     provider: { origin: "https://api.openai.com", credential: () => process.env.OPENAI_API_KEY! },
     sessionsDir: "/var/lib/my-host/codex-sessions",
   }),
