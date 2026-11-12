@@ -197,7 +197,7 @@ export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" |
     if (kept.length || waiting.length || files.length) return cut(said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string").map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []));
   }
   if (learning.state === "dropped" && learning.reason === "grader" && verdict) {
-    // serve.json's `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
+    // the stored `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
     // in it included.
     const lost = Array.isArray(learning.lost) ? learning.lost.filter((file) => typeof file?.file === "string") : [];
     return cut(notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) }, lost));

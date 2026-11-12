@@ -8,7 +8,9 @@ import { nodeMeta, type NodeMeta } from "./workflowDoc";
 export type NodeRunStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
 /** `branches`: each route inside the map's body that ran for this item, and the branch it took (by its graph path). */
 export type RunItem = { index: number; status: NodeRunStatus; executionPath: string; label?: string; branches?: Record<string, string> };
-export type NodeRun = { status: NodeRunStatus; startedAt?: string; endedAt?: string; branch?: string; items?: RunItem[] };
+/** `model`: a model node's once it ran, the model the run's route sent it to, and `tier` the tier it asked for when it
+ *  named one; a decision node's model is its provider's. Absent on any other node. */
+export type NodeRun = { status: NodeRunStatus; startedAt?: string; endedAt?: string; branch?: string; items?: RunItem[]; model?: string; tier?: string };
 
 export type Question =
   | { type: "choice"; instructions: string; criteria: Record<string, string | null> }
@@ -202,7 +204,10 @@ export function runMarks(g: RunGraph, selected: Selection): GraphMarks {
     for (const [p, s] of Object.entries(status)) if (s === "working") status[p] = "held";
     for (const list of Object.values(items)) for (const it of list) if (it.status === "working") it.status = "held";
   }
-  return { status, taken, items, fired, verdict, meta: metaOf(g.workflow, g.graph), selected };
+  // What each node ran on (a model node's model and tier), for its card's kind line.
+  const ran: Record<string, { model: string; tier?: string }> = {};
+  for (const [path, n] of Object.entries(g.nodes)) if (n.model) ran[path] = { model: n.model, ...(n.tier ? { tier: n.tier } : {}) };
+  return { status, taken, items, fired, verdict, meta: metaOf(g.workflow, g.graph), selected, ...(Object.keys(ran).length ? { ran } : {}) };
 }
 
 /** How an outcome reads, for a cell's colour only: words a workflow's branches commonly use. An outcome not listed here

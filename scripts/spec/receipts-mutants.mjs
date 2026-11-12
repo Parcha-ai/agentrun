@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// Mutation check for spec/receipts: each mutant breaks one guard a recovery driver (Receipts.tla) or the
-// serve door (Door.tla, `module: "Door"`) relies on, and the properties of the config it names (its
-// module's own .cfg unless it says otherwise) must catch it, with the property named here. A property
+// Mutation check for spec/receipts: each mutant breaks one guard a recovery driver (Receipts.tla) relies
+// on, and the properties of the config it names (its module's own .cfg unless it says otherwise) must catch it, with the property named here. A property
 // that no mutant can fail is vacuous; a mutant that no property catches is a guard the spec does not
 // state. The receipts-spec CI job runs it after check-receipts.sh when a change touches spec/receipts/
 // or scripts/spec/, and nightly; every mutant must be caught, by its named property, within
@@ -17,7 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const specs = Object.fromEntries(["Receipts", "Door"].map((m) => [m, fs.readFileSync(path.join(root, `spec/receipts/${m}.tla`), "utf8")]));
+const specs = Object.fromEntries(["Receipts"].map((m) => [m, fs.readFileSync(path.join(root, `spec/receipts/${m}.tla`), "utf8")]));
 // Each mutant runs TLC in its own directory, so a relative jar path is resolved from the caller's first.
 const jar = process.env.TLA2TOOLS && path.resolve(process.env.TLA2TOOLS);
 if (!jar || !fs.existsSync(jar)) { console.error(`tla2tools.jar not found${jar ? ` at ${jar}` : ""}: set TLA2TOOLS to its path`); process.exit(2); }
@@ -74,20 +73,6 @@ const MUTANTS = [
   { name: "RestartResumesCancelled", code: "an open refuses a run whose journal holds its cancel, so a cancelled run never resumes",
     caughtBy: "I10_CancelledNeverResumes",
     edits: [["  /\\ run' = IF run = \"stopped\" /\\ ~stopped THEN \"running\" ELSE run", "  /\\ run' = IF run = \"stopped\" THEN \"running\" ELSE run"]] },
-  { module: "Door", name: "DoorResubmitOnResume", code: "a later incarnation answers an ADMITTED or UNKNOWN record as it stands and never calls hook.submit for it (src/door.ts)",
-    // An ADMITTED record goes out a second time (I1); an UNKNOWN one goes out while it is not ADMITTED (I4).
-    caughtBy: ["I1_OneDispatchPerRequest", "I4_DispatchOnlyAdmittedUnderLease"],
-    edits: [["       ELSE UNCHANGED <<rec, by, call>> \\* the commit refused, or the record answered",
-             "       ELSE IF holds[i] /\\ rec[r] \\in {\"ADMITTED\", \"UNKNOWN\"} /\\ by[r] # i THEN by' = [by EXCEPT ![r] = i] /\\ call' = [call EXCEPT ![i][r] = \"own\"] /\\ UNCHANGED rec ELSE UNCHANGED <<rec, by, call>>"]] },
-  { module: "Door", name: "DoorLateAnswerWithoutFence", code: "a late answer settles the record through the run's fenced commit, refused once the lease is lost",
-    caughtBy: "I3_UnknownSettledByItsLateAnswer",
-    edits: [["  /\\ \\E o \\in Settled : rec' = IF holds[i] THEN [rec EXCEPT ![r] = o] ELSE rec \\* fenced", "  /\\ \\E o \\in Settled : rec' = [rec EXCEPT ![r] = o]"]] },
-  { module: "Door", name: "DoorStaleAdmittedAnswersAdmitted", code: "an ADMITTED record no call in this process carries answers UNKNOWN (src/door.ts), never 202 ADMITTED",
-    caughtBy: "I6_AdmittedOnlyWhileCalled",
-    edits: [["AnswerOf(i, r) == IF rec[r] = \"ADMITTED\" /\\ call[i][r] \\notin Calling THEN \"UNKNOWN\" ELSE rec[r]", "AnswerOf(i, r) == rec[r]"]] },
-  { module: "Door", name: "DoorDedupeAfterDispatch", code: "the door looks the requestId up and admits it in one commit before hook.submit, never after",
-    caughtBy: ["I1_OneDispatchPerRequest", "I4_DispatchOnlyAdmittedUnderLease"],
-    edits: [["  /\\ alive[i] /\\ holds[i] /\\ call[i][r] = \"own\"\n", "  /\\ alive[i] /\\ holds[i] /\\ (call[i][r] = \"own\" \\/ checking[i][r] > 0)\n"]] },
 ];
 
 let failed = 0;

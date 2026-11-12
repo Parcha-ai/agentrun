@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
+import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { note } from "./fixtures/faux-learn.mjs";
@@ -766,4 +766,13 @@ test("every InputIssue reason the MCP registry sends is one the document's Input
   }
   assert.ok(sent.has("redirect"), "the registry refuses a redirect with reason redirect");
   assert.deepEqual([...sent].filter((reason) => !listed.includes(reason)).sort(), []);
+});
+
+test("an MCP preview's tools are said to be the server's offer, not what the credential allows (a read-only token lists write tools too)", async (t) => {
+  const { doc } = await served(t);
+  const preview = doc.paths["/settings/mcp-servers/preview"].post;
+  assert.match(MCP_PREVIEW_SCOPE, /not what this credential allows/);
+  assert.match(MCP_PREVIEW_SCOPE, /refused by the MCP server/);
+  assert.ok(preview.description.includes(MCP_PREVIEW_SCOPE), preview.description);
+  assert.ok(preview.responses["200"].description.includes(MCP_PREVIEW_SCOPE), preview.responses["200"].description);
 });

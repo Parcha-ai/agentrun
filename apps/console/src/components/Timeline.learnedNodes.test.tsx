@@ -77,3 +77,18 @@ describe("Timeline, a learned workflow's call", () => {
     }
   });
 });
+
+// A learned workflow's model node names the model it ran on, and its tier when it named one: "extract · fast ·
+// gpt-5-mini"; one of no tier "extract · gpt-5-4-mini"; a call node its kind alone.
+describe("Timeline, a learned workflow's nodes and their models", () => {
+  it("each model node's kind line names its tier and the model it ran on; a call node's its kind alone", async () => {
+    const t = show(call([
+      { label: "quick look", kind: "extract", status: "ok", duration_ms: 400, model: "gpt-5-mini", tier: "fast" },
+      { label: "final answer", kind: "extract", status: "ok", duration_ms: 900, model: "gpt-5-4-mini" },
+      { label: "fetch the page", kind: "call", status: "ok", duration_ms: 300 },
+    ]));
+    await act(async () => { t.toggle()!.click(); });
+    const kinds = [...t.list()!.querySelectorAll("li [data-kind]")].map((x) => x.textContent);
+    expect(kinds).toEqual(["extract · fast · gpt-5-mini", "extract · gpt-5-4-mini", "call"]);
+  });
+});

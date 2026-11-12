@@ -734,6 +734,12 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
    *  wins; the value saved under it after (this one, or the one there before). */
   putIfAbsent(key: string, value: unknown): Promise<unknown>;
+  /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
+   *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
+   *  when the row changed since or is gone. */
+  replaceIf(key: string, was: unknown, value: unknown): Promise<boolean>;
+  /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
+  removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
   /** Every setting, by key. */
@@ -800,6 +806,10 @@ export interface ComputerLedger {
   list(provider: string): Promise<ComputerLedgerRow[]>;
   /** The session's row goes. */
   remove(provider: string, sessionId: string): Promise<void>;
+  /** Replaces the session's `labels` and `detail` only while its row still holds `was`'s, in one statement (a
+   *  compare-and-set, so two writers that read one row never both write it): true when it was replaced; false, with
+   *  nothing written, when the row changed since or is gone. */
+  swap(provider: string, sessionId: string, was: { readonly labels: Readonly<Record<string, string>>; readonly detail: Readonly<Record<string, unknown>> }, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one

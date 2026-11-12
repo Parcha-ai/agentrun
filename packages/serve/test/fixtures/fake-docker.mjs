@@ -2,7 +2,7 @@
 // arguments go to `$FAKE_DOCKER_STATE/argv.jsonl`, and each container is a file under `containers/`. `exec` runs the
 // command on this machine, the container's mount targets mapped to their sources (one with no mount at /workspace has a
 // /workspace of its own under the state directory, never this machine's) and its `--env` its whole environment
-// (with a TMPDIR of its own), so pi-transport's box environment works over it. Like Docker's, a killed `exec` client
+// (with a TMPDIR of its own), so a box's environment works over it. Like Docker's, a killed `exec` client
 // leaves its command running. With `fail-run` in the state directory, `run` leaves a running container behind and fails,
 // as a client cut off while the daemon made the container would.
 //

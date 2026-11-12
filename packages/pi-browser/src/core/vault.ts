@@ -19,23 +19,12 @@ export type VaultCookie = {
   httpOnly: boolean; secure: boolean; sameSite?: "Strict" | "Lax" | "None";
 };
 
-export type CapturedState =
-  | {
-      kind: "cdp"; capturedAt: string;
-      /** Only cookies the allowed origins would be sent (see `cookieKept`). Partitioned cookies are not kept. */
-      cookies: VaultCookie[];
-      localStorage: Record<string, Record<string, string>>;
-    }
-  /** `origins`: the origins the context was captured for. A context holds a whole browser profile, so it is restored only for a request that covers EVERY one of them (`coversEveryOrigin`); one that records none is refused. */
-  | { kind: "provider-context"; capturedAt: string; provider: "browserbase" | "kernel"; contextId: string; origins?: string[] };
-
-/** Whether `requested` includes every origin in `saved` (as scheme://host[:port], any order): a provider context is all-or-nothing, so a request for some of its origins would bring back the others' sign-ins. */
-export function coversEveryOrigin(requested: readonly string[], saved: readonly string[] | undefined): boolean {
-  if (!saved || saved.length === 0) return false;
-  const origin = (value: string) => { try { return new URL(value).origin; } catch { return null; } };
-  const have = new Set(requested.map(origin));
-  return saved.every((value) => { const o = origin(value); return o !== null && have.has(o); });
-}
+export type CapturedState = {
+  kind: "cdp"; capturedAt: string;
+  /** Only cookies the allowed origins would be sent (see `cookieKept`). Partitioned cookies are not kept. */
+  cookies: VaultCookie[];
+  localStorage: Record<string, Record<string, string>>;
+};
 
 export interface SessionVaultPort {
   /** At release and at the end of a handoff, and, for a context a new session made, right after the create (so a restart still finds it). The host supplied the origins; nothing outside them was captured.

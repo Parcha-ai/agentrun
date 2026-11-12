@@ -20,7 +20,7 @@ import { redacted, redactedOutput } from "./key-refusal.js";
 import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
-import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
+import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
@@ -267,9 +267,9 @@ function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false):
 /** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
  *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
  *  run could not resume) answers nothing, so the person may answer again. */
-async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
+async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny"; at: number } | undefined> {
   const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
-  return row && { decision: row.kind === "approve" ? "allow" : "deny" };
+  return row && { decision: row.kind === "approve" ? "allow" : "deny", at: row.id };
 }
 
 /** How a stop or cancel written to run `runId` before `before` (a command id; absent, any) answers every call still waiting:
@@ -293,8 +293,16 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
     if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
-  const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
-  if (given) return settle(given);
+  const answered = moment.answeredApprovals?.[id];
+  if (answered) return settle(answered);
+  const given = await sentAnswer(store, moment.id, id);
+  if (given) {
+    // The answer written before (this one's retry, or another) sits behind a stop or cancel the runner has not taken yet:
+    // it never runs, so it is told as any answer behind that stop is, never settled as taken.
+    const behind = await endBefore(store, moment.id, { before: given.at });
+    if (behind) throw alreadyAnswered(id, behind.decision);
+    return settle(given);
+  }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   const ending = await endBefore(store, moment.id);
   if (ending) throw alreadyAnswered(id, ending.decision);
@@ -317,6 +325,13 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   // refused at that end, so the person is told now.
   const raced = await endBefore(store, moment.id, { before: sent.id });
   if (raced) throw alreadyAnswered(id, raced.decision);
+  // That stop's end may already be written by this read: its runner took the stop and refused this answer in the same
+  // commit. Read the answer back: refused behind a stop or cancel, it never runs either.
+  const mine = (await store.commands(moment.id, 0)).find((command) => command.id === sent.id);
+  if (mine?.refused != null) {
+    const end = await endBefore(store, moment.id, { before: sent.id, taken: true });
+    if (end) throw alreadyAnswered(id, end.decision);
+  }
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
@@ -363,6 +378,10 @@ export interface StartDeps {
   readonly files?: { hold(runId: string, ids: readonly string[]): Promise<void>; release(runId: string): Promise<void> };
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
+  /** The Archil disk the run's launch record keeps (server.ts launchDiskOf): the one its body's `archil_disk` names, else
+   *  its agent's when it has one now; undefined for neither, or in Mode 1. A disk named in Mode 1 is refused. Absent, no
+   *  disk is kept. */
+  launchDiskOf?(agentId: string, named: string | undefined): Promise<LaunchDisk | undefined>;
   /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
   workflowTitle(name: string, input: Record<string, unknown>): string;
   /** Every secret this server never shows, for the title's redaction (server.ts serverSecrets). */
@@ -592,6 +611,11 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
   const learning = await learningStartFor(deps, entry, revision, rbody, input, body.learning === RUN_LEARNING_USE);
+  // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
+  // customer), else its agent's when it has one; with neither, its claim makes the agent's.
+  const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
+  if (named !== undefined && !deps.launchDiskOf) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps no run on an Archil disk." }]);
+  const archilDisk = deps.launchDiskOf ? await deps.launchDiskOf(entry.agent.id, named) : undefined;
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
@@ -614,6 +638,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(trigger ? { trigger } : {}),
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
+    ...(archilDisk ? { archilDisk } : {}),
   };
   return { launch, revision };
 }
