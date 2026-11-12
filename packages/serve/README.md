@@ -921,6 +921,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
+| `subagent` | pi only: `{prompt, tools?, model?, max_tool_calls?, effort?}` in, the child's last text out, bounded like a host tool's result. Runs a fresh conversation whose whole task is `prompt`, with `tools` a subset of the agent's own (by catalog or session name, MCP tools and `bash` included; absent, none), on the agent's own model or the tier `model` names (`fast` or `strong`: the definition's `model_tiers`, else `AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`, else the agent's own model) ([subagents](#subagents)) | a pi run | no, no |
 
 `bash` and the background tools run only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
 sandbox place `read`, `write` and `edit` run in the box too.
@@ -962,6 +963,54 @@ the model whole: the Claude Agent CLI would otherwise save a result past 50,000 
 to read it, which a run's confinement refuses, Codex keeps only the ends of a result past 10,000 tokens, and OpenCode
 would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the session has no tool to read. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
+
+### Subagents
+
+`subagent` is one primitive: a prompt, a fresh context and a subset of the agent's own tools, on the agent's own model
+unless the call names a tier. A child keeps the run's gate, so the agent's permissions and bash policy (`read-only`)
+hold its tool calls too, and every request it makes books on the run's one cap. It goes one level deep (a child is never
+given `subagent` or `ask_person`), and at most 4 children of a run work at once; more wait. The run's timeline nests each
+child under its call, and the run's cost counts every child's requests. How to split work and merge answers is the
+agent's own instructions, never the engine's.
+
+A call may set its child's `max_tool_calls` and `effort`. `max_tool_calls` narrows the agent's own budget (its definition's
+`max_tool_calls`, which holds each conversation) for that child and never widens it; with no budget of the agent's, the
+call's holds. `effort` (`low`, `medium` or `high`) is the child's thinking level; absent, the child thinks as the agent
+does. So one template can run wide reviewers at `medium` with 30 calls and deep ones at `high` with 90.
+
+A child is a conversation in the run's own journal, owned by its call, so it lives and ends with the run:
+
+- **A restart or a moved claim** resumes it. The next claim finds the same child, which answers its call once. A request
+  it had finished is never sent again, and one the stop cut is sent again. A child on a tier whose model changed in the
+  meantime (the server's `AGENT_MODEL_STRONG`, say) resumes on the tier's model now.
+- **A cancel** stops every child with the run: their requests are aborted, and nothing more is asked.
+- **The cap.** When the run's cap refuses a child's request, the child stops and its call fails in the cap's words
+  (`subagent: it stopped before it answered: ... spend_cap_reached`). The run's next request is refused the same way, so
+  the run parks at its cap (`input_required`, a `budget` pending) and sends nothing more. A raise resumes the run, not
+  the child: the agent reads the failed call on its next turn and may call `subagent` again, which starts a fresh child.
+  On a capped run, a call on a tier whose model has no known price is refused before any child starts.
+
+#### Patterns
+
+**Sample K, merge, verify.** One pass misses what a second finds, and states things neither would confirm. A template's
+skill can ask for K passes and check their union, with no engine support beyond the tool:
+
+1. In one turn, make K `subagent` calls with the same prompt and tools (K of 3 or 4 run at once; more wait their turn).
+   Each starts from a fresh context, so the answers vary the way independent samples do.
+2. Merge the K answers: dedupe the items that say the same thing about the same place, and keep how many children found
+   each.
+3. Before acting on a kept item, re-check it with the parent's own tools: open the file, page or record it cites and
+   confirm it says what the item claims. Drop what does not hold. Agreement between children orders the checks; it is
+   never the check.
+
+It fits any agent whose answer is a list:
+
+- Research: children answer with `web_search` and `web_fetch`; the parent re-fetches each cited source before it writes.
+- QA: children run one test plan with `browser`; the parent reproduces each finding before it files it.
+- Extraction: children pull a document's fields with `read`; the parent reads the page again for any value they differ on.
+- Code review: children read a diff with read-only `bash`; the parent re-reads each finding's lines before it posts.
+
+Each child books on the run's cap, so size the cap for K passes, not one.
 
 ### Search and fetch
 
