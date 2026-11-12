@@ -179,7 +179,7 @@ line. A store whose secrets were sealed with another key refuses to start, and t
 sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
-`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
+`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 24.22.3 and Debian 13
 (trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
