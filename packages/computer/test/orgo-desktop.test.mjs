@@ -395,6 +395,9 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.equal((await call("files.write", { path: `${dir}\\none\\big.bin`, data: big.toString("base64") })).error.code, "not_found");
 	fake.boxOf(ref.id).notReady = 1;
 	assert.equal((await call("files.write", { path: `${dir}\\lost.bin`, data: big.toString("base64") })).ok, false);
+	// A script cut off by Orgo's time limit answers ok with a timeout: its uploaded copy is removed the same way.
+	fake.boxOf(ref.id).filesTimeout = true;
+	assert.equal((await call("files.write", { path: `${dir}\\slow.bin`, data: big.toString("base64") })).ok, false);
 	assert.deepEqual(staged(), [], "no failed write leaves its uploaded copy");
 	assert.equal((await call("files.stat", { path: `${dir}\\a.txt` })).value.type, "file");
 	assert.equal((await call("files.stat", { path: dir })).value.type, "dir");

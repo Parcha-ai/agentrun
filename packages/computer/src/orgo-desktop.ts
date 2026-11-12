@@ -1537,11 +1537,11 @@ export class OrgoDesktopClient implements ComputerClient {
 		}
 		const script = FILES_SCRIPT.replace("@@REQUEST@@", Buffer.from(JSON.stringify(request), "utf8").toString("base64"));
 		const ran = await bashCall(this.rest, this.computer, script, 120_000, signal);
-		if (!ran.ok) {
-			// The script that removes an uploaded copy did not run (or was cut off): it is removed here, once, unbounded by the
+		if (!ran.ok || ran.value.timedOut) {
+			// The script that removes an uploaded copy did not run (or was cut off, or hit Orgo's time limit): it is removed here, once, unbounded by the
 			// call's own signal, which may be the abort itself.
 			if (typeof request.staged === "string") await bashCall(this.rest, this.computer, `Remove-Item -LiteralPath ${psQuote(request.staged)} -Force -ErrorAction SilentlyContinue`, 30_000).catch(() => undefined);
-			return signal.aborted ? refuse("aborted", `files.${op} was aborted`) : ran;
+			if (!ran.ok) return signal.aborted ? refuse("aborted", `files.${op} was aborted`) : ran;
 		}
 		let answer: Record<string, unknown>;
 		try {

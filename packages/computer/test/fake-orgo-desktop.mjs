@@ -165,6 +165,11 @@ export function fakeOrgoDesktop({ os = "windows", width = 1280, height = 720, us
 			return { httpStatus: 503, body: { error: "Computer not ready", request_id: "r1" } };
 		}
 		if (windows) {
+			if (command.startsWith(FILES_MARK) && box.filesTimeout) {
+				// Orgo's time limit cuts the script off: the call answers a timeout and the copy stays where the script left it.
+				box.filesTimeout = false;
+				return { exit_code: 124, error: "timeout", stdout: "", stderr: "", output: "" };
+			}
 			if (command.startsWith(FILES_MARK)) return filesOp(box, JSON.parse(Buffer.from(/FromBase64String\('([^']*)'\)/.exec(command)[1], "base64").toString("utf8")), command);
 			const write = /FromBase64String\('([A-Za-z0-9+/=]*)'\)\)\n\$p = '([^']+)'/.exec(command);
 			if (write) {
