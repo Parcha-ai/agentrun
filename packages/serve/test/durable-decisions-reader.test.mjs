@@ -41,7 +41,7 @@ test('unlocked: a read-only, lock-free read (vfs=unix-none) of a store its proce
   const file = fileOf();
   const harness = await open(file);
   try { await harness.commit(async (tx) => { const count = await tx.doc(Count); count.count = 2; for (const [place, id] of ['a', 'b'].entries()) Object.assign(await tx.doc(Keyed, String(place).padStart(8, '0'), null), row(id)); }, ctx); } finally { await harness.close(ctx); }
-  // The run's own process, as pi-durable-disk's exclusive profile opens it: it holds the file's lock.
+  // The run's own process, as it opens the file: it holds the file's lock.
   const { DatabaseSync } = await import('node:sqlite');
   const writer = new DatabaseSync(file);
   try {

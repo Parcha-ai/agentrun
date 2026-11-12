@@ -91,7 +91,7 @@ function replyTo(context, faux) {
     // A node that writes a report in a fixed format (a learned workflow's last node, as a skill's format asks it).
     if (canary.includes("Write the card report")) {
       if (answered) return faux.message("Submitted.");
-      // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+      // In a session of its own, submit takes the DSL's envelope: the record under `value`.
       const params = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit")?.parameters;
       const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1);
       return faux.message(faux.toolCall("submit", enveloped ? { value: { report: REPORT } } : { report: REPORT }), { stopReason: "toolUse" });
