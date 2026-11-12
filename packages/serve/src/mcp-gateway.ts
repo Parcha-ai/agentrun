@@ -335,7 +335,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
   /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
    *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. */
-  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>): Promise<McpCallResult> => {
+  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true } = {}): Promise<McpCallResult> => {
     let connected = false;
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
@@ -359,7 +359,12 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       clients.delete(server);
       // Its address refused before the request left (reach): nothing reached it.
       const refused = statuses.get(server)?.refused;
-      if (refused !== undefined) return said(`The MCP server ${server}'s address is refused here: ${refused}. Nothing was sent.`, true);
+      if (refused !== undefined) {
+        // `sending` may have run already (the connection was open): the request's own address check refused it, so the call
+        // never left and `outcome` says so, for the caller that books a price only for a call that went.
+        outcome.unsent = true;
+        return said(`The MCP server ${server}'s address is refused here: ${refused}. Nothing was sent.`, true);
+      }
       const status = statuses.get(server)?.last;
       // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
@@ -409,11 +414,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const listed = pinnedTools.find((t) => t.name === tool)!;
     // Whether the call left for the server: only then is it booked, at its price or as not metered.
     let went = false;
-    const call = (mark: () => Promise<string | undefined> = async () => undefined) => forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
-      const refused = await mark();
-      went = refused === undefined;
-      return refused;
-    });
+    const call = async (mark: () => Promise<string | undefined> = async () => undefined) => {
+      const outcome: { unsent?: true } = {};
+      const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
+        const refused = await mark();
+        went = refused === undefined;
+        return refused;
+      }, outcome);
+      // The request's own address check refused it after the mark: it never left, so nothing is booked.
+      if (outcome.unsent) went = false;
+      return result;
+    };
     const name = mcpToolName(server, tool);
     const label = { tool: name, charged_by: server, call: callId };
     const commit = options.commit?.();
@@ -437,8 +448,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     servers: [...pins].map(([name, pinned]) => ({ name, tools: pinned.tools })),
     heldValues: () => [...new Set([...inFlight.values()].flatMap((calls) => [...calls].flatMap((values) => [...values])))],
     async call(server, tool, args, { signal, callId }) {
-      const why = unsendable(server, tool);
-      if (why) return said(why, true);
+      // Only what no sign-in can change is refused here: the rest (a credential that did not open, a server since removed)
+      // is read by sent() after beforeCall, which opens the row again, so a call after the owner signs in again goes.
+      if (!pins.get(server)?.tools.some((t) => t.name === tool)) return said(`${tool} is not a tool of the MCP server ${server} in this run.`, true);
       return sent(server, tool, args, callId ?? `mcp_${randomUUID()}`, signal);
     },
   };

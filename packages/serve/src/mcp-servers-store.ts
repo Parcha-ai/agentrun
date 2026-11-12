@@ -114,6 +114,7 @@ export class McpServersOverStore {
     this.signIns.base = base.replace(/\/+$/, "");
     this.signIns.listening = listening.replace(/\/+$/, "");
     this.loopback = local === true;
+    this.signIns.loopback = this.loopback;
   }
 
   clientDocument() {

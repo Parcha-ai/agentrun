@@ -122,6 +122,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       signal: held.signal,
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
+      ...(options.loopback ? { loopback: true } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),

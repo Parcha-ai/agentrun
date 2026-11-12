@@ -154,7 +154,7 @@ const guarded = (stop: AbortSignal | undefined, mcpUrl: string, network: OAuthNe
     sentWithin ? request.catch((error: unknown) => Promise.reject(connectFailed(error) ? new RequestUnsent("the connection was not made", { cause: error }) : error)) : request;
   const url = new URL(input instanceof Request ? input.url : String(input));
   const what = `endpoint ${url.origin}${url.pathname}`;
-  if (loopbackAllowed(url, mcpUrl, reach.own ?? [])) return noted(sent(fetch(input, { ...init, redirect: "manual", signal: sending })), what, seen);
+  if (reach.loopback === true && loopbackAllowed(url, mcpUrl, reach.own ?? [])) return noted(sent(fetch(input, { ...init, redirect: "manual", signal: sending })), what, seen);
   let at: Awaited<ReturnType<typeof checked>>;
   try {
     at = await checked(`the authorization server's ${what}`, url.href, signal, network, reach);
@@ -278,7 +278,7 @@ async function discoveryRefusal(state: OAuthDiscoveryState, network: OAuthNetwor
   const metadata = state.authorizationServerMetadata;
   const named: Array<[string, string | undefined]> = [["address", state.authorizationServerUrl], ["metadata address", state.resourceMetadataUrl], ["authorization endpoint", metadata?.authorization_endpoint], ["token endpoint", metadata?.token_endpoint], ["registration endpoint", metadata?.registration_endpoint]];
   for (const [what, url] of named) {
-    if (url && loopbackAllowed(url, mcpUrl, reach.own ?? [])) continue;
+    if (url && reach.loopback === true && loopbackAllowed(url, mcpUrl, reach.own ?? [])) continue;
     const at = url ? await checked(`the authorization server's ${what}`, url, signal, network, reach) : undefined;
     if (at && "refused" in at) return at.refused;
   }
@@ -315,6 +315,9 @@ export class McpSignIns {
   /** Where this server listens (`http://<host>:<port>`), whatever `base` is: its port is never an endpoint a loopback
    *  authorization server may name. Set by McpServersOverStore.attach. */
   listening = "";
+  /** Whether this server is a local install (McpServersOverStore.attach): only then may a loopback MCP server's
+   *  authorization server be on loopback too. */
+  loopback = false;
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
    *  and its public address too when that is on loopback (a local https proxy on another port, in front of the
    *  listener, reaches this server). */
@@ -345,7 +348,7 @@ export class McpSignIns {
     const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const seen: Seen = {};
-    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
     const provider = this.provider(entry, reach, { state, redirect: (to) => void (opened = to), seen });
     try {
       await (await sdk()).auth(provider, { serverUrl: url, ...(options.scope ? { scope: options.scope } : {}), fetchFn: guarded(undefined, url.href, this.network, seen, reach) });
@@ -373,7 +376,7 @@ export class McpSignIns {
   /** The code exchanged (with the verifier and the client the start kept) for the token set to seal. */
   async finish(entry: Pending, code: string, iss: string | undefined, stop?: AbortSignal): Promise<TokenSet> {
     let tokens: OAuthTokens | undefined;
-    const reach: Reach = { own: this.own, allowed: await this.allowed() };
+    const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
     const provider = this.provider(entry, reach, { saved: (got) => void (tokens = got) });
     await (await sdk()).auth(provider, { serverUrl: entry.url, authorizationCode: code, ...(iss ? { iss } : {}), fetchFn: guarded(stop, entry.url, this.network, {}, reach) });
     if (!tokens || !entry.client || !entry.discovery) throw new ApiError("upstream_failed", "The authorization server gave no tokens.");
@@ -390,7 +393,7 @@ export class McpSignIns {
     const token = set.tokens.refresh_token;
     if (typeof endpoint !== "string" || !token) return false;
     try {
-      const reach: Reach = { own: this.own, allowed: await this.allowed() };
+      const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
       const { client_id: id, client_secret: secret } = set.client;
       const body = new URLSearchParams({ token, token_type_hint: "refresh_token", ...(secret ? {} : { client_id: id }) });
       // A confidential client authenticates as RFC 6749 says by default (client_secret_basic); a public one names itself.

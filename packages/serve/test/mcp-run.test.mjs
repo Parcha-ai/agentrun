@@ -281,9 +281,11 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
   const scratchFiles = await scratchOf(data, runId);
   // The CLI is found working in the run's scratch (so its exit, waited on below, is seen).
   assert.ok((await workingIn(join(data, "scratch"), runId)).length > 0, "the CLI process works in the run's scratch");
-  // Mid-call, an extra check: what the CLI has written so far (maybe nothing yet) holds no token. The scan that must read
-  // files is the one after the CLI exited, below.
-  const leakedMidCall = scratchFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
+  // Mid-call is the one moment the CLI's own files exist to be read (the claim's scratch folder is swept at the run's end,
+  // and a scan of a swept folder reads nothing): the CLI's home and MCP config are there and none holds the token.
+  const cliFilesMidCall = scratchFiles.filter((file) => file.path.includes(`/${runId}/harness/`));
+  assert.ok(cliFilesMidCall.length > 0, `the CLI's own files were read mid-call: ${JSON.stringify(scratchFiles.map((file) => file.path))}`);
+  const leakedMidCall = cliFilesMidCall.filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leakedMidCall, [], "no file of the CLI's own (its home, its MCP config) holds the token");
   held.release();
   const { rows, last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
@@ -307,8 +309,6 @@ test("claude-agent: the Claude CLI's own MCP client calls mcp:fake/add through t
     assert.ok(i < 600, `the CLI process exits: ${JSON.stringify(await workingIn(join(data, "scratch"), runId))}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const cliFiles = (await scratchOf(data, runId)).filter((file) => file.path.includes(`/${runId}/harness/`));
-  assert.deepEqual(cliFiles.filter((file) => file.text.includes(TOKEN)).map((file) => file.path), [], "no file of the CLI's own (its home, its cache, its MCP log) holds the token");
   const leaked = (await dataFiles(data)).filter((file) => file.text.includes(TOKEN)).map((file) => file.path);
   assert.deepEqual(leaked, [], "no file under the data directory, the store among them, holds the token");
 });
