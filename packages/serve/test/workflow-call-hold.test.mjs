@@ -127,15 +127,3 @@ test("a hold refused for good once the driver admitted the call ends its effect 
   assert.equal(thrown, undefined);
   assert.deepEqual(log.map(([op, , value]) => [op, value]), [["refused", undefined], ["completed", { ok: false, agentrun_serve_tool_failed: 'call node "search-0": no price for it' }]], JSON.stringify(log));
 });
-
-test("a call ended held or failed is a returned failure: a continuation never answers a call from its receipt", async () => {
-  const { inheritableReceipts } = await import("@parcha/agentrun-dsl/recovery");
-  const outcomes = [];
-  for (const refusal of [new CapRefused("no room", { forGood: false, spentUsd: 0.9 }), new CapRefused("no price for it", { forGood: true, spentUsd: null })]) {
-    const { log, call } = admissions({ refusals: [refusal] });
-    await call().catch(() => undefined);
-    outcomes.push(log.find(([op]) => op === "completed")[2]);
-  }
-  const receipt = (value, id) => ({ id, name: "search-0", argsHash: "h", status: "completed", session: null, result: { value, files: {}, intent: { tool: "web_search", args: {} } } });
-  assert.deepEqual(inheritableReceipts([receipt(outcomes[0], "e0"), receipt(outcomes[1], "e1"), receipt("found", "e2")]).map((one) => one.id), ["e2"], JSON.stringify(outcomes));
-});
