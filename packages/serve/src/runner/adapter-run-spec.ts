@@ -698,7 +698,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 }
 
 /** The host-tool ctx a non-hand tool is wrapped with (host-tools.ts hostToolOf): the run's own Harness (its commit,
- *  snapshot, conversation and task reads), the results map, and the run's folder as the api env's cwd (a tool reads no
+ *  snapshot and task reads), the results map, and the run's folder as the api env's cwd (a tool reads no
  *  file environment, so an error names a path relative to it). Shared by the pi spec's bindNonHandTools and the CLI spec's
  *  learned_workflow. */
 export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolResults, root: string): HostToolCtx {
@@ -708,7 +708,6 @@ export function hostToolCtxOf(run: AdapterRun, context: Context, results: ToolRe
     env: async () => ({ cwd: root }) as never,
     commit: (change, at, options) => run.harness.commit(change, at, options),
     snapshot: ((...args: unknown[]) => Reflect.apply(run.harness.snapshot, run.harness, args)) as ToolExecutionApi["snapshot"],
-    conversation: ((id, at) => run.harness.conversation(id, at)) as ToolExecutionApi["conversation"],
     waitForTask: (id, at) => run.harness.waitForTask(id, at),
     agent: async (at) => {
       const conversation = await run.harness.conversation(ROOT_CONVERSATION_ID, at);
