@@ -1510,7 +1510,7 @@ proxy on a public https address, set `AGENTRUN_PUBLIC_URL` to that address and h
 and `X-Forwarded-Proto: https`: without them a start reads as another address (or plain http) than the callback's,
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
-refresh is refused with words and nothing is sent. A loopback MCP server (`http://127.0.0.1`, `localhost`) is taken only
+refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
 by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
 and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does.

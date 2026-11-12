@@ -89,7 +89,7 @@ per address (an IPv6 one by its /64) and wrong passwords per server; past the li
 Behind a proxy, set AGENTRUN_TRUSTED_PROXIES to its addresses or ranges (comma-separated; or loopback, linklocal,
 uniquelocal) so each visitor counts by the address its X-Forwarded-For names; unset, that header is never read. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
 data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.
-An MCP server on loopback (http://127.0.0.1, localhost) is refused unless AGENTRUN_MCP_ALLOW_LOOPBACK=1 is set at the
+An MCP server on loopback (a 127.0.0.1 or localhost address) is refused unless AGENTRUN_MCP_ALLOW_LOOPBACK=1 is set at the
 start: set it only on a machine you alone use, since loopback is this machine's other services too.
 
 \`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
