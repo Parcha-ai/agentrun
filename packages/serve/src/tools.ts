@@ -432,7 +432,7 @@ const browserTool: ToolEntry = {
       // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
       // session opens (onSessions, below).
       waitEnded: (at, why) => {
-        if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }).catch(() => undefined);
+        if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
       },
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
@@ -501,7 +501,7 @@ const browserTool: ToolEntry = {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
       // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
-      if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId).catch(() => undefined);
+      if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
       await saved?.(row, change);
       await onSession(row, change);
     };

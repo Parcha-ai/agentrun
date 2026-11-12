@@ -20,12 +20,18 @@ export type WaitEnded = { at: string; why: string };
 const keyOf = (runId: string) => `browser_wait_ended:${runId}`;
 
 /** The run's process, as its wait ends with the browser let go: kept for the Screen tab. */
-export async function markWaitEnded(settings: WaitEndedSettings, runId: string, ended: WaitEnded): Promise<void> {
-  await settings.put(keyOf(runId), ended);
+export async function markWaitEnded(settings: WaitEndedSettings, runId: string, ended: WaitEnded, epoch?: number): Promise<void> {
+  await settings.put(keyOf(runId), epoch === undefined ? ended : { ...ended, epoch });
 }
 
-/** The run's process, as any browser session of the run opens: nothing ended any more. */
-export async function clearWaitEnded(settings: WaitEndedSettings, runId: string): Promise<void> {
+/** The run's process, as any browser session of the run opens, or at the run's end: nothing ended any more. Given the
+ *  claim's `epoch`, a message a later claim wrote stays (a follow-up that started on another runner while this claim's
+ *  loop was still closing keeps its own). */
+export async function clearWaitEnded(settings: WaitEndedSettings, runId: string, epoch?: number): Promise<void> {
+  if (epoch !== undefined) {
+    const written = ((await settings.get(keyOf(runId))) as { epoch?: unknown } | undefined)?.epoch;
+    if (typeof written === "number" && written > epoch) return;
+  }
   await settings.remove(keyOf(runId));
 }
 

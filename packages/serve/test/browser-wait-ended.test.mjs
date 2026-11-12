@@ -24,6 +24,16 @@ function storeOf() {
 
 const ENDED = { at: "2026-11-11T14:26:00.000Z", why: "The browser was released after 15 min waiting for you" };
 
+test("a claim's clear leaves a later claim's message: a follow-up on another runner keeps its own", async () => {
+  const store = storeOf();
+  await markWaitEnded(store.settings, "run-e", ENDED, 3);
+  assert.deepEqual(await readWaitEnded(store.settings, "run-e"), ENDED, "the epoch is not part of what the Screen reads");
+  await clearWaitEnded(store.settings, "run-e", 2);
+  assert.deepEqual(await readWaitEnded(store.settings, "run-e"), ENDED, "an earlier claim's end leaves a later claim's message");
+  await clearWaitEnded(store.settings, "run-e", 3);
+  assert.equal(await readWaitEnded(store.settings, "run-e"), undefined, "its own claim's end clears it");
+});
+
 test("marked as the wait ends, read back for the run, and gone once any new session of the run opens", async () => {
   const store = storeOf();
   assert.equal(await readWaitEnded(store.settings, "run-a"), undefined);
