@@ -4,7 +4,7 @@ Greptile is an industry-leading code review product. In March it moved from a fl
 review past 50. Then our agents took off, and our bill went from $180 a month to $6,451:
 
 <p align="center">
-  <img alt="Our Greptile bill, every month: $180 in December up to $6,451 in October and $7,018 so far in November" src="../assets/case-studies/chart-review-bill.png" width="100%">
+  <img alt="Our Greptile bill: $180 in December up to $6,451 in October and $7,018 so far in November" src="../assets/case-studies/chart-review-bill.png" width="100%">
 </p>
 
 So we built our own. It runs on particle-1, a model that costs almost nothing, and a review costs us about 18 cents.
