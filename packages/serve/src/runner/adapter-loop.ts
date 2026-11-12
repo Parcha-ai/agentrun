@@ -685,6 +685,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  person's message is placed as that first input. The claim waits on it, never sending the input they stopped, however
    *  late the runner hands the message over. */
   let firstInputPlaced: Promise<void> | undefined;
+  /** Resolved once a pass of this claim has sent what its session starts on (the run's input, a follow-up, a recovery),
+   *  or found nothing to send: a message handed over while the session is still new waits for it, so it lands after the
+   *  run's input, never as the session's first prompt (a message sent as soon as the run's 202 came back). */
+  let inputSent: () => void = () => {};
+  const startSent = new Promise<void>((resolve) => (inputSent = resolve));
   /** The tool hosts' holds while the run waits in its claim on the person's answer (HostLifecycle.personWait): dropped
    *  once the wait is over, whichever way it ends. */
   let waitHolds: PersonWait[] = [];
@@ -888,10 +893,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   const steer = async (command: Command): Promise<CommandOutcome> => {
     // Handed over before the session is open: placed once it is, its outcome the real one (never taken and then dropped).
-    if (!gate || !session) await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+    // Awaited even with a session there: until the claim is ready it has not said whether this message reopens the run.
+    const over = () => (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined);
+    await Promise.race([ready, over()]);
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The session is still new and this is no reopen's message: the claim has yet to send the run's input. Placed now,
+    // the message would be the session's first prompt and the input would follow it; it waits for the input instead, then
+    // goes into that turn as any message does.
+    if (!reopen && session.state === "new") {
+      await Promise.race([startSent, over()]);
+      if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    }
     // The run's job has answered and it is looking back before its end: a person's message is not the end-of-run turn's
     // to answer. Left untaken, the run's end opens a completed run again with it as a new turn (store run-patch.ts
     // refuseLeftovers).
@@ -1671,6 +1685,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           await session!.send(spec.input, spec.inputOrigin ? { origin: spec.inputOrigin } : undefined);
         }
         else if (session!.state === "open_turn") await session!.recover();
+        // A message handed over while the session was new is placed from here on, after what was just sent.
+        inputSent();
         // The turn this claim waits on: the first, then each the person's answer starts while the run waits in its claim on
         // its question (waitInClaim: ask_person with the browser open); "lapsed" when such a wait can no longer hold.
         let turn: Promise<TurnEnd | "lapsed"> = placed ? session!.turnEnd() : idleTurnOf(harness, root);
