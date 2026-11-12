@@ -14,6 +14,7 @@ let package = Package(
 		.library(name: "ComputerdKit", targets: ["ComputerdKit"]),
 		.executable(name: "ComputerdApp", targets: ["ComputerdApp"]),
 		.executable(name: "computerd", targets: ["ComputerdCLI"]),
+		.executable(name: "UIFixture", targets: ["UIFixture"]),
 	],
 	targets: [
 		.target(name: "CComputerd"),
@@ -36,6 +37,12 @@ let package = Package(
 		),
 		.executableTarget(name: "ComputerdApp", dependencies: ["ComputerdMac", "ComputerdKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
 		.executableTarget(name: "ComputerdCLI", dependencies: ["ComputerdKit"]),
+		// The ui conformance cases' fixture app (ai.agentrun.ui-fixture), bundled by scripts/bundle.sh. Test-only.
+		.executableTarget(
+			name: "UIFixture",
+			swiftSettings: [.swiftLanguageMode(.v5)],
+			linkerSettings: [.linkedFramework("AppKit", .when(platforms: [.macOS]))]
+		),
 		.testTarget(name: "ComputerdKitTests", dependencies: ["ComputerdKit"]),
 		.testTarget(name: "ComputerdMacTests", dependencies: ["ComputerdMac", "ComputerdKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
 	]

@@ -2,6 +2,7 @@
 # Builds Computerd.app from this package and signs it.
 #
 #   scripts/bundle.sh [OUT_DIR]          writes OUT_DIR/Computerd.app (default: ./build)
+#   COMPUTERD_UI_FIXTURE=1 also writes OUT_DIR/UIFixture.app, the ui conformance cases' fixture
 #
 # COMPUTERD_SIGN_IDENTITY is the one signing setting. "-" (the default) signs ad hoc, as CI does: macOS then pins each
 # grant to this exact build, so a new build is granted again. A "Developer ID Application: <name> (<team>)" identity
@@ -45,3 +46,15 @@ codesign --force --sign "$identity" ${options[@]+"${options[@]}"} --entitlements
 codesign --verify --strict --deep "$app"
 codesign --display --requirements - "$app" 2>&1 | sed -n 's/^designated => /designated requirement: /p'
 echo "$app"
+
+# The ui conformance cases' fixture app, with COMPUTERD_UI_FIXTURE=1 (CI installs it in /Applications). Test-only.
+if [[ "${COMPUTERD_UI_FIXTURE:-}" == 1 ]]; then
+	swift build -c "$config" --product UIFixture
+	fixture="$out/UIFixture.app"
+	rm -rf "${out:?}/UIFixture.app"
+	mkdir -p "$fixture/Contents/MacOS"
+	cp "$bin/UIFixture" "$fixture/Contents/MacOS/UIFixture"
+	cp App/UIFixture-Info.plist "$fixture/Contents/Info.plist"
+	codesign --force --sign "$identity" ${options[@]+"${options[@]}"} "$fixture"
+	echo "$fixture"
+fi

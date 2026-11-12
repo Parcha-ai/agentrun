@@ -4,8 +4,9 @@
 
 The core checks must pass: hello, ping, exec, files, apps, the socket's peer check, and each grant-bound method either
 working or refused in words that name the grant. With the grants in place (seed-tcc.sh), it also drives TextEdit in the
-background: open a document without bringing it forward, observe it, type into it, and expect the text. Those live
-results are reported, and fail the run only with SMOKE_STRICT_LIVE=1. A summary goes to $GITHUB_STEP_SUMMARY.
+background: open a document without bringing it forward, observe it, type into it, and expect the text. Then the ui
+fixture (UIFixture.app, when installed): its elements, an expect, and its canvas, which only foreground input reaches.
+Those live results are reported, and fail the run only with SMOKE_STRICT_LIVE=1. A summary goes to $GITHUB_STEP_SUMMARY.
 """
 
 import base64
@@ -87,7 +88,7 @@ def core(c):
 
     apps = c.call("apps.list").get("result") or {}
     ids = [a["id"] for a in apps.get("apps", [])]
-    record("core", "apps.list has the Finder", "com.apple.finder" in ids, f"{len(ids)} apps, front {apps.get('foreground')}")
+    record("core", "apps.list has the Finder (running) and TextEdit (installed)", "com.apple.finder" in ids and "com.apple.TextEdit" in ids, f"{len(ids)} apps, front {apps.get('foreground')}")
     return features
 
 
@@ -156,6 +157,66 @@ def live(c):
     c.call("apps.terminate", {"id": "com.apple.TextEdit"})
 
 
+FIXTURE = "ai.agentrun.ui-fixture"
+
+
+def fixture(c):
+    """The ui fixture (UIFixture.app, CI installs it), checked the way the ui conformance cases read it."""
+    ids = [a["id"] for a in (c.call("apps.list").get("result") or {}).get("apps", [])]
+    if FIXTURE not in ids:
+        record("fixture", f"skipped: {FIXTURE} is not installed", True)
+        return
+    c.call("apps.terminate", {"id": FIXTURE})
+    launch = c.call("apps.launch", {"id": FIXTURE})
+    record("fixture", "apps.launch the ui fixture", "result" in launch, json.dumps(launch.get("error")))
+    seen = None
+    for _ in range(20):
+        reply = c.call("ui.observe", {"target": {"app": FIXTURE}})
+        r = reply.get("result") or {}
+        if any(n.get("id") == "next" for n in r.get("nodes", [])):
+            seen = r
+            break
+        time.sleep(0.5)
+    if seen is None:
+        record("fixture", "ui.observe the fixture's home", False, json.dumps(reply.get("error") or reply.get("result", {}).get("nodes", [])[:8]))
+        return
+    by = {n["id"]: n for n in seen["nodes"] if n.get("id")}
+    shape = {k: (by.get(k) or {}).get("role") for k in ["name", "wifi", "save", "next", "canvas"]}
+    want = {"name": "textbox", "wifi": "switch", "save": "button", "next": "button", "canvas": "image"}
+    record("fixture", "the fixture's elements, by id and role", shape == want, json.dumps(shape))
+    size = seen["window"]["bounds"][2:]
+    record("fixture", "the window is 480 by 320 points", size == [480, 320], json.dumps(seen["window"]))
+    record("fixture", "Wi-Fi's desc", (by.get("wifi") or {}).get("desc") == "Networks nearby", json.dumps(by.get("wifi")))
+    record("fixture", "the canvas's count starts at 0", (by.get("canvas") or {}).get("value") == "0", json.dumps(by.get("canvas")))
+    if shape != want:
+        return
+
+    saved = c.call("ui.act", {"target": {"app": FIXTURE}, "steps": [{"press": by["save"]["ref"]}], "expect": {"text": "Saved", "timeoutMs": 3000}})
+    r = saved.get("result") or {}
+    record("fixture", "press Save, expect Saved", r.get("expect") == "met", json.dumps(saved.get("error") or r.get("steps")) + f" expect {r.get('expect')}")
+
+    def count():
+        nodes = (c.call("ui.observe", {"target": {"app": FIXTURE}}).get("result") or {}).get("nodes", [])
+        return next((n.get("value") for n in nodes if n.get("id") == "canvas"), None)
+
+    before = count()
+    posted = c.call("ui.act", {"target": {"app": FIXTURE}, "steps": [{"click": by["canvas"]["ref"]}]})
+    step = ((posted.get("result") or {}).get("steps") or [{}])[0]
+    after = count()
+    if "error" in step:
+        ok = step["error"].get("kind") in ("denied", "unsupported")
+    else:
+        ok = step.get("route") != "foreground" and (not step.get("verified") or after != before)
+    record("fixture", "a canvas click without foreground: refused, or never verified unless it landed", ok, f"{json.dumps(posted.get('error') or step)} count {before} -> {after}")
+
+    allowed = c.call("ui.act", {"target": {"app": FIXTURE}, "steps": [{"click": by["canvas"]["ref"]}], "foreground": True})
+    step = ((allowed.get("result") or {}).get("steps") or [{}])[0]
+    final = count()
+    landed = after is not None and final is not None and int(final) == int(after) + 1
+    record("fixture", "a canvas click with foreground: true lands and verifies", landed and step.get("verified") is True, f"{json.dumps(allowed.get('error') or step)} count {after} -> {final}")
+    c.call("apps.terminate", {"id": FIXTURE})
+
+
 def peer_check():
     path = wait_for_socket()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -182,6 +243,7 @@ def main():
         features = core(c)
         if grant_bound(c, features):
             live(c)
+            fixture(c)
         else:
             record("live", "skipped: ui.tree is off (Accessibility is not granted)", True)
     finally:
@@ -196,7 +258,7 @@ def main():
         with open(summary, "a") as f:
             f.write("### Computerd smoke\n\n" + "\n".join(lines) + "\n")
     strict_live = os.environ.get("SMOKE_STRICT_LIVE") == "1"
-    failed = [r for r in results if not r[2] and (r[0] != "live" or strict_live)]
+    failed = [r for r in results if not r[2] and (r[0] not in ("live", "fixture") or strict_live)]
     print(f"{len(results) - len([r for r in results if not r[2]])} of {len(results)} checks passed")
     sys.exit(1 if failed else 0)
 

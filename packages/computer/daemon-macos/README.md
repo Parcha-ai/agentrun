@@ -20,7 +20,7 @@ It speaks the protocol three ways:
 | `hello` | The screen in points and its scale, the Mac's model and macOS build, and each feature on or off with the reason (a missing grant, a missing private symbol). |
 | `exec.run`, `files.*`, `tar.*` | As the logged-in user, as the Linux daemon does. |
 | `screen.shot`, `screen.watch` | ScreenCaptureKit; needs Screen Recording. |
-| `apps.list`, `apps.launch`, `apps.terminate` | NSWorkspace. `background: true` opens the app without bringing it forward, and sends it back if it comes forward on its own. |
+| `apps.list`, `apps.launch`, `apps.terminate` | NSWorkspace. The list is every app in the Applications folders and every app running. `background: true` opens the app without bringing it forward, and sends it back if it comes forward on its own. |
 | `ui.observe` | The window's accessibility tree, batched, at most a second per call to the app, capped at 5,000 nodes; compact or full; a diff since a state; the window's own image (it shows even when covered). Without Accessibility (`ui.tree` off) it answers the window's image with no nodes and says why, and steps at the image's points still run. |
 | `ui.act` | Each step on the first route that can do it: **semantic** (AXPress, a value set and read back, a menu item for `super+s`), then **background** (input posted to the app's window through SkyLight, without moving the pointer or raising the window), then **foreground** (the real keyboard and mouse) only when the call says `foreground: true`. Each step's result names its route and whether its effect was verified. |
 
@@ -105,6 +105,9 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
 - **ComputerdMac**: those protocols on macOS (accessibility, ScreenCaptureKit, NSWorkspace, SkyLight input, the
   keychain, the socket's peer check, the attach client).
 - **ComputerdApp**: the app. **ComputerdCLI**: the `computerd` command.
+- **UIFixture**: the ui conformance cases' fixture app (`ai.agentrun.ui-fixture`, per
+  `packages/computer/src/conformance/ui-fixture.ts`). `COMPUTERD_UI_FIXTURE=1 scripts/bundle.sh` writes
+  `build/UIFixture.app`; test-only.
 
 CI (`.github/workflows/computer-macos.yml`) builds and tests on `macos-26`, bundles the app, seeds the runner's grants,
 starts the app under launchd in the runner's desktop, and runs `scripts/smoke.py` through `computerd`, with the results

@@ -49,9 +49,11 @@ jobs:
       - name: Unit tests
         run: swift test --skip-build 2>&1 | tee test.log
       # The steps below run even when a unit test failed, so one red test does not hide the smoke test's report.
-      - name: Bundle Computerd.app (ad hoc)
+      - name: Bundle Computerd.app and the ui fixture (ad hoc)
         if: ${{ !cancelled() }}
-        run: scripts/bundle.sh build
+        run: |
+          COMPUTERD_UI_FIXTURE=1 scripts/bundle.sh build
+          cp -R build/UIFixture.app /Applications/
       - name: Seed the runner's grants
         if: ${{ !cancelled() }}
         run: scripts/seed-tcc.sh build/Computerd.app

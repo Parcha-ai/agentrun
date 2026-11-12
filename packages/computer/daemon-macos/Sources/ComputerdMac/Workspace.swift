@@ -3,7 +3,8 @@ import AppKit
 import ComputerdKit
 import Foundation
 
-/// Apps through NSWorkspace: the ones with a Dock presence, launched without coming to the front when asked.
+/// Apps through NSWorkspace: the ones installed in the Applications folders and the ones running with a Dock presence,
+/// launched without coming to the front when asked.
 final class MacWorkspace: Workspace, @unchecked Sendable {
 	init() {}
 
@@ -11,15 +12,26 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 	/// app that was in front is made active again.
 	var backgroundLaunch: Feature { .on }
 
+	/// Where installed apps are, as the Finder's Applications shows them.
+	static let folders = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities", NSHomeDirectory() + "/Applications"]
+
+	/// What apps.launch can open: every app in the Applications folders, and every app running with a Dock presence
+	/// (the Finder, an app opened from elsewhere).
 	func list() -> AppsListResult {
-		var seen = Set<String>()
-		var apps: [App] = []
-		for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && !app.isTerminated {
-			guard let id = app.bundleIdentifier, seen.insert(id).inserted else { continue }
-			let version = app.bundleURL.flatMap { Bundle(url: $0)?.infoDictionary?["CFBundleShortVersionString"] as? String }
-			apps.append(App(id: id, name: app.localizedName, version: version))
+		var byID: [String: App] = [:]
+		func add(_ url: URL, name: String?) {
+			guard let info = Bundle(url: url)?.infoDictionary, let id = info["CFBundleIdentifier"] as? String, byID[id] == nil else { return }
+			let shown = name ?? (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? url.deletingPathExtension().lastPathComponent
+			byID[id] = App(id: id, name: shown, version: info["CFBundleShortVersionString"] as? String)
 		}
-		apps.sort { $0.id < $1.id }
+		for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && !app.isTerminated {
+			if let url = app.bundleURL { add(url, name: app.localizedName) }
+		}
+		for folder in Self.folders {
+			let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+			for name in names where name.hasSuffix(".app") { add(URL(fileURLWithPath: folder).appendingPathComponent(name), name: nil) }
+		}
+		let apps = byID.values.sorted { $0.id < $1.id }
 		return AppsListResult(apps: apps, foreground: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
 	}
 
