@@ -2799,7 +2799,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "startRun":
       case "callRunComputer":
       case "releaseRunComputer": {
-        // A held computer's routes (computer-held-routes.ts), over the store: each a command row the run's runner applies.
+        // A call on a run's computer (the computer call channel) and a held computer's start and release
+        // (computer-held-routes.ts), over the store: each a command row the run's runner applies.
         const run = await needRun(id);
         return send(res, 200, await heldRoute(found.name, run.id, await bodyOf(req), store, { context: ctx }), { "cache-control": "no-store" });
       }

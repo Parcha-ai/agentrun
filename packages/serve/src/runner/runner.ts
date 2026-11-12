@@ -163,6 +163,8 @@ interface Held {
   sealed: boolean;
   renewing: boolean;
   delivering: boolean;
+  /** A command was written while a delivery was in flight: one more delivery follows its end. */
+  deliverAgain: boolean;
   /** The delivery under way, which the end waits for (up to endWaitMs) before it writes. */
   inFlight?: Promise<void>;
   deadline?: unknown;
@@ -244,6 +246,8 @@ export function startRunner(options: RunnerOptions): Runner {
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
   let commandTimer: NodeJS.Timeout | undefined;
+  /** Stops listening for written commands (store.watchCommands); set once the runner has started. */
+  let unwatchCommands: (() => void) | undefined;
   let polling = false;
 
   /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
@@ -381,6 +385,11 @@ export function startRunner(options: RunnerOptions): Runner {
       } finally {
         held.delivering = false;
         if (held.inFlight === delivery) held.inFlight = undefined;
+        // A row written while this delivery ran: read again now (deliver itself checks the run still takes rows).
+        if (held.deliverAgain) {
+          held.deliverAgain = false;
+          if (delivering()) void deliver(held);
+        }
       }
     })();
     held.inFlight = delivery;
@@ -663,7 +672,7 @@ export function startRunner(options: RunnerOptions): Runner {
       },
       redact,
     });
-    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, mib };
+    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
@@ -795,6 +804,15 @@ export function startRunner(options: RunnerOptions): Runner {
 
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
+  // A command written for a run this runner holds is handed on now, not at the next poll. A delivery already in flight
+  // marks the run, and one more delivery follows its end, so a row written mid-delivery is never left to the next poll.
+  unwatchCommands = store.watchCommands(({ runId, what }) => {
+    if (what !== "written" || !delivering()) return;
+    const held = runs.get(runId);
+    if (held === undefined) return;
+    if (held.delivering) held.deliverAgain = true;
+    else void deliver(held);
+  });
 
   /** The untaken stop or cancel row each of `going` ends on (endingRow: a cancel before a stop), past its cursor, by run id:
    *  the close's one read of their rows (store.commandsOf), after the deliveries in flight. The whole of it is bounded by
@@ -838,6 +856,7 @@ export function startRunner(options: RunnerOptions): Runner {
   const stopTimers = () => {
     clearTimeout(pollTimer);
     clearTimeout(commandTimer);
+    unwatchCommands?.();
     clearInterval(renewTimer);
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };

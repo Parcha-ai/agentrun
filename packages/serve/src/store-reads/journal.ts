@@ -12,6 +12,7 @@ import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
+import { computerCallsOf } from "../computer-calls.js";
 import { labelled, type Reflect } from "../reflect-range.js";
 import { reflectFrom } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
@@ -191,7 +192,20 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+}
+
+/** `rows` with each tool call's result row carrying the computer protocol calls it made (`computer_calls`, and
+ *  `computer_calls_dropped` past the record's bound), from the COMPUTER_CALLS entry the adapter loop kept beside the call
+ *  (computer-calls.ts), joined by the call's id. A record holds no param's value and no answer's bytes, so it needs no cut.
+ *  Rows of a run whose tools made none are as they were. */
+function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const made = computerCallsOf(entries);
+  if (!made.size) return rows;
+  return rows.map((row) => {
+    const kept = row.kind === "tool_result" && row.tool_use_id ? made.get(row.tool_use_id) : undefined;
+    return kept ? { ...row, computer_calls: kept.calls, ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;
+  });
 }
 
 /** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the

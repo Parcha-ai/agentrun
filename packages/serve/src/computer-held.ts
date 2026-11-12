@@ -1,8 +1,9 @@
 // A held computer: a run started with `hold: true` claims its computer and waits, its agent not started, until its owner
 // starts it (POST /runs/{id}/start); after the agent ends, the run keeps the computer until the owner releases it (POST
 // /runs/{id}/computer/release) or the hold times out. Meanwhile the owner sends the computer protocol calls of their own
-// (POST /runs/{id}/computer/call): to set a task up before the agent starts, and to check what it left after. A
-// benchmark is the user: it sets a task up, starts the agent, reads the computer after, then lets it go.
+// through the computer call channel (computer-channel.ts, POST /runs/{id}/computer/call): to set a task up before the
+// agent starts, and to check what it left after. A benchmark is the user: it sets a task up, starts the agent, reads the
+// computer after, then lets it go.
 //
 // Like the take-over (computer-commands.ts), it runs over the one store: the server writes command rows, the run's
 // runner applies them to the computer it holds (runner/held-run.ts), and commits what came of each to the run's journal.
@@ -12,36 +13,24 @@
 //   computer.held, `{ state, at, minutes, by?, why? }`: "waiting" (the computer is up, the agent not started), "started"
 //     (row `by` started it), "ended" (the agent is done; the run keeps the computer), "released" (row `by` released it, or
 //     `why`: "timeout" when no call came for `minutes`, "lost" when the claim that held it was lost and its computer with it).
-//   computer.call, `{ by, method, answer, ms, at }`: row `by`'s protocol call and its answer, verbatim: `{ ok: true, value }`
-//     or `{ ok: false, error }`.
-// The rows: computer_start `{}`, computer_call `{ method, params }`, computer_release `{}`.
+//   computer.call (the channel's, computer-channel.ts): each owner call starts the hold's `minutes` again from its `at`.
+// The rows: computer_start `{}`, computer_release `{}`.
+import { CALL_KIND } from "./computer-channel.js";
 import type { JournalEntry } from "./computer-commands.js";
 import type { ComputerKind } from "./computer-setting.js";
 import type { InputIssue } from "./errors.js";
 
-/** The journal entry kinds the runner commits. */
+/** The journal entry kind the runner commits for each change of the hold. */
 export const HELD_KIND = "computer.held";
-export const HELD_CALL_KIND = "computer.call";
 /** The command row kinds the server writes. */
 export const COMPUTER_START = "computer_start";
-export const COMPUTER_CALL = "computer_call";
 export const COMPUTER_RELEASE = "computer_release";
-export const HELD_COMMANDS: ReadonlySet<string> = new Set([COMPUTER_START, COMPUTER_CALL, COMPUTER_RELEASE]);
+export const HELD_COMMANDS: ReadonlySet<string> = new Set([COMPUTER_START, COMPUTER_RELEASE]);
 
 /** How long a held computer waits with no call from its owner, before the start and after the agent ends: the default,
  *  and the most a run may ask for (`hold_minutes`). */
 export const HOLD_MINUTES = 30;
 export const HOLD_MAX_MINUTES = 120;
-/** The longest one owner call runs on the computer before the runner ends it. */
-export const HELD_CALL_MS = 120_000;
-
-/** The computer protocol's methods (spec/computer/protocol.json; a test keeps the two equal). A call names one of them. */
-export const PROTOCOL_METHODS: readonly string[] = [
-  "apps.install", "apps.launch", "apps.list", "apps.terminate", "deadline.extend", "exec.run", "files.list", "files.mkdir", "files.move",
-  "files.read", "files.remove", "files.stat", "files.write", "hello", "input.actions", "mount.sync", "ping", "process.list", "process.read",
-  "process.resize", "process.signal", "process.start", "process.wait", "process.write", "screen.read", "screen.shot", "screen.watch",
-  "tar.pull.begin", "tar.pull.end", "tar.pull.read", "tar.push.begin", "tar.push.end", "tar.push.write", "ui.act", "ui.observe",
-];
 
 /** The kinds of computer a run may hold: those that speak the protocol. A browser is driven through its own tool. */
 export const HELD_KINDS: readonly ComputerKind[] = ["sandbox", "desktop", "phone"];
@@ -93,20 +82,9 @@ export function heldIn(entries: readonly JournalEntry[]): HeldRead | undefined {
     if (entry.kind === HELD_KIND && HELD_STATES.includes(data.state as HeldState)) {
       const minutes = typeof data.minutes === "number" ? data.minutes : (read?.minutes ?? HOLD_MINUTES);
       read = { state: data.state as HeldState, minutes, last: at, ...(data.why === "timeout" || data.why === "lost" ? { why: data.why } : {}) };
-    } else if (entry.kind === HELD_CALL_KIND && read) read.last = Math.max(read.last, at);
+    } else if (entry.kind === CALL_KIND && read) read.last = Math.max(read.last, at);
   }
   return read && { state: read.state, minutes: read.minutes, until: read.last + read.minutes * 60_000, ...(read.why ? { why: read.why } : {}) };
-}
-
-/** Row `rowId`'s call's answer, once the runner committed it: `{ ok: true, value }` or `{ ok: false, error }`, verbatim. */
-export function callAnswerIn(entries: readonly JournalEntry[], rowId: number): unknown {
-  for (let i = entries.length - 1; i >= 0; i -= 1) {
-    const entry = entries[i]!;
-    if (entry.kind !== HELD_CALL_KIND) continue;
-    const data = dataOf(entry);
-    if (data.by === rowId) return data.answer;
-  }
-  return undefined;
 }
 
 /** The Timeline's words for the hold's changes. */

@@ -1,22 +1,19 @@
 // A held computer on the runner (computer-held.ts has the contract): the run's computer waits for its owner before the
-// agent's first input and after the agent's end, and the owner's start, call and release rows are applied here. Every
-// change, and every call with its answer, is committed to the run's journal; the commit that writes it takes its row.
+// agent's first input and after the agent's end, and the owner's start and release rows are applied here. Every change is
+// committed to the run's journal; the commit that writes it takes its row. The owner's calls go through the computer call
+// channel (computer-channel.ts) as any run's do; each one starts the hold's count again (touched).
 //
 // The adapter loop makes one per pass, for a spec that carries `held`, once the run's Harness is open (as it does the
 // take-over's journalHold), and reads the hold's state from the journal, so a restart within the claim goes on where the
 // last pass left it. A new claim has a new computer: a hold an earlier claim left open is gone with that claim's computer.
-import type { ComputerClient } from "@parcha/agentrun-computer";
 import { HOST_PHASE } from "../timeline/index.js";
-import {
-  COMPUTER_CALL, COMPUTER_RELEASE, COMPUTER_START, HELD_CALL_KIND, HELD_CALL_MS, HELD_COMMANDS, HELD_KIND, heldIn, type HeldRead, type HeldState, heldWords,
-  PROTOCOL_METHODS,
-} from "../computer-held.js";
-import type { RunComputer } from "../workspace/run-tools.js";
+import { COMPUTER_RELEASE, COMPUTER_START, HELD_COMMANDS, HELD_KIND, heldIn, type HeldRead, type HeldState, heldWords } from "../computer-held.js";
+import type { LoopComputer } from "./computer-channel.js";
 import type { RootEntry } from "./computer-journal.js";
 import type { Command } from "./loop-contract.js";
 
-/** A run's held computer, as its spec gives it: the client of the computer the run claimed, and the hold's minutes. */
-export type HeldSpec = { readonly client: ComputerClient; readonly minutes: number };
+/** A run's held computer, as its spec gives it: the hold's minutes (its computer is the spec's `computer`). */
+export type HeldSpec = { readonly minutes: number };
 
 /** What came of an owner's row: refused in words, or the change to commit (the commit takes the row). */
 export type HeldDecision = { readonly refused: string } | { readonly write: () => Promise<void> };
@@ -43,6 +40,8 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
     return next;
   };
   const phase = (summary: string, at: number): RootEntry => ({ kind: HOST_PHASE, data: { summary, at } });
+  /** Why a row finds the hold over, in words. */
+  const released = (): string => (read?.why === "timeout" ? `The run's computer was let go: no call came for ${spec.minutes} minutes.` : read?.why === "lost" ? heldWords.lost : "The run's computer was already released.");
   /** The hold moves to `state` now: read here at once, committed in order. */
   const move = (state: HeldState, extra: { by?: number; why?: "timeout" | "lost" }, words: string | undefined): Promise<void> => {
     const at = now();
@@ -103,36 +102,28 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
       if (read?.state !== "ended") await move("ended", {}, heldWords.ended(spec.minutes)).catch(() => undefined);
       return waitWhile(["ended"], cut);
     },
-    /** An owner's row: a start, a call or a release. A call runs on the computer here, before its answer is written. */
-    async decide(command: Command): Promise<HeldDecision> {
+    /** Why an owner's call is refused now: the hold is over (released, lapsed or lost). Undefined while the computer is
+     *  held: waiting, started or ended. */
+    refusesCall(): string | undefined {
+      if (read?.state !== "released") return undefined;
+      return released();
+    },
+    /** An owner's call ended at `at` (its computer.call entry's stamp): the hold's count starts again from it. */
+    touched(at: number): void {
+      if (!read || read.state === "released") return;
+      read = { ...read, until: Math.max(read.until, at + ms) };
+      poke();
+    },
+    /** An owner's row: a start or a release. */
+    decide(command: Command): HeldDecision {
       const state = read?.state;
       if (state === undefined) return { refused: "The run's computer is not up yet." };
-      if (state === "released") return { refused: read?.why === "timeout" ? `The run's computer was let go: no call came for ${spec.minutes} minutes.` : read?.why === "lost" ? heldWords.lost : "The run's computer was already released." };
+      if (state === "released") return { refused: released() };
       if (command.kind === COMPUTER_START) {
         if (state !== "waiting") return { refused: "The run's agent has already started." };
         return { write: () => move("started", { by: command.id }, heldWords.started) };
       }
       if (command.kind === COMPUTER_RELEASE) return { write: () => move("released", { by: command.id }, heldWords.released) };
-      if (command.kind === COMPUTER_CALL) {
-        const body = (command.body ?? {}) as { method?: unknown; params?: unknown };
-        const method = typeof body.method === "string" ? body.method : "";
-        if (!PROTOCOL_METHODS.includes(method)) return { refused: `${JSON.stringify(method)} is not a computer protocol method.` };
-        const params = body.params && typeof body.params === "object" && !Array.isArray(body.params) ? body.params : {};
-        const started = now();
-        const answer = await spec.client.call(method as never, params as never, { signal: AbortSignal.timeout(HELD_CALL_MS) }).catch((error: unknown) => ({
-          ok: false as const,
-          error: { code: "gone", message: error instanceof Error ? error.message : String(error) },
-        }));
-        const at = now();
-        return {
-          write: () => {
-            // A call starts the hold's count again.
-            if (read && read.state !== "released") read = { ...read, until: at + ms };
-            poke();
-            return write([{ kind: HELD_CALL_KIND, data: { by: command.id, method, answer, ms: at - started, at } }]);
-          },
-        };
-      }
       return { refused: `a held computer takes no ${command.kind} row` };
     },
     /** Whether `data`, a hold or call entry's, is the change row `id` made: the commit that writes it takes the row. */
@@ -144,11 +135,11 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
 
 export type JournalHeld = ReturnType<typeof journalHeld>;
 
-/** The spec's `held` for a run whose launch holds its computer (run-launch.ts hold), given the computer its claim got:
- *  none for a run that holds none, or whose computer speaks no protocol (a browser's). */
-export function heldSpecOf(launch: { readonly hold?: { readonly minutes: number } }, computer: RunComputer | undefined): HeldSpec | undefined {
-  if (!launch.hold || !computer || computer.kind === "browser") return undefined;
-  return { client: computer.computer.client, minutes: launch.hold.minutes };
+/** The spec's `held` for a run whose launch holds its computer (run-launch.ts hold), given the loop's computer: none for a
+ *  run that holds none, or whose computer speaks no protocol (none, or a browser). */
+export function heldSpecOf(launch: { readonly hold?: { readonly minutes: number } }, computer: LoopComputer | undefined): HeldSpec | undefined {
+  if (!launch.hold || !computer) return undefined;
+  return { minutes: launch.hold.minutes };
 }
 
 /** Whether a command row is the owner's, for a held computer. */
