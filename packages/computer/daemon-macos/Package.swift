@@ -31,7 +31,6 @@ let package = Package(
 				.linkedFramework("ApplicationServices", .when(platforms: [.macOS])),
 				.linkedFramework("ScreenCaptureKit", .when(platforms: [.macOS])),
 				.linkedFramework("Security", .when(platforms: [.macOS])),
-				.linkedFramework("ServiceManagement", .when(platforms: [.macOS])),
 				.linkedLibrary("bsm", .when(platforms: [.macOS])),
 			]
 		),

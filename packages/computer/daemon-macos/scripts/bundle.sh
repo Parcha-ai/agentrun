@@ -13,8 +13,8 @@
 # The bundle:
 #   Contents/MacOS/Computerd                        the app (ComputerdApp)
 #   Contents/Helpers/computerd                      the command that relays to the app's socket
-#   Contents/Library/LaunchAgents/ai.parcha.computerd.plist
 #   Contents/Info.plist
+# The LaunchAgent's plist is not in the bundle: the app writes it to ~/Library/LaunchAgents when a person opens it.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,11 +31,10 @@ bin="$(swift build -c "$config" --show-bin-path)"
 
 app="$out/Computerd.app"
 rm -rf "${out:?}/Computerd.app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Library/LaunchAgents"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers"
 cp "$bin/ComputerdApp" "$app/Contents/MacOS/Computerd"
 cp "$bin/computerd" "$app/Contents/Helpers/computerd"
 cp App/Info.plist "$app/Contents/Info.plist"
-cp App/ai.parcha.computerd.plist "$app/Contents/Library/LaunchAgents/ai.parcha.computerd.plist"
 
 # A Developer ID identity signs with the hardened runtime and Apple's timestamp, which notarization asks for. Ad hoc and
 # local identities (mini-bootstrap.sh's) sign plainly: neither is notarized.

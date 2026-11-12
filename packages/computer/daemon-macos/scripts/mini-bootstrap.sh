@@ -56,17 +56,15 @@ COMPUTERD_SIGN_IDENTITY="$hash" COMPUTERD_UI_FIXTURE=1 "$here/scripts/bundle.sh"
 codesign --display --requirements - "$build/Computerd.app" 2>&1 | grep -E 'certificate (leaf|root) = H"' >/dev/null \
 	|| die "Computerd.app's designated requirement does not name the certificate, so a rebuild would lose the grants"
 
-say "stopping the old agent"
-# A self-signed build's LaunchAgent is pinned to the build that registered it: launchd kills any other build at spawn
-# ("Launch Constraint Violation", exit 78 "needs LWCR update"). So the old agent stops before its bundle is swapped,
-# and the new build registers again below. Any Computerd window still open is the old build: it goes too.
-if launchctl bootout "$domain/$label" 2>/dev/null; then echo "booted out $label"; else echo "$label was not loaded"; fi
-running="$(pgrep -x -u "$(id -u)" Computerd || true)"
-if [[ -n "$running" ]]; then
-	echo "ending Computerd: pid $(echo $running)"
-	kill $running 2>/dev/null || true
-	sleep 1
-fi
+say "closing Computerd's window"
+# A Computerd still running that is not the agent is an old build's grants window: it goes before the swap. The agent
+# keeps running, and is restarted on the new build below.
+agent_pid="$(launchctl print "$domain/$label" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | sed -n 1p)"
+for pid in $(pgrep -x -u "$(id -u)" Computerd || true); do
+	[[ "$pid" == "$agent_pid" ]] && continue
+	echo "ending Computerd's window, pid $pid"
+	kill "$pid" 2>/dev/null || true
+done
 
 say "installing in /Applications"
 # Each bundle is copied beside the old one, then swapped in.
@@ -84,45 +82,54 @@ install_app "$build/UIFixture.app" "$fixture"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" "$fixture"
 
 say "the LaunchAgent"
-# This build registers the agent again (unregister, awaited, then register), so launchd records this build's launch
-# constraint. open starts it in the login session, where SMAppService works (-n: a new copy, so the argument is not
-# lost on one already running); it writes the outcome to agent-status.txt and exits.
-status_file="$home/agent-status.txt"
-rm -f "$status_file"
-# (open may complain that a copy which never shows a window did not check in: the status file decides.)
-open -n "$app" --args --register-agent || echo "open exited $?: waiting for the status file anyway"
-for _ in $(seq 1 60); do
-	[[ -s "$status_file" ]] && break
-	sleep 1
-done
-agent="$(cat "$status_file" 2>/dev/null || echo "unknown: Computerd --register-agent wrote nothing in 60 s")"
-echo "SMAppService: the LaunchAgent is $agent"
-echo "Computerd.log:"
-{ sed -n '/LaunchAgent/p' "$HOME/Library/Logs/Computerd.log" 2>/dev/null || true; } | tail -n 4 | sed 's/^/  /'
-case "$agent" in
-enabled) ;;
-requiresApproval) die "a person must switch Computerd on in System Settings > General > Login Items & Extensions (Screen Sharing works), then run this again" ;;
-*) die "the LaunchAgent did not register: see Computerd.log above" ;;
-esac
-
-# The grants window, opened as a person would; --until-granted closes it once every grant is on, so it never covers the
-# windows the demos work in.
-open -n "$app" --args --until-granted
-for _ in $(seq 1 30); do
-	launchctl print "$domain/$label" >/dev/null 2>&1 && break
-	sleep 1
-done
-if ! launchctl print "$domain/$label" >/dev/null 2>&1; then
-	cat "$status_file" 2>/dev/null | sed 's/^/SMAppService: /'
-	die "the LaunchAgent is registered but launchd has not loaded it"
+# A plain user LaunchAgent, with the keys the app writes when a person opens it (Agent.job in
+# Sources/ComputerdApp/Agent.swift). It runs the app's executable by its path, so a rebuild at the same path is only a
+# restart. Not SMAppService: its launch constraint pinned a self-signed agent to the build that registered it, and
+# launchd killed every rebuild at spawn ("needs LWCR update").
+agents="$HOME/Library/LaunchAgents"
+plist="$agents/$label.plist"
+exe="$app/Contents/MacOS/Computerd"
+if [[ -f "$plist" && "$(plutil -extract ProgramArguments.0 raw "$plist" 2>/dev/null || true)" == "$exe" ]] \
+	&& launchctl print "$domain/$label" >/dev/null 2>&1; then
+	echo "loaded from $plist: restarting it on the new build"
+	launchctl kickstart -k "$domain/$label"
+else
+	mkdir -p "$agents"
+	cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$label</string>
+	<key>ProgramArguments</key><array><string>$exe</string></array>
+	<key>AssociatedBundleIdentifiers</key><array><string>$label</string></array>
+	<key>EnvironmentVariables</key><dict><key>COMPUTERD_SERVE</key><string>1</string></dict>
+	<key>LimitLoadToSessionType</key><string>Aqua</string>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+EOF
+	plutil -lint "$plist" >/dev/null || die "$plist is not a valid plist"
+	launchctl bootout "$domain/$label" 2>/dev/null && echo "booted out the old $label" || true
+	loaded=0
+	for _ in 1 2 3 4 5; do
+		if launchctl bootstrap "$domain" "$plist" 2>/dev/null; then loaded=1; break; fi
+		sleep 0.5
+	done
+	[[ "$loaded" == 1 ]] || { launchctl bootstrap "$domain" "$plist" || true; die "launchctl bootstrap $domain $plist failed (above)"; }
+	echo "bootstrapped $plist"
 fi
-# The agent is the copy that serves the socket; it is restarted so it runs this build.
-launchctl kickstart -k "$domain/$label"
 sleep 2
-if launchctl print "$domain/$label" 2>&1 | grep -E 'needs LWCR update|last exit code = 78' >/dev/null; then
-	launchctl print "$domain/$label" 2>&1 | grep -E 'state|last exit|LWCR|spawn' | sed 's/^/  /'
-	die "launchd refuses this build of the agent (its launch constraint is for another build): run open -n $app --args --register-agent, then this again"
+if ! launchctl print "$domain/$label" 2>&1 | grep -E '^[[:space:]]*state = running' >/dev/null; then
+	launchctl print "$domain/$label" 2>&1 | grep -E 'state|last exit|spawn|LWCR' | sed 's/^/  /' || true
+	die "launchd has the agent but it is not running (above)"
 fi
+
+# The grants window, opened as a person would: --until-granted closes it once every grant is on, so it never covers the
+# windows the demos work in. (Opened by a person, the app writes the same plist; it finds it in place and leaves it.)
+open -n "$app" --args --until-granted
 for _ in $(seq 1 100); do
 	[[ -S "$home/computerd.sock" ]] && "$computerd" hello >/dev/null 2>&1 && break
 	sleep 0.1

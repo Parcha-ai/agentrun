@@ -2,122 +2,103 @@
 import ComputerdKit
 import ComputerdMac
 import Foundation
-import Security
-import ServiceManagement
 
-/// The LaunchAgent, from Contents/Library/LaunchAgents in the bundle: registered by the app the first time a person
-/// opens it, so it starts at login in the Aqua session and launchd restarts it if it ends.
-///
-/// Registering records a launch constraint for the build that registered. A Developer ID build's constraint names its
-/// team, so any later build of it still launches. A self-signed build's names that very build: once a new build is
-/// installed, launchd kills the agent at spawn ("Launch Constraint Violation", exit 78 "needs LWCR update") while the
-/// service still reads as enabled. So the app keeps the build it registered, and a different build registers again:
-/// unregister, awaited, then register.
+/// The LaunchAgent: a plain user agent at ~/Library/LaunchAgents/ai.parcha.computerd.plist that runs this app's own
+/// executable in the Aqua session, at login, and again whenever it ends. The app writes it and loads it with launchctl,
+/// for every build. (Not SMAppService: an agent registered through it carries a launch constraint, which for a
+/// self-signed build names the build that registered, so launchd killed every rebuild at spawn, and unregistering and
+/// registering again kept the old constraint.) macOS lists the agent under Login Items & Extensions.
 enum Agent {
-	static let service = SMAppService.agent(plistName: "\(AttachSettings.agentLabel).plist")
-	static let registeredKey = "registeredBuild"
-	/// Where the last registration's outcome is written, for a script that cannot ask SMAppService itself (over SSH).
-	static let statusPath = NSHomeDirectory() + "/Library/Application Support/Computerd/agent-status.txt"
+	static let label = AttachSettings.agentLabel
+	static var plistPath: String { NSHomeDirectory() + "/Library/LaunchAgents/\(label).plist" }
+	static var domain: String { "gui/\(getuid())" }
 
-	/// This build: the code directory hash of the running app, which changes with every build; else its version and the
-	/// executable's time.
-	static var build: String {
-		var code: SecCode?
-		var staticCode: SecStaticCode?
-		var info: CFDictionary?
-		if SecCodeCopySelf([], &code) == errSecSuccess, let code,
-			SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
-			SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-			let unique = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data
-		{
-			return "cdhash " + unique.map { String(format: "%02x", $0) }.joined()
-		}
-		let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-		let built = Bundle.main.executableURL.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date }
-		return "version \(version), built \(built.map { "\($0.timeIntervalSince1970)" } ?? "?")"
+	/// The agent's job, for the executable at this path. scripts/mini-bootstrap.sh writes the same keys.
+	static func job(executable: String) -> NSDictionary {
+		[
+			"Label": label,
+			"ProgramArguments": [executable],
+			// Login Items & Extensions shows the agent as Computerd, with its icon, rather than as a bare plist.
+			"AssociatedBundleIdentifiers": [Bundle.main.bundleIdentifier ?? label],
+			"EnvironmentVariables": ["COMPUTERD_SERVE": "1"],
+			"LimitLoadToSessionType": "Aqua",
+			"RunAtLoad": true,
+			"KeepAlive": true,
+			"ProcessType": "Interactive",
+		]
 	}
 
-	/// The agent is registered for this build: enabled, and registered by it.
-	static var current: Bool {
-		service.status == .enabled && UserDefaults.standard.string(forKey: registeredKey) == build
-	}
-
-	/// Registers the agent for this build, unless it already is; with force, again in any case. Unregisters first
-	/// (awaited) whenever the service is known to launchd, so the launch constraint is recorded anew. Logs each result,
-	/// writes the outcome to statusPath, and answers the status after.
+	/// launchctl, with its output; its exit status.
 	@discardableResult
-	static func register(force: Bool = false) async -> SMAppService.Status {
-		let build = self.build
-		let before = service.status
-		let recorded = UserDefaults.standard.string(forKey: registeredKey)
-		if !force && before == .enabled && recorded == build {
-			log("the LaunchAgent is registered for this build (\(build))")
-			write(before)
-			return before
+	static func launchctl(_ arguments: [String]) -> (status: Int32, output: String) {
+		let task = Process()
+		task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+		task.arguments = arguments
+		let pipe = Pipe()
+		task.standardOutput = pipe
+		task.standardError = pipe
+		do { try task.run() } catch { return (-1, "\(error)") }
+		let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+		task.waitUntilExit()
+		return (task.terminationStatus, output.trimmingCharacters(in: .whitespacesAndNewlines))
+	}
+
+	/// launchd has the job loaded.
+	static var loaded: Bool { launchctl(["print", "\(domain)/\(label)"]).status == 0 }
+
+	/// Writes the plist for this app's executable, boots out any job with the label, and bootstraps it. Nothing to do
+	/// when the plist already runs this executable and the job is loaded. Answers why it failed, or nil.
+	@discardableResult
+	static func install() -> String? {
+		guard let executable = Bundle.main.executablePath else { return failed("no executable path for the LaunchAgent") }
+		let wanted = job(executable: executable)
+		let data: Data
+		do {
+			data = try PropertyListSerialization.data(fromPropertyList: wanted, format: .xml, options: 0)
+		} catch {
+			return failed("cannot write the LaunchAgent's plist: \(error)")
 		}
-		log("registering the LaunchAgent for \(build): it is \(name(before)), registered for \(recorded ?? "no recorded build")")
-		if before != .notRegistered && before != .notFound {
-			do {
-				try await service.unregister()
-				log("unregistered the LaunchAgent: it is \(name(service.status))")
-			} catch {
-				log("cannot unregister the LaunchAgent (registering anyway): \(error.localizedDescription)")
+		let now = FileManager.default.contents(atPath: plistPath).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? NSDictionary }
+		if now == wanted && loaded {
+			log("the LaunchAgent runs \(executable) already")
+			return nil
+		}
+		do {
+			try FileManager.default.createDirectory(atPath: (plistPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+			try data.write(to: URL(fileURLWithPath: plistPath), options: .atomic)
+		} catch {
+			return failed("cannot write \(plistPath): \(error)")
+		}
+		launchctl(["bootout", "\(domain)/\(label)"])
+		// A job just booted out can take a moment to go: bootstrap is asked again for up to 2 s.
+		var last = (status: Int32(0), output: "")
+		for _ in 0..<5 {
+			last = launchctl(["bootstrap", domain, plistPath])
+			if last.status == 0 {
+				log("the LaunchAgent is loaded: \(plistPath) runs \(executable)")
+				return nil
 			}
+			Thread.sleep(forTimeInterval: 0.4)
 		}
-		do {
-			try service.register()
-			UserDefaults.standard.set(build, forKey: registeredKey)
-			log("registered the LaunchAgent: it is \(name(service.status))")
-		} catch {
-			log("cannot register the LaunchAgent: \(error.localizedDescription); it is \(name(service.status))")
-		}
-		let after = service.status
-		write(after)
-		return after
+		return failed("launchctl bootstrap \(domain) \(plistPath) failed (\(last.status)): \(last.output)")
 	}
 
-	/// Unregisters the agent, awaited, and forgets the build it was registered for.
-	static func unregister() async -> SMAppService.Status {
-		do {
-			try await service.unregister()
-			log("unregistered the LaunchAgent: it is \(name(service.status))")
-		} catch {
-			log("cannot unregister the LaunchAgent: \(error.localizedDescription); it is \(name(service.status))")
-		}
-		UserDefaults.standard.removeObject(forKey: registeredKey)
-		let after = service.status
-		write(after)
-		return after
+	/// Boots the job out and deletes its plist: Computerd no longer runs at login.
+	static func remove() {
+		launchctl(["bootout", "\(domain)/\(label)"])
+		try? FileManager.default.removeItem(atPath: plistPath)
+		log("the LaunchAgent is removed")
 	}
 
-	static func write(_ status: SMAppService.Status) {
-		let path = URL(fileURLWithPath: statusPath)
-		try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-		try? "\(name(status))\n".write(to: path, atomically: true, encoding: .utf8)
-	}
-
-	static func name(_ status: SMAppService.Status) -> String {
-		switch status {
-		case .enabled: return "enabled"
-		case .requiresApproval: return "requiresApproval"
-		case .notRegistered: return "notRegistered"
-		case .notFound: return "notFound"
-		@unknown default: return "unknown"
-		}
+	/// Logs why the agent could not be set up, and answers it.
+	static func failed(_ words: String) -> String {
+		log(words)
+		return words
 	}
 
 	static var state: String {
-		switch service.status {
-		case .enabled: return "Running, and starts at login"
-		case .requiresApproval: return "Waiting for you: allow Computerd in System Settings > General > Login Items"
-		case .notRegistered: return "Not registered"
-		case .notFound: return "Missing from the app bundle"
-		@unknown default: return "Unknown"
-		}
-	}
-
-	static func openLoginItems() {
-		SMAppService.openSystemSettingsLoginItems()
+		guard FileManager.default.fileExists(atPath: plistPath) else { return "Not installed" }
+		return loaded ? "Running, and starts at login" : "Installed, not running"
 	}
 }
 #endif

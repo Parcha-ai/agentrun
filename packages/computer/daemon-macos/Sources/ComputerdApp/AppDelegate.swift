@@ -5,7 +5,7 @@ import ComputerdMac
 import Foundation
 
 /// The app runs in one of two ways. Started by launchd as the LaunchAgent (or with COMPUTERD_SERVE=1), it serves the
-/// socket, dials the paired server and keeps a menu bar item. Opened by a person, it registers the LaunchAgent and
+/// socket, dials the paired server and keeps a menu bar item. Opened by a person, it installs the LaunchAgent (Agent) and
 /// shows the onboarding window, and quits when the window closes. COMPUTERD_HEADLESS=1 (CI) shows nothing at all.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -14,8 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	var statusItem: NSStatusItem?
 	var onboarding: Onboarding?
 	var attachStatus = "Not paired"
-	/// The LaunchAgent's registration is over (or, serving, was never this copy's to do).
-	var agentSettled = false
 	let environment = ProcessInfo.processInfo.environment
 	var headless: Bool { environment["COMPUTERD_HEADLESS"] == "1" }
 	/// launchd names a job's processes by its label; an app opened from the Finder gets another name.
@@ -26,17 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		let missing = Permissions.missing.map(\.rawValue)
 		log(missing.isEmpty ? "every grant is in place" : "not granted yet: \(missing.joined(separator: ", "))")
 		guard serving else {
+			Agent.install()
 			showOnboarding()
-			// A new build registers again (see Agent). The window waits for it before it may close, since closing
-			// it quits this copy.
-			Task { @MainActor in
-				await Agent.register()
-				self.agentSettled = true
-				self.onboarding?.refresh()
-			}
 			return
 		}
-		agentSettled = true
 		let server = SocketServer(auth: PeerAuth(), makeDriver: { MacPlatform.driver() })
 		do {
 			try server.start()
@@ -135,6 +126,7 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	let alertState = NSTextField(labelWithString: "")
 	let alertButton = NSButton(title: "Raise it now", target: nil, action: nil)
 	let agentState = NSTextField(labelWithString: "")
+	let agentButton = NSButton(title: "Remove", target: nil, action: nil)
 	let pairState = NSTextField(labelWithString: "")
 	let serverField = NSTextField(string: "")
 	let codeField = NSTextField(string: "")
@@ -150,12 +142,8 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	/// to look at a finished setup stays until it is closed.
 	var closeWhenDone = false
 
-	/// Every grant on, paired or pairing put off, and the LaunchAgent's registration over: nothing is left for this
-	/// window.
-	var done: Bool { app?.agentSettled == true && setUp }
-
-	/// Every grant on, and paired or pairing put off.
-	var setUp: Bool { Permissions.missing.isEmpty && (pairingPutOff || grantsOnly || AttachSettings.load() != nil) }
+	/// Every grant on, and paired or pairing put off: nothing is left for this window.
+	var done: Bool { Permissions.missing.isEmpty && (pairingPutOff || grantsOnly || AttachSettings.load() != nil) }
 
 	init(app: AppDelegate) {
 		self.app = app
@@ -194,7 +182,8 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		let alertRow = NSStackView(views: [label("The screen capture alert: macOS asks once whether Computerd may read the screen directly. Answer it now, not mid-task."), alertState, alertButton])
 		alertRow.orientation = .horizontal
 		stack.addArrangedSubview(alertRow)
-		let agentButton = NSButton(title: "Login Items…", target: self, action: #selector(loginItems))
+		agentButton.target = self
+		agentButton.action = #selector(toggleAgent)
 		let agentRow = NSStackView(views: [label("Background agent: runs Computerd at login."), agentState, agentButton])
 		agentRow.orientation = .horizontal
 		stack.addArrangedSubview(agentRow)
@@ -215,7 +204,7 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	}
 
 	func show() {
-		closeWhenDone = grantsOnly || !setUp
+		closeWhenDone = grantsOnly || !done
 		refresh()
 		window.center()
 		window.makeKeyAndOrderFront(nil)
@@ -242,6 +231,7 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		alertState.stringValue = raised ? "Answered" : "Not yet"
 		alertButton.isEnabled = !raised && Permissions.Grant.screenRecording.granted
 		agentState.stringValue = Agent.state
+		agentButton.title = FileManager.default.fileExists(atPath: Agent.plistPath) ? "Remove" : "Install"
 		if app?.serving == true {
 			pairState.stringValue = app?.attachStatus ?? ""
 		} else {
@@ -261,8 +251,15 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		refresh()
 	}
 
-	@objc func loginItems() {
-		Agent.openLoginItems()
+	/// Remove boots the agent out and deletes its plist; Install puts it back.
+	@objc func toggleAgent() {
+		if FileManager.default.fileExists(atPath: Agent.plistPath) {
+			Agent.remove()
+		} else if let why = Agent.install() {
+			agentState.stringValue = "Not installed: \(why)"
+			return
+		}
+		refresh()
 	}
 
 	@objc func ask(_ sender: NSButton) {

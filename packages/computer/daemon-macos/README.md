@@ -43,8 +43,10 @@ macOS 14 or later.
    An ad-hoc build is granted anew after each rebuild; a Developer ID build keeps its grants across updates. A Mac that
    builds its own Computerd (the bench's Mac mini) signs with a local identity instead: see [MINI.md](MINI.md).
 
-2. **Open it.** Double-click Computerd in Applications. It registers its LaunchAgent, which starts it now and at every
-   login. If macOS asks, allow Computerd in System Settings > General > Login Items.
+2. **Open it.** Double-click Computerd in Applications. It writes its LaunchAgent to
+   `~/Library/LaunchAgents/ai.parcha.computerd.plist` and loads it with `launchctl`, which starts it now and at every
+   login. macOS lists it under System Settings > General > Login Items & Extensions. The window's **Remove** unloads
+   it and deletes the plist.
 
 3. **Grant it.** The window lists three grants. Click each **Allow…** and switch Computerd on in System Settings:
    - **Accessibility**: to read windows and press their buttons.
