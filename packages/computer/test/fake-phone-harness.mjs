@@ -272,6 +272,11 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			phone.files.set(w[2], sum);
 			return result();
 		}
+		if (w[0] === "test" && w[1] === "-e") return result("", phone.files.has(w[2]) ? 0 : 1);
+		if (w[0] === "touch") {
+			if (!phone.files.has(w[1])) phone.files.set(w[1], sha256(Buffer.alloc(0)));
+			return result();
+		}
 		// pm install -r <file> 2>&1: Success, or pm's Failure line (installFails) for a file the phone holds.
 		if (w[0] === "pm" && w[1] === "install" && w[2] === "-r" && w[4] === "2>&1") {
 			if (!phone.files.has(w[3])) return result(`Error: Unable to open file: ${w[3]}\nConsider using a file under /data/local/tmp/\n`, 1);

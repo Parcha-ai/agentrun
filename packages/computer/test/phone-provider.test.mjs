@@ -494,7 +494,7 @@ test("a push that fails or lands changed is refused in words, no phoned starts, 
 	}
 });
 
-test("the apks option's APKs install before phoned starts, each pushed once under its sha256; a refused or missing one fails connect in words", async () => {
+test("the apks option's APKs install once per phone before phoned starts, pushed under their sha256; a refused or missing one fails connect in words", async () => {
 	const apk = join(dir, "fixture.apk");
 	writeFileSync(apk, "an APK's bytes, which the fake phone never opens");
 	const sha = createHash("sha256").update(readFileSync(apk)).digest("hex");
@@ -511,7 +511,9 @@ test("the apks option's APKs install before phoned starts, each pushed once unde
 	const again = await provider.connect(ref);
 	assert.equal(again.ok, true, JSON.stringify(again));
 	assert.equal(fake.adbCalls().filter((argv) => argv[2] === "push" && argv[3] === apk).length, 1, "the phone held the APK under its name: one push");
-	assert.deepEqual(fake.phone.installed, [sha, sha], "a phoned started afresh installs the APK again");
+	assert.deepEqual(fake.phone.installed, [sha], "the phone's marker says it installed those bytes: a phoned started afresh installs nothing again");
+	assert.ok(fake.phone.files.has(`${remote}.installed`), "the marker beside the APK on the phone");
+	assert.equal(fake.phone.phoned.length, 2);
 	await again.value.close();
 
 	const refusing = await setup({ installFails: true }, { apks: [apk] });

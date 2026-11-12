@@ -1019,13 +1019,20 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
-	/** The apks option's APKs, each put on the phone like phoned's jar and installed there with `pm install -r`. */
+	/**
+	 * The apks option's APKs, each put on the phone like phoned's jar and installed there with `pm install -r`, once per
+	 * phone: a marker beside it on the phone (<apk>.installed) says that phone installed those bytes, so a later connect,
+	 * which starts phoned afresh, installs nothing again.
+	 */
 	async #install(transport: string, adb: AdbRun, onPhone: OnPhone): Promise<Result<void>> {
 		for (const path of this.#apks) {
 			const what = `the APK ${basename(path)}`;
 			const apk = await this.#fileAt(path, (why) => `${what}, which the provider's apks option names, is not at ${path} (${why})`);
 			if (!apk.ok) return apk;
 			const remote = `${PHONE_TMP}/apk-${apk.value.sha256.slice(0, 16)}.apk`;
+			const done = await onPhone(`shell:test -e ${remote}.installed && echo installed`, transport);
+			if (!done.ok) return done;
+			if (done.value.trim() === "installed") continue;
 			const placed = await this.#place(transport, adb, onPhone, apk.value, remote, what);
 			if (!placed.ok) return placed;
 			const installed = await onPhone(`shell:pm install -r ${remote} 2>&1`, transport);
@@ -1035,6 +1042,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				const said = installed.value.split("\n").find((line) => /Failure|Error|Exception/.test(line)) ?? installed.value.trim().split("\n")[0] ?? "";
 				return vendorFail("phone-harness", `${what} did not install on the phone: ${redactWords(said.trim()) || "pm install answered nothing"}`);
 			}
+			const marked = await onPhone(`shell:touch ${remote}.installed && echo marked`, transport);
+			if (!marked.ok) return marked;
+			if (marked.value.trim() !== "marked") return vendorFail("phone-harness", `${what} installed, and its marker could not be written on the phone: ${redactWords(marked.value.trim().split("\n")[0] ?? "")}`);
 		}
 		return ok(undefined);
 	}
