@@ -13,8 +13,8 @@
 // Shared with the pi spec: the run's Workspace and its uploaded files, a sandbox run's computer, the kernel registry's
 // hands on them (runTools), the gate from the store's tool settings, the system prompt (environment line, instructions
 // with what the agent learned and its skills, effort guidance), the first message, the end's metrics and the release.
-import { mkdir, rm, rmdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, rm, rmdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -152,17 +152,36 @@ export function inGrantOrder<T extends { readonly name: string }>(tools: readonl
   return keyed.sort((a, b) => a.key - b.key || a.given - b.given).map(({ tool }) => tool);
 }
 
-/** A claim's private folder removed, then each of `parents` in order while it is empty: one another claim of the run has
- *  laid things in since (a follow-up's) stays, with what is in it. */
-export async function sweepScratch(dir: string, parents: readonly string[]): Promise<void> {
-  await rm(dir, { recursive: true, force: true });
+/** Every earlier claim's private folder of the run (`<harnesses>/<n>`, n below `epoch`) removed: what a claim whose runner
+ *  died left (its release never ran), or a sweep of its own cut off partway. A claim at `epoch` or later (a live one, or a
+ *  next claim's while this one lets go late) is never touched. Each removal is whole or is finished by the next sweep. */
+export async function sweepEarlier(harnesses: string, epoch: number): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(harnesses);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) {
+    if (/^\d+$/.test(name) && Number(name) < epoch) await rm(join(harnesses, name), { recursive: true, force: true });
+  }
+}
+
+/** A claim's end: every earlier claim's folder of the run (sweepEarlier) and the claim's own (`<harnesses>/<epoch>`)
+ *  removed, then each of `parents` in order while it is empty: one another claim of the run has laid things in since (a
+ *  follow-up's) stays, with what is in it. Run again over what a cut-off sweep left, it finishes it. */
+export async function sweepScratch(harnesses: string, epoch: number, parents: readonly string[]): Promise<void> {
+  await sweepEarlier(harnesses, epoch);
+  await rm(join(harnesses, String(epoch)), { recursive: true, force: true });
   for (const parent of parents) {
     try {
       await rmdir(parent);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return;
-      throw error;
+      if (code === "ENOTEMPTY" || code === "EEXIST") return;
+      // Already gone (a sweep cut off after it, or never made): the folder above it may still be left empty.
+      if (code !== "ENOENT") throw error;
     }
   }
 }
@@ -291,19 +310,26 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
   // run's folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and
   // any other absolute path is refused (workspace/paths.ts portPath).
-  // The private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is in it:
-  // the next claim, here or on another runner, lays its own, its harness's session coming back from the run's journal.
-  // Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its release follows the
-  // run's end commit) never has the next claim's folder swept from under it.
+  // The private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is in it,
+  // then the agent's: the next claim, here or on another runner, lays its own, its harness's session coming back from the
+  // run's journal. Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its release
+  // follows the run's end commit) never has the next claim's folder swept from under it. A claim whose runner died never
+  // ran its release: every claim sweeps the earlier claims' folders of its run at its start and again at its end, so a
+  // killed CLI's home and session state never outlive the run.
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
   const harnesses = join(scratch, "harness");
   const dir = join(harnesses, String(claim.epoch));
-  holds.hold({ scratch: { sweep: () => sweepScratch(dir, [harnesses, scratch]) } });
-  // Made again once if a parent went as it was made (the last claim's sweep removing the then empty scratch folder).
-  await mkdir(dir, { recursive: true, mode: 0o700 }).catch(async (error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-  });
+  holds.hold({ scratch: { sweep: () => sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
+  // Made again if a parent went as it was made (another claim's sweep removing the then empty scratch or agent folder).
+  for (let tries = 1; ; tries += 1) {
+    try {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || tries === 3) throw error;
+    }
+  }
+  await sweepEarlier(harnesses, claim.epoch).catch((error: unknown) => log(`an earlier claim's scratch folder could not be swept: ${(error as Error)?.message ?? String(error)}`));
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
