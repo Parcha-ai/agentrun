@@ -137,6 +137,18 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
   return pin;
 }
 
+/** What a request's address refusal says before its reason (the guarded fetch below throws it). */
+const ADDRESS_REFUSED = "its address is refused here: ";
+/** The reason an error, or a cause the SDK wrapped it in, carries for an address refusal: the one request's own, so a
+ *  refusal of one call is never read as another's. */
+function addressRefusal(error: unknown): string | undefined {
+  for (let e: unknown = error, depth = 0; e && depth < 8; e = (e as { cause?: unknown }).cause, depth++) {
+    const message = String((e as { message?: unknown }).message ?? "");
+    const at = message.indexOf(ADDRESS_REFUSED);
+    if (at >= 0) return message.slice(at + ADDRESS_REFUSED.length);
+  }
+  return undefined;
+}
 
 /** Why a connection failed, in a few words: the network's own code, read down the error's causes (the SDK wraps fetch's
  *  error, which wraps the socket's), else the deepest message, cut short. */
@@ -258,8 +270,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     if (options.reach) {
       const at = await options.reach(input instanceof Request ? input.url : String(input), init.signal ?? AbortSignal.timeout(options.bounds?.connectMs ?? CONNECT_MS));
       if ("refused" in at) {
-        status.refused = at.refused;
-        throw new Error(`its address is refused here: ${at.refused}`);
+        throw new Error(`${ADDRESS_REFUSED}${at.refused}`);
       }
       if (at.send) through = at.send;
     }
@@ -340,8 +351,6 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
     const clean = scrubberOf(server, hold(server, headers), held.values);
-    const was = statuses.get(server);
-    if (was) delete was.refused;
     try {
       const upstream = await until(connect(server, url, headers), signal);
       connected = true;
@@ -357,8 +366,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
-      // Its address refused before the request left (reach): nothing reached it.
-      const refused = statuses.get(server)?.refused;
+      // Its address refused before the request left (reach): nothing reached it. Read from this call's own error, never
+      // from the server's shared state: another call's refusal says nothing of whether this one was sent.
+      const refused = addressRefusal(error);
       if (refused !== undefined) {
         // `sending` may have run already (the connection was open): the request's own address check refused it, so the call
         // never left and `outcome` says so, for the caller that books a price only for a call that went.
