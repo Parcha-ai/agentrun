@@ -157,11 +157,11 @@ route() {
     'table inet agentrun_archil' \
     'delete table inet agentrun_archil' \
     'table inet agentrun_archil {' \
-    '  chain redirect {' \
+    '  chain out_redirect {' \
     '    type nat hook output priority -100; policy accept;' \
     "    meta skuid 0 meta nfproto ipv4 tcp dport { $ARCHIL_PORTS } redirect to :$RELAY_PORT" \
     '  }' \
-    '  chain fence {' \
+    '  chain out_fence {' \
     '    type filter hook output priority 0; policy accept;' \
     "    tcp dport { $ARCHIL_PORTS } reject with tcp reset" \
     '  }' \
