@@ -5,7 +5,6 @@
  *  (Claude Code's own 120 s and 600 s). A command that needs longer is a background process (bash_background). The
  *  ceiling a run gets is its hands' `maxExecS`: 600 s locally and on a computer, less where the hands' exec is bounded. */
 export const BASH_DEFAULT_TIMEOUT_S = 120;
-export const BASH_MAX_TIMEOUT_S = 600;
 
 /** The largest image read hands the model, in bytes: 3.75 MiB, whose base64 is the 5 MiB the strictest platform a
  *  harness sends images to takes (the claude-agent adapter's CLAUDE_AGENT_MAX_IMAGE_BYTES, Amazon Bedrock's). */

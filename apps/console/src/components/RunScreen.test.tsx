@@ -253,6 +253,24 @@ describe("the run page's Screen tab, for a browser", () => {
     expect(p.section()).not.toContain("closed when the run ended");
   });
 
+  it("a browser let go while the run waits for its person says so, with when, and stays so: never 'Waiting for the browser'", async () => {
+    const waitingOnYou = { ...working, status: "input_required", state: "waiting" } as Run;
+    const ended = { at: "2026-11-11T14:26:00.000Z", why: "The browser was released after 15 min waiting for you" };
+    let released = false;
+    const p = await moving(async () => (released ? { state: "none", kind: "browser", hold: "agent", ended } : { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }), waitingOnYou);
+    await settle(80);
+    expect(p.frame()).not.toBeNull();
+    released = true;
+    await settle(80);
+    expect(p.frame()).toBeNull();
+    expect(p.section()).toContain("The browser was released after 15 min waiting for you");
+    expect(p.section()).toContain("A new browser opens when the run goes on.");
+    expect(p.section()).not.toContain("Waiting for the browser");
+    // Read on and on: it stays.
+    await settle(150);
+    expect(p.section()).toContain("The browser was released after 15 min waiting for you");
+  });
+
   it("an ended run that answered off is read again once a follow-up makes it go: its new browser shows under Screen", async () => {
     let restored = false;
     const p = await moving(async () => (restored ? { state: "live", kind: "browser", viewer: VIEWER, hold: "agent" } : { state: "off", hold: "agent", why: "no browser key" }), ended);
