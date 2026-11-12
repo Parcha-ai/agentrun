@@ -1,12 +1,12 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputersPage } from "./ComputersPage";
 import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret } from "@/lib/v2";
+import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret, PairedComputer } from "@/lib/v2";
 
 // Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys and POST /v2/computers/{provider}/test:
 // a section per kind with the server's why when it isn't offered, each provider under every kind it serves with its keys
@@ -35,8 +35,12 @@ const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secret
 const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", ...NO_SHELL };
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
 const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, ...NO_SHELL };
+/** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
+const MAC: PairedComputer = { id: "cmp-abc", name: "vesper-mac", kind: "desktop", os: "macos", arch: "arm64", driver: "0.2.0", online: true, held_by_run: null, created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z" };
+const MAC_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "vesper-mac", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
 const view = (saved = false): Computers => ({
+  paired: [],
   kinds: [
     kind("none", []),
     kind("sandbox", [docker, e2b(saved), daytona]),
@@ -95,7 +99,7 @@ describe("Settings → Computers", () => {
   it("shows a section per kind: the server's why for a kind it doesn't offer, and nothing to set up for none", async () => {
     const { v2 } = server([view()]);
     const { host, section } = await open(v2);
-    expect([...host.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"))).toEqual(["None", "Sandbox", "Desktop", "Phone", "Browser"]);
+    expect([...host.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"))).toEqual(["Your computers", "None", "Sandbox", "Desktop", "Phone", "Browser"]);
     expect(section("None").textContent).toContain("Nothing to set up");
     expect(section("None").querySelectorAll("li")).toHaveLength(0);
     expect(section("Phone").textContent).toContain(PHONE_WHY);
@@ -247,6 +251,56 @@ describe("Settings → Computers", () => {
     const { v2 } = server([view()]);
     const { host } = await open(v2);
     expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
+  });
+
+  it("pairs a computer: shows the code and its countdown, reads the computers again while it is up, names the computer that used it, and lists it once, in its own section", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+    try {
+      const withMac: Computers = { ...view(), paired: [MAC], kinds: view().kinds.map((k) => (k.kind === "desktop" ? { ...k, providers: [...k.providers, MAC_PROVIDER] } : k)) };
+      const { v2, calls } = server([view(), view(), withMac], () => json(201, { code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
+      const { section, click, settle } = await open(v2);
+      const mine = section("Your computers");
+      expect(mine.textContent).toContain("None paired yet");
+      await click(mine, /^Pair a computer$/);
+      expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/pairings" });
+      expect(mine.querySelector("[data-code]")?.textContent).toBe("K7PD-W3QX");
+      expect(mine.querySelector("[data-countdown]")?.textContent).toBe("10:00");
+      const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
+      await tick(2_000);
+      expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
+      expect(mine.querySelector("[data-countdown]")?.textContent).toBe("9:58");
+      await tick(2_000);
+      expect(mine.querySelector("[data-code]")).toBeNull();
+      expect(mine.querySelector("[role=status]")?.textContent).toBe("Paired vesper-mac.");
+      const row = mine.querySelector('[data-paired="cmp-abc"]')!;
+      expect(row.textContent).toContain("Online");
+      expect(row.textContent).toContain("Desktop · macos · arm64 · driver 0.2.0");
+      expect([...section("Desktop").querySelectorAll("[data-provider]")].map((el) => el.textContent)).toEqual(["E2B", "Orgo"]);
+      expect(section("Desktop").textContent).toContain("Also served by your computers: vesper-mac.");
+      await tick(10_000);
+      expect(calls.filter((c) => c.method === "GET"), "no reads once the code is used").toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says a paired computer offline and how to bring it back, the run that holds one, and removes one after asking", async () => {
+    const held = { ...MAC, held_by_run: "0190f0aa-0000-7000-8000-00000000beef" };
+    const away: PairedComputer = { ...MAC, id: "cmp-old", name: "old-mac", online: false, seen_at: null };
+    const { v2, calls } = server([{ ...view(), paired: [held, away] }, { ...view(), paired: [held] }], () => new Response(null, { status: 204 }));
+    const { section, click } = await open(v2);
+    const mine = section("Your computers");
+    const row = (id: string) => mine.querySelector(`[data-paired="${id}"]`);
+    expect(row("cmp-abc")!.textContent).toContain("In use by run 0000beef");
+    expect(row("cmp-old")!.textContent).toContain("Offline");
+    expect(row("cmp-old")!.textContent).toContain("Open its driver (Computerd): it dials this server.");
+    await click(row("cmp-old")!, /^Remove$/);
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(row("cmp-old")!.querySelector("[data-confirm]")?.textContent).toContain("Remove old-mac?");
+    await click(row("cmp-old")!.querySelector("[data-confirm]")!, /^Remove$/);
+    expect(calls.filter((c) => c.method === "DELETE")).toMatchObject([{ path: "/v2/computers/cmp-old", body: undefined }]);
+    expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
+    expect(row("cmp-old")).toBeNull();
   });
 
   it("says a failed read in the server's words, and reads again on Try again", async () => {

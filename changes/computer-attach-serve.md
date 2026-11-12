@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-serve
+kind: breaking
+---
+Pair a person's own computer with the server: Settings → Computers → Pair a computer shows a code (`POST /v2/computers/pairings`), the computer's driver (Computerd) trades it for its own token (`POST /v2/computers/pair`, no server token) and attaches over `GET /v2/computers/attach` (a WebSocket, subprotocol `agentrun.computer.0.2`), and an agent whose computer is `{"kind": "desktop", "provider": "<its cmp- id>"}` uses it: a run claims it at its start and releases it at its end. `GET /v2/computers` lists the paired computers under `paired`, online or offline, with the run that holds one, and `DELETE /v2/computers/{computer_id}` removes one, closing its connection. Only the runner beside the server can use a paired computer.
+
+Who breaks: the store's schema is version 7 (SQLite) and Postgres gains migration `0005_paired_computers`, so a SQLite store an older build made is refused at the start as a version this build does not know; start on a new data directory. `GET /v2/computers` answers a required `paired` array.

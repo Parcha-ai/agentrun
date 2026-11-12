@@ -16,7 +16,7 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 // The local container engine's provider, for its check() of the operator's size settings at the start (dockerLimitsOf).
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
@@ -134,8 +134,12 @@ export interface ComputerDepsOptions {
   /** The server's environment: a provider key named here wins over its saved one; AGENTRUN_DOCKER_IMAGE names Docker's
    *  image. Passed in, never read here. */
   readonly env: KeyEnv;
-  /** The store: its sealed keys (a provider's saved keys) and its computer ledger (the phone provider's). */
-  readonly store: Pick<Store, "sealedKeys" | "computerLedger">;
+  /** The store: its sealed keys (a provider's saved keys), its computer ledger (the phone provider's) and its paired
+   *  computers (a test's stand-in may have none). */
+  readonly store: Pick<Store, "sealedKeys" | "computerLedger"> & { readonly pairedComputers?: Pick<Store["pairedComputers"], "list"> };
+  /** The server's AttachHub, where this runner shares the server's process (runner/beside.ts): a paired computer's
+   *  socket is there. Absent: a runner of its own process, which refuses a paired computer in words. */
+  readonly hub?: AttachHub;
   /** The server's seal key: absent, no saved key is opened (a key from the environment still is). */
   readonly sealKey: Buffer | undefined;
   /** The kind registry: the computer package's unless given (a test's fixture). */
@@ -325,6 +329,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     ...(options.hostWhy ? { hostWhy: (provider: string): string | undefined => (Object.hasOwn(options.hostWhy!, provider) ? options.hostWhy![provider] : undefined) } : {}),
     ...(options.daemon ? { daemon: options.daemon } : faux ? {} : { daemon: dockerDaemonOf(env) }),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
+    ...(store.pairedComputers ? { attached: { rows: () => store.pairedComputers!.list(), ...(options.hub ? { hub: options.hub } : {}) } } : {}),
   };
   const factories = faux?.factories ?? computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id));
   return { computerForClaim: claimComputer, computerDeps, factories };

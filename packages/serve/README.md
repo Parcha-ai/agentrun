@@ -620,7 +620,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -684,6 +684,32 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+#### A person's own computer
+
+A Mac of your own can be an agent's desktop. Its driver, Computerd, dials this server and holds the connection open, so
+the Mac needs no open port and this server needs no address of the Mac's
+([spec/computer/attach.md](../../spec/computer/attach.md)).
+
+- **Pair it.** Settings → Computers → Pair a computer shows a code, such as `K7PD-W3QX` (`POST /v2/computers/pairings`).
+  It pairs one computer, once, within 10 minutes. Type it into Computerd, or run
+  `computerd pair <this server's URL> <code> "<name>"`: the driver trades it for its own token
+  (`POST /v2/computers/pair`, which takes no token of this server's) and keeps that token in the Mac's keychain. This
+  server keeps only the token's SHA-256. A wrong, used or expired code is a 404, and each source address gets 10 tries a
+  minute.
+- **It attaches.** The driver dials `GET /v2/computers/attach`, a WebSocket with its token and the subprotocol
+  `agentrun.computer.0.2`, and dials again when the connection drops. `GET /v2/computers` lists it under `paired`,
+  online or offline, with the run that holds it, and as a provider of `desktop` that is ready while it is online.
+- **An agent uses it.** `computer: {"kind": "desktop", "provider": "cmp-8f2k3jq7m4xw9tnb"}` names it by its id. A run
+  claims it at its start (one run at a time: another is refused while one holds it) and releases it at its end; it is
+  never made, stopped or deleted. A run of an agent whose computer is offline is refused at its start, saying to open
+  Computerd.
+- **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
+  run holding it loses it. Pairing it again gives it a new id.
+- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
+  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
+  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
+  so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 

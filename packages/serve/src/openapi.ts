@@ -37,6 +37,8 @@ import { BASH_POLICIES } from "./bash-read-only.js";
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
+import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
+import { PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
 
 type Json = Record<string, unknown>;
 
@@ -647,8 +649,50 @@ const COMPUTER_PROVIDER = closedWith({
     description: "Present where an agent's computer of this kind can be kept between its runs (`computer.persistent: true`): its provider keeps one for an agent (Orgo's Linux desktop, which its suspend keeps with its memory). Absent where none can.",
   },
 });
+/** A paired computer in GET /computers' `paired` (computer-attach.ts PairedView). */
+const PAIRED_COMPUTER = closed({
+  id: { type: "string", description: "Its id: an agent's `computer.provider` names it (`{kind: \"desktop\", provider: <id>}`), and DELETE /computers/{computer_id} removes it." },
+  name: { type: "string", description: "What the person called it when they paired it." },
+  kind: { type: "string", description: "The machine kind it paired as (its hello's `kind`): `desktop` for a Mac." },
+  os: { type: "string", description: "Its OS, as its hello said it." },
+  arch: { type: "string", description: "Its architecture, as its hello said it." },
+  driver: { type: "string", description: "Its driver's build: its live hello's while it is attached, else the one it last said." },
+  online: { type: "boolean", description: "Whether its driver is attached to this server now." },
+  held_by_run: { type: ["string", "null"], description: "The run that holds it now; null when none does." },
+  created_at: { type: "string", format: "date-time", description: "When it was paired." },
+  seen_at: { type: ["string", "null"], format: "date-time", description: "When it last attached; null before its first." },
+});
+/** POST /computers/pairings' answer. */
+const PAIRING = closed({
+  code: { type: "string", pattern: PAIRING_CODE_PATTERN.source, description: "The code to type into the driver, such as K7PD-W3QX." },
+  expires_at: { type: "string", format: "date-time", description: "When it stops pairing; it is good once before then." },
+});
+/** POST /computers/pair's body: the driver's. */
+const PAIR_REQUEST = closedWith({
+  code: { type: "string", description: "The code the console showed; spaces and case are taken as typed." },
+  name: { type: "string", minLength: 1, maxLength: PAIRED_NAME_MAX, description: "What the person calls the computer: \"Ada's MacBook Pro\"." },
+  hello: {
+    type: "object",
+    required: ["protocol", "version", "os", "kind", "arch", "groups"],
+    properties: {
+      protocol: { type: "string", description: `The protocol version the driver speaks: this server's is ${PROTOCOL_VERSION}.` },
+      version: { type: "string", description: "The driver's own build." },
+      os: { enum: ["linux", "windows", "macos", "android", "ios"] },
+      kind: { enum: ["linux", "desktop", "android", "ios", "browser"] },
+      arch: { type: "string" },
+      groups: { type: "array", items: { type: "string" } },
+    },
+    description: "The driver's own answer to hello, as it would give it: what the server pairs (its kind, OS, groups and features).",
+  },
+}, {});
+/** POST /computers/pair's answer. */
+const PAIRED_TOKEN = closed({
+  computer: { type: "string", description: "The paired computer's id." },
+  token: { type: "string", description: "The computer's token (`art_` and 32 random bytes): shown only here; the driver keeps it in the OS's keychain." },
+});
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
+  paired: { type: "array", items: PAIRED_COMPUTER, description: "The person's own computers paired with this server (Settings → Computers → Pair a computer), oldest first, each online or not. Each is also a provider of its kind under `kinds`, ready while it is online." },
   kinds: {
     type: "array",
     items: closedWith({
@@ -700,6 +744,8 @@ const AGENT_ARCHIL_VIEW = closed({
   },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
+/** attach/1: a person's own computer paired with this server (computer-attach.ts). */
+const ATTACH_MARK = { "x-agentrun-serve": "attach/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
 const PROVIDER_PARAM = { name: "provider", in: "path", required: true, description: "The provider's id (GET /computers lists them).", schema: { type: "string", minLength: 1 } };
 /** computer/1: a run's live computer kind, one live view family for every kind (GET /runs/{run_id}/computer). */
@@ -1346,6 +1392,41 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ...COMPUTER_MARK,
     },
   },
+  "/computers/pairings": {
+    post: {
+      operationId: "createPairing", tags: ["local"], summary: "A code that pairs a person's own computer with this server",
+      description: `Settings → Computers → Pair a computer. A new code of eight letters and digits (two groups of four, no 0, O, 1 or I), good once for ${PAIRING_CODE_TTL_MS / 60_000} minutes: the person types it into the driver on their computer (Computerd on a Mac), which trades it for its own token (POST /computers/pair). The server keeps the code's SHA-256, never the code. A new code does not cancel an older one.`,
+      responses: { "201": json(PAIRING, "The code, and when it expires."), ...errors(401, 429, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/pair": {
+    post: {
+      operationId: "pairComputer", tags: ["local"], summary: "A driver trades a pairing code for its computer's token (no token: the code is the credential)",
+      description: `The driver on a person's own computer sends the code the console showed, the computer's name and its own hello. The code must exist, be unused and be unexpired: it is then used up, and the computer is paired. A wrong, used or expired code is 404, with no word about which; each source address gets ${PAIR_TRIES_PER_MINUTE} tries a minute (429 past them, with Retry-After). A hello of another protocol version than the server's (${PROTOCOL_VERSION}) is 422 in words that say which side to update, and the code stays good. The token is shown only in this answer: the driver keeps it in the OS's keychain and dials GET /computers/attach with it. It has no expiry; it ends when the computer is removed (DELETE /computers/{computer_id}). The server keeps its SHA-256 alone.`,
+      security: [],
+      requestBody: { required: true, content: { "application/json": { schema: PAIR_REQUEST } } },
+      responses: { "201": json(PAIRED_TOKEN, "The computer's id and its token."), ...errors(404, 422, 429, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/attach": {
+    get: {
+      operationId: "attachComputer", tags: ["local"], summary: "The attach socket: a paired computer's driver dials it (a WebSocket)",
+      description: `A WebSocket (spec/computer/attach.md). The driver dials it with \`Authorization: Bearer <its token>\` (POST /computers/pair) and the subprotocol \`${ATTACH_SUBPROTOCOL}\`. A token no paired computer has (unknown, or its computer removed) is 401 before the upgrade; another subprotocol is 426. Frames are text, one JSON-RPC message each, at most ${MAX_LINE_BYTES} bytes (a bigger one closes the socket with 1009, a binary frame with 1003). The server is the caller: it sends hello, and the computer is attached while its hello is what it paired as (else closed with 4400, or 4426 for another protocol version); then the server sends a run's calls. Each side pings every ${ATTACH_HEARTBEAT_MS / 1000} s, and one that hears nothing for ${ATTACH_IDLE_MS / 1000} s closes with 4408. The same computer dialing again replaces its older socket (4409); removing it closes the socket with 4401. A request with no upgrade is 400. One server process holds the socket, so a run uses a paired computer only on a runner in that process (the start's runner beside the server).`,
+      responses: { "101": { description: "Switching to the attach WebSocket." }, ...errors(400, 401, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/{computer_id}": {
+    delete: {
+      operationId: "deleteComputer", tags: ["local"], summary: "Remove a paired computer: its token ends and its socket closes",
+      description: "Revokes the computer's token (its next dial is 401), ends a run's hold on it (the run's next call to it fails), and closes its live socket with 4401, so the driver stops dialing and asks to be paired again. The computer itself is untouched. 404 for an id no paired computer has, or one removed already.",
+      parameters: [{ name: "computer_id", in: "path", required: true, description: "The paired computer's id (GET /computers lists them under `paired`).", schema: { type: "string", minLength: 1 } }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 404, 429, 500) },
+      ...ATTACH_MARK,
+    },
+  },
   "/workspace/archil": {
     get: {
       operationId: "getWorkspaceArchil", tags: ["local"], summary: "Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved",
@@ -1767,7 +1848,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
-      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\`, the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), and for a GitHub delivery \`number\` (pull_request.number, else issue.number), \`head_sha\` (pull_request.head.sha) and \`base_sha\` (pull_request.base.sha; neither on a comment event), read from the signed body so the cut never loses them, each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
+      description: `A route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\`, the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), and for a GitHub delivery \`number\` (pull_request.number, else issue.number), \`head_sha\` (pull_request.head.sha) and \`base_sha\` (pull_request.base.sha; neither on a comment event), read from the signed body so the cut never loses them, each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
       security: [],
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "*/*": { schema: {} } } },

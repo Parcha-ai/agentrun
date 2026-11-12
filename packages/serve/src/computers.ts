@@ -20,7 +20,9 @@ import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
-import type { Store } from "./store/index.js";
+import type { PairedComputerRow, Store } from "./store/index.js";
+import type { PairedView } from "./computer-attach.js";
+import { withPaired } from "./workspace/attached-computers.js";
 import { type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
@@ -132,6 +134,10 @@ export interface ComputerRoutesOptions {
   /** Whether a provider that binds a folder of this machine (Docker) answers here now, or why not (the server's daemon
    *  check, docker-daemon.ts, which keeps its answer a while). Absent: taken as answering. */
   readonly answers?: (provider: string) => Promise<DockerDaemon>;
+  /** The person's own computers paired with this server (computer-attach.ts): the store's rows and each one's view.
+   *  Each is one more provider of its kind (attached-computers.ts pairedEntry), ready while it is attached. Absent:
+   *  none. */
+  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow): PairedView };
 }
 
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
@@ -255,8 +261,13 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
    *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
-  async function view(): Promise<{ kinds: KindView[] }> {
+  async function view(): Promise<{ kinds: KindView[]; paired: PairedView[] }> {
     const mode = await modeNow();
+    // The paired computers, each one more provider of its kind; one not attached now is not ready, saying so.
+    const rows = options.paired ? await options.paired.rows() : [];
+    const paired = rows.map((row) => options.paired!.viewOf(row));
+    const kinds = withPaired(options.kinds as never, rows) as unknown as KindRegistry;
+    const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver (Computerd), which dials this server`] as const])));
     const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds as never);
     // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
     // of its key's name.
@@ -276,7 +287,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const daemon = daemons.get(provider.id);
-          const why = unusable(kind, provider) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const why = offline.get(provider.id) ?? unusable(kind, provider) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
           const serving = provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0);
           const images = imagesOf(serving, provider.defaultImage?.[kind]);
@@ -295,6 +306,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
         return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
+      paired,
     };
   }
 

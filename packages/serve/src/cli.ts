@@ -68,7 +68,9 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
                     memory holds; the rest wait queued) and on SIGTERM lets each busy run finish its turn for up to
-                    --drain-timeout D (default AGENTRUN_DRAIN_TIMEOUT, else 6s), then hands the rest back to resume
+                    --drain-timeout D (default AGENTRUN_DRAIN_TIMEOUT, else 6s), then hands the rest back to resume.
+                    A paired computer (Settings → Computers → Pair a computer) dials the server's process, so only the
+                    runner beside it can use one: separate runners refuse a run whose agent names one
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
@@ -362,8 +364,10 @@ if (!values["no-runner"] && askedAt === undefined) {
     // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
-    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true });
+    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
+    // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
+    // separate runners refuse it in words).
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
