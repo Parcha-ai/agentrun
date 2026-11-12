@@ -1,67 +1,24 @@
 // `npm run build:phoned`: phoned, the phone's driver, as one dex jar at dist/phoned.jar, stamped with this package's
-// version. Plain javac and d8, no Gradle: the code compiles against Android 11's (API 30) own java.base and android.jar,
-// so a call the oldest phone phoned supports lacks fails here and not on a phone. Needs a JDK 17 or newer (JAVA_HOME,
-// else PATH) and an Android SDK with platforms;android-30 and build-tools;35.0.0 (ANDROID_HOME or ANDROID_SDK_ROOT).
+// version. Plain javac and d8, no Gradle: the code compiles against the pinned platform's own java.base and
+// android.jar (android-sdk.mjs's ANDROID, the one GitHub's runner images ship), so a java.* call a phone lacks fails
+// here, and d8 makes dex for the oldest Android phoned runs on. A call newer than that floor needs a
+// Build.VERSION.SDK_INT check; hidden APIs go through reflection. Needs a JDK 17 or newer and an Android SDK with the
+// pinned platform and build tools; the first missing one stops the build in one sentence.
 //
 // `npm run test:phoned` (this script with --test): the JVM tests of phoned's core, the protocol and the driver over a
 // fake phone, with the host JDK alone.
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { delimiter, join, relative, sep } from "node:path";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ANDROID, androidSdk, files, jdk as jdkTool, run as runTool } from "./android-sdk.mjs";
 
+const SCRIPT = "build:phoned";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const source = join(root, "daemon-android");
 const build = join(source, "build");
 const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-/** The oldest Android phoned runs on, and the build tools that make its dex. */
-const API = 30;
-const BUILD_TOOLS = "35.0.0";
-
-function fail(words) {
-	console.error(`build:phoned: ${words}`);
-	process.exit(1);
-}
-
-function findOnPath(name) {
-	for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-		const candidate = join(dir, name);
-		if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-	}
-	return undefined;
-}
-
-/** A JDK tool: from JAVA_HOME, else PATH. */
-function jdk(name) {
-	const home = process.env.JAVA_HOME;
-	const tool = home ? join(home, "bin", name) : findOnPath(name);
-	if (tool === undefined || !existsSync(tool)) fail(`${name} was not found (JAVA_HOME, then PATH); install a JDK 17 or newer`);
-	return tool;
-}
-
-/** Every file under dir ending in suffix, sorted, so a build lists its inputs in one order. */
-function files(dir, suffix) {
-	const out = [];
-	const walk = (at) => {
-		for (const entry of readdirSync(at, { withFileTypes: true })) {
-			const path = join(at, entry.name);
-			if (entry.isDirectory()) walk(path);
-			else if (entry.name.endsWith(suffix)) out.push(path);
-		}
-	};
-	if (existsSync(dir)) walk(dir);
-	return out.sort();
-}
-
-/** Runs a tool with its output shown; when it fails, this script exits with its status (the tool said why). */
-function run(tool, args, options = {}) {
-	try {
-		execFileSync(tool, args, { stdio: ["ignore", "inherit", "inherit"], ...options });
-	} catch (error) {
-		console.error(`build:phoned: ${tool.split(sep).pop()} failed`);
-		process.exit(typeof error.status === "number" && error.status > 0 ? error.status : 1);
-	}
-}
+const jdk = (name) => jdkTool(SCRIPT, name);
+const run = (tool, args, options) => runTool(SCRIPT, tool, args, options);
 
 /** The generated class that says phoned's version: hello.version, which the phone harness checks against its own. */
 function versionSource() {
@@ -96,31 +53,19 @@ if (process.argv.includes("--test")) {
 // --fake: phoned's core over the scripted phone, for the host JVM (ai.agentrun.phoned.fake.FakeMain), which the phone
 // harness's tests and the live probe's dry run start in place of a phone.
 if (process.argv.includes("--fake")) {
-	console.log(`build:phoned: ${hostClasses("fake-classes", ["core", "fake"])}`);
+	console.log(`${SCRIPT}: ${hostClasses("fake-classes", ["core", "fake"])}`);
 	process.exit(0);
 }
 
 for (const name of ["java.base", "jbmod", "classes"]) rmSync(join(build, name), { recursive: true, force: true });
-
-const sdk = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT;
-if (!sdk) fail("ANDROID_HOME is not set; install an Android SDK with platforms;android-30 and build-tools;35.0.0");
-const platform = join(sdk, "platforms", `android-${API}`);
-const androidJar = join(platform, "android.jar");
-const systemModules = join(platform, "core-for-system-modules.jar");
-const d8 = join(sdk, "build-tools", BUILD_TOOLS, process.platform === "win32" ? "d8.bat" : "d8");
-for (const [path, pkg] of [
-	[androidJar, `platforms;android-${API}`],
-	[systemModules, `platforms;android-${API}`],
-	[d8, `build-tools;${BUILD_TOOLS}`],
-]) {
-	if (!existsSync(path)) fail(`${path} is missing: sdkmanager "${pkg}"`);
-}
+const sdk = androidSdk(SCRIPT);
+const d8 = sdk.tool("d8");
 
 // Android's java.base as a module, so javac checks every java.* call against what a phone has (no ProcessHandle, no
 // java.net.http) instead of against the host JDK.
 const base = join(build, "java.base");
 mkdirSync(base, { recursive: true });
-run(jdk("jar"), ["xf", systemModules], { cwd: base });
+run(jdk("jar"), ["xf", sdk.systemModules], { cwd: base });
 const packages = [...new Set(files(base, ".class").map((path) => relative(base, path).split(sep).slice(0, -1).join(".")))].filter(Boolean).sort();
 writeFileSync(join(build, "module-info.java"), `module java.base {\n${packages.map((name) => `\texports ${name};\n`).join("")}}\n`);
 const module = join(build, "jbmod");
@@ -130,13 +75,13 @@ run(jdk("jar"), ["uf", join(build, "java.base.jar"), "-C", module, "module-info.
 
 const classes = join(build, "classes");
 const inputs = [...tree("core"), ...tree("android"), versionSource()];
-run(javac, [...common, "--system=none", "--module-path", join(build, "java.base.jar"), "-classpath", androidJar, "-source", "17", "-target", "17", "-XDstringConcat=inline", "-d", classes, ...inputs]);
+run(javac, [...common, "--system=none", "--module-path", join(build, "java.base.jar"), "-classpath", sdk.androidJar, "-source", "17", "-target", "17", "-XDstringConcat=inline", "-d", classes, ...inputs]);
 
 const dist = join(root, "dist");
 mkdirSync(dist, { recursive: true });
 const out = join(dist, "phoned.jar");
 rmSync(out, { force: true });
-run(d8, ["--release", "--min-api", String(API), "--lib", androidJar, "--output", out, ...files(classes, ".class")]);
+run(d8, ["--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", out, ...files(classes, ".class")]);
 // build/ is git-ignored, so CI's build output would carry its megabytes of Android's java.base to every test job.
 rmSync(build, { recursive: true, force: true });
-console.log(`build:phoned: ${out} (${statSync(out).size} bytes, ${version})`);
+console.log(`${SCRIPT}: ${out} (${statSync(out).size} bytes, ${version})`);

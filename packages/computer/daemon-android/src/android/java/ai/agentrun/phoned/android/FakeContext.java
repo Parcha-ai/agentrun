@@ -8,7 +8,7 @@ import android.content.ContextWrapper;
 /**
  * The system context, speaking as the shell package (com.android.shell, uid 2000), so the framework's own managers
  * (PackageManager, UserManager) work from app_process. scrcpy's content-resolver and attribution-source overrides are
- * left out: phoned uses neither, and they need classes the API 30 SDK does not have.
+ * left out: phoned uses neither.
  */
 final class FakeContext extends ContextWrapper {
 	static final String PACKAGE_NAME = "com.android.shell";
@@ -39,8 +39,8 @@ final class FakeContext extends ContextWrapper {
 		return PACKAGE_NAME;
 	}
 
-	// Overrides Context.getDeviceId() on Android 14 and later; the API 30 SDK does not have it.
-	@SuppressWarnings("unused")
+	/** Context.getDeviceId() (Android 14 and later): the default device. Older phones never call it. */
+	@Override
 	public int getDeviceId() {
 		return 0;
 	}

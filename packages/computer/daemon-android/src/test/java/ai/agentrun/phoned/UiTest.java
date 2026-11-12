@@ -6,6 +6,7 @@ import static ai.agentrun.phoned.Check.map;
 import static ai.agentrun.phoned.Check.refuses;
 import static ai.agentrun.phoned.Check.yes;
 
+import ai.agentrun.phoned.fake.FakeDevice;
 import ai.agentrun.phoned.fake.FakeNode;
 import java.util.Arrays;
 import java.util.List;
@@ -57,10 +58,14 @@ final class UiTest {
 		Map<String, Object> full = phone.call("ui.observe", "{\"full\":true}");
 		yes(list(full, "nodes").size() > list(seen, "nodes").size(), "full lists more");
 		phone.node(full, "Mobile, Wi-Fi, hotspot");
-		phone.node(full, "System");
+		// The System row's title, scrolled out below the window: offscreen, a line on the window's bottom edge.
+		Map<String, Object> system = phone.node(full, "System");
+		eq(Arrays.asList("offscreen"), system.get("flags"));
+		eq("[80,1200,370,0]", Json.write(system.get("bounds")));
 		for (Object n : list(full, "nodes")) {
 			String b = Json.write(map(n).get("bounds"));
-			yes(!b.endsWith(",0,0]") && !b.endsWith(",0]"), "a zero-size node is listed: " + b);
+			Object flags = map(n).get("flags");
+			yes(flags != null && ((List<?>) flags).contains("offscreen") || !b.endsWith(",0,0]") && !b.endsWith(",0]"), "a zero-size node is listed: " + b);
 		}
 	}
 
@@ -262,5 +267,75 @@ final class UiTest {
 		eq("Keep me signed in", o.entries.get(0).name);
 		eq("checkbox", o.entries.get(1).role);
 		eq(o.entries.get(0), o.entries.get(1).parent);
+	}
+
+	static void testARowHalfShownIsCutToTheWindow() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		// Security & privacy's row is pixels 2300 to 2500 of a 2400-pixel window: half of it shows.
+		Map<String, Object> row = phone.node(phone.call("ui.observe", "{}"), "Security & privacy");
+		eq("[0,1150,540,50]", Json.write(row.get("bounds")));
+		eq(null, row.get("flags"));
+	}
+
+	static void testAStepIsVerifiedOnlyWhenTheWindowReadsBackChanged() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		Map<String, Object> seen = phone.call("ui.observe", "{}");
+		// Connected devices' row takes its click and shows nothing new: the click ran, and nothing verifies it.
+		String still = (String) phone.node(seen, "Connected devices").get("ref");
+		eq(Json.obj("route", "semantic", "verified", false), step(phone.call("ui.act", "{\"steps\":[{\"press\":\"" + still + "\"}]}"), 0));
+		// A frame and an event with nothing changed are no readback either.
+		phone.device.changed();
+		eq(Json.obj("route", "semantic", "verified", false), step(phone.call("ui.act", "{\"steps\":[{\"press\":\"" + still + "\"}]}"), 0));
+	}
+
+	static void testTheFixtureCanvasTakesOnlyTheForegroundRoute() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		eq("[" + (1080 - 640) / 4 + "," + (2400 - 640) / 4 + ",320,320]", Json.write(map(seen.get("window")).get("bounds")));
+		Map<String, Object> canvas = null;
+		for (Object n : list(seen, "nodes")) if ("canvas".equals(map(n).get("id"))) canvas = map(n);
+		yes(canvas != null, "the canvas is listed by its id");
+		eq("image", canvas.get("role"));
+		eq("Canvas", canvas.get("name"));
+		eq("0", canvas.get("value"));
+		yes(!canvas.containsKey("actions"), "the canvas has no action a caller would perform: " + canvas.get("actions"));
+		String click = "{" + target + ",\"steps\":[{\"click\":\"" + canvas.get("ref") + "\"}]";
+		// No click action to try: without foreground: true the tap is denied, and nothing is injected.
+		Map<String, Object> error = map(step(phone.call("ui.act", click + "}"), 0).get("error"));
+		eq("denied", error.get("kind"));
+		yes(((String) error.get("message")).contains("pass foreground: true"), (String) error.get("message"));
+		yes(phone.device.log.equals(Arrays.asList("launch " + FakeDevice.FIXTURE)), "nothing was injected: " + phone.device.log);
+		// With it, one tap at the canvas's middle, verified by reading its count back.
+		eq(Json.obj("route", "foreground", "verified", true), step(phone.call("ui.act", click + ",\"foreground\":true}"), 0));
+		eq("1", phone.device.canvas.state);
+	}
+
+	static void testTheFixtureShowsItsEffectsLaterAndBackLeavesIt() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		String save = null;
+		String next = null;
+		for (Object n : list(seen, "nodes")) {
+			if ("save".equals(map(n).get("id"))) save = (String) map(n).get("ref");
+			if ("next".equals(map(n).get("id"))) next = (String) map(n).get("ref");
+		}
+		// Saved shows SAVED_MS after the press: only the expect, polling, sees it.
+		Map<String, Object> saved = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + save + "\"}],\"expect\":{\"text\":\"Saved\"}}");
+		eq("met", saved.get("expect"));
+		Map<String, Object> second = phone.call("ui.act", "{" + target + ",\"steps\":[{\"press\":\"" + next + "\"}],\"expect\":{\"ref\":\"" + next + "\",\"gone\":true}}");
+		eq("met", second.get("expect"));
+		eq("Second page", phone.device.windows.get(0).title);
+		Map<String, Object> home = phone.call("ui.act", "{" + target + ",\"steps\":[{\"nav\":\"back\"}],\"expect\":{\"text\":\"UI fixture\"}}");
+		eq("met", home.get("expect"));
+		// Back on its first page leaves the app for the home screen; terminate does too.
+		phone.call("ui.act", "{\"steps\":[{\"nav\":\"back\"}]}");
+		eq(FakeDevice.LAUNCHER, map(phone.call("apps.list", "{}")).get("foreground"));
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		phone.call("apps.terminate", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		eq(FakeDevice.LAUNCHER, map(phone.call("apps.list", "{}")).get("foreground"));
 	}
 }

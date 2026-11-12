@@ -138,13 +138,19 @@ public final class Outline {
 	public final List<Hit> hits = new ArrayList<>();
 	public boolean truncated;
 	private int read;
+	/** The window's bounds (its root's), which every element's are cut to; null when the root has none. */
+	private Rect area;
 
 	private Outline() {}
 
 	/** The tree under root, compact or full. */
 	public static Outline of(AxNode root, boolean full) {
 		Outline outline = new Outline();
-		if (root != null) outline.walk(root, null, full, false, 0);
+		if (root != null) {
+			Rect window = root.bounds();
+			outline.area = window.empty() ? null : window;
+			outline.walk(root, null, full, false, 0);
+		}
 		if (!full) {
 			List<Entry> kept = new ArrayList<>(outline.entries.size());
 			for (Entry e : outline.entries) if (e.kept) kept.add(e);
@@ -167,6 +173,20 @@ public final class Outline {
 		return null;
 	}
 
+	/**
+	 * Bounds held inside the window's (its root's), each edge moved in to the window's: a row half scrolled out of a
+	 * list reports its whole size on some releases, and only the part inside the window is there to see or tap. One
+	 * scrolled wholly out (offscreen, listed by a full observe) becomes a line on the window's edge it left by.
+	 */
+	private Rect inside(Rect r) {
+		if (area == null) return r;
+		return new Rect(clamp(r.left, area.left, area.right), clamp(r.top, area.top, area.bottom), clamp(r.right, area.left, area.right), clamp(r.bottom, area.top, area.bottom));
+	}
+
+	private static int clamp(int v, int lo, int hi) {
+		return Math.max(lo, Math.min(hi, v));
+	}
+
 	private boolean spent(int depth) {
 		if (read >= MAX_NODES || depth > 200) {
 			truncated = true;
@@ -178,12 +198,13 @@ public final class Outline {
 
 	private void walk(AxNode node, Entry parent, boolean full, boolean inSearch, int depth) {
 		if (spent(depth)) return;
-		Rect bounds = node.bounds();
-		boolean visible = node.visible();
-		if (!bounds.empty() && visible) hits.add(new Hit(node.key(), bounds));
+		Rect own = node.bounds();
+		Rect bounds = inside(own);
+		boolean visible = node.visible() && !bounds.empty();
+		if (visible) hits.add(new Hit(node.key(), bounds));
 		Entry entry = null;
 		boolean took = false;
-		if (!bounds.empty() && (full || visible)) {
+		if (!own.empty() && (full || visible)) {
 			String name = ownName(node);
 			String value = valueOf(node);
 			String desc = null;
@@ -227,7 +248,7 @@ public final class Outline {
 			return;
 		}
 		if (spent(depth)) return;
-		Rect bounds = node.bounds();
+		Rect bounds = inside(node.bounds());
 		if (!bounds.empty() && node.visible()) hits.add(new Hit(node.key(), bounds));
 		int count = node.childCount();
 		for (int i = 0; i < count; i++) {

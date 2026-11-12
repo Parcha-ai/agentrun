@@ -32,9 +32,9 @@ public final class FakeDevice implements Device {
 	public static final String LAUNCHER = "com.google.android.apps.nexuslauncher";
 	public static final String CHROME = "com.android.chrome";
 	/** The ui fixture's app id, as the conformance suite names it (src/conformance/ui-fixture.ts). */
-	public static final String FIXTURE = "ai.agentrun.ui-fixture";
+	public static final String FIXTURE = "ai.agentrun.uifixture";
 	/** The fixture's window, in points (ui-fixture.ts size), and its delays (SAVED_MS, NEXT_MS, NEXT_ANIMATE_MS). */
-	public static final int FIXTURE_WIDTH = 480;
+	public static final int FIXTURE_WIDTH = 320;
 	public static final int FIXTURE_HEIGHT = 320;
 	public static final long SAVED_MS = 300;
 	public static final long NEXT_MS = 200;
