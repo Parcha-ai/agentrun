@@ -194,8 +194,8 @@ test('the install waits until both packuments of every package list the release 
       const pkg = pkgFor(url);
       assert.ok(pkg, `unexpected URL ${url}`);
       seen.add(init.headers.accept);
-      // The full packument lists pi at once; the abbreviated one the installer reads lags 16 minutes, as npm did for beta.11's dsl.
-      const lagging = pkg.directory === 'pi' && init.headers.accept === PACKUMENT_ACCEPT.abbreviated && waited < 976_000;
+      // The full packument lists serve at once; the abbreviated one the installer reads lags 16 minutes, as npm did for beta.11's dsl.
+      const lagging = pkg.directory === 'serve' && init.headers.accept === PACKUMENT_ACCEPT.abbreviated && waited < 976_000;
       return packument(pkg, !lagging);
     },
   });
@@ -208,8 +208,8 @@ test('a packument that never lists the version fails after the 20 minute budget 
   let waited = 0, calls = 0;
   await assert.rejects(waitForRegistryVersions(registry, packages, {
     wait: async ms => { waited += ms; },
-    fetchImpl: async (url, init) => { calls++; const pkg = pkgFor(url); return pkg.directory === 'jev' && init.headers.accept === PACKUMENT_ACCEPT.full ? new Response(null, { status: 404 }) : packument(pkg, pkg.directory !== 'pi'); },
-  }), /never listed @parcha\/agentrun-jev@0\.1\.0-beta\.1 \(full: HTTP 404\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(full\), @parcha\/agentrun-pi@0\.1\.0-beta\.1 \(abbreviated\)/);
+    fetchImpl: async (url, init) => { calls++; const pkg = pkgFor(url); return pkg.directory === 'jev' && init.headers.accept === PACKUMENT_ACCEPT.full ? new Response(null, { status: 404 }) : packument(pkg, pkg.directory !== 'serve'); },
+  }), /never listed @parcha\/agentrun-jev@0\.1\.0-beta\.1 \(full: HTTP 404\), @parcha\/agentrun-serve@0\.1\.0-beta\.1 \(full\), @parcha\/agentrun-serve@0\.1\.0-beta\.1 \(abbreviated\)/);
   assert.ok(waited <= 20 * 60_000 && waited > 20 * 60_000 - 30_000, `waited ${waited} ms`);
   const polls = calls / (2 * packages.length);
   assert.ok(Number.isInteger(polls) && polls > 30 && polls < 60, `${polls} polls in 20 minutes`);
