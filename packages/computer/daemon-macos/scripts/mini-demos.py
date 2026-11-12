@@ -159,7 +159,11 @@ class Task:
         if method == "ui.observe":
             entry["nodes"] = len(r.get("nodes", []))
         self.calls.append(entry)
-        routes = ", ".join(s.get("route") or (s.get("error") or {}).get("kind", "?") for s in r.get("steps") or [])
+        # A route, with " unverified" when no readback saw the step's effect; or the refusal's kind.
+        routes = ", ".join(
+            (s["route"] + ("" if s.get("verified") else " unverified")) if "route" in s else (s.get("error") or {}).get("kind", "?")
+            for s in r.get("steps") or []
+        )
         tail = f" [{routes}]" if routes else ""
         if "expect" in entry and entry["expect"]:
             tail += f" expect {entry['expect']}"
@@ -169,7 +173,13 @@ class Task:
     def observe(self, label="observe", **extra):
         params = {"target": {"app": self.app}}
         params.update(extra)
-        reply = self.call("ui.observe", params, label)
+        # An app just opened may swap its first window for another (Notes does): not_found is asked again, for 10 s.
+        deadline = time.monotonic() + 10
+        while True:
+            reply = self.call("ui.observe", params, label)
+            if (reply.get("error") or {}).get("data", {}).get("kind") != "not_found" or time.monotonic() > deadline:
+                break
+            time.sleep(0.5)
         if "error" in reply:
             raise Failed(f"ui.observe {self.app}: {reply['error'].get('message')}")
         r = reply["result"]
@@ -200,6 +210,26 @@ class Task:
         if expect is not None and r.get("expect") != "met":
             raise Failed(f"{label}: the expect {json.dumps(expect)} was {r.get('expect')}")
         return r
+
+    def close(self, label):
+        """super+w on the task's window, as teardown. Closing the act's own window leaves no window to settle on, which
+        the driver answers not_found: the window is then gone, as asked."""
+        self.say(label)
+        reply = self.call("ui.act", {"target": {"app": self.app}, "steps": [{"key": "super+w"}]}, label)
+        kind = (reply.get("error") or {}).get("data", {}).get("kind")
+        if kind not in (None, "not_found"):
+            raise Failed(f"{label}: {reply['error'].get('message')}")
+
+    def dump(self):
+        """The window's nodes, printed, for a failed task."""
+        try:
+            r = self.c.call("ui.observe", {"target": {"app": self.app}}).get("result") or {}
+        except Exception as e:
+            print(f"  (no observation: {e!r})")
+            return
+        print(f"  the window now ({r.get('window', {}).get('title')!r}, {len(r.get('nodes', []))} nodes):")
+        for n in r.get("nodes", [])[:150]:
+            print(f"    {n.get('ref')} {n.get('role')} name={n.get('name')!r} value={(n.get('value') or '')[:60]!r} id={n.get('id')!r} flags={n.get('flags')} parent={n.get('parent')}")
 
     def wait_for(self, text, label, seconds=20):
         """Until the app has a window that shows the text: an expect, asked again while the app has no window yet."""
@@ -305,7 +335,7 @@ def textedit_edit_number(t):
         raise Failed(f"totals.txt holds {saved!r}, not {after!r}")
     t.notes.append("totals.txt saved with Pears: 42, the other lines kept")
     if not keep:
-        t.act([{"key": "super+w"}], "close the document (super+w)")
+        t.close("close the document (super+w)")
         t.run_exec(["/bin/rm", "-rf", folder], "remove the task's folder")
 
 
@@ -326,7 +356,7 @@ def finder_rename_file(t):
         raise Failed(f"the folder holds {names}, not final.txt and other.txt")
     t.notes.append(f"the folder holds {', '.join(names)}")
     if not keep:
-        t.act([{"key": "super+w"}], "close the window (super+w)")
+        t.close("close the window (super+w)")
         t.run_exec(["/bin/rm", "-rf", folder], "remove the task's folder")
 
 
@@ -346,7 +376,7 @@ def safari_follow_link(t):
     t.act([{"key": "super+["}], "go back (super+[)", expect={"text": "Quarterly report", "timeoutMs": 10000})
     t.notes.append("followed the link by its name and came back")
     if not keep:
-        t.act([{"key": "super+w"}], "close the tab (super+w)")
+        t.close("close the tab (super+w)")
         t.run_exec(["/bin/rm", "-rf", folder], "remove the task's site")
 
 
@@ -424,6 +454,9 @@ def main():
             except Exception as e:
                 error = repr(e)
             took = round((time.monotonic() - t.t0) * 1000)
+            if error is not None:
+                print(f"  {error}")
+                t.dump()
             if t.rec:
                 t.say("passed" if error is None else "failed")
                 time.sleep(1)
