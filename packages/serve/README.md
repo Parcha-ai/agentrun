@@ -1228,6 +1228,19 @@ and the ask expires, the agent told the cap's words. When the
 browser comes back, what was held up front goes, and the time the person had stays held, at the provider's price, until
 the session's next charge books it: take-overs given back with no browser call between them still meet the cap.
 
+**The run waits for you, its browser kept.** When the agent asks the person a question (`ask_person`) with its browser open,
+the run waits for the answer with that browser kept open for them: its page, the live view and Take over stay there. The
+browser's own idle release (a few minutes with no browser call) doesn't apply while it waits. It is kept for the person's
+window, `AGENTRUN_BROWSER_PERSON_WAIT_MIN` (whole minutes, 1 to 360; 15 by default), the same setting that bounds a
+take-over with no input and an agent's hand-over ask (above, 15 minutes each by default), so the three never drift apart.
+The window's session time is held under the run's cap first, at the provider's price, like a take-over's: while the run
+waits, its cost grows by the browser's session time only, never by model time, and with no room under the cap the run
+parks at once. An answer inside the window goes back to the agent on the same page. At the window's end the run parks and
+the browser is released ("The browser was released after 15 min waiting for you" on the timeline, and the Screen tab says
+so, with when, until a browser opens again), so its billing stops there. An answer after that goes on with a new
+browser, opened at the agent's next browser call. A browser its provider ends before the answer says so too ("The browser
+session ended while the run waited for you"). A provider's own session timeout still applies: keep the window under it.
+
 **The agent asks.** The agent may ask the owner to do something in its browser (`browser_request_handoff`: an instruction
 and how it will know it is done, such as signing in). Its person's time is held the same way first; with no room no ask is
 made, and the tool's result says why. The run then reads `input_required`/`waiting` with

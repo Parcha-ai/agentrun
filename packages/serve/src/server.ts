@@ -24,7 +24,7 @@ import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
-import { HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
+import { HOME_HOST_OWNED, SETUP_LOST } from "./files.js";
 import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
@@ -50,6 +50,7 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
@@ -2109,23 +2110,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
   // again. A run whose journal cannot be read leaves it all tokens.
   const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
-  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
-  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
-  // none (a run whose cost is known, or one ended before the figure was kept).
-  const endedSoFar = new Map<string, number | undefined>();
-  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
-    const key = `${row.id} ${row.endedAt}`;
-    if (!endedSoFar.has(key)) {
-      // TODO(E3/store-reads): a run's kept so-far cost comes from the store (its row/journal), not a per-run RUN_META file
-      // (runStorePath is gone). Undefined until the usage route reads it over the store.
-      let usd: number | undefined;
-      {
-        usd = undefined;
-      }
-      endedSoFar.set(key, usd);
-    }
-    return endedSoFar.get(key);
-  };
   const metersOf = async (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -2183,7 +2167,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
-      const soFar = usd !== null || !read ? 0 : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const soFar = usd !== null || !read ? 0 : read.known.tokens + read.known.browser + read.known.others;
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
@@ -2727,6 +2711,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => computerOf(kept, env, family),
           hold: () => hold,
+          // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
+          // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
+          // For an ended run, nothing, and its row goes.
+          ended: () => screenWaitEnded(store.settings, run.id, run.terminal),
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
         return send(res, 200, view, { "cache-control": "no-store" });

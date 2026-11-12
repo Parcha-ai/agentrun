@@ -6,8 +6,6 @@ import { join } from "node:path";
 
 export { DATA_ENV, SERVER_FILE, TOKEN_FILE, agentFolderOf, defaultData, readJson, removeOwnRecord, serialBy, syncDir, tempOf, writeDurable, writeDurableSync, writeWhole } from "./server-fs.js";
 
-/** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
-export const RUN_META = "serve.json";
 /** A cancelled run's mark in its directory, written before its process is told: the run's process sends no model
  *  request once it is there, however the cancel and the process's start interleave. */
 export const RUN_CANCELLED = "cancelled";
@@ -20,7 +18,7 @@ export const RUN_DOOR_TOKEN = "door-token";
 
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
-/** Why a run fails that the store has running with no serve.json: its server went down before it set the run up. */
+/** Why a run fails that the store has running with no launch row or setup: its server went down before it set the run up. */
 export const SETUP_LOST = "server_lost_at_setup";
 
 
