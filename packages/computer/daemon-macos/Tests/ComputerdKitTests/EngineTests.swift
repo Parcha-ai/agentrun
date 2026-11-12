@@ -173,11 +173,11 @@ final class EngineTests: XCTestCase {
 		let r = try await engine.observe(UiObserveParams())
 		let refused = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello")), .press(ref(r, "Save"))]))
 		XCTAssertEqual(refused.steps.count, 1, "a refused step is the last")
-		XCTAssertEqual(stepError(refused, 0)?.kind, .unsupported)
+		XCTAssertEqual(stepError(refused, 0)?.kind, .denied, "the call can allow the one route left")
 		let words = stepError(refused, 0)?.message ?? ""
 		XCTAssertTrue(words.contains("semantic: \(ref(r, "Hello")) has no AXPress"), words)
 		XCTAssertTrue(words.contains("background: ui.background is off here: SkyLight"), words)
-		XCTAssertTrue(words.contains("foreground: the call does not allow it"), words)
+		XCTAssertTrue(words.contains("foreground: it moves the user's pointer and focus, and this call does not allow it: pass foreground: true"), words)
 		XCTAssertEqual(os.entries, [])
 		let allowed = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))], foreground: true))
 		XCTAssertEqual(ran(allowed, 0)?.0, .foreground)
@@ -188,6 +188,7 @@ final class EngineTests: XCTestCase {
 		let engine = os.engine(background: .off("no SkyLight"), foreground: .off("Post Event is not granted"))
 		let r = try await engine.observe(UiObserveParams())
 		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(stepError(result, 0)?.kind, .unsupported, "no route reaches it here")
 		XCTAssertTrue(stepError(result, 0)?.message.contains("ui.foreground is off here: Post Event") == true)
 	}
 

@@ -58,11 +58,14 @@ default:
 }
 
 signal(SIGPIPE, SIG_IGN)
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+// The process's first thread is the main thread: AppKit and the app delegate live there.
+MainActor.assumeIsolated {
+	let app = NSApplication.shared
+	let delegate = AppDelegate()
+	app.delegate = delegate
+	app.setActivationPolicy(.accessory)
+	app.run()
+}
 #else
 print("Computerd.app runs on macOS only")
 #endif

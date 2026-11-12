@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// One window: each grant with its state and a button that asks for it, the capture alert, and pairing.
+@MainActor
 final class Onboarding: NSObject, NSWindowDelegate {
 	weak var app: AppDelegate?
 	let window: NSWindow
@@ -185,7 +186,9 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		NSApp.activate()
 		// Grants change in System Settings, not here: look again each second while the window is open.
 		timer?.invalidate()
-		timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+		timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+			MainActor.assumeIsolated { self?.refresh() }
+		}
 	}
 
 	func windowWillClose(_ notification: Notification) {

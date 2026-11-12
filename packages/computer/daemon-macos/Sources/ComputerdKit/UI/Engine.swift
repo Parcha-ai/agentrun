@@ -299,10 +299,12 @@ public actor UIEngine {
 		case change
 	}
 
-	/// One way to do a step: its route, why it can't be taken (nil when it can), and the doing.
+	/// One way to do a step: its route, why it can't be taken (nil when it can), and the doing. notAllowed: the route
+	/// works here but the call does not allow it (the foreground route without foreground: true).
 	struct Attempt {
 		let route: Route
 		let off: String?
+		var notAllowed = false
 		let run: () async throws -> Check
 	}
 
@@ -454,25 +456,31 @@ public actor UIEngine {
 		var background: String?
 		if case .off(let reason) = platform.backgroundFeature { background = "ui.background is off here: \(reason)" }
 		var foreground: String?
+		var notAllowed = false
 		if case .off(let reason) = platform.foregroundFeature {
 			foreground = "ui.foreground is off here: \(reason)"
 		} else if !allowed {
-			foreground = "the call does not allow it (foreground: true), and it moves the user's pointer and focus"
+			foreground = "it moves the user's pointer and focus, and this call does not allow it: pass foreground: true"
+			notAllowed = true
 		}
 		let bg = platform.background
 		let fg = platform.foreground
 		return [
 			Attempt(route: .background, off: background) { try await body(bg) },
-			Attempt(route: .foreground, off: foreground) { try await body(fg) },
+			Attempt(route: .foreground, off: foreground, notAllowed: notAllowed) { try await body(fg) },
 		]
 	}
 
-	/// Takes the first route that can do the step; settles; checks. A route that turns out unable lets the next try.
+	/// Takes the first route that can do the step; settles; checks. A route that turns out unable lets the next try. When
+	/// the one route left is one the call does not allow, the step is refused denied (the call can allow it); when no
+	/// route reaches it here, unsupported.
 	func ladder(_ step: Step, view: View, _ attempts: [Attempt]) async throws -> (Route, Bool, View) {
 		var reasons: [String] = []
+		var denied = false
 		for attempt in attempts {
 			if let off = attempt.off {
 				reasons.append("\(attempt.route.rawValue): \(off)")
+				denied = denied || attempt.notAllowed
 				continue
 			}
 			let check: Check
@@ -488,7 +496,8 @@ public actor UIEngine {
 			case .change: return (attempt.route, view.fingerprint != after.fingerprint, after)
 			}
 		}
-		throw RPCError.unsupported("no route could \(step.verb) here. " + reasons.joined(separator: "; "))
+		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
+		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
 	}
 
 	// MARK: elements and points

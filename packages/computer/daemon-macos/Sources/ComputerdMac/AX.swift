@@ -337,18 +337,26 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		if chord.modifiers.contains(.alt) { modifiers |= 2 }
 		if chord.modifiers.contains(.ctrl) { modifiers |= 4 }
 		let key = chord.key.uppercased()
-		guard let bar = AX.element(AX.copy(AXUIElementCreateApplication(target.pid), kAXMenuBarAttribute)) else { return nil }
+		guard let bar = AX.element(AX.copy(AXUIElementCreateApplication(target.pid), kAXMenuBarAttribute)) else {
+			log("menu item for \(chord.text) in \(target.app.id): the app shows no menu bar")
+			return nil
+		}
 		var stack: [(AXUIElement, Int)] = [(bar, 0)]
 		var seen = 0
+		var near: [String] = []
 		while case let (element, depth)? = stack.popLast(), seen < 4000 {
 			seen += 1
 			let v = AX.copy(element, Self.menuWalked)
-			if let char = AX.string(v[1]), char.uppercased() == key, (v[2] as? NSNumber)?.intValue ?? 0 == modifiers, AX.bool(v[3]) != false {
-				return ElementHandle(ax: element)
+			if let char = AX.string(v[1]), char.uppercased() == key {
+				let mods = (v[2] as? NSNumber)?.intValue ?? 0
+				let enabled = AX.bool(v[3]) != false
+				if mods == modifiers && enabled { return ElementHandle(ax: element) }
+				near.append("modifiers \(mods), enabled \(enabled)")
 			}
 			guard depth < 6 else { continue }
 			for child in AX.elements(v[0]).reversed() { stack.append((child, depth + 1)) }
 		}
+		log("menu item for \(chord.text) in \(target.app.id): none of \(seen) elements matched; items on \(key): \(near.isEmpty ? "none" : near.joined(separator: "; "))")
 		return nil
 	}
 }
