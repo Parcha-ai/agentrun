@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>ai.agentrun.ui-fixture</string>
+	<string>ai.agentrun.uifixture</string>
 	<key>CFBundleName</key>
 	<string>UI fixture</string>
 	<key>CFBundleDisplayName</key>

@@ -105,7 +105,7 @@ swift build --build-tests && swift test     # on a Mac; the core (ComputerdKit) 
 - **ComputerdMac**: those protocols on macOS (accessibility, ScreenCaptureKit, NSWorkspace, SkyLight input, the
   keychain, the socket's peer check, the attach client).
 - **ComputerdApp**: the app. **ComputerdCLI**: the `computerd` command.
-- **UIFixture**: the ui conformance cases' fixture app (`ai.agentrun.ui-fixture`, per
+- **UIFixture**: the ui conformance cases' fixture app (`ai.agentrun.uifixture`, per
   `packages/computer/src/conformance/ui-fixture.ts`). `COMPUTERD_UI_FIXTURE=1 scripts/bundle.sh` writes
   `build/UIFixture.app`; test-only.
 

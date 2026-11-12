@@ -37,7 +37,7 @@ let package = Package(
 		),
 		.executableTarget(name: "ComputerdApp", dependencies: ["ComputerdMac", "ComputerdKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
 		.executableTarget(name: "ComputerdCLI", dependencies: ["ComputerdKit"]),
-		// The ui conformance cases' fixture app (ai.agentrun.ui-fixture), bundled by scripts/bundle.sh. Test-only.
+		// The ui conformance cases' fixture app (ai.agentrun.uifixture), bundled by scripts/bundle.sh. Test-only.
 		.executableTarget(
 			name: "UIFixture",
 			swiftSettings: [.swiftLanguageMode(.v5)],

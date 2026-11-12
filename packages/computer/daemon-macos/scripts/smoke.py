@@ -157,7 +157,7 @@ def live(c):
     c.call("apps.terminate", {"id": "com.apple.TextEdit"})
 
 
-FIXTURE = "ai.agentrun.ui-fixture"
+FIXTURE = "ai.agentrun.uifixture"
 
 
 def fixture(c):
@@ -185,7 +185,7 @@ def fixture(c):
     want = {"name": "textbox", "wifi": "switch", "save": "button", "next": "button", "canvas": "image"}
     record("fixture", "the fixture's elements, by id and role", shape == want, json.dumps(shape))
     size = seen["window"]["bounds"][2:]
-    record("fixture", "the window is 480 by 320 points", size == [480, 320], json.dumps(seen["window"]))
+    record("fixture", "the window is 320 by 320 points", size == [320, 320], json.dumps(seen["window"]))
     record("fixture", "Wi-Fi's desc", (by.get("wifi") or {}).get("desc") == "Networks nearby", json.dumps(by.get("wifi")))
     record("fixture", "the canvas's count starts at 0", (by.get("canvas") or {}).get("value") == "0", json.dumps(by.get("canvas")))
     if shape != want:

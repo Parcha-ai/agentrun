@@ -1,5 +1,5 @@
-// The ui fixture on macOS (ai.agentrun.ui-fixture): the small app the computer protocol's ui conformance cases know,
-// built to packages/computer/src/conformance/ui-fixture.ts. Its window is 480 by 320 points with its content under a
+// The ui fixture on macOS (ai.agentrun.uifixture): the small app the computer protocol's ui conformance cases know,
+// built to packages/computer/src/conformance/ui-fixture.ts. Its window is 320 by 320 points with its content under a
 // transparent title bar, so each element's frame here is its bounds in window points there.
 //
 //   home     "UI fixture" heading, a "Name" text field, a "Wi-Fi" switch (desc "Networks nearby"), "Save", "Next", and a
@@ -10,10 +10,17 @@
 #if os(macOS)
 import AppKit
 
+/// The fixture as ui-fixture.ts names it: its app id (App/UIFixture-Info.plist's CFBundleIdentifier, checked at launch)
+/// and its window's size in points.
+enum Spec {
+	static let id = "ai.agentrun.uifixture"
+	static let size = NSSize(width: 320, height: 320)
+}
+
 let savedMs = 300
 let nextMs = 200
 let nextAnimateMs = 300
-let size = NSSize(width: 480, height: 320)
+let size = Spec.size
 
 /// A view whose frames read from the top left, as window points do.
 final class Flipped: NSView {
@@ -146,6 +153,11 @@ final class Fixture: NSObject, NSApplicationDelegate {
 		root.addSubview(home)
 		window.title = "UI fixture"
 	}
+}
+
+guard Bundle.main.bundleIdentifier == Spec.id else {
+	FileHandle.standardError.write(Data("the ui fixture's bundle id is \(Bundle.main.bundleIdentifier ?? "none"), not \(Spec.id): run it as UIFixture.app from bundle.sh\n".utf8))
+	exit(1)
 }
 
 MainActor.assumeIsolated {
