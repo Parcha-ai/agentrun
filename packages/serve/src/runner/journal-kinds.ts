@@ -297,8 +297,9 @@ export interface EndData {
   /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
    *  (a person's stop: the turn is over, not the run) or 'cancelled' (stopEnd). */
   readonly outcome?: "completed" | "escalated" | "stopped" | "cancelled";
-  /** What the run cost, as its end knows it. */
-  readonly costUsd?: number;
+  /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
+   *  follow-up's end). Absent: the stored cost is left as it is. */
+  readonly costUsd?: number | null;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it

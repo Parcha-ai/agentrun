@@ -38,6 +38,8 @@ export interface KeptProposal {
   readonly files?: readonly NoteText[];
   /** Each kept draft's dry run, by its workflow.json's path (learn/skills.ts draftDryRun), which the grader is told. */
   readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
+  /** The skill of each draft's name as the folder held it at the seed, which the grader is shown beside the draft. */
+  readonly drafted?: readonly NoteText[];
   readonly asked?: readonly string[];
   /** Why each draft waits for its owner's OK whatever the grade (the learning end's: skills.ts unpricedCalls). */
   readonly held?: Readonly<Record<string, readonly string[]>>;
@@ -263,7 +265,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(proposal.notes as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: proposal.notes,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
