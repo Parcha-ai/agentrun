@@ -2861,12 +2861,9 @@ screenshots, then the answer), spending about $0.04 in all:
 | --- | --- | --- | --- | --- |
 | `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
-| `expected` (the default) | Either | as `strict` | as `strict` until #2504 lands | as `strict` until #2504 lands |
+| `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
-In `strict` mode every step's whole input is priced at the cache-write price. The `expected` row is today's: the runner
-does not yet price a step from what the previous request read from the cache, as `expected` is described above, so it
-prices like `strict` until #2504 lands. Once it does, a five-step run in `expected` mode needs about $0.06 by either route,
-and about $0.007 a further step. A claude-agent run's first request is of the same size (the pinned
+In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
 once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests

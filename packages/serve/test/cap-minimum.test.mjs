@@ -1,6 +1,5 @@
-// The smallest cap a pi run on Sonnet can work under in `strict` cap mode, as serve's README states it, held to what the
-// cap does. (The default, `expected`, prices a step after the first from what the previous one read from the cache; its
-// row in the README is the runner's once that pricing is wired there.) The run is
+// The smallest cap a pi run on Sonnet can work under, in `strict` cap mode and in `expected` (the default), as serve's
+// README states them, held to what the cap does. The run is
 // a desktop agent's through the dispatch's own spec (its system prompt and tools: read, write, edit and the desktop's),
 // five model requests: four screenshots, then the answer. Each step is admitted only when what the run spent plus the
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
@@ -54,14 +53,15 @@ function desktopOrigin(sent, counted) {
 
 /** A pi desktop run on Sonnet under `capUsd`, its model at `origin`: the run's row, what the cap was asked, the requests
  *  sent and the counts asked. */
-async function desktopRun(t, capUsd, origin) {
+async function desktopRun(t, capUsd, origin, mode = "strict") {
   const { spec } = await specFor(t, { body: { instructions: TASK, tools: ["read", "write", "edit"], computer: { kind: "desktop", provider: "faux-desktop" } }, computer: fauxComposer });
   const counted = [];
   const provider = { api: "anthropic-messages", origin, credential: () => `not-a-secret-${"x"}` };
   const result = await capRun(t, {
     specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: TASK, hooks: quiet, gate: () => "allow" }),
-    // Strict mode, the figures the README prints for it: every step's input at the cache-write price, whatever was cached.
-    runCap: { capUsd: () => capUsd, modelOf: () => SONNET, mode: "strict" },
+    // Strict mode: every step's input at the cache-write price, whatever was cached. Expected mode (the default): a step
+    // after the first is priced from what the session's previous request read from the cache (the loop's `previous`).
+    runCap: { capUsd: () => capUsd, modelOf: () => SONNET, mode },
     cap: specCap(capUsd),
   });
   return { ...result, counted };
@@ -69,8 +69,8 @@ async function desktopRun(t, capUsd, origin) {
 
 /** What the run needs to reach its answer: the most, over its steps, of what it spent before a step and that step's least,
  *  read off a run under a cap that never binds. */
-async function neededFor(t, origin) {
-  const { asked, row } = await desktopRun(t, 1, origin);
+async function neededFor(t, origin, mode = "strict") {
+  const { asked, row } = await desktopRun(t, 1, origin, mode);
   assert.deepEqual([row.state, asked.length], ["ended", 5], JSON.stringify({ state: row.state, summary: row.summary }));
   return { first: leastOf(asked[0].request.inputTokensMax), whole: Math.max(...asked.map(({ request }) => request.spentUsd + leastOf(request.inputTokensMax))), asked };
 }
@@ -98,3 +98,14 @@ for (const [route, origin, minimum] of [["through a gateway", "https://openroute
     assert.deepEqual([under.row.state, under.sent.length], ["parked", 4], JSON.stringify({ state: under.row.state, summary: under.row.summary }));
   });
 }
+
+// Expected mode, the default: a step after the first is priced from what the session's previous request read from the cache
+// (cacheRead at $0.30 a million, only what is new at the cache-write price), so the run needs about $0.06 by either route.
+test("expected mode, the default: $0.06 takes a pi desktop run on Sonnet to its answer by either route; $0.05 parks it before its last step", async (t) => {
+  for (const origin of ["https://openrouter.ai/api", "https://api.anthropic.com"]) {
+    const at = await desktopRun(t, 0.06, origin, "expected");
+    assert.deepEqual([at.row.state, at.sent.length], ["ended", 5], `${origin}: ${JSON.stringify({ state: at.row.state, summary: at.row.summary })}`);
+    const under = await desktopRun(t, 0.05, origin, "expected");
+    assert.deepEqual([under.row.state, under.sent.length], ["parked", 4], `${origin}: ${JSON.stringify({ state: under.row.state, summary: under.row.summary })}`);
+  }
+});
