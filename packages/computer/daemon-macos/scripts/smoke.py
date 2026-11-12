@@ -68,9 +68,10 @@ def core(c):
     hello = c.call("hello", {"client": "smoke"})
     h = hello.get("result") or {}
     record("core", "hello", h.get("os") == "macos" and h.get("protocol") == "0.2", json.dumps(h.get("features")))
-    names = {"apps.background", "ui.image", "ui.background", "ui.foreground", "ui.page", "ui.nav"}
+    record("core", "hello.device and osVersion", (h.get("device") or {}).get("maker") == "Apple" and "(" in (h.get("osVersion") or ""), f"{h.get('device')} {h.get('osVersion')}")
+    names = {"apps.background", "ui.tree", "ui.image", "ui.background", "ui.foreground", "ui.page", "ui.nav"}
     features = h.get("features") or {}
-    record("core", "hello.features names the six", set(features) == names, ", ".join(sorted(features)))
+    record("core", "hello.features names the seven", set(features) == names, ", ".join(sorted(features)))
     vague = [n for n, f in features.items() if f is not True and len((f or {}).get("off", "")) < 20]
     record("core", "every feature off says why", not vague, ", ".join(vague))
     record("core", "hello.screen", bool(h.get("screen")), json.dumps(h.get("screen")))
@@ -101,11 +102,17 @@ def grant_bound(c, features):
 
     observe = c.call("ui.observe", {"target": {"app": "com.apple.finder"}})
     message = (observe.get("error") or {}).get("message", "")
-    if kind(observe) == "denied":
-        record("grants", "ui.observe refused without Accessibility", "Accessibility" in message, message)
-        return False
-    record("grants", "ui.observe with Accessibility (or not_found: the Finder has no window)", "result" in observe or kind(observe) == "not_found", message or "observed")
-    return True
+    r = observe.get("result") or {}
+    tree, image = features.get("ui.tree") is True, features.get("ui.image") is True
+    if tree:
+        record("grants", "ui.observe with the tree (or not_found: the Finder has no window)", "result" in observe or kind(observe) == "not_found", message or f"{len(r.get('nodes', []))} nodes")
+    elif image:
+        ok = kind(observe) == "not_found" or (r.get("nodes") == [] and "ui.tree is off" in (r.get("empty") or "") and bool(r.get("image")))
+        record("grants", "ui.observe without the tree: no nodes, why, and the image", ok, message or f"empty: {r.get('empty')}")
+    else:
+        ok = kind(observe) == "denied" and "Accessibility" in message and "Screen Recording" in message
+        record("grants", "ui.observe refused without the tree and the image, naming both", ok, message)
+    return tree
 
 
 def live(c):
@@ -176,7 +183,7 @@ def main():
         if grant_bound(c, features):
             live(c)
         else:
-            record("live", "skipped: Accessibility is not granted", True)
+            record("live", "skipped: ui.tree is off (Accessibility is not granted)", True)
     finally:
         c.close()
     peer_check()

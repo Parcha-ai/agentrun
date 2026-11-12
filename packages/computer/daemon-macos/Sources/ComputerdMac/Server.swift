@@ -16,7 +16,7 @@ public func log(_ words: String) {
 enum LogFile {
 	static let lock = NSLock()
 	static let path = NSHomeDirectory() + "/Library/Logs/Computerd.log"
-	nonisolated(unsafe) static let handle: FileHandle? = {
+	static let handle: FileHandle? = {
 		if !FileManager.default.fileExists(atPath: path) {
 			FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
 		}

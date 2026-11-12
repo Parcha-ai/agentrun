@@ -28,7 +28,7 @@ struct View: Sendable {
 	func looks(_ node: RawNode) -> String {
 		let b = bounds(node)
 		let value = node.flags.contains(.secure) ? "" : node.value ?? ""
-		return [node.role, node.name ?? "", value, "\(b.x),\(b.y),\(b.w),\(b.h)", node.flags.sorted().map(\.rawValue).joined(separator: ",")].joined(separator: "\u{1f}")
+		return [node.role, node.name ?? "", value, node.desc ?? "", "\(b.x),\(b.y),\(b.w),\(b.h)", node.flags.sorted().map(\.rawValue).joined(separator: ",")].joined(separator: "\u{1f}")
 	}
 
 	/// What a person would see of the whole window: its id and size, every node, and the image's hash.

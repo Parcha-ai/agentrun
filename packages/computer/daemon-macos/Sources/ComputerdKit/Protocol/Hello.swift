@@ -48,6 +48,8 @@ public enum Feature: Sendable, Equatable, Codable {
 public enum FeatureName {
 	/// apps.launch with background: true opens an app without bringing it to the front.
 	public static let appsBackground = "apps.background"
+	/// ui.observe reads the window's elements; off, it answers the window's image with no nodes, or is refused.
+	public static let tree = "ui.tree"
 	/// ui.observe returns the window's image.
 	public static let image = "ui.image"
 	/// Input posted to one app's window without bringing it to the front.
@@ -59,7 +61,18 @@ public enum FeatureName {
 	/// The nav step: back, home and app_switch.
 	public static let nav = "ui.nav"
 
-	public static let all = [appsBackground, image, background, foreground, page, nav]
+	public static let all = [appsBackground, tree, image, background, foreground, page, nav]
+}
+
+/// What the machine is, the same fields on every OS: "Apple", "MacBook Pro".
+public struct Device: Sendable, Codable, Equatable {
+	public var maker: String
+	public var model: String
+
+	public init(maker: String, model: String) {
+		self.maker = maker
+		self.model = model
+	}
 }
 
 /// The screen in points, and how many pixels a point holds.
@@ -85,10 +98,11 @@ public struct HelloResult: Sendable, Codable, Equatable {
 	public var groups: [Group]
 	public var screen: ScreenInfo?
 	public var features: [String: Feature]?
+	public var device: Device?
 
 	public init(
 		protocol: String = protocolVersion, version: String = driverVersion, os: String, osVersion: String?, kind: String,
-		arch: String, groups: [Group], screen: ScreenInfo?, features: [String: Feature]?
+		arch: String, groups: [Group], screen: ScreenInfo?, features: [String: Feature]?, device: Device?
 	) {
 		self.protocol = `protocol`
 		self.version = version
@@ -99,6 +113,7 @@ public struct HelloResult: Sendable, Codable, Equatable {
 		self.groups = groups
 		self.screen = screen
 		self.features = features
+		self.device = device
 	}
 }
 

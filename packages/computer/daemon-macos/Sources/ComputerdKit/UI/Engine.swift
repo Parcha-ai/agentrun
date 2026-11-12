@@ -58,15 +58,24 @@ public actor UIEngine {
 
 	// MARK: looking
 
-	/// A look at the target's window, under the policy.
+	/// A look at the target's window, under the policy. With ui.tree off it is the window alone, found in the window
+	/// server's list, with no nodes; with ui.image off as well there is nothing to look with.
 	func look(_ target: Target?) async throws -> View {
-		if case .off(let reason) = ax.feature {
-			throw RPCError.denied("\(reason): without it Computerd cannot read or find windows")
-		}
 		if let app = target?.app { try policy.check(app) }
-		let resolved = try ax.resolve(target)
-		try policy.check(resolved.app.id)
-		let snapshot = try ax.snapshot(resolved, maxNodes: Limits.maxUiNodes)
+		let resolved: ResolvedTarget
+		let snapshot: Snapshot
+		switch (ax.feature, platform.capture.feature) {
+		case (.on, _):
+			resolved = try ax.resolve(target)
+			try policy.check(resolved.app.id)
+			snapshot = try ax.snapshot(resolved, maxNodes: Limits.maxUiNodes)
+		case (.off, .on):
+			resolved = try platform.capture.resolve(target)
+			try policy.check(resolved.app.id)
+			snapshot = Snapshot(nodes: [], truncated: false)
+		case (.off(let tree), .off(let image)):
+			throw RPCError.denied("ui.tree is off here: \(tree); and ui.image is off: \(image). Without either, Computerd cannot see a window")
+		}
 		let frame = platform.capture.feature.isOn ? await platform.capture.windowHash(resolved) : nil
 		return View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: frame)
 	}
@@ -91,6 +100,12 @@ public actor UIEngine {
 				throw RPCError.unsupported("ui.observe: ui.image is off here: \(reason)")
 			}
 		}
+		// With the tree off the image is all a caller has to act from, so it comes asked for or not.
+		var empty: String?
+		if case .off(let reason) = ax.feature {
+			empty = "ui.tree is off here: \(reason)"
+			edge = edge ?? Limits.defaultImageEdge
+		}
 		let view = try await look(params.target)
 		var image: UiImage?
 		if let edge {
@@ -110,7 +125,7 @@ public actor UIEngine {
 		}
 		let diff = params.since.flatMap { store.view($0) }.map { self.diff(from: $0, to: view, shown: nodes) }
 		let state = store.add(view)
-		return UiObserveResult(state: state, app: view.target.app, window: view.target.window, nodes: nodes, diff: diff, image: image, truncated: truncated || view.truncated)
+		return UiObserveResult(state: state, app: view.target.app, window: view.target.window, nodes: nodes, diff: diff, image: image, empty: empty, truncated: truncated || view.truncated)
 	}
 
 	/// Roles a person acts on: kept in a compact view even without a name.
@@ -122,7 +137,7 @@ public actor UIEngine {
 		if node.flags.contains(.focused) || node.settable || node.textInput { return true }
 		if Self.actionable.contains(node.role) { return true }
 		if node.actions.contains(where: { !ax.incidentalActions.contains($0) }) { return true }
-		return !(node.name ?? "").isEmpty || !(node.value ?? "").isEmpty
+		return !(node.name ?? "").isEmpty || !(node.value ?? "").isEmpty || !(node.desc ?? "").isEmpty
 	}
 
 	/// The view's nodes as the wire sends them, compact or full, at most maxUiNodes.
@@ -155,7 +170,7 @@ public actor UIEngine {
 			if node.frame == nil || !window.intersects(bounds) { flags.insert(.offscreen) }
 			out.append(UiNode(
 				ref: ref, role: node.role, name: Self.words(node.name),
-				value: flags.contains(.secure) ? nil : Self.words(node.value), id: Self.words(node.identifier),
+				value: flags.contains(.secure) ? nil : Self.words(node.value), desc: Self.words(node.desc), id: Self.words(node.identifier),
 				bounds: bounds, parent: parent.flatMap { refOf[$0] },
 				flags: flags.isEmpty ? nil : flags.sorted(), actions: node.actions.isEmpty ? nil : node.actions))
 		}
@@ -215,6 +230,9 @@ public actor UIEngine {
 		}
 		if let e = p.expect {
 			guard e.text != nil || e.ref != nil else { throw RPCError.invalid("ui.act: expect names neither text nor ref: it needs at least one") }
+			if case .off(let reason) = ax.feature {
+				throw RPCError.unsupported("ui.act: an expect reads the window's elements, and ui.tree is off here: \(reason)")
+			}
 			if let ref = e.ref, !isRef(ref) { throw RPCError.invalid("ui.act: expect.ref is \(ref.debugDescription), not a ref (\"@e12\")") }
 			if let t = e.timeoutMs {
 				guard t >= 0 else { throw RPCError.invalid("ui.act: expect.timeoutMs is not a whole number of milliseconds") }
@@ -427,7 +445,8 @@ public actor UIEngine {
 	}
 
 	func semantic(_ off: String?, _ run: @escaping () async throws -> Check) -> Attempt {
-		Attempt(route: .semantic, off: off, run: run)
+		if case .off(let reason) = ax.feature { return Attempt(route: .semantic, off: "ui.tree is off here: \(reason)", run: run) }
+		return Attempt(route: .semantic, off: off, run: run)
 	}
 
 	/// The background route, then the foreground one, for a step done by posting input.
@@ -545,11 +564,12 @@ public actor UIEngine {
 		return last
 	}
 
-	/// The expect holds in this look. text: some node's name or value holds it (never a secure field's value). ref: the
-	/// element is there. Both: that element's name or value holds the text. gone turns each around.
+	/// The expect holds in this look. text: some node's name, value or desc holds it (never a secure field's value). ref:
+	/// the element is there. Both: that element's name, value or desc holds the text. gone turns each around.
 	func holds(_ expect: Expect, _ view: View) -> Bool {
 		func has(_ node: RawNode, _ text: String) -> Bool {
-			node.name?.contains(text) == true || (!node.flags.contains(.secure) && node.value?.contains(text) == true)
+			node.name?.contains(text) == true || node.desc?.contains(text) == true
+				|| (!node.flags.contains(.secure) && node.value?.contains(text) == true)
 		}
 		let seen: Bool
 		if let ref = expect.ref {

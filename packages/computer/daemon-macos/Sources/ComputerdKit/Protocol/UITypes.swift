@@ -107,6 +107,8 @@ public struct UiNode: Sendable, Codable, Equatable {
 	public var name: String?
 	/// Never sent for a secure field.
 	public var value: String?
+	/// What else it says, beside its name: a row's secondary text, a help tag.
+	public var desc: String?
 	/// The app's own name for it: a macOS accessibility identifier.
 	public var id: String?
 	/// In the window's points, origin at its top left.
@@ -117,11 +119,12 @@ public struct UiNode: Sendable, Codable, Equatable {
 	/// The platform's own action names, for the perform step: "AXShowMenu", "AXIncrement".
 	public var actions: [String]?
 
-	public init(ref: String, role: String, name: String? = nil, value: String? = nil, id: String? = nil, bounds: Rect, parent: String? = nil, flags: [UiFlag]? = nil, actions: [String]? = nil) {
+	public init(ref: String, role: String, name: String? = nil, value: String? = nil, desc: String? = nil, id: String? = nil, bounds: Rect, parent: String? = nil, flags: [UiFlag]? = nil, actions: [String]? = nil) {
 		self.ref = ref
 		self.role = role
 		self.name = name
 		self.value = value
+		self.desc = desc
 		self.id = id
 		self.bounds = bounds
 		self.parent = parent
@@ -166,6 +169,8 @@ public struct UiObserveResult: Sendable, Codable, Equatable {
 	public var nodes: [UiNode]
 	public var diff: UiDiff?
 	public var image: UiImage?
+	/// Why nodes is empty though the window is not: ui.tree is off here. The image then comes, asked for or not.
+	public var empty: String?
 	public var truncated: Bool
 }
 

@@ -2,6 +2,7 @@
 import ComputerdKit
 import CoreGraphics
 import Foundation
+import IOKit
 
 /// The macOS platform, put together: the accessibility tree, ScreenCaptureKit, NSWorkspace, SkyLight's background
 /// input and the keyboard and mouse. Made per connection, so each sees the grants as they are when it connects.
@@ -25,7 +26,31 @@ public enum MacPlatform {
 	}
 
 	public static var machine: MachineInfo {
-		MachineInfo(os: "macos", osVersion: macOSVersion)
+		let build = sysctl("kern.osversion").map { " (\($0))" } ?? ""
+		return MachineInfo(os: "macos", osVersion: macOSVersion + build, device: Device(maker: "Apple", model: model))
+	}
+
+	/// The Mac's model as a person knows it, "MacBook Pro (14-inch, 2023)", where the device tree names it (Apple
+	/// silicon); else its model identifier, "Mac14,9" or "VirtualMac2,1".
+	static var model: String {
+		let product = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/product")
+		if product != 0 {
+			defer { IOObjectRelease(product) }
+			if let data = IORegistryEntryCreateCFProperty(product, "product-name" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Data {
+				let name = String(decoding: data.prefix { $0 != 0 }, as: UTF8.self)
+				if !name.isEmpty { return name }
+			}
+		}
+		return sysctl("hw.model") ?? "Mac"
+	}
+
+	static func sysctl(_ name: String) -> String? {
+		var size = 0
+		guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+		var bytes = [UInt8](repeating: 0, count: size)
+		guard sysctlbyname(name, &bytes, &size, nil, 0) == 0 else { return nil }
+		let text = String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+		return text.isEmpty ? nil : text
 	}
 
 	/// The owner's policy; a policy file that does not parse allows no app at all, never every app.

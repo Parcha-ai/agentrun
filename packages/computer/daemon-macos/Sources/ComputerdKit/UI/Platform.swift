@@ -20,6 +20,8 @@ public struct RawNode: Sendable {
 	public var role: String
 	public var name: String?
 	public var value: String?
+	/// What else it says, beside its name (AXHelp, or an AXDescription that is not its name).
+	public var desc: String?
 	/// The app's own name for it (AXIdentifier).
 	public var identifier: String?
 	/// In screen points; nil when the element has no frame.
@@ -34,11 +36,12 @@ public struct RawNode: Sendable {
 	/// It takes typed text: a text field, a text area, a search field, an editable combo box.
 	public var textInput: Bool
 
-	public init(handle: ElementHandle, role: String, name: String? = nil, value: String? = nil, identifier: String? = nil, frame: Rect?, parent: Int? = nil, flags: Set<UiFlag> = [], actions: [String] = [], settable: Bool = false, textInput: Bool = false) {
+	public init(handle: ElementHandle, role: String, name: String? = nil, value: String? = nil, desc: String? = nil, identifier: String? = nil, frame: Rect?, parent: Int? = nil, flags: Set<UiFlag> = [], actions: [String] = [], settable: Bool = false, textInput: Bool = false) {
 		self.handle = handle
 		self.role = role
 		self.name = name
 		self.value = value
+		self.desc = desc
 		self.identifier = identifier
 		self.frame = frame
 		self.parent = parent
@@ -132,6 +135,9 @@ public struct Image: Sendable, Equatable {
 public protocol Capture: Sendable {
 	/// Screen Recording is granted, or why not.
 	var feature: Feature { get }
+	/// The app and window a target names, from the window server's list: how a window is found while the tree is off.
+	/// Window ids are the same ones Accessibility.resolve gives. Throws not_found as resolve does.
+	func resolve(_ target: Target?) throws -> ResolvedTarget
 	/// The window's image, at most maxEdge pixels on its long edge and maxBytes long (JPEG at a lower quality when a PNG
 	/// would be longer).
 	func window(_ target: ResolvedTarget, maxEdge: Int, maxBytes: Int) async throws -> Image

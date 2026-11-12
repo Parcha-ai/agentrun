@@ -78,9 +78,7 @@ public final class AttachClient: NSObject, URLSessionWebSocketDelegate, @uncheck
 		request.setValue(Attach.subprotocol, forHTTPHeaderField: "Sec-WebSocket-Protocol")
 		let task = session.webSocketTask(with: request)
 		task.maximumMessageSize = Limits.maxLineBytes
-		lock.lock()
-		current = task
-		lock.unlock()
+		lock.withLock { current = task }
 		task.resume()
 
 		let driver = makeDriver()

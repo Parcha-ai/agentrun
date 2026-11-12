@@ -84,7 +84,9 @@ func appExecutable() -> String {
 	#if canImport(Darwin)
 	var size: UInt32 = 4096
 	var buffer = [CChar](repeating: 0, count: Int(size))
-	if _NSGetExecutablePath(&buffer, &size) == 0 { me = URL(fileURLWithPath: String(cString: buffer)) }
+	if _NSGetExecutablePath(&buffer, &size) == 0 {
+		me = URL(fileURLWithPath: String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
+	}
 	#endif
 	let contents = me.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
 	return contents.appendingPathComponent("MacOS/Computerd").path

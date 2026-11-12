@@ -6,12 +6,14 @@ public struct MachineInfo: Sendable {
 	public var osVersion: String?
 	public var kind: String
 	public var arch: String
+	public var device: Device?
 
-	public init(os: String = "macos", osVersion: String?, kind: String = "desktop", arch: String = goArch) {
+	public init(os: String = "macos", osVersion: String?, kind: String = "desktop", arch: String = goArch, device: Device?) {
 		self.os = os
 		self.osVersion = osVersion
 		self.kind = kind
 		self.arch = arch
+		self.device = device
 	}
 }
 
@@ -37,19 +39,18 @@ public final class Driver: Sendable {
 
 	/// hello: what the computer is, and each feature on or off with the reason.
 	public func hello() -> HelloResult {
-		HelloResult(os: machine.os, osVersion: machine.osVersion, kind: machine.kind, arch: machine.arch, groups: Self.groups, screen: platform.capture.screenInfo(), features: features())
+		HelloResult(os: machine.os, osVersion: machine.osVersion, kind: machine.kind, arch: machine.arch, groups: Self.groups, screen: platform.capture.screenInfo(), features: features(), device: machine.device)
 	}
 
-	/// Each feature on, or off with why. Without Accessibility there is no tree and no window to aim at, so every ui
-	/// feature is off with its reason.
+	/// Each feature on, or off with why. Without the tree (Accessibility) the window's image still comes and steps at
+	/// its points still run; without the tree and the image, ui.observe is refused.
 	public func features() -> [String: Feature] {
-		let tree = platform.accessibility.feature
-		let ui = { (f: Feature) in Feature.all(tree, f) }
-		return [
+		[
 			FeatureName.appsBackground: platform.workspace.backgroundLaunch,
-			FeatureName.image: ui(platform.capture.feature),
-			FeatureName.background: ui(platform.backgroundFeature),
-			FeatureName.foreground: ui(platform.foregroundFeature),
+			FeatureName.tree: platform.accessibility.feature,
+			FeatureName.image: platform.capture.feature,
+			FeatureName.background: platform.backgroundFeature,
+			FeatureName.foreground: platform.foregroundFeature,
 			FeatureName.page: .off("web pages through the browser's own protocol are not built yet: pages are read through the accessibility tree"),
 			FeatureName.nav: platform.navFeature,
 		]

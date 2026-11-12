@@ -100,10 +100,35 @@ final class EngineTests: XCTestCase {
 		_ = try await engine.observe(UiObserveParams())
 	}
 
-	func testWithoutAccessibilityObserveIsDenied() async {
+	func testWithoutTheTreeTheImageComesAndPointsStillWork() async throws {
 		os.trusted = false
-		let words = await throwsKind(.denied) { try await self.os.engine().observe(UiObserveParams()) }
-		XCTAssertTrue(words?.contains("Accessibility") == true)
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertEqual(r.nodes, [])
+		XCTAssertTrue(r.empty?.contains("ui.tree is off here: Accessibility") == true, r.empty ?? "no empty")
+		XCTAssertEqual(r.image?.width, 1568, "the image comes unasked")
+		XCTAssertEqual(r.window.id, "7")
+		XCTAssertTrue(os.entries.contains("capture.resolve"))
+
+		let act = try await engine.act(UiActParams(state: r.state, steps: [.click(.point(Point(10, 20)), button: nil, count: nil), .type("hi", into: nil)]))
+		XCTAssertEqual(act.steps, [.ran(route: .background, verified: false), .ran(route: .background, verified: false)])
+		XCTAssertEqual(os.entries.filter { $0.hasPrefix("bg.") }, ["bg.click 110,70 left 1", "bg.type hi"])
+
+		let expect = await throwsKind(.unsupported) { try await engine.act(UiActParams(steps: [], expect: Expect(text: "hi"))) }
+		XCTAssertTrue(expect?.contains("ui.tree is off") == true)
+
+		os.screenRecording = false
+		let both = await throwsKind(.denied) { try await engine.observe(UiObserveParams()) }
+		XCTAssertTrue(both?.contains("Accessibility") == true && both?.contains("Screen Recording") == true, both ?? "")
+	}
+
+	func testDescIsShownAndExpected() async throws {
+		os.add(30, "listitem", name: "Wi-Fi", desc: "Connected, secured", frame: Rect(110, 300, 200, 40))
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		XCTAssertEqual(r.nodes.first { $0.name == "Wi-Fi" }?.desc, "Connected, secured")
+		let act = try await engine.act(UiActParams(steps: [], expect: Expect(text: "Connected")))
+		XCTAssertEqual(act.expect, .met)
 	}
 
 	func testPolicyLimitsApps() async {
@@ -386,24 +411,27 @@ final class EngineTests: XCTestCase {
 	// MARK: the driver
 
 	func testFeaturesSayWhy() {
-		let driver = Driver(platform: os.platform(background: .off("SkyLight is missing")), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: "26.1"))
+		let driver = Driver(platform: os.platform(background: .off("SkyLight is missing")), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: "26.1 (25B78)", device: Device(maker: "Apple", model: "MacBook Pro")))
 		var f = driver.features()
+		XCTAssertEqual(f["ui.tree"], .on)
 		XCTAssertEqual(f["ui.image"], .on)
 		XCTAssertEqual(f["ui.background"], .off("SkyLight is missing"))
 		XCTAssertEqual(f["apps.background"], .on)
 		XCTAssertEqual(Set(f.keys), Set(FeatureName.all))
 		os.trusted = false
 		f = driver.features()
-		XCTAssertEqual(f["ui.image"], .off("Accessibility is not granted to Computerd"))
-		XCTAssertEqual(f["ui.foreground"], .off("Accessibility is not granted to Computerd"))
+		XCTAssertEqual(f["ui.tree"], .off("Accessibility is not granted to Computerd"))
+		XCTAssertEqual(f["ui.image"], .on, "the image does not need the tree")
+		XCTAssertEqual(f["ui.foreground"], .on)
 		let hello = driver.hello()
+		XCTAssertEqual(hello.device, Device(maker: "Apple", model: "MacBook Pro"))
 		XCTAssertEqual(hello.protocol, "0.2")
 		XCTAssertEqual(hello.groups, [.exec, .files, .screen, .apps, .ui])
 		XCTAssertEqual(hello.screen, ScreenInfo(width: 1440, height: 900, scale: 2))
 	}
 
 	func testDriverAppsHonorThePolicy() async throws {
-		let driver = Driver(platform: os.platform(), policy: Policy(apps: ["com.apple.Notes"]), machine: MachineInfo(os: "macos", osVersion: nil))
+		let driver = Driver(platform: os.platform(), policy: Policy(apps: ["com.apple.Notes"]), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		let r = driver.router()
 		let list = try await r.handler("apps.list")!(nil)
 		XCTAssertEqual(list, .object(["apps": .array([.object(["id": .string("com.apple.Notes"), "name": .string("Notes")])]), "foreground": .null]))
@@ -414,7 +442,7 @@ final class EngineTests: XCTestCase {
 	}
 
 	func testScreenShotIsChunked() async throws {
-		let driver = Driver(platform: os.platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil))
+		let driver = Driver(platform: os.platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		let r = driver.router()
 		let shot = try await r.handler("screen.shot")!(nil)
 		XCTAssertEqual(shot["eof"], .bool(false))

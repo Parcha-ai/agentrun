@@ -92,18 +92,46 @@ final class MacTests: XCTestCase {
 			if case .off(let reason) = feature { XCTAssertGreaterThan(reason.count, 20, "\(name): \(reason)") }
 		}
 		// What this Mac has, for the CI log.
-		print("hello.features on \(macOSVersion): \(String(decoding: try Coders.encode(features), as: UTF8.self))")
+		print("hello.features on \(hello.osVersion ?? "?"), \(hello.device.map { "\($0.maker) \($0.model)" } ?? "?"): \(String(decoding: try Coders.encode(features), as: UTF8.self))")
 		print("SkyLight missing: \(SkyLight.shared.missing), _AXUIElementGetWindow: \(SkyLight.shared.getWindowFn != nil)")
+		XCTAssertEqual(hello.device?.maker, "Apple")
+		XCTAssertTrue(hello.osVersion?.contains("(") == true, "osVersion carries the build: \(hello.osVersion ?? "")")
 	}
 
-	func testWithoutAccessibilityObserveIsDeniedInWords() async throws {
-		guard !AXIsProcessTrusted() else { throw XCTSkip("Accessibility is granted here") }
+	/// The window list finds the same window, by the same id, as the tree does, so a state read without the tree and one
+	/// read with it name windows alike.
+	func testTheWindowListAndTheTreeAgreeOnWindowIDs() throws {
+		let platform = MacPlatform.make()
+		guard platform.accessibility.feature.isOn, platform.capture.feature.isOn else {
+			throw XCTSkip("needs Accessibility and Screen Recording here: \(platform.accessibility.feature), \(platform.capture.feature)")
+		}
+		let front: ResolvedTarget
 		do {
-			_ = try await MacPlatform.driver().ui.observe(UiObserveParams())
-			XCTFail("observe ran without Accessibility")
-		} catch let e as RPCError {
-			XCTAssertEqual(e.kind, .denied)
-			XCTAssertTrue(e.message.contains("Accessibility"), e.message)
+			front = try platform.accessibility.resolve(nil)
+		} catch {
+			throw XCTSkip("the app in front has no window: \(error)")
+		}
+		let listed = try platform.capture.resolve(Target(app: front.app.id, window: front.window.id))
+		XCTAssertEqual(listed.window.id, front.window.id)
+		XCTAssertEqual(listed.window.bounds, front.window.bounds)
+		print("front: \(front.app.id) window \(front.window.id) \(front.window.bounds)")
+	}
+
+	func testObserveSaysWhatItCannotSee() async throws {
+		let platform = MacPlatform.make()
+		do {
+			let r = try await MacPlatform.driver().ui.observe(UiObserveParams())
+			print("observe: \(r.app.id) window \(r.window.id), \(r.nodes.count) nodes, image \(r.image.map { "\($0.width)x\($0.height)" } ?? "none"), empty \(r.empty ?? "-")")
+			if !platform.accessibility.feature.isOn {
+				XCTAssertEqual(r.nodes, [])
+				XCTAssertNotNil(r.empty)
+				XCTAssertNotNil(r.image)
+			}
+		} catch let e as RPCError where e.kind == .notFound {
+			print("observe: \(e.message)")
+		} catch let e as RPCError where e.kind == .denied {
+			XCTAssertFalse(platform.accessibility.feature.isOn || platform.capture.feature.isOn, e.message)
+			XCTAssertTrue(e.message.contains("Accessibility") && e.message.contains("Screen Recording"), e.message)
 		}
 	}
 

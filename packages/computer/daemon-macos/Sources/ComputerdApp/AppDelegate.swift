@@ -7,6 +7,7 @@ import Foundation
 /// The app runs in one of two ways. Started by launchd as the LaunchAgent (or with COMPUTERD_SERVE=1), it serves the
 /// socket, dials the paired server and keeps a menu bar item. Opened by a person, it registers the LaunchAgent and
 /// shows the onboarding window, and quits when the window closes. COMPUTERD_HEADLESS=1 (CI) shows nothing at all.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	var server: SocketServer?
 	var attach: AttachClient?
@@ -68,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			return
 		}
 		let client = AttachClient(settings: settings, token: token, makeDriver: { MacPlatform.driver() }) { [weak self] words in
-			DispatchQueue.main.async { self?.setStatus(words) }
+			Task { @MainActor in self?.setStatus(words) }
 		}
 		attach = client
 		setStatus("Dialing \(settings.server)")

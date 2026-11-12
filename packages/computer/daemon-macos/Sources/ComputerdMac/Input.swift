@@ -247,15 +247,17 @@ struct BackgroundRoute: InputRoute {
 struct ForegroundRoute: InputRoute {
 	let accessibility: MacAccessibility
 
-	/// Brings the target's app to the front and raises its window, so what the keyboard and mouse do lands there.
+	/// Brings the target's app to the front and, with the tree, raises its window, so what the keyboard and mouse do
+	/// lands there. Without the tree the app comes forward with its own front window.
 	func front(_ t: ResolvedTarget) throws {
 		guard let app = NSRunningApplication(processIdentifier: t.pid) else { throw RPCError.stale("\(t.app.id) is no longer running") }
 		if NSWorkspace.shared.frontmostApplication?.processIdentifier != t.pid {
 			if app.isHidden { app.unhide() }
 			app.activate()
 		}
-		let window = try accessibility.window(t)
-		_ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+		if accessibility.feature.isOn {
+			_ = AXUIElementPerformAction(try accessibility.window(t), kAXRaiseAction as CFString)
+		}
 		for _ in 0..<20 where NSWorkspace.shared.frontmostApplication?.processIdentifier != t.pid {
 			InputQueue.pause(25)
 		}

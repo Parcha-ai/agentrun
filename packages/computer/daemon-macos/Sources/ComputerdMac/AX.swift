@@ -146,7 +146,8 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 
 	// MARK: apps and windows
 
-	func runningApp(_ id: String?) throws -> NSRunningApplication {
+	/// The app a target names, or the one in front: for both ways of finding a window (the tree's and the window list's).
+	static func runningApp(_ id: String?) throws -> NSRunningApplication {
 		if let id {
 			guard let found = NSRunningApplication.runningApplications(withBundleIdentifier: id).first(where: { !$0.isTerminated }) else {
 				throw RPCError.notFound("\(id) is not running: start it with apps.launch")
@@ -180,7 +181,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 	}
 
 	func resolve(_ target: Target?) throws -> ResolvedTarget {
-		let app = try runningApp(target?.app)
+		let app = try Self.runningApp(target?.app)
 		let pid = app.processIdentifier
 		let id = app.bundleIdentifier ?? "pid.\(pid)"
 		let root = AXUIElementCreateApplication(pid)
@@ -210,7 +211,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 	static let walked: [String] = [
 		kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
 		kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXEnabledAttribute, kAXFocusedAttribute,
-		kAXSelectedAttribute, kAXChildrenAttribute, kAXPlaceholderValueAttribute,
+		kAXSelectedAttribute, kAXChildrenAttribute, kAXPlaceholderValueAttribute, kAXHelpAttribute,
 	]
 
 	func snapshot(_ target: ResolvedTarget, maxNodes: Int) throws -> Snapshot {
@@ -245,15 +246,19 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 				value = nil
 			}
 			if let frame, !frame.overlaps(bounds) { flags.insert(.offscreen) }
-			var name = AX.string(v[2]) ?? AX.string(v[3])
+			let title = AX.string(v[2])
+			let description = AX.string(v[3])
+			var name = title ?? description
 			if role == "text", name == nil {
 				name = value
 				value = nil
 			}
 			if name == nil, role == "textbox" || role == "searchbox" { name = AX.string(v[12]) }
+			// desc: what it says beside its name. A description that is not already the name, else its help tag.
+			let desc = [description, AX.string(v[13])].compactMap { $0 }.first { !$0.isEmpty && $0 != name }
 			let textInput = axRole.map { Roles.textInput.contains($0) } == true || subrole == "AXSearchField"
 			nodes.append(RawNode(
-				handle: ElementHandle(ax: element), role: role, name: name, value: value, identifier: AX.string(v[5]), frame: frame,
+				handle: ElementHandle(ax: element), role: role, name: name, value: value, desc: desc, identifier: AX.string(v[5]), frame: frame,
 				parent: parent, flags: flags, actions: AX.actions(element), settable: AX.settable(element, kAXValueAttribute), textInput: textInput
 			))
 			guard depth < 64 else { continue }

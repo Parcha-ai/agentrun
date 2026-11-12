@@ -40,8 +40,8 @@ final class SchemaTests: XCTestCase {
 		let stat = FileStat(type: .symlink, size: 5, mode: 0o644, mtimeMs: 1, uid: 501, gid: 20, target: "/tmp/x")
 		return [
 			Case(method: "hello", params: [HelloParams(client: "computerd 0.2.0")], results: [
-				HelloResult(os: "macos", osVersion: "26.1", kind: "desktop", arch: "arm64", groups: Driver.groups, screen: ScreenInfo(width: 1512, height: 982, scale: 2), features: ["ui.image": .on, "ui.nav": .off("no")]),
-				HelloResult(os: "macos", osVersion: nil, kind: "desktop", arch: "arm64", groups: [], screen: nil, features: nil),
+				HelloResult(os: "macos", osVersion: "26.1", kind: "desktop", arch: "arm64", groups: Driver.groups, screen: ScreenInfo(width: 1512, height: 982, scale: 2), features: ["ui.tree": .on, "ui.image": .on, "ui.nav": .off("no")], device: Device(maker: "Apple", model: "MacBook Pro")),
+				HelloResult(os: "macos", osVersion: nil, kind: "desktop", arch: "arm64", groups: [], screen: nil, features: nil, device: nil),
 			]),
 			Case(method: "ping", params: [Empty()], results: [Empty()]),
 			Case(method: "exec.run", params: [
@@ -92,8 +92,9 @@ final class SchemaTests: XCTestCase {
 				UiObserveParams(image: .image(maxEdge: nil)), UiObserveParams(image: ImageOption.none), UiObserveParams(),
 			], results: [
 				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: 4), window: UiWindow(id: "1", title: "T", bounds: rect), nodes: [
-					UiNode(ref: "@e1", role: "button", name: "OK", value: "v", id: "ok", bounds: rect, parent: "@e0", flags: UiFlag.allCases, actions: ["AXPress"]),
+					UiNode(ref: "@e1", role: "button", name: "OK", value: "v", desc: "d", id: "ok", bounds: rect, parent: "@e0", flags: UiFlag.allCases, actions: ["AXPress"]),
 				], diff: UiDiff(added: ["@e1"], removed: [], changed: []), image: UiImage(format: "png", width: 1, height: 1, data: data), truncated: false),
+				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: 4), window: UiWindow(id: "1", title: "T", bounds: rect), nodes: [], image: UiImage(format: "jpeg", width: 1, height: 1, data: data), empty: "ui.tree is off here", truncated: false),
 				UiObserveResult(state: "s2", app: UiApp(id: "a", name: "A", pid: nil), window: UiWindow(id: "1", title: nil, bounds: rect), nodes: [UiNode(ref: "@e1", role: "generic", bounds: rect)], diff: nil, image: nil, truncated: true),
 			]),
 			Case(method: "ui.act", params: [
@@ -118,7 +119,7 @@ final class SchemaTests: XCTestCase {
 		guard let methods = schema["definitions"]?["DaemonMethods"]?["properties"]?.objectValue else {
 			return XCTFail("methods.schema.json has no DaemonMethods")
 		}
-		let served = Set(Driver(platform: FakeOS().platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil)).router().methods)
+		let served = Set(Driver(platform: FakeOS().platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil)).router().methods)
 		let tested = Set(Self.cases.map(\.method))
 		XCTAssertEqual(served, tested, "every method the driver serves has samples here")
 		for method in served {

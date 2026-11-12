@@ -9,6 +9,7 @@ final class FakeOS: @unchecked Sendable {
 		var role: String
 		var name: String?
 		var value: String?
+		var desc: String?
 		var frame: Rect?
 		var parent: Int?
 		var flags: Set<UiFlag> = []
@@ -41,9 +42,9 @@ final class FakeOS: @unchecked Sendable {
 	}
 
 	@discardableResult
-	func add(_ id: Int, _ role: String, name: String? = nil, value: String? = nil, frame: Rect? = nil, parent: Int? = nil, actions: [String] = [], settable: Bool = false, textInput: Bool = false, flags: Set<UiFlag> = []) -> Int {
+	func add(_ id: Int, _ role: String, name: String? = nil, value: String? = nil, desc: String? = nil, frame: Rect? = nil, parent: Int? = nil, actions: [String] = [], settable: Bool = false, textInput: Bool = false, flags: Set<UiFlag> = []) -> Int {
 		with { os in
-			os.elements[id] = Element(id: id, role: role, name: name, value: value, frame: frame, parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput)
+			os.elements[id] = Element(id: id, role: role, name: name, value: value, desc: desc, frame: frame, parent: parent, flags: flags, actions: actions, settable: settable, textInput: textInput)
 			os.order.append(id)
 		}
 		return id
@@ -102,7 +103,7 @@ struct FakeAX: Accessibility {
 				var flags = e.flags
 				if os.focusedID == id { flags.insert(.focused) }
 				index[id] = nodes.count
-				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: e.actions, settable: e.settable, textInput: e.textInput))
+				nodes.append(RawNode(handle: ElementHandle(id), role: e.role, name: e.name, value: e.value, desc: e.desc, frame: e.frame, parent: e.parent.flatMap { index[$0] }, flags: flags, actions: e.actions, settable: e.settable, textInput: e.textInput))
 			}
 			return Snapshot(nodes: nodes, truncated: os.order.count > cap)
 		}
@@ -162,6 +163,15 @@ struct FakeCapture: Capture {
 	let os: FakeOS
 
 	var feature: Feature { os.with { $0.screenRecording } ? .on : .off("Screen Recording is not granted to Computerd") }
+
+	func resolve(_ target: Target?) throws -> ResolvedTarget {
+		try os.with { os in
+			os.log.append("capture.resolve")
+			if let app = target?.app, app != os.app.id { throw RPCError.notFound("\(app) is not running") }
+			if let window = target?.window, window != os.window.id { throw RPCError.notFound("no window \(window)") }
+			return ResolvedTarget(app: os.app, pid: 42, window: os.window)
+		}
+	}
 
 	func window(_ target: ResolvedTarget, maxEdge: Int, maxBytes: Int) async throws -> Image {
 		let w = target.window.bounds.w * 2

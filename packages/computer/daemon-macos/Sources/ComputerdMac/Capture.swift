@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import ComputerdKit
 import CoreGraphics
 import Foundation
@@ -20,11 +21,45 @@ final class MacCapture: Capture, @unchecked Sendable {
 			: .off("Screen Recording is not granted to Computerd: allow it in System Settings > Privacy & Security > Screen & System Audio Recording")
 	}
 
+	/// The app and window a target names, from the window server's list, while the tree is off. The window ids are the
+	/// window server's, as the tree's resolve gives them. Without a window named: the app's frontmost window on screen.
+	func resolve(_ target: Target?) throws -> ResolvedTarget {
+		let app = try MacAccessibility.runningApp(target?.app)
+		let pid = app.processIdentifier
+		let id = app.bundleIdentifier ?? "pid.\(pid)"
+		func number(_ info: [String: Any], _ key: CFString) -> NSNumber? { info[key as String] as? NSNumber }
+		let info: [String: Any]
+		if let wanted = target?.window {
+			guard let wid = CGWindowID(wanted),
+				let found = (CGWindowListCopyWindowInfo([.optionIncludingWindow], wid) as? [[String: Any]])?.first,
+				number(found, kCGWindowOwnerPID)?.int32Value == pid
+			else {
+				throw RPCError.notFound("\(id) has no window \(wanted): observe it without a window for its frontmost one")
+			}
+			info = found
+		} else {
+			// On screen, front to back; layer 0 holds an app's ordinary windows.
+			let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+			guard let front = list.first(where: { number($0, kCGWindowOwnerPID)?.int32Value == pid && number($0, kCGWindowLayer)?.intValue == 0 }) else {
+				throw RPCError.notFound("\(id) has no window on screen\(app.isHidden ? ": it is hidden" : "")")
+			}
+			info = front
+		}
+		guard let wid = number(info, kCGWindowNumber)?.uint32Value,
+			let dict = info[kCGWindowBounds as String] as? NSDictionary,
+			let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary)
+		else {
+			throw RPCError.notFound("\(id)'s window has no number or frame in the window list")
+		}
+		let title = (info[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
+		return ResolvedTarget(
+			app: UiApp(id: id, name: app.localizedName ?? id, pid: Int(pid)), pid: pid,
+			window: UiWindow(id: String(wid), title: title, bounds: Rect(Double(bounds.minX), Double(bounds.minY), Double(bounds.width), Double(bounds.height))))
+	}
+
 	/// What is on screen, kept a second: listing it is the slow part of a capture.
 	func shareable() async throws -> SCShareableContent {
-		lock.lock()
-		let cached = content
-		lock.unlock()
+		let cached = lock.withLock { content }
 		if let cached, Date().timeIntervalSince(cached.at) < 1 { return cached.value }
 		let fresh: SCShareableContent
 		do {
@@ -32,18 +67,14 @@ final class MacCapture: Capture, @unchecked Sendable {
 		} catch {
 			throw RPCError.denied("the screen cannot be read: \(error.localizedDescription)")
 		}
-		lock.lock()
-		content = (Date(), fresh)
-		lock.unlock()
+		lock.withLock { content = (Date(), fresh) }
 		return fresh
 	}
 
 	func scWindow(_ target: ResolvedTarget) async throws -> SCWindow {
 		guard let wid = CGWindowID(target.window.id) else { throw RPCError.notFound("window \(target.window.id) is not a window server id") }
 		if let found = try await shareable().windows.first(where: { $0.windowID == wid }) { return found }
-		lock.lock()
-		content = nil
-		lock.unlock()
+		lock.withLock { content = nil }
 		guard let found = try await shareable().windows.first(where: { $0.windowID == wid }) else {
 			throw RPCError.notFound("window \(target.window.id) of \(target.app.id) is not on screen")
 		}
