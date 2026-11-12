@@ -110,7 +110,8 @@ test("a sandbox place this server can't run saves with a warning that names the 
   // (resolve-computer.ts computerReadiness): no such provider, Mode 1's Docker-only sandbox, or the Docker box's own
   // reason (with the box it names, `box`), each naming what to do.
   const SETTINGS = "for this agent's computer in Settings → Computers";
-  const SANDBOXES = PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label).join(", ");
+  // Under --faux (every served test's), its sandboxes are offered beside the package's.
+  const SANDBOXES = [...PROVIDERS.filter((one) => one.kinds.includes("sandbox")).map((one) => one.label), "Faux sandbox", "Faux broken"].join(", ");
   for (const [id, body, words, box] of [
     ["bwrapped", agent("bwrapped", { place: { mode: "sandbox", box: "bwrap" } }), `"bwrap" is no computer provider this server knows: pick one of ${SANDBOXES} ${SETTINGS}.`, undefined],
     ["sandboxed", agent("sandboxed", { place: { mode: "sandbox", box: "daytona" } }), `Mode 1 runs a sandbox only on Docker: a Daytona sandbox can't reach the run's folder on this machine. Pick Docker ${SETTINGS}, or another kind of computer.`, undefined],

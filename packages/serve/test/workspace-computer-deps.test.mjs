@@ -17,7 +17,7 @@ import { after, test } from "node:test";
 import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
 import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 import { dockerHost } from "./docker-host-fake.mjs";
-import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
+import { fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
 import { startServe } from "../dist/index.js";
 import { putSealedKey } from "../dist/server-keys.js";
@@ -167,18 +167,32 @@ test("the composer builds a working claim on a docker box: the real Docker provi
   assert.ok(fake.calls().some((args) => args[0] === "rm"), "its release removes the container");
 });
 
-test("the composer builds a working claim on the faux box: a faux desktop is a kinded RunComputer, and its release ends it", async () => {
+test("the composer builds a working claim on the faux box: a faux desktop is a kinded RunComputer whose watch opens its live view, and its release ends both", async () => {
   const root = scratch();
   const sealKey = randomBytes(32);
   const store = await savedKeysStore(sealKey);
-  const faux = fauxComputers({ viewerBase: "http://127.0.0.1:9" });
-  const { computerForClaim, computerDeps } = computerDepsFrom({ env: {}, store, sealKey, faux });
+  const opened = [];
+  const openComputerView = async (args) => {
+    const view = { args, closed: [], ended: [] };
+    opened.push(view);
+    const watched = await args.watch({ frame: (_frame, ack) => ack(), ended: (error) => view.ended.push(error.code) }, {});
+    return { ok: true, view: { close: (why) => (view.closed.push(why), watched.value.close()) } };
+  };
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers(), openComputerView });
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "faux-desktop" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
   assert.equal(answer.computer?.kind, "desktop", "a kinded RunComputer");
-  const page = `${FAUX_VIEW_PATH}/faux-desktop-1/view`;
-  assert.ok(faux.viewPage(page), "the faux desktop is live");
+  assert.equal(opened.length, 1, "its live view is opened at the claim");
+  assert.deepEqual([opened[0].args.kind, opened[0].args.input, opened[0].args.tag], ["desktop", "desktop", "faux-desktop-1"]);
   await answer.release();
-  assert.equal(faux.viewPage(page), undefined, "its release ended it");
+  assert.deepEqual(opened[0].closed, ["released"], "its release closed the view");
+});
+
+test("under faux, a provider that is not --faux's is still the package's: the registry holds both, and the key table too", () => {
+  const { computerDeps } = computerDepsFrom({ env: {}, store: {}, sealKey: randomBytes(32), faux: fauxComputers() });
+  const ids = computerDeps.kinds.PROVIDERS.map((one) => one.id);
+  assert.ok(ids.includes("faux-desktop") && ids.includes("e2b") && ids.includes("docker"), ids.join(", "));
+  assert.deepEqual(["faux-desktop", "e2b"].map((id) => computerDeps.launches(id)), [true, false]);
+  assert.ok(computerDeps.keyTable.keys["faux-sandbox"] && computerDeps.keyTable.keys.e2b);
 });
 
 /** The tag a stand-in's prepareImage() answers. */

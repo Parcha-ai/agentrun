@@ -110,8 +110,10 @@ export interface ComputerForClaimDeps {
   readonly answers?: (provider: string) => Promise<boolean>;
   /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails (ClaimSide.daemon). */
   readonly daemon?: ClaimSide["daemon"];
-  /** A launch of the server's own in place of the providers' (--faux's desktop). */
+  /** A launch of the server's own in place of the providers' (--faux's desktop), for the providers `launches` takes (by
+   *  id; absent, every one): any other is made by its provider, as with no launch. */
   readonly launch?: ClaimSide["launch"];
+  readonly launches?: (provider: string) => boolean;
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
   readonly workspace: Workspace;
   readonly check: MountCheck;
@@ -504,10 +506,11 @@ export async function computerForClaim(
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
     async launch(entry, { kind, keys, configuration, mount, gpu, persistent, signal }) {
+      const ownLaunch = deps.launch && (deps.launches?.(entry.id) ?? true) ? deps.launch : undefined;
       // An agent's own computer needs its agent and the store's record of it; the server's launch (--faux) keeps none.
-      if (persistent && (deps.launch || launch.agentId === undefined || store.settings === undefined)) throw new Error("this run can't keep its agent's own computer here: start it again with persistent off");
-      if (deps.launch) {
-        const own = await deps.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
+      if (persistent && (ownLaunch || launch.agentId === undefined || store.settings === undefined)) throw new Error("this run can't keep its agent's own computer here: start it again with persistent off");
+      if (ownLaunch) {
+        const own = await ownLaunch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;

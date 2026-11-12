@@ -137,7 +137,7 @@ test("a browser computer's live view rides the session the browser tool opened: 
   const host = { known: (tag) => opened.find((one) => one.tag === tag)?.view ?? null, open: async (tag, cdpUrl) => { const view = { fullscreen: `http://127.0.0.1:1/v/${tag}` }; opened.push({ tag, cdpUrl, view }); return view; }, release: async () => {} };
   const sessions = liveViewProvider(claimBrowserProvider(answer.computer.browser), host);
   // The tool's first call opens the claim's one session; its driver attaches; a person opens the live view, twice.
-  const session = await sessions.create({ tag: "ar-run-1-1", maxLifetimeS: 120 }, new AbortController().signal);
+  const session = await sessions.create({ tag: "ar-run-1-1", maxLifetimeS: 120, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1288, height: 711 }, metadata: {} }, new AbortController().signal);
   await sessions.attach(session);
   const view = await sessions.liveView(session);
   assert.equal(await sessions.liveView(session), view, "a second look is the same view");

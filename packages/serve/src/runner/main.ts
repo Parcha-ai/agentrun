@@ -28,7 +28,8 @@ import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { claimViewOpener } from "../computer-live.js";
 import { runnerLiveOf } from "../live-reach.js";
-import type { KeyEnv } from "../key-meta.js";
+import { envValue, type KeyEnv } from "../key-meta.js";
+import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { startJanitor } from "../workspace/computer-janitor.js";
 import { createDispatchLoop } from "./dispatch.js";
@@ -133,10 +134,12 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
 /** The run's computer at its claim, composed once for a runner (workspace/computer-deps.ts computerDepsFrom), the live view
  *  of a desktop or a phone (computer-live.ts openClaimView) with it: runnerLoop's, runnerBeside's and a test's in-process
  *  runner's. `own`: where Docker has the data directory and this host's addresses, and a test's kind registry and
- *  provider loader in place of the computer package's. */
+ *  provider loader in place of the computer package's. Under --faux (the runs' environment names the faux model, as a
+ *  --faux server's and a `runner --faux` give it), --faux's computers are beside them, as the server's start check
+ *  reads them (server.ts computerReady): a run on the faux desktop is claimed, and its live view opened, the real way. */
 export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy"> = {}) =>
   // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
-  computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...own });
+  computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...(envValue(env, FAUX_ENV) ? { faux: fauxComputers() } : {}), ...own });
 
 /** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
  *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a

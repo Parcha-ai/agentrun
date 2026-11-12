@@ -21,6 +21,7 @@ import { scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
 const { blockersOf } = await import("../dist/runnable.js");
 const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
+const { fauxComputers } = await import("../dist/faux-computers.js");
 
 // A computer key's save and the Archil settings' PUT are secret writes: the client sends them from the owner's session.
 SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/computers\/[^/]+\/keys$/ }, { methods: ["PUT"], path: /^\/workspace\/archil$/ });
@@ -260,14 +261,14 @@ test("an agent with only an old place {mode: sandbox, box: docker} keeps the box
   assert.deepEqual(asked, [computer]);
 });
 
-test("under --faux, a run's start and its claim answer alike: a faux desktop the claim cannot make is refused at the start in the claim's words, and a Docker desktop it can make is not", async (t) => {
-  // The claim's registry is the one the runner composes with (runner/main.ts, and this suite's in-process runner: no
-  // faux, so the computer package's, which has no faux desktop). Settings → Computers under --faux lists the faux ones;
-  // the start check reads the claim's, so it never lets a run start that its claim would refuse, nor the reverse.
+test("under --faux, a run's start and its claim answer alike: the faux desktop and a Docker desktop the claim can make are not refused, and a provider it cannot make is refused at the start in the claim's words", async (t) => {
+  // The claim's registry is the one the runner composes with under --faux (runner/main.ts runnerComputers, and this
+  // suite's in-process runner: --faux's providers beside the computer package's). The start check reads the claim's, so
+  // it never lets a run start that its claim would refuse, nor the reverse.
   const api = await server(t, { archil: false, docker: true, faux: true });
-  const claimed = computerDepsFrom({ env: {}, store: {}, sealKey: randomBytes(32) }).computerDeps.kinds;
+  const claimed = computerDepsFrom({ env: {}, store: {}, sealKey: randomBytes(32), faux: fauxComputers() }).computerDeps.kinds;
   const side = { keysOf: async () => ({}), answers: async () => false, launch: async () => { throw new Error("nothing is launched here"); } };
-  for (const [id, computer, makes] of [["faux-desk", { kind: "desktop", provider: "faux-desktop" }, false], ["docker-desk", { kind: "desktop", provider: "docker" }, true]]) {
+  for (const [id, computer, makes] of [["faux-desk", { kind: "desktop", provider: "faux-desktop" }, true], ["docker-desk", { kind: "desktop", provider: "docker" }, true], ["no-desk", { kind: "desktop", provider: "nowhere" }, false]]) {
     const claim = await resolveComputer(computer, 1, claimed, side);
     assert.equal(!("refused" in claim), makes, `the claim ${makes ? "makes" : "refuses"} ${computer.provider}'s desktop: ${JSON.stringify(claim)}`);
     const said = await saveAndStart(api, id, { computer });

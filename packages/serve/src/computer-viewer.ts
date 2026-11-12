@@ -5,7 +5,7 @@
 // sent once, in the hello (computer-live.ts has the protocol). Frames are drawn by their format (JPEG or PNG, told by their
 // bytes) and acked once drawn, so the next comes only then. The bar has Take over and Hand back; no address bar, back or
 // reload (a browser's). A desktop gets the mouse, the wheel and keys; a phone gets taps, swipes, its back, home and
-// recents buttons, and keys. Coordinates are the screen's real pixels, the w and h each frame carries. A swipe lasts 1,000 ms
+// recents buttons, and keys (a soft keyboard's too, through beforeinput). Coordinates are the screen's real pixels, the w and h each frame carries. A swipe lasts 1,000 ms
 // at most, as the computer takes it (createActionMapper's bound). Losing focus tells the endpoint ("blur"), which lets go of
 // the buttons held.
 
@@ -257,6 +257,33 @@ const js = `"use strict";
   }
   [canvas, sink].forEach(function (el) { el.addEventListener("keydown", onKeyDown); el.addEventListener("paste", onPaste); });
   sink.addEventListener("compositionend", function (e) { if (e.data) send({ type: "text", text: e.data }); sink.value = ""; });
+  // A soft keyboard (a phone's, a tablet's) sends keydown with keyCode 229 and no key, so its edits come as the sink's
+  // beforeinput alone. A desktop's typed key never reaches here: onKeyDown's preventDefault cancels the beforeinput it
+  // would have made. A composition's own steps are compositionend's, a paste the paste handler's.
+  function sendKey(key) { send({ type: "key", action: "down", key: key, code: "", modifiers: 0 }); }
+  var EDITS = {
+    insertText: function (e) { if (e.data) send({ type: "text", text: e.data }); },
+    // Autocorrect swapping a word the computer already has: as many Backspaces as the replaced range, then the new word.
+    insertReplacementText: function (e) {
+      var text = e.data || (e.dataTransfer ? e.dataTransfer.getData("text/plain") : "");
+      var range = e.getTargetRanges ? e.getTargetRanges()[0] : null;
+      var gone = range && range.startContainer === range.endContainer ? Math.max(0, range.endOffset - range.startOffset) : 0;
+      for (var i = 0; i < gone; i++) sendKey("Backspace");
+      if (text) send({ type: "text", text: text });
+    },
+    insertLineBreak: function () { sendKey("Enter"); },
+    insertParagraph: function () { sendKey("Enter"); },
+    deleteContentBackward: function () { sendKey("Backspace"); },
+    deleteContentForward: function () { sendKey("Delete"); },
+  };
+  sink.addEventListener("beforeinput", function (e) {
+    var edit = Object.prototype.hasOwnProperty.call(EDITS, e.inputType) ? EDITS[e.inputType] : null;
+    if (!edit || e.isComposing) return;
+    e.preventDefault();
+    edit(e);
+  });
+  // Whatever a keyboard put in the sink that no beforeinput took (one it could not cancel) is let go, never sent twice.
+  sink.addEventListener("input", function (e) { if (!e.isComposing) sink.value = ""; });
 })();
 `;
 
