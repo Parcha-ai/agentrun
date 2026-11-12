@@ -1,11 +1,7 @@
-// Launching a Chrome on this machine, the pieces the local browser (local-chrome.ts, local-supervisor.ts) is made of. Moved
-// here from pi-browser, which starts its own local Chrome (packages/pi-browser/src/providers/chrome-args.ts findChrome, and
-// src/providers/cdp.ts alive, leadsOwnGroup, killTree, ownDebugger and singletonDir), so pi-browser can import them back
-// once it depends on this package; and the fence and sandbox check of PR #1718's local Chrome for serve
-// (packages/serve/src/local-chrome.ts chromeFence and checkChrome), less what was there for Stagehand's extension.
+// Launching a Chrome on this machine, the pieces the local browser (local-chrome.ts, local-supervisor.ts) is made of: finding
+// a Chrome, its process-group and singleton-lock handling, and the fence and sandbox check of a local Chrome.
 //
-// The library reads no environment: where pi-browser read CHROME_PATH and PATH from process.env, findChrome takes the
-// environment it is given.
+// The library reads no environment: findChrome takes the environment it is given.
 import { spawn } from "node:child_process";
 import { constants, existsSync, readFileSync } from "node:fs";
 import { access, mkdtemp, readFile, readlink, rm, stat } from "node:fs/promises";
@@ -26,7 +22,7 @@ const FIXED = [
 	"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 ];
 
-/** The environment names a Chrome is found by: pi-browser's own, then the common one. */
+/** The environment names a Chrome is found by: PI_BROWSER_CHROME, then the common CHROME_PATH. */
 export const CHROME_ENV = ["PI_BROWSER_CHROME", "CHROME_PATH"] as const;
 
 /**
@@ -78,9 +74,8 @@ export const CHROME_FLAGS: readonly string[] = [
  * each refused by the proxy after its lookup; no name or address resolved by Chrome itself but the proxy's, so a request
  * a page sends around the proxy reaches nothing; no QUIC, which goes around an HTTP proxy; and WebRTC on no UDP but the
  * proxy's, which carries none, so no ICE candidate is gathered and no STUN packet leaves. That last is
- * `--webrtc-ip-handling-policy`: Chrome 155 and 156 ignore the `--force-` spelling (#1718 measured a STUN server on
- * loopback sent its binding requests under it). From #1718's chromeFence, less the bypass it kept for the DevTools guard
- * Stagehand's extension dialled: nothing in this browser reaches its own DevTools socket.
+ * `--webrtc-ip-handling-policy`: Chrome 155 and 156 ignore the `--force-` spelling (a STUN server on loopback
+ * was sent binding requests under it). Nothing in this browser reaches its own DevTools socket.
  */
 export function chromeFence(proxy: string): string[] {
 	const { hostname, port } = new URL(proxy);

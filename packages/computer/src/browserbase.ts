@@ -1,6 +1,5 @@
 // Browserbase as a computer of kind browser: each computer is a Browserbase session, over Browserbase's v1 REST API with
-// fetch (no SDK), or through a BrowserbaseApi a host gives (pi-browser's SDK client). Labels ride the session's own
-// userMetadata; attach and list find a session by them; connect hands over the session's signed connectUrl, which a
+// fetch (no SDK). Labels ride the session's own userMetadata; attach and list find a session by them; connect hands over the session's signed connectUrl, which a
 // driver dials; stream is its live view (the debugger's fullscreen URL). Both URLs are secrets: they stay in memory and
 // never reach a ref, a list, an error's words or a report.
 //
@@ -156,8 +155,8 @@ export interface BrowserbaseDownload {
 /**
  * The calls the provider makes, one Browserbase request each, never retried where a retry could open a second paid
  * browser. A failure throws, with the HTTP status as `status` when one came back; the provider returns it as a result
- * whose hidden cause is the thrown error, so a host that gave its own api rethrows its own error. The optional calls
- * back the session options and members of the same name: a host's api without them declares none of those.
+ * whose hidden cause is the thrown error. The context calls back the profiles member, the download calls the downloads
+ * member.
  */
 export interface BrowserbaseApi {
 	create(body: Record<string, unknown>, signal?: AbortSignal): Promise<BrowserbaseSession>;
@@ -168,13 +167,13 @@ export interface BrowserbaseApi {
 	release(id: string, signal?: AbortSignal): Promise<"gone" | "asked">;
 	debug(id: string, signal?: AbortSignal): Promise<BrowserbaseDebug>;
 	/** Makes a context (POST /v1/contexts): its id. */
-	createContext?(signal?: AbortSignal): Promise<string>;
+	createContext(signal?: AbortSignal): Promise<string>;
 	/** "gone" when Browserbase does not know the context (404). */
-	deleteContext?(id: string, signal?: AbortSignal): Promise<"gone" | "deleted">;
+	deleteContext(id: string, signal?: AbortSignal): Promise<"gone" | "deleted">;
 	/** One page of a session's downloads, from offset, and how many there are in all. */
-	listDownloads?(sessionId: string, offset: number, signal?: AbortSignal): Promise<{ downloads: BrowserbaseDownload[]; total: number }>;
+	listDownloads(sessionId: string, offset: number, signal?: AbortSignal): Promise<{ downloads: BrowserbaseDownload[]; total: number }>;
 	/** A download's bytes, streamed; undefined when Browserbase does not know it (404). */
-	readDownload?(id: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array> | undefined>;
+	readDownload(id: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array> | undefined>;
 }
 
 /** A plain id as Browserbase answers one (a context's, a download's): a token, never a path. */
@@ -257,7 +256,7 @@ export const BROWSERBASE_PROFILE_SETTLE_MS = 5_000;
 export const BROWSERBASE_DOWNLOADS_PATH = "downloads";
 
 export interface BrowserbaseProviderOptions {
-	/** With apiUrl and fetch, the REST api is built from it; required unless api is given. */
+	/** With apiUrl and fetch, the REST api is built from it. */
 	apiKey?: string;
 	/** Named in every create and release; none behind a gateway (env), whose key names the project. */
 	projectId?: string;
@@ -270,10 +269,6 @@ export interface BrowserbaseProviderOptions {
 	 */
 	env?: Readonly<Record<string, string | undefined>>;
 	fetch?: typeof fetch;
-	/** The calls, a host's own (pi-browser's SDK client); default the REST api. */
-	api?: BrowserbaseApi;
-	/** Where the signed connect URLs are held; default a Map of this provider's own. */
-	urls?: UrlStore;
 	confirm?: ReleaseConfirm;
 	sleep?: (ms: number) => Promise<void>;
 }
@@ -290,39 +285,36 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	readonly version = VERSION;
 	/**
 	 * A session ends at its timeout, a wall clock; it may be stealth (Verified, with the CAPTCHA solver); it opens a
-	 * context as a profile (written back about 5 s after a saving session ends) and keeps what is saved into downloads/. A
-	 * host's api without a call declares no feature that needs it. capabilities().browser gives it.
+	 * context as a profile (written back about 5 s after a saving session ends) and keeps what is saved into downloads/.
+	 * capabilities().browser gives it.
 	 */
 	readonly #browser: BrowserFeatures;
-	readonly profiles?: BrowserProfiles;
-	readonly downloads?: BrowserDownloads;
+	readonly profiles: BrowserProfiles;
+	readonly downloads: BrowserDownloads;
 	readonly #api: BrowserbaseApi;
 	readonly #projectId: string | undefined;
 	readonly #urls: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
 
-	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, api, urls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
-		if (api === undefined && (typeof apiKey !== "string" || apiKey === "")) throw new Error("set options.apiKey to a Browserbase API key, or options.api to a host's own Browserbase calls: the provider reads no environment");
+	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Browserbase API key: the provider reads no environment");
 		const gateway = env.BROWSERBASE_BASE_URL?.trim() || undefined;
 		const behindGateway = Boolean(gateway || env.BROWSERBASE_CONNECT_BASE_URL?.trim());
 		this.#projectId = behindGateway ? undefined : projectId || undefined;
 		const base = apiUrl || gateway;
-		this.#api = api ?? browserbaseRest({ apiKey: apiKey as string, ...(base ? { apiUrl: base } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
-		this.#urls = urls ?? memoryUrls();
+		this.#api = browserbaseRest({ apiKey, ...(base ? { apiUrl: base } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
+		this.#urls = memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
-		const a = this.#api;
-		const hasProfiles = typeof a.createContext === "function" && typeof a.deleteContext === "function";
-		const hasDownloads = typeof a.listDownloads === "function" && typeof a.readDownload === "function";
 		this.#browser = {
 			timeout: "wall-clock",
 			stealth: true,
-			...(hasProfiles ? { profiles: { settleMs: BROWSERBASE_PROFILE_SETTLE_MS } } : {}),
-			...(hasDownloads ? { downloads: { path: BROWSERBASE_DOWNLOADS_PATH } } : {}),
+			profiles: { settleMs: BROWSERBASE_PROFILE_SETTLE_MS },
+			downloads: { path: BROWSERBASE_DOWNLOADS_PATH },
 		};
-		if (hasProfiles) this.profiles = { create: (context) => this.#createProfile(context), remove: (pointer, context) => this.#removeProfile(pointer, context) };
-		if (hasDownloads) this.downloads = { list: (ref, context) => this.#listDownloads(ref, context), read: (ref, name, maxBytes, context) => this.#readDownload(ref, name, maxBytes, context) };
+		this.profiles = { create: (context) => this.#createProfile(context), remove: (pointer, context) => this.#removeProfile(pointer, context) };
+		this.downloads = { list: (ref, context) => this.#listDownloads(ref, context), read: (ref, name, maxBytes, context) => this.#readDownload(ref, name, maxBytes, context) };
 	}
 
 	/**
@@ -406,7 +398,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	/** A new context, a profile's pointer: one POST /v1/contexts, never retried. */
 	async #createProfile({ signal }: CallContext = {}): Promise<Result<string>> {
 		try {
-			return ok(await (this.#api.createContext as NonNullable<BrowserbaseApi["createContext"]>).call(this.#api, signal));
+			return ok(await this.#api.createContext(signal));
 		} catch (error) {
 			return vendorFailure("browserbase", NAME, "POST /v1/contexts", error);
 		}
@@ -416,7 +408,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	async #removeProfile(pointer: string, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (!pointerOk(pointer)) return fail("invalid", "a profile's pointer is a plain token, as profiles.create gave it");
 		try {
-			await (this.#api.deleteContext as NonNullable<BrowserbaseApi["deleteContext"]>).call(this.#api, pointer, signal);
+			await this.#api.deleteContext(pointer, signal);
 			return ok(undefined);
 		} catch (error) {
 			return vendorFailure("browserbase", NAME, "DELETE /v1/contexts/{id}", error);
@@ -427,12 +419,11 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	async #downloadRows(id: string, signal?: AbortSignal): Promise<Result<BrowserbaseDownload[]>> {
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
-		const page = this.#api.listDownloads as NonNullable<BrowserbaseApi["listDownloads"]>;
 		const rows: BrowserbaseDownload[] = [];
 		for (let pages = 0; pages < MAX_PAGES; pages++) {
 			let got: { downloads: BrowserbaseDownload[]; total: number };
 			try {
-				got = await page.call(this.#api, id, rows.length, signal);
+				got = await this.#api.listDownloads(id, rows.length, signal);
 			} catch (error) {
 				return vendorFailure("browserbase", NAME, "GET /v1/downloads", error);
 			}
@@ -464,7 +455,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		if (row.size > maxBytes) return fail("limit", `the download ${JSON.stringify(name)} is ${row.size} bytes, larger than the ${maxBytes}-byte limit`);
 		let body: AsyncIterable<Uint8Array> | undefined;
 		try {
-			body = await (this.#api.readDownload as NonNullable<BrowserbaseApi["readDownload"]>).call(this.#api, row.id, signal);
+			body = await this.#api.readDownload(row.id, signal);
 		} catch (error) {
 			return vendorFailure("browserbase", NAME, "GET /v1/downloads/{id}", error);
 		}
@@ -654,8 +645,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 }
 
 /**
- * The provider, built from its options alone, the key included (options.apiKey, or options.api / options.request, a
- * host's own transport); it reads no environment, and throws in words when the key is missing, never echoing one.
+ * The provider, built from its options alone, the key included (options.apiKey); it reads no environment, and throws in words when the key is missing, never echoing one.
  */
 export function create(options: BrowserbaseProviderOptions): BrowserbaseProvider {
 	return new BrowserbaseProvider(options ?? ({} as BrowserbaseProviderOptions));
