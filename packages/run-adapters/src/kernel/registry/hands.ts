@@ -1,7 +1,7 @@
 // The run's hands, as the registry's tools reach them: Workspace(run) on the host's side (a folder on this machine, the
 // run's Archil disk, or an attached computer), given to each call. The kernel never knows which.
 import { constants } from "node:os";
-import type { ToolImage } from "../../types.js";
+import type { JsonValue, ToolImage } from "../../types.js";
 
 /** How one exec ended: its exit code, or the signal that ended it (exitCode null), and whether its timeout did. */
 export type ExecResult = { readonly exitCode: number | null; readonly signal: string | null; readonly timedOut: boolean };
@@ -50,68 +50,16 @@ export type CapabilityKind = "desktop" | "phone";
 export const needsKindWords = (tool: string, kind: CapabilityKind): string =>
   `${tool} needs a ${kind} computer: set this agent's computer to ${kind} (Settings → Computers).`;
 
-/** A screenshot as a tool's answer: the words, and the PNG in the answer's images. */
-export const shotAnswer = (text: string, shot: Shot): ToolAnswer => ({ text, images: [{ mimeType: "image/png", data: Buffer.from(shot.png.buffer, shot.png.byteOffset, shot.png.byteLength).toString("base64") }] });
+/** One answer of the run's computer: the value a script gets, the text a model reads, and the images beside it. */
+export type ComputerAnswer = { readonly value: unknown; readonly text: string; readonly images: readonly ToolImage[] };
 
-/** A point in a screenshot's pixels, origin top left, as computerd's input.actions takes it. */
-export type ScreenPoint = readonly [x: number, y: number];
-
-/** A screenshot: its PNG's bytes, and its size in pixels (the coordinates input takes). */
-export type Shot = { readonly png: Uint8Array; readonly width: number; readonly height: number };
-
-/** A desktop's screen (computerd's screen.shot): the whole screen, or a region of it in the whole screen's pixels. */
-export type Screen = { shot(options?: { readonly region?: { readonly x: number; readonly y: number; readonly w: number; readonly h: number } }): Promise<Shot> };
-
-/** One action of a desktop's input, as computerd's input.actions takes it: the pointer's and the keyboard's, and
- *  nothing more. A key is a name of computerd's key table or one printable ASCII character. */
-export type InputAction =
-  | { readonly type: "move"; readonly at: ScreenPoint }
-  | { readonly type: "click"; readonly at?: ScreenPoint; readonly button?: "left" | "right" | "middle"; readonly count?: 1 | 2 | 3 }
-  | { readonly type: "drag"; readonly path: readonly ScreenPoint[]; readonly button?: "left" | "right" | "middle" }
-  | { readonly type: "scroll"; readonly at?: ScreenPoint; readonly dx?: number; readonly dy?: number; readonly unit: "clicks" | "px" }
-  | { readonly type: "type"; readonly text: string }
-  | { readonly type: "key"; readonly keys: readonly string[] };
-
-/** A desktop's input (computerd's input.actions): the batch runs in order; a refusal throws its code and words. */
-export type Input = { actions(list: readonly InputAction[]): Promise<void> };
-
-/** A point on a phone's screen, in its screenshot's pixels. */
-export type PhonePoint = { readonly x: number; readonly y: number };
-
-/** A node of a phone screen's structure, flattened: its platform class, its id, text and label where it has them, its
- *  bounds in screenshot pixels, and whether a model can tap it or type into it. */
-export type PhoneNode = {
-  readonly role: string;
-  readonly id?: string;
-  readonly text?: string;
-  readonly label?: string;
-  readonly bounds: { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
-  readonly clickable: boolean;
-  readonly editable: boolean;
-  readonly focused?: boolean;
-  /** A node with no text or label of its own, named by its first inner text (else label): an Android list row, a
-   *  clickable layout whose title sits on a child that is not clickable. */
-  readonly inner?: string;
-};
-
-/** A key a phone presses: its back and home buttons, and enter. */
-export type PhoneKey = "back" | "home" | "enter";
-
-/** A phone: its screen and the screen's structure, a tap, a swipe, typing into the field in focus, its keys, and its apps. */
-export type Phone = {
-  shot(): Promise<Shot>;
-  /** The screen's structure, flattened (`total` the nodes the phone gave, `truncated` when it gave only part); absent on a
-   *  phone that does not offer it. */
-  tree?(): Promise<{ readonly nodes: readonly PhoneNode[]; readonly total: number; readonly truncated: boolean }>;
-  tap(at: PhonePoint): Promise<void>;
-  swipe(spec: { readonly from: PhonePoint; readonly to: PhonePoint; readonly durationMs: number }): Promise<void>;
-  type(text: string): Promise<void>;
-  /** Absent on a phone that does not offer its keys. */
-  key?(name: PhoneKey): Promise<void>;
-  readonly apps: {
-    list(): Promise<{ readonly apps: readonly { readonly id: string; readonly name?: string }[]; readonly foreground: string | null }>;
-    open(id: string): Promise<void>;
-  };
+/** The run's computer as its tools reach it: its groups (its hello's), and one call per op (observe, act, screenshot,
+ *  input.act, apps.list, apps.open, shell.run, files.read, files.write, files.list, files.stat), which
+ *  @parcha/agentrun-computer's surface answers the same for a per-step tool, a script and the claim's MCP endpoint. A
+ *  refusal throws an error with a `kind` (stale, unsupported, ...) and the computer's words; an abort throws. */
+export type ComputerPort = {
+  readonly groups: readonly string[];
+  call(op: string, args: unknown, signal?: AbortSignal): Promise<ComputerAnswer>;
 };
 
 /** The agent's hand-over of a desktop or a phone to the person, through the run's hold: ask opens it (what the person is
@@ -137,11 +85,9 @@ export type Hands = {
   exec(command: string, options: { timeoutS: number; onOutput?: (chunk: { stream: "stdout" | "stderr"; data: string }) => void }, signal?: AbortSignal): Promise<ExecResult>;
   /** The attached computer's processes; absent with no computer, where the background tools are refused. */
   readonly processes?: Processes;
-  /** A desktop's screen and input; absent where the computer has none, and their tools are refused in words. */
-  readonly screen?: Screen;
-  readonly input?: Input;
-  /** A phone's screen, touch, typing and apps; absent where the computer is no phone. */
-  readonly phone?: Phone;
+  /** A desktop's or a phone's surface (computer_observe, computer_act, computer_screenshot, computer_script); absent
+   *  where the computer is neither, and those tools are refused in words. */
+  readonly computer?: ComputerPort;
   /** A desktop's or a phone's hand-over to the person (the run's hold); absent where there is none. */
   readonly handoff?: Handoff;
 };
@@ -153,6 +99,9 @@ export type ToolAnswer = {
   readonly text: string;
   readonly error?: string;
   readonly images?: readonly ToolImage[];
+  /** The answer as a value, for a script that called the tool (Codex's code mode, an MCP client's structuredContent):
+   *  the computer's tools give the surface's value, its images' data left out (they travel in `images`). */
+  readonly structured?: JsonValue;
   readonly details?: unknown;
   readonly isError?: boolean;
   readonly diagnostics?: readonly { readonly severity: "info" | "warn" | "error"; readonly code?: string; readonly message: string }[];
@@ -175,5 +124,6 @@ export async function answerOf(call: ToolCall, run: () => Promise<ToolAnswer>): 
 /** A host tool's run. */
 export type Executor = (args: unknown, call: ToolCall) => Promise<ToolAnswer>;
 
-/** What the host gives the registry, by tool name: read, write and edit, and bash's own run, which the registry bounds. */
-export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash", Executor>>>;
+/** What the host gives the registry, by tool name: read, write and edit, bash's own run, which the registry bounds, and
+ *  computer_script's run in the host's isolate (listed only where the host gives it). */
+export type HostExecutors = Readonly<Partial<Record<"read" | "write" | "edit" | "bash" | "computer_script", Executor>>>;

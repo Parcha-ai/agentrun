@@ -3,8 +3,8 @@
 // schemas (computer_observe, computer_act, computer_screenshot, computer_script). Every surface answers through one
 // core (core.ts): a script's call, a per-step tool and the claim's MCP endpoint return the same values.
 //
-// A member of Computer marked `@group <name>` exists only on a computer that declares that group (its hello), so a model
-// is never offered what the computer can't do. The steps are the protocol's own (UiStep): one step language for a
+// A member of Computer marked `@group <name> [<name> ...]` exists only on a computer that declares one of those groups
+// (its hello), so a model is never offered what the computer can't do. The steps are the protocol's own (UiStep): one step language for a
 // script, a tool call and the wire.
 import type { ComputerKind, ComputerOs, FileType, InputAction, Point, Rect, ScreenSize, UiExpect, UiNode, UiRef, UiRoute, UiStep } from "../protocol.js";
 
@@ -45,7 +45,7 @@ export interface State {
 	elements: UiNode[];
 	/** Elements were left out (too many, or past the reply's size). */
 	truncated: boolean;
-	/** The elements as compact lines, as computer_observe shows them: `@e12  button  "Save"`. */
+	/** The elements as compact lines, as computer_observe shows them: `@e12 button "Save"`. */
 	outline: string;
 	/** The window's image, when asked. Its pixels are not points: a point is pixel × window.bounds[2] / image.width. */
 	image?: Image;
@@ -160,7 +160,7 @@ export interface Computer {
 		shot(options?: { region?: Rect }): Promise<Image>;
 	};
 	/** Raw input at screenshot pixels, for a computer with no ui group.
-	 *  @group input */
+	 *  @group input.pointer input.touch input.keys */
 	readonly input: {
 		act(actions: InputAction[]): Promise<ActResult>;
 	};
