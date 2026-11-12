@@ -317,6 +317,46 @@ test("an idle release in flight at shutdown: the drain waits for it before the h
   await harness.close(ctx);
 });
 
+test("a session kept for the person's answer survives its idle window; let go, it is released one idle window later", async (t) => {
+  const { backend, browser, harness, root, ctx } = await inProcess(t, {}, { idleReleaseS: 0.05 }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const tag = Object.values((await harness.snapshot(browser.docs.Inventory, ctx)).rows)[0].tag;
+  const letGo = browser.keepForPerson(tag);
+  // Several idle windows pass while the run waits for its person: nothing is released.
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(backend.tally().releases, 0, "kept for the person, the idle release lets the session be");
+  assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].state, "live");
+  letGo();
+  letGo();
+  for (let i = 0; i < 200 && backend.tally().releases === 0; i += 1) {
+    await harness.waitForIdle(ctx);
+    await browser.drain(harness, ctx);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(backend.tally().releases, 1, "let go, the next idle window releases it");
+  assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].releaseReason, "idle");
+  await harness.close(ctx);
+});
+
+test("two keeps on one session: the idle release waits for the last one to go", async (t) => {
+  const { backend, browser, harness, root, ctx } = await inProcess(t, {}, { idleReleaseS: 0.05 }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const tag = Object.values((await harness.snapshot(browser.docs.Inventory, ctx)).rows)[0].tag;
+  const first = browser.keepForPerson(tag);
+  const second = browser.keepForPerson(tag);
+  first();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(backend.tally().releases, 0, "one keep is still on it");
+  second();
+  for (let i = 0; i < 200 && backend.tally().releases === 0; i += 1) {
+    await harness.waitForIdle(ctx);
+    await browser.drain(harness, ctx);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(backend.tally().releases, 1);
+  await harness.close(ctx);
+});
+
 test("a drain bounded by the host's signal gives up when it aborts, and leaves the release to the next run", async (t) => {
   const { backend, browser, harness, root, ctx } = await inProcess(t, {}, {}, ["browser_read"]);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);

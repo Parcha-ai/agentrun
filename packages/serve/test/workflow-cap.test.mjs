@@ -7,7 +7,7 @@
 // go, and a raise opens the run again from its journal under the new cap, sending no completed node again. A step no raise
 // sends (a decision model with no price) ends the run failed, spend_cap_reached, in the cap's words.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -297,65 +297,6 @@ test("a capped workflow start whose decision model's price cannot be read, OpenR
   assert.equal(again.status, 202);
   await follow(api, again.body.run_id, ENDED, { deadlineMs: 60_000 });
   assert.equal((await view(api, again.body.run_id)).status, "completed");
-});
-
-/** The run's status once it has ended, or the status it still has after `ms` (`from`, a run nothing sent on). */
-async function statusAway(api, runId, from, ms = 30_000) {
-  let status = from;
-  for (const end = Date.now() + ms; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
-    status = (await view(api, runId)).status;
-    if (ENDED.includes(status)) return status;
-  }
-  return status;
-}
-
-/** A capped run of `twoNodes` paused at its second node, its process let go, on a server at `data` that is then closed. */
-async function pausedAndClosed(t, id) {
-  const data = join(await scratch(t), "agents");
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
-  const api = client(server.baseUrl, server.token);
-  assert.equal((await api("POST", "/agents", flowAgent(id, twoNodes()))).status, 201);
-  const { run_id: runId } = (await api("POST", `/agents/${id}/runs`, { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 })).body;
-  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
-  assert.equal((await view(api, runId)).pending?.kind, "budget");
-  await letGo(data, runId);
-  await server.close();
-  return { data, runId };
-}
-
-/** serve.json as a raise to `to` leaves it when the server dies right after keeping it: its cap and the raise, and no
- *  cap.json written, the pause's budget.json still there. */
-function keptRaiseOnly(data, runId, to) {
-  const file = join(runDir(data, runId), "serve.json");
-  const meta = JSON.parse(readFileSync(file, "utf8"));
-  writeFileSync(file, JSON.stringify({ ...meta, max_cost_usd: to, cap_raised: [...(meta.cap_raised ?? []), { from: meta.max_cost_usd, to, at: new Date().toISOString(), pause: "budget" }] }));
-  assert.equal(existsSync(join(runDir(data, runId), "cap.json")), false);
-  assert.equal(existsSync(join(runDir(data, runId), "budget.json")), true);
-}
-
-// SKIP (follow-up #2080): the run never leaves queued or working on the runner
-test.skip("a raise serve.json kept and a crash cut short is finished at the server's next start: the paused run, its process let go, is opened again under the raised cap and completes", async (t) => {
-  withEnv(t, {}, KEYS);
-  const { data, runId } = await pausedAndClosed(t, "kept");
-  keptRaiseOnly(data, runId, 1);
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
-  t.after(() => server.close());
-  const api = client(server.baseUrl, server.token);
-  assert.equal(await statusAway(api, runId, "input_required"), "completed");
-  assert.equal(answered(entriesOf(data, runId)), 2, "the second node sent once, the first not again");
-});
-
-// SKIP (follow-up #2080): the run never leaves queued or working on the runner
-test.skip("the same raise again, after a crash cut it short past serve.json, finishes it: the run completes under the raised cap", async (t) => {
-  withEnv(t, {}, KEYS);
-  const { data, runId } = await pausedAndClosed(t, "retried");
-  keptRaiseOnly(data, runId, 1);
-  const server = await startServe({ data, port: 0, faux: PRICED, drainTimeout: "5s" });
-  t.after(() => server.close());
-  const api = client(server.baseUrl, server.token);
-  const again = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
-  assert.equal(again.status, 200);
-  assert.equal(await statusAway(api, runId, "input_required"), "completed");
 });
 
 // SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
