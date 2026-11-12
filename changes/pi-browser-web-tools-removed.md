@@ -1,5 +1,0 @@
----
-packages: @parcha/pi-browser
-kind: breaking
----
-The durable adapter's own `web_fetch` and `web_search` are removed: no host used them (AgentRun's server runs its own web tools). Gone: `createWebExtension` and `WebExtensionOptions` (`/durable`); `createWebTools`, `WebBackup`, `FetchSource`, `SearchSource` and the rest of the web tools' exports (root); a provider's `fetch` and `search` (Browserbase's Fetch and Search APIs, the fake backend's `fetches` and `search` options) with `FetchRequest`, `FetchResult`, `SearchRequest`, `SearchResult` and `SearchHit`; the `web_fetch` and `web_search` tool contracts (`WEB_TOOLS`, `WEB_TOOL_NAMES`, `WEB_SEARCH_SNIPPET_MAX`, and the `fetch` and `search` values of a contract's `listedWhen`) and `web_fetch` as an `EvidenceTool`; `fetchUsage`, `searchUsage`, `scrubFetchedUrl`, and Browserbase's `SEARCH_QUERY_MAX` and `SEARCH_RESULTS_MAX`. The page-wall words a browser read uses (`WALLS`, `wallOf`, `wallFailure`, `pageNotice`, `INJECTION_THRESHOLD`) stay. A host that wants fetch or search gives its agent its own tool.
