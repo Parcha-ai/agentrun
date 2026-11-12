@@ -496,23 +496,21 @@ public final class UiDriver {
 			Outline.Frame frame = new Outline.Frame(window.bounds().left, window.bounds().top, device.display().scale);
 			AxNode node = s.ref == null ? null : resolve(s.ref);
 			if (s.point != null) checkPoint(s.point, stateId, held, window, frame);
-			long events = a11y.events();
-			a11y.framesSince(window.id());
+			Sign sign = new Sign(a11y, target, window, cancel);
 			switch (s.kind) {
 				case "press":
-					if (node.perform("ACTION_CLICK", null)) return answer("semantic", Settle.sign(a11y, clock, window.id(), events, cancel));
-					foreground(foreground, "press " + s.ref + ": the app refused its click action, and a tap");
+					if (has(node, "ACTION_CLICK") && node.perform("ACTION_CLICK", null)) return answer("semantic", sign.seen());
+					foreground(foreground, "press " + s.ref + ": " + (has(node, "ACTION_CLICK") ? "the app refused its click action, and a tap" : "it has no click action, so a tap"));
 					device.input().touch(new int[][] {center(node, s.ref)}, 0);
-					return answer("foreground", Settle.sign(a11y, clock, window.id(), events, cancel));
+					return answer("foreground", sign.seen());
 				case "set":
-					return set(s, node, a11y, window.id(), events, cancel);
+					return set(s, node, sign);
 				case "perform":
 					if (!node.perform(s.action, null)) throw new Refused("unsupported", "perform " + s.action + " on " + s.ref + ": the app refused it");
-					return answer("semantic", Settle.sign(a11y, clock, window.id(), events, cancel));
+					return answer("semantic", sign.seen());
 				case "click": {
-					if (!foreground && node != null && s.count == 1 && node.perform(s.right ? "ACTION_LONG_CLICK" : "ACTION_CLICK", null)) {
-						return answer("semantic", Settle.sign(a11y, clock, window.id(), events, cancel));
-					}
+					String action = s.right ? "ACTION_LONG_CLICK" : "ACTION_CLICK";
+					if (!foreground && node != null && s.count == 1 && has(node, action) && node.perform(action, null)) return answer("semantic", sign.seen());
 					foreground(foreground, "click " + (s.ref != null ? s.ref : "at a point") + ": a tap");
 					int[] at = node != null ? center(node, s.ref) : onScreen(frame.pixels(s.point[0], s.point[1]));
 					if (s.right) {
@@ -523,28 +521,28 @@ public final class UiDriver {
 							device.input().touch(new int[][] {at}, 0);
 						}
 					}
-					return answer("foreground", Settle.sign(a11y, clock, window.id(), events, cancel));
+					return answer("foreground", sign.seen());
 				}
 				case "type":
-					return type(s, node, foreground, a11y, window, events, cancel);
+					return type(s, node, foreground, window, sign);
 				case "key":
 					foreground(foreground, "key " + s.text + ": a key press");
 					Keys.press(device.input(), s.keys);
-					return answer("foreground", Settle.sign(a11y, clock, window.id(), events, cancel));
+					return answer("foreground", sign.seen());
 				case "nav": {
 					String off = off("ui.nav");
 					if (off != null) throw new Refused("unsupported", "nav " + s.nav + ": " + off);
 					if (!a11y.global(s.nav)) throw new Refused("unsupported", "nav " + s.nav + ": the phone refused the global action");
-					return answer("semantic", Settle.sign(a11y, clock, window.id(), events, cancel));
+					return answer("semantic", sign.seen());
 				}
 				case "scroll":
-					return scroll(s, node, foreground, frame, window, a11y, events, cancel);
+					return scroll(s, node, foreground, frame, window, sign);
 				case "drag": {
 					foreground(foreground, "drag: a touch");
 					int[][] path = new int[s.path.length][];
 					for (int i = 0; i < s.path.length; i++) path[i] = onScreen(frame.pixels(s.path[i][0], s.path[i][1]));
 					device.input().touch(path, s.ms);
-					return answer("foreground", Settle.sign(a11y, clock, window.id(), events, cancel));
+					return answer("foreground", sign.seen());
 				}
 				default:
 					throw new Refused("invalid", "unknown step " + s.kind);
@@ -559,21 +557,67 @@ public final class UiDriver {
 		return Json.obj("route", route, "verified", verified);
 	}
 
+	/** Whether the element lists the action: one it lacks is never tried, so a missing one is not an error. */
+	private static boolean has(AxNode node, String action) {
+		return node.actions().contains(action);
+	}
+
+	/**
+	 * Whether a step landed, by reading the window back: verified only when what a person would see of the target's
+	 * window (its fingerprint) differs from before the step. An accessibility event or a new frame is only the cue to
+	 * read again: a tap's ripple draws frames and changes nothing, so it never verifies a step.
+	 */
+	private final class Sign {
+		private final Device.Accessibility a11y;
+		private final Target target;
+		private final int windowId;
+		private final Wire.Cancel cancel;
+		private final String before;
+		private final long events;
+
+		Sign(Device.Accessibility a11y, Target target, Device.AxWindow window, Wire.Cancel cancel) {
+			this.a11y = a11y;
+			this.target = target;
+			this.windowId = window.id();
+			this.cancel = cancel;
+			this.before = new Look(window, false).fingerprint();
+			this.events = a11y.events();
+			a11y.framesSince(windowId);
+		}
+
+		/** Reads the window back until it differs, within SIGN_MS; reads again only on an event or a frame. */
+		boolean seen() throws InterruptedException {
+			Device.Clock clock = device.clock();
+			long start = clock.now();
+			long seen = events;
+			boolean read = true;
+			for (;;) {
+				if (read && !before.equals(new Look(after(a11y, target), false).fingerprint())) return true;
+				if (clock.now() - start >= Settle.SIGN_MS) return false;
+				cancel.check();
+				clock.sleep(Settle.POLL_MS);
+				long now = a11y.events();
+				read = now != seen || a11y.framesSince(windowId) > 0;
+				seen = now;
+			}
+		}
+	}
+
 	/** Refuses a step that needs the foreground route when the call did not allow it. */
 	private static void foreground(boolean allowed, String what) throws Refused {
 		if (allowed) return;
 		throw new Refused("denied", what + " is the phone's own input (the foreground route), which this call does not allow: pass foreground: true");
 	}
 
-	private Map<String, Object> set(Step s, AxNode node, Device.Accessibility a11y, int windowId, long events, Wire.Cancel cancel) throws Refused, InterruptedException {
+	private Map<String, Object> set(Step s, AxNode node, Sign sign) throws Refused, InterruptedException {
 		if (node.checkable()) {
 			boolean on;
 			if (s.text.equals("on") || s.text.equals("true")) on = true;
 			else if (s.text.equals("off") || s.text.equals("false")) on = false;
 			else throw new Refused("invalid", "set " + s.ref + ": a switch or checkbox is set to \"on\" or \"off\", not " + Json.write(s.text));
 			if (node.checked() == on) return answer("semantic", true);
-			if (!node.perform("ACTION_CLICK", null)) throw new Refused("unsupported", "set " + s.ref + ": the app refused its click action");
-			Settle.sign(a11y, device.clock(), windowId, events, cancel);
+			if (!has(node, "ACTION_CLICK") || !node.perform("ACTION_CLICK", null)) throw new Refused("unsupported", "set " + s.ref + ": the app refused its click action");
+			sign.seen();
 			return answer("semantic", node.refresh() && node.checked() == on);
 		}
 		if (!node.editable()) throw new Refused("unsupported", "set " + s.ref + ": phoned sets text fields, switches and checkboxes; this element is none (press it, or type into a field)");
@@ -581,7 +625,7 @@ public final class UiDriver {
 		return answer("semantic", readback(node, s.text, true));
 	}
 
-	private Map<String, Object> type(Step s, AxNode into, boolean foreground, Device.Accessibility a11y, Device.AxWindow window, long events, Wire.Cancel cancel) throws Refused, InterruptedException {
+	private Map<String, Object> type(Step s, AxNode into, boolean foreground, Device.AxWindow window, Sign sign) throws Refused, InterruptedException {
 		AxNode field = into != null ? into : focusedField(window.root(), 0);
 		if (field != null && field.editable() && !field.password()) {
 			// Semantic: the field's text with this text after it, set by the app's own action. It types at the end of the
@@ -594,7 +638,7 @@ public final class UiDriver {
 		Device.Input input = device.input();
 		if (!(ascii(s.text) && input.typeKeys(s.text))) input.paste(s.text);
 		if (field != null && field.editable() && !field.password()) return answer("foreground", readback(field, s.text, false));
-		return answer("foreground", Settle.sign(a11y, device.clock(), window.id(), events, cancel));
+		return answer("foreground", sign.seen());
 	}
 
 	/**
@@ -602,7 +646,7 @@ public final class UiDriver {
 	 * element (a page, whatever the amount). With it, swipes inside the element or the window, each holding still at
 	 * its end so the list stops where the finger does.
 	 */
-	private Map<String, Object> scroll(Step s, AxNode node, boolean foreground, Outline.Frame frame, Device.AxWindow window, Device.Accessibility a11y, long events, Wire.Cancel cancel) throws Refused, InterruptedException {
+	private Map<String, Object> scroll(Step s, AxNode node, boolean foreground, Outline.Frame frame, Device.AxWindow window, Sign sign) throws Refused, InterruptedException {
 		Device.Clock clock = device.clock();
 		if (s.dx == 0 && s.dy == 0) return answer(foreground ? "foreground" : "semantic", true);
 		boolean vertical = Math.abs(s.dy) >= Math.abs(s.dx);
@@ -611,7 +655,7 @@ public final class UiDriver {
 			String dir = vertical ? (s.dy > 0 ? "ACTION_SCROLL_DOWN" : "ACTION_SCROLL_UP") : (s.dx > 0 ? "ACTION_SCROLL_RIGHT" : "ACTION_SCROLL_LEFT");
 			String paged = (vertical ? s.dy : s.dx) > 0 ? "ACTION_SCROLL_FORWARD" : "ACTION_SCROLL_BACKWARD";
 			String action = actions.contains(dir) ? dir : actions.contains(paged) ? paged : null;
-			if (action != null && node.perform(action, null)) return answer("semantic", Settle.sign(a11y, clock, window.id(), events, cancel));
+			if (action != null && node.perform(action, null)) return answer("semantic", sign.seen());
 		}
 		foreground(foreground, "scroll " + (s.ref != null ? s.ref : "at a point") + ": a swipe");
 		Device.Display d = device.display();
@@ -623,7 +667,7 @@ public final class UiDriver {
 		long reachX = Math.max(1, area.width() * 8L / 10);
 		long reachY = Math.max(1, area.height() * 8L / 10);
 		for (int swipes = 0; (leftX != 0 || leftY != 0) && swipes < 20; swipes++) {
-			cancel.check();
+			sign.cancel.check();
 			long mx = Math.max(-reachX, Math.min(reachX, leftX));
 			long my = Math.max(-reachY, Math.min(reachY, leftY));
 			int fromX = clamp(at[0] + (int) (mx / 2), area.left, area.right - 1);
@@ -636,7 +680,7 @@ public final class UiDriver {
 			leftY -= fromY - toY;
 			clock.sleep(30);
 		}
-		return answer("foreground", Settle.sign(a11y, clock, window.id(), events, cancel));
+		return answer("foreground", sign.seen());
 	}
 
 	private static int clamp(int v, int lo, int hi) {

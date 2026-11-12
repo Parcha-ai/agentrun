@@ -145,7 +145,8 @@ export function rowsOf(seen: UiObserveResult): Row[] {
 		if (!clickable(node) || saysSearch(seen, node)) continue;
 		const [x, y, w, h] = node.bounds;
 		if (x < lx || y < ly || x + w > lx + lw || y + h > ly + lh || w === 0 || h === 0) continue;
-		const text = under(seen, node).find((one) => one.role === "text" && one.name)?.name;
+		// A driver that names a row from its children (phoned) gives the row its title; another lists the text under it.
+		const text = node.name ?? under(seen, node).find((one) => one.role === "text" && one.name)?.name;
 		if (text !== undefined) rows.push({ text, bounds: node.bounds });
 	}
 	return rows;

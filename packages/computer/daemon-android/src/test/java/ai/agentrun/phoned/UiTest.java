@@ -50,7 +50,8 @@ final class UiTest {
 		for (Object n : list(seen, "nodes")) if (map(n).get("ref").equals(row.get("parent"))) listNode = map(n);
 		yes(listNode != null, "the row's parent is listed");
 		eq("scrollarea", listNode.get("role"));
-		eq("com.android.settings:id/recycler_view", listNode.get("id"));
+		// The id as the app named it, without the package that holds it.
+		eq("recycler_view", listNode.get("id"));
 		yes(listNode.containsKey("parent"), "the list's own parent (the window's root) is listed too");
 		// The zero-size layout is dropped in both forms.
 		Map<String, Object> full = phone.call("ui.observe", "{\"full\":true}");

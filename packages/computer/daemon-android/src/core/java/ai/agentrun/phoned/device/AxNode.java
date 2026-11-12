@@ -32,6 +32,12 @@ public interface AxNode {
 	/** The resource id ("com.android.settings:id/title"), or null. */
 	String viewId();
 
+	/** What state it is in, in the app's words (a count, "On", "50 percent"), or null: stateDescription. */
+	String stateDescription();
+
+	/** Whether the app marks it a heading. */
+	boolean heading();
+
 	/** In screen pixels. */
 	Rect bounds();
 

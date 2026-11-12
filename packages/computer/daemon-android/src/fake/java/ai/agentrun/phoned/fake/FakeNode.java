@@ -19,6 +19,11 @@ public final class FakeNode implements AxNode {
 	public String desc;
 	public String hint;
 	public String viewId;
+	/** Its stateDescription, or null. */
+	public String state;
+	public boolean heading;
+	/** Its state counts the injected taps that reached it (the ui fixture's canvas): an accessibility action never does. */
+	public boolean counts;
 	public Rect bounds = new Rect(0, 0, 0, 0);
 	public boolean visible = true;
 	public boolean clickable;
@@ -144,6 +149,16 @@ public final class FakeNode implements AxNode {
 	@Override
 	public String viewId() {
 		return viewId;
+	}
+
+	@Override
+	public String stateDescription() {
+		return state;
+	}
+
+	@Override
+	public boolean heading() {
+		return heading;
 	}
 
 	@Override

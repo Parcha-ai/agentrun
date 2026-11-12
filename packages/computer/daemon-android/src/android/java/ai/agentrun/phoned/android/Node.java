@@ -118,6 +118,16 @@ final class Node implements AxNode {
 	}
 
 	@Override
+	public String stateDescription() {
+		return str(n.getStateDescription());
+	}
+
+	@Override
+	public boolean heading() {
+		return n.isHeading();
+	}
+
+	@Override
 	public Rect bounds() {
 		android.graphics.Rect r = new android.graphics.Rect();
 		n.getBoundsInScreen(r);

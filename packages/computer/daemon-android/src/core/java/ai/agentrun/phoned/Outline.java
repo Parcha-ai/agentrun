@@ -90,7 +90,7 @@ public final class Outline {
 			this.name = name;
 			this.value = value;
 			this.desc = desc;
-			this.id = Outline.trim(node.viewId());
+			this.id = Outline.shortId(node.viewId());
 			this.bounds = bounds;
 			this.flags = flags;
 			this.actions = actions;
@@ -265,9 +265,21 @@ public final class Outline {
 		return trim(n.description());
 	}
 
-	/** What it holds: a text field's text. A secure field's is never read. */
+	/**
+	 * A resource id as the app named it, without the package that holds it: "com.android.settings:id/title" is "title",
+	 * as an id is on every other OS (an identifier the app's author chose). An id with no ":id/" part is kept whole.
+	 */
+	static String shortId(String viewId) {
+		String id = trim(viewId);
+		if (id == null) return null;
+		int at = id.indexOf(":id/");
+		return at >= 0 && at + 4 < id.length() ? id.substring(at + 4) : id;
+	}
+
+	/** What it holds: a text field's text, else the state the app says it is in (a count, a level). A secure field's is never read. */
 	static String valueOf(AxNode n) {
-		if (n.password() || !n.editable()) return null;
+		if (n.password()) return null;
+		if (!n.editable()) return trim(n.stateDescription());
 		String text = trim(n.text());
 		// An empty field reports its hint as its text on many releases: that is not a value.
 		if (text != null && text.equals(trim(n.hint()))) return null;
@@ -366,6 +378,7 @@ public final class Outline {
 		}
 		if (n.checkable()) return "checkbox";
 		if (n.clickable() || n.longClickable()) return "button";
+		if (n.heading()) return "heading";
 		if (n.scrollable()) return "scrollarea";
 		String simple = simpleName(n);
 		if (simple.endsWith("ImageView")) return "image";

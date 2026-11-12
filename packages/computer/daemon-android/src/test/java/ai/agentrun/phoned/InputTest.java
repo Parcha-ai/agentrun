@@ -144,9 +144,5 @@ final class InputTest {
 		start = clock.now();
 		yes(!Settle.quiet(stream(Integer.MAX_VALUE), clock, -1, 1000, Wire.Cancel.none()), "a spinner reaches the cap");
 		yes(clock.now() - start >= 1000, "at the cap");
-		yes(Settle.sign(stream(1), clock, -1, 0, Wire.Cancel.none()), "an event is a sign");
-		start = clock.now();
-		yes(!Settle.sign(stream(0), clock, -1, 0, Wire.Cancel.none()), "no sign");
-		yes(clock.now() - start >= Settle.SIGN_MS, "after SIGN_MS");
 	}
 }

@@ -13,7 +13,7 @@ public final class Settle {
 	public static final long QUIET_MS = 150;
 	/** How often they are read. */
 	static final long POLL_MS = 25;
-	/** How long a step waits for a first sign (an event or a frame) that it landed. */
+	/** How long a step waits for the window, read back, to show it landed (UiDriver's Sign). */
 	public static final long SIGN_MS = 400;
 
 	private Settle() {}
@@ -39,21 +39,6 @@ public final class Settle {
 			if (windowId >= 0 && a11y.framesSince(windowId) > 0) lastActivity = now;
 			if (now - lastActivity >= QUIET_MS) return true;
 			if (now - start >= capMs) return false;
-		}
-	}
-
-	/**
-	 * Whether the phone showed a sign within SIGN_MS that a step landed: an accessibility event after eventsBefore, or a
-	 * frame presented in windowId.
-	 */
-	public static boolean sign(Device.Accessibility a11y, Device.Clock clock, int windowId, long eventsBefore, Wire.Cancel cancel) throws InterruptedException {
-		long start = clock.now();
-		for (;;) {
-			if (a11y.events() != eventsBefore) return true;
-			if (windowId >= 0 && a11y.framesSince(windowId) > 0) return true;
-			if (clock.now() - start >= SIGN_MS) return false;
-			cancel.check();
-			clock.sleep(POLL_MS);
 		}
 	}
 }
