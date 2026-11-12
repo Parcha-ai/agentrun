@@ -38,9 +38,11 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   // A loop that ignores its stop and keeps committing, beside a read that never answers.
   const faux = fauxLoops({ stubborn: true, turnMs: 20 });
   t.after(() => faux.loops.forEach((loop) => (loop.halted = true)));
+  // The close's read stalls, not the claim's own read of the run's rows (a queued run's claim reads them too).
+  let stall = false;
   const stalled = new Proxy(store, {
     get(target, prop) {
-      if (prop === "commandsOf") return () => new Promise(() => {});
+      if (prop === "commandsOf") return (...args) => (stall ? new Promise(() => {}) : target.commandsOf(...args));
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -50,6 +52,7 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   t.after(() => runner.close());
   await queue(server, "run-1");
   await until(() => faux.loops.length === 1, "the run claimed");
+  stall = true;
   const startedAt = Date.now();
   await runner.close();
   const took = Date.now() - startedAt;
@@ -86,9 +89,11 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   // run ended stopped before the close read anything.
   let delivered = () => {};
   const firstDelivery = new Promise((resolve) => (delivered = resolve));
+  // The close's read stalls, not the claim's own read of the run's rows (a queued run's claim reads them too).
+  let stall = false;
   const stalled = new Proxy(store, {
     get(target, prop) {
-      if (prop === "commandsOf") return () => new Promise(() => {});
+      if (prop === "commandsOf") return (...args) => (stall ? new Promise(() => {}) : target.commandsOf(...args));
       if (prop === "commands") return (...args) => target.commands(...args).finally(() => delivered());
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
@@ -99,6 +104,7 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   t.after(() => runner.close());
   await queue(server, "run-1");
   await until(() => faux.loops.length === 1, "the run claimed");
+  stall = true;
   await firstDelivery;
   // One turn more: the runner's own continuation of that read (its cursor moved past what it found) has run.
   await new Promise((resolve) => setImmediate(resolve));
