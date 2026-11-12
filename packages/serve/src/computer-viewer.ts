@@ -241,13 +241,16 @@ const js = `"use strict";
   });
   ["back", "home", "recents"].forEach(function (name) { $(name).addEventListener("click", function () { send({ type: "button", name: name }); focusScreen(); }); });
 
-  // Keys, for both: a printable character typed goes as its char, everything else as its key.
+  // Keys, for both: a printable character typed goes as its char, everything else as its key. AltGr's character (which
+  // Windows reports with Ctrl and Alt held) is text, not a shortcut; a dead key is left to finish as the composition or
+  // the input it makes (compositionend, beforeinput).
   function onKeyDown(e) {
-    if (e.isComposing || e.keyCode === 229) return;
+    if (e.isComposing || e.keyCode === 229 || e.key === "Dead") return;
     if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) return;
     e.preventDefault();
-    var printable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
-    if (printable) send({ type: "key", action: "char", key: e.key, code: e.code || "", text: e.key, modifiers: mods(e) });
+    var altGraph = !!(e.getModifierState && e.getModifierState("AltGraph"));
+    var printable = e.key.length === 1 && (altGraph ? !e.metaKey : !e.ctrlKey && !e.metaKey && !e.altKey);
+    if (printable) send({ type: "key", action: "char", key: e.key, code: e.code || "", text: e.key, modifiers: altGraph ? (e.shiftKey ? 8 : 0) : mods(e) });
     else send({ type: "key", action: "down", key: e.key, code: e.code || "", modifiers: mods(e) });
   }
   function onPaste(e) {

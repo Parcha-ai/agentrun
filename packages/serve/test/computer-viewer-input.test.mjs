@@ -132,6 +132,28 @@ test("a desktop's typed key goes once, as its char: its keydown is cancelled, so
   ]);
 });
 
+test("AltGr's character (reported with Ctrl and Alt held) goes as text, while Ctrl+Alt on a letter stays a shortcut", () => {
+  const { sent, press } = viewer("desktop");
+  const altGraph = (on) => ({ getModifierState: (name) => name === "AltGraph" && on });
+  press({ key: "@", code: "KeyQ", keyCode: 81, ctrlKey: true, altKey: true, ...altGraph(true) });
+  press({ key: "t", code: "KeyT", keyCode: 84, ctrlKey: true, altKey: true, ...altGraph(false) });
+  assert.deepEqual(sent, [
+    { type: "key", action: "char", key: "@", code: "KeyQ", text: "@", modifiers: 0 },
+    { type: "key", action: "down", key: "t", code: "KeyT", modifiers: 3 },
+  ]);
+});
+
+test("a dead key sends nothing itself: the character it makes goes once, by its composition or its input", () => {
+  const { sent, sink, press } = viewer("desktop");
+  const dead = press({ key: "Dead", code: "Quote", keyCode: 222 });
+  assert.equal(dead.down.defaultPrevented, false, "left to the browser to compose");
+  sink.dispatch("beforeinput", { inputType: "insertCompositionText", isComposing: true, data: "´" });
+  sink.dispatch("compositionend", { data: "é" });
+  press({ key: "Dead", code: "Quote", keyCode: 222 });
+  sink.dispatch("beforeinput", { inputType: "insertText", isComposing: false, data: "é" });
+  assert.deepEqual(sent, [{ type: "text", text: "é" }, { type: "text", text: "é" }]);
+});
+
 test("a paste goes once, through the paste handler, not as a beforeinput", () => {
   const { sent, sink } = viewer("desktop");
   const pasted = sink.dispatch("beforeinput", { inputType: "insertFromPaste", isComposing: false, data: null });

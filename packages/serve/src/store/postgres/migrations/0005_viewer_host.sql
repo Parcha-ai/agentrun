@@ -3,7 +3,9 @@
 -- migrate.ts opens. Never edit this file once applied: a change is a new file.
 --
 -- computer_viewers.host: the runner's live host (AGENTRUN_RUNNER_LIVE_HOST); null, the server's own machine (loopback).
+-- IF NOT EXISTS: applied again over a store that has it (the migration-0003 repair re-runs every migration after 0002),
+-- it changes nothing.
 
-ALTER TABLE computer_viewers ADD COLUMN host TEXT COLLATE "C";
+ALTER TABLE computer_viewers ADD COLUMN IF NOT EXISTS host TEXT COLLATE "C";
 
 UPDATE store_meta SET schema_version = 5 WHERE singleton = 1;
