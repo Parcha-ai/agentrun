@@ -47,7 +47,7 @@ test("create(options) builds the phone-harness provider from its options alone: 
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, network: caps.network, release: caps.release, groups: caps.groups, isolation: caps.isolation },
 		{ kind: "android", os: "android", daemon: "none", lifetime: "vendor", network: ["open"], release: ["delete"], groups: PHONE_GROUPS, isolation: "vm" },
 	);
-	assert.deepEqual(PHONE_GROUPS, ["exec", "screen", "input.touch", "input.keys", "apps", "apps.ui_tree"]);
+	assert.deepEqual(PHONE_GROUPS, ["exec", "screen", "input.keys", "input.touch", "apps", "ui"]);
 	assert.equal(caps.maxLifetimeMs, 30 * 60_000, "30 min by default");
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.equal(provider.extend, undefined, "the phone harness has no extend");

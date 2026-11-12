@@ -26,6 +26,10 @@
       "types": "./dist/mount.d.ts",
       "default": "./dist/mount.js"
     },
+    "./fake-ui-driver": {
+      "types": "./dist/fake-ui-driver.d.ts",
+      "default": "./dist/fake-ui-driver.js"
+    },
     "./docker": {
       "types": "./dist/docker.d.ts",
       "default": "./dist/docker.js"
