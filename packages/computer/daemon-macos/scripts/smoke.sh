@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # CI: starts Computerd.app the way its LaunchAgent does (launchd, in the runner's Aqua session), headless, and runs
-# smoke.py against it through the app's own computerd command.
+# smoke.py against it through the app's own computerd command, then the protocol's ui conformance cases
+# (ui-conformance.sh) when packages/computer is built.
 #
 #   scripts/smoke.sh PATH/TO/Computerd.app
 set -euo pipefail
@@ -52,4 +53,14 @@ else
 	direct=$!
 fi
 
-python3 -I "$here/smoke.py" "$app/Contents/Helpers/computerd" "$home"
+smoke=0
+python3 -I "$here/smoke.py" "$app/Contents/Helpers/computerd" "$home" || smoke=$?
+
+# The protocol's ui conformance cases, on the same running app, when packages/computer is built.
+conformance=0
+if [[ -f "$here/../../dist/conformance/cli.js" ]]; then
+	"$here/ui-conformance.sh" "$app/Contents/Helpers/computerd" "$home" || conformance=$?
+else
+	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the ui conformance cases do not run"
+fi
+exit $((smoke || conformance))

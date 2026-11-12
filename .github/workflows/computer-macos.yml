@@ -41,11 +41,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Toolchain
         run: |
+          echo "runner image ${ImageOS:-?} ${ImageVersion:-?}"
           sw_vers
           swift --version
           xcodebuild -version
-      - name: Build
-        run: swift build --build-tests
+      # Each target builds in its own step, past its first error, and the job goes on: one run reports every error.
+      - name: Build ComputerdKit
+        continue-on-error: true
+        run: swift build --target ComputerdKit -Xswiftc -continue-building-after-errors 2>&1 | tee build-kit.log
+      - name: Build ComputerdMac
+        continue-on-error: true
+        run: swift build --target ComputerdMac -Xswiftc -continue-building-after-errors 2>&1 | tee build-mac.log
+      - name: Build ComputerdApp
+        continue-on-error: true
+        run: swift build --target ComputerdApp -Xswiftc -continue-building-after-errors 2>&1 | tee build-app.log
+      - name: Build ComputerdCLI
+        continue-on-error: true
+        run: swift build --target ComputerdCLI -Xswiftc -continue-building-after-errors 2>&1 | tee build-cli.log
+      - name: Build UIFixture
+        continue-on-error: true
+        run: swift build --target UIFixture -Xswiftc -continue-building-after-errors 2>&1 | tee build-fixture.log
+      - name: Build the tests
+        continue-on-error: true
+        run: swift build --build-tests -Xswiftc -continue-building-after-errors 2>&1 | tee build-tests.log
+      - name: Build errors
+        run: |
+          if grep -h "error:" build-*.log | sort -u; then exit 1; fi
+          echo "no build errors"
       - name: Unit tests
         run: swift test --skip-build 2>&1 | tee test.log
       # The steps below run even when a unit test failed, so one red test does not hide the smoke test's report.
@@ -54,10 +76,23 @@ jobs:
         run: |
           COMPUTERD_UI_FIXTURE=1 scripts/bundle.sh build
           cp -R build/UIFixture.app /Applications/
+      # The ui conformance cases run from packages/computer's build, against the app the smoke step starts.
+      - uses: actions/setup-node@v4
+        if: ${{ !cancelled() }}
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - name: Build packages/computer
+        if: ${{ !cancelled() }}
+        working-directory: .
+        run: |
+          npm install --global npm@11.21.0 --ignore-scripts
+          node scripts/npm-ci-retry.mjs --ignore-scripts
+          npm run build -w @parcha/agentrun-computer
       - name: Seed the runner's grants
         if: ${{ !cancelled() }}
         run: scripts/seed-tcc.sh build/Computerd.app
-      - name: Smoke test
+      - name: Smoke test and the ui conformance cases
         if: ${{ !cancelled() }}
         run: scripts/smoke.sh build/Computerd.app
       - name: Logs
@@ -67,6 +102,8 @@ jobs:
           name: computerd-macos-logs
           path: |
             packages/computer/daemon-macos/test.log
+            packages/computer/daemon-macos/build-*.log
+            /tmp/computerd-ci/ui-conformance.json
             /tmp/computerd-ci/stderr.log
             ~/Library/Logs/Computerd.log
           if-no-files-found: ignore

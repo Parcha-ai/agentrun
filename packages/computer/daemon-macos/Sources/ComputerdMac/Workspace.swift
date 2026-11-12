@@ -18,25 +18,36 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 	/// What apps.launch can open: every app in the Applications folders, and every app running with a Dock presence
 	/// (the Finder, an app opened from elsewhere).
 	func list() -> AppsListResult {
-		var byID: [String: App] = [:]
+		let apps = Self.installed().map(\.app).sorted { $0.id < $1.id }
+		return AppsListResult(apps: apps, foreground: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+	}
+
+	/// Each app apps.list shows, with where it is: the running ones first, then the Applications folders.
+	static func installed() -> [(app: App, url: URL)] {
+		var byID: [String: (app: App, url: URL)] = [:]
 		func add(_ url: URL, name: String?) {
 			guard let info = Bundle(url: url)?.infoDictionary, let id = info["CFBundleIdentifier"] as? String, byID[id] == nil else { return }
 			let shown = name ?? (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? url.deletingPathExtension().lastPathComponent
-			byID[id] = App(id: id, name: shown, version: info["CFBundleShortVersionString"] as? String)
+			byID[id] = (App(id: id, name: shown, version: info["CFBundleShortVersionString"] as? String), url)
 		}
 		for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && !app.isTerminated {
 			if let url = app.bundleURL { add(url, name: app.localizedName) }
 		}
-		for folder in Self.folders {
+		for folder in folders {
 			let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
 			for name in names where name.hasSuffix(".app") { add(URL(fileURLWithPath: folder).appendingPathComponent(name), name: nil) }
 		}
-		let apps = byID.values.sorted { $0.id < $1.id }
-		return AppsListResult(apps: apps, foreground: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+		return Array(byID.values)
+	}
+
+	/// Where the app is: Launch Services' answer, or else the app apps.list found in the Applications folders (an app
+	/// copied in moments ago that Launch Services has not registered yet).
+	static func url(of id: String) -> URL? {
+		NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) ?? installed().first { $0.app.id == id }?.url
 	}
 
 	func launch(_ id: String, url: String?, background: Bool) async throws {
-		guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else {
+		guard let appURL = Self.url(of: id) else {
 			throw RPCError.notFound("no app with the bundle id \(id) is installed")
 		}
 		let front = NSWorkspace.shared.frontmostApplication
