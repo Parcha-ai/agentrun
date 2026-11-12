@@ -23,9 +23,8 @@ the evals](#running-the-evals)).
 
 ## The packages this server ships
 
-None but code-review needs a sandbox: each reads and writes through web tools and MCP servers the owner saves.
-code-review also reads the pull request's checkout with read-only bash, which runs only in a box, so it applies on a
-server with the docker box (`AGENTRUN_BOXES=docker`) and is refused, in words that say so, on one with none.
+None needs a sandbox (code-review prefers a shell and runs without one): each reads and writes through web tools and MCP
+servers the owner saves.
 
 **Writes are bounded.** Every package reads content someone else wrote (web pages, pull requests, form submissions),
 so no package puts a write in its own `allow`. A package whose job runs on triggers (code-review, inbound-lead,
@@ -55,7 +54,7 @@ the owner grants a write, text the agent read could try to copy what that read r
 
 | Package | What it does | Started by | Needs |
 |---|---|---|---|
-| `code-review` | Reviews a pull request for real bugs on a read-only checkout AgentRun makes of the PR (`checkout: pull_request`, in `repo/`): one `subagent` turn starts five quick and three deep reviewers, each with read-only bash (`git diff`, `git grep`, `nl -ba`; none builds or runs the code), against the repository's `CODEREVIEW.md` (on top of its own `rules/CODEREVIEW.md`, the baseline and the starter); the agent merges and verifies their findings and posts one comment review with P0/P1/P2 findings, each quoting the line behind it, and a 1-5 risk score, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review` | a run naming a PR, or a GitHub webhook trigger the owner adds | a box for its shell (`AGENTRUN_BOXES=docker`; with none the apply is refused); the GitHub MCP server `github` to read the PR and post; with none, a diff in the message |
+| `code-review` | Reviews a pull request for real bugs on a read-only checkout AgentRun makes of the PR (`checkout: pull_request`, in `repo/`): one `subagent` turn starts five quick and three deep reviewers, each with read-only bash (`git diff`, `git grep`, `nl -ba`; none builds or runs the code), against the repository's `CODEREVIEW.md` (on top of its own `rules/CODEREVIEW.md`, the baseline and the starter); the agent merges and verifies their findings and posts one comment review with P0/P1/P2 findings, each quoting the line behind it, and a 1-5 risk score, never an approval (its write is pinned to COMMENT). A fork's PR is reviewed when a writer comments `@<bot> review` | a run naming a PR, or a GitHub webhook trigger the owner adds | a shell (`computer: [shell, none]`: with none, it is made without bash and its reviewers read through the GitHub tools); the GitHub MCP server `github` to read the PR and post; with neither, a diff in the message |
 | `kyb` | Business due diligence: identity, owners, sanctions against the lists themselves, adverse media, a verdict, every claim cited | a run naming a company | nothing; web tools only |
 | `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: Slack (`slack`) or Gmail (`gmail`) MCP, to send |
 | `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |

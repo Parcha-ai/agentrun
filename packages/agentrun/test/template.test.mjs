@@ -80,8 +80,8 @@ for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun
 });
 
 // SKIP (follow-up #2089): the eval's answer on the server has no fenced json block, so the case fails its findings check
-// (Un-skipping it: code-review 0.3.0 has a shell, and bash runs only in a box, so under AGENTRUN_BOXES=none its apply
-// is refused; the eval's server needs the docker box.)
+// (Un-skipping it: code-review 0.3.0 prefers a shell, [shell, none], so under AGENTRUN_BOXES=none it is made with no
+// computer and without bash, and its reviewers read through the GitHub tools.)
 test.skip("template eval --server runs on that server with the token in AGENTRUN_API_KEY, and never prints it", { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
   const data = join(dir, "data");

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { PackageError, readPackage } from "../dist/templates.js";
 import { connect, connectable, deliver, firstInput } from "./github-support.mjs";
-import { dockerBox, scratch } from "./support.mjs";
+import { scratch } from "./support.mjs";
 import { firings, keyOf } from "./trigger-support.mjs";
 
 const REPO = "acme/widgets";
@@ -144,8 +144,6 @@ test("(d) the release-notes package this server ships: without GitHub its trigge
 });
 
 test("the code-review package as it ships: its pull-requests trigger takes the repo parameter in its where, so a pull_request for that repository fires a run and one for another fires none; with GitHub not connected its own words say what connecting does", { timeout: 120_000 }, async (t) => {
-  // code-review's checkout needs a shell, so a box (bash runs only in one).
-  await dockerBox(t);
   const server = await connectable(t);
   const unconnected = await server.api("POST", "/templates/code-review/apply", { parameters: { repo: REPO } });
   assert.equal(unconnected.status, 201, JSON.stringify(unconnected.body));
