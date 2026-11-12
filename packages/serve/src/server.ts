@@ -49,6 +49,7 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
@@ -2695,6 +2696,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => computerOf(kept, env, family),
           hold: () => hold,
+          // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
+          // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
+          // For an ended run, nothing, and its row goes.
+          ended: () => screenWaitEnded(store.settings, run.id, run.terminal),
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
         return send(res, 200, view, { "cache-control": "no-store" });
