@@ -139,6 +139,10 @@ function laterProtocol(a: string, b: string): boolean {
  * replace it the way a provider replaces a copied daemon.
  */
 export function helloMismatch(paired: PairedComputer, hello: HelloResult): { code: number; message: string } | undefined {
+	const said = hello as Partial<Record<keyof HelloResult, unknown>> | null;
+	if (typeof said !== "object" || said === null || typeof said.protocol !== "string" || typeof said.version !== "string") {
+		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver answered hello without its protocol and version: update the driver on ${paired.name} (Computerd: its menu's Check for Updates, or the download on the console's Computers page)` };
+	}
 	if (hello.protocol !== PROTOCOL_VERSION) {
 		const newer = laterProtocol(hello.protocol, PROTOCOL_VERSION) ?"the server is older: it is updated by whoever runs it" : `update the driver on ${paired.name} (Computerd: its menu's Check for Updates, or the download on the console's Computers page)`;
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: ${newer}` };
@@ -163,11 +167,23 @@ interface Live {
 export class AttachHub {
 	readonly #live = new Map<string, Live>();
 	readonly #claims = new Map<string, Record<string, string>>();
+	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
+	readonly #pending = new Map<string, Set<AttachSocket>>();
 
 	/** Takes a computer's new socket: calls hello on it, and keeps it when the hello is what the computer paired as. */
 	async accept(paired: PairedComputer, socket: AttachSocket): Promise<Result<HelloResult>> {
+		const pending = this.#pending.get(paired.id) ?? new Set<AttachSocket>();
+		this.#pending.set(paired.id, pending);
+		pending.add(socket);
 		const client = new DaemonClient(socketStreams(socket));
 		const hello = await client.call("hello", { client: "agentrun-serve" });
+		const revoked = !pending.delete(socket);
+		if (pending.size === 0 && this.#pending.get(paired.id) === pending) this.#pending.delete(paired.id);
+		if (revoked) {
+			const why = `${paired.name} was removed while it said hello`;
+			socket.close(ATTACH_CLOSE.unauthorized, why);
+			return fail("refused", why);
+		}
 		if (!hello.ok) {
 			socket.close(ATTACH_CLOSE.going, `hello failed: ${hello.error.message}`);
 			return hello;
@@ -224,6 +240,10 @@ export class AttachHub {
 
 	/** Ends a computer's attachment: its token was revoked, or the computer was removed. */
 	revoke(id: string, why: string): void {
+		const pending = this.#pending.get(id);
+		this.#pending.delete(id);
+		for (const socket of pending ?? []) socket.close(ATTACH_CLOSE.unauthorized, why);
+		pending?.clear();
 		this.#live.get(id)?.socket.close(ATTACH_CLOSE.unauthorized, why);
 		this.#live.delete(id);
 		this.#claims.delete(id);
