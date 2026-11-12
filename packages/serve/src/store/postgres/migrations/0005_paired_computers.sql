@@ -4,8 +4,9 @@
 --
 -- paired_computers: the token's SHA-256 alone is kept (hex); revoked_at marks a removed computer, whose token dials no more.
 -- pairing_codes: a code's SHA-256 alone (hex), good once until expires_at; a used one is deleted as it pairs.
+-- Each table is made only where it is missing, so a store whose record of this file was lost applies it again unharmed.
 
-CREATE TABLE paired_computers (
+CREATE TABLE IF NOT EXISTS paired_computers (
   id TEXT COLLATE "C" PRIMARY KEY,
   name TEXT COLLATE "C" NOT NULL,
   hello TEXT COLLATE "C" NOT NULL CHECK (hello::json IS NOT NULL),
@@ -17,7 +18,7 @@ CREATE TABLE paired_computers (
   revoked_at BIGINT
 );
 
-CREATE TABLE pairing_codes (
+CREATE TABLE IF NOT EXISTS pairing_codes (
   code_sha256 TEXT COLLATE "C" PRIMARY KEY,
   expires_at BIGINT NOT NULL
 );

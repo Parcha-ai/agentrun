@@ -36,8 +36,13 @@ const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, 
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
 const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, ...NO_SHELL };
 /** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
-const MAC: PairedComputer = { id: "cmp-abc", name: "vesper-mac", kind: "desktop", os: "macos", arch: "arm64", driver: "0.2.0", online: true, held_by_run: null, created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z" };
-const MAC_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "vesper-mac", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
+/** A paired computer of no OS the page knows: it is shown by what its hello says. */
+const DESK: PairedComputer = {
+  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
+  screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
+  driver: "0.2.0", online: true, held_by_run: null, held_until: null, created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
+};
+const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
 const view = (saved = false): Computers => ({
   paired: [],
@@ -253,17 +258,18 @@ describe("Settings → Computers", () => {
     expect(host.textContent).not.toContain(SIGN_IN_TO_CHANGE);
   });
 
-  it("pairs a computer: shows the code and its countdown, reads the computers again while it is up, names the computer that used it, and lists it once, in its own section", async () => {
+  it("pairs a computer: shows the code, this server's address and the countdown, reads the computers again while it is up, names the computer that used it, and lists it once, in its own section, as its hello says", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
     try {
-      const withMac: Computers = { ...view(), paired: [MAC], kinds: view().kinds.map((k) => (k.kind === "desktop" ? { ...k, providers: [...k.providers, MAC_PROVIDER] } : k)) };
-      const { v2, calls } = server([view(), view(), withMac], () => json(201, { code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
+      const withDesk: Computers = { ...view(), paired: [DESK], kinds: view().kinds.map((k) => (k.kind === "desktop" ? { ...k, providers: [...k.providers, DESK_PROVIDER] } : k)) };
+      const { v2, calls } = server([view(), view(), withDesk], () => json(201, { code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z" }));
       const { section, click, settle } = await open(v2);
       const mine = section("Your computers");
       expect(mine.textContent).toContain("None paired yet");
       await click(mine, /^Pair a computer$/);
       expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/pairings" });
       expect(mine.querySelector("[data-code]")?.textContent).toBe("K7PD-W3QX");
+      expect(mine.querySelector("[data-address]")?.textContent).toBe(window.location.origin);
       expect(mine.querySelector("[data-countdown]")?.textContent).toBe("10:00");
       const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
       await tick(2_000);
@@ -271,12 +277,14 @@ describe("Settings → Computers", () => {
       expect(mine.querySelector("[data-countdown]")?.textContent).toBe("9:58");
       await tick(2_000);
       expect(mine.querySelector("[data-code]")).toBeNull();
-      expect(mine.querySelector("[role=status]")?.textContent).toBe("Paired vesper-mac.");
+      expect(mine.querySelector("[role=status]")?.textContent).toBe("Paired desk-1.");
       const row = mine.querySelector('[data-paired="cmp-abc"]')!;
       expect(row.textContent).toContain("Online");
-      expect(row.textContent).toContain("Desktop · macos · arm64 · driver 0.2.0");
+      expect(row.querySelector("[data-machine]")?.textContent).toBe("Desktop · Acme Book 14 · windows 11 · x86_64 · screen 1920×1080 at 1x");
+      expect(row.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
+      expect(row.querySelector("[data-held-until]")).toBeNull();
       expect([...section("Desktop").querySelectorAll("[data-provider]")].map((el) => el.textContent)).toEqual(["E2B", "Orgo"]);
-      expect(section("Desktop").textContent).toContain("Also served by your computers: vesper-mac.");
+      expect(section("Desktop").textContent).toContain("Also served by your computers: desk-1 (windows).");
       await tick(10_000);
       expect(calls.filter((c) => c.method === "GET"), "no reads once the code is used").toHaveLength(3);
     } finally {
@@ -284,19 +292,20 @@ describe("Settings → Computers", () => {
     }
   });
 
-  it("says a paired computer offline and how to bring it back, the run that holds one, and removes one after asking", async () => {
-    const held = { ...MAC, held_by_run: "0190f0aa-0000-7000-8000-00000000beef" };
-    const away: PairedComputer = { ...MAC, id: "cmp-old", name: "old-mac", online: false, seen_at: null };
+  it("says a paired computer offline and how to bring it back, the run that holds one and the deadline its hold ends by, and removes one after asking", async () => {
+    const held = { ...DESK, held_by_run: "0190f0aa-0000-7000-8000-00000000beef", held_until: "2026-11-12T11:00:00.000Z" };
+    const away: PairedComputer = { ...DESK, id: "cmp-old", name: "old-desk", online: false, seen_at: null };
     const { v2, calls } = server([{ ...view(), paired: [held, away] }, { ...view(), paired: [held] }], () => new Response(null, { status: 204 }));
     const { section, click } = await open(v2);
     const mine = section("Your computers");
     const row = (id: string) => mine.querySelector(`[data-paired="${id}"]`);
     expect(row("cmp-abc")!.textContent).toContain("In use by run 0000beef");
+    expect(row("cmp-abc")!.querySelector("[data-held-until]")?.textContent).toMatch(/^The run's hold ends by .+, released or not\.$/);
     expect(row("cmp-old")!.textContent).toContain("Offline");
-    expect(row("cmp-old")!.textContent).toContain("Open its driver (Computerd): it dials this server.");
+    expect(row("cmp-old")!.textContent).toContain("Open its driver on that computer: it dials this server.");
     await click(row("cmp-old")!, /^Remove$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
-    expect(row("cmp-old")!.querySelector("[data-confirm]")?.textContent).toContain("Remove old-mac?");
+    expect(row("cmp-old")!.querySelector("[data-confirm]")?.textContent).toContain("Remove old-desk?");
     await click(row("cmp-old")!.querySelector("[data-confirm]")!, /^Remove$/);
     expect(calls.filter((c) => c.method === "DELETE")).toMatchObject([{ path: "/v2/computers/cmp-old", body: undefined }]);
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);

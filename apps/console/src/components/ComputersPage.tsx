@@ -1,4 +1,4 @@
-import { Monitor } from "lucide-react";
+import { Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
@@ -35,7 +35,8 @@ type Tested = { ok: boolean; words: string; at: string };
 export const PAIRING_POLL_MS = 2_000;
 
 /** Settings → Computers: first, the person's own computers paired with this server (Pair a computer: a code to type into
- *  the computer's driver, Computerd; each paired computer online or offline, the run that holds it, and Remove). Each is
+ *  the computer's driver with this server's address, one page for every OS; each paired computer as its hello says it,
+ *  online or offline, the run that holds it and until when, and Remove). Each is
  *  also a provider of its kind in GET /v2/computers, and shows here once, in its own section. Then every kind of computer
  *  an agent can be given, as GET /v2/computers answers it. A kind this
  *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
@@ -130,6 +131,21 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
   );
 }
 
+/** What a paired computer is, as its hello says it, the same line for every OS: the kinds it serves, its device, its os
+ *  and version, its architecture and its screen. */
+function machineOf(computer: PairedComputer): string {
+  const device = computer.device ? `${computer.device.maker} ${computer.device.model}` : null;
+  const os = computer.os_version ? `${computer.os} ${computer.os_version}` : computer.os;
+  const screen = computer.screen ? `screen ${computer.screen.width}×${computer.screen.height} at ${computer.screen.scale}x` : null;
+  return [computer.serves.map((kind) => wordsOf(kind).label).join(", ") || wordsOf(computer.kind).label, device, os, computer.arch, screen].filter(Boolean).join(" · ");
+}
+
+/** What its driver offers: its groups, then each feature that is off, with why. */
+function offersOf(computer: PairedComputer): string {
+  const off = Object.entries(computer.features).flatMap(([name, value]) => (value === true ? [] : [`${name} off: ${value.off}`]));
+  return [`Offers ${computer.groups.join(", ")}`, ...off].join(" · ");
+}
+
 /** The person's own computers: Pair a computer (a code, its countdown, and where to type it), then each paired computer
  *  with its state and Remove. While a code is up the page reads the computers again every PAIRING_POLL_MS, and the
  *  computer that used the code is said by name. */
@@ -179,14 +195,22 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
     <section aria-label="Your computers">
       <h2 className="mb-2 flex flex-wrap items-center gap-2">
         <span className="caps text-small font-semibold">Your computers</span>
-        <span className="text-small text-muted-foreground">A Mac of your own, attached by its driver (Computerd). An agent can be given it as its desktop.</span>
+        <span className="text-small text-muted-foreground">A computer or phone of your own, attached by the driver you run on it. An agent can be given it as its computer.</span>
       </h2>
       {pairing
         ? <div data-pairing className="mb-3 space-y-3 border bg-card p-4">
-            <p className="caps text-label text-muted-foreground">Pairing code</p>
-            <p data-code className="font-mono text-2xl font-semibold">{pairing.code.code}</p>
+            <div className="flex flex-wrap gap-x-8 gap-y-3">
+              <div>
+                <p className="caps text-label text-muted-foreground">Server address</p>
+                <p data-address className="mt-1 font-mono text-prose font-semibold">{window.location.origin}</p>
+              </div>
+              <div>
+                <p className="caps text-label text-muted-foreground">Pairing code</p>
+                <p data-code className="mt-1 font-mono text-2xl font-semibold">{pairing.code.code}</p>
+              </div>
+            </div>
             {live
-              ? <p className="text-body">Open Computerd on the computer and type this code, with this server's address, <span className="font-mono">{window.location.origin}</span>. It pairs one computer, once, in the next <span data-countdown className="font-mono">{countdown}</span>.</p>
+              ? <p className="text-body">Type both into the driver on the computer. The code pairs one computer, once, in the next <span data-countdown className="font-mono">{countdown}</span>.</p>
               : <p role="status" className="text-body text-muted-foreground">This code has expired. Make a new one.</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={() => void make()} disabled={making}>{making ? "Making…" : "New code"}</Button>
@@ -203,15 +227,18 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
             {paired.map((computer) => (
               <li key={computer.id} data-paired={computer.id} className="border-b p-4 last:border-b-0">
                 <div className="flex flex-wrap items-start gap-3">
-                  <Monitor className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  {computer.serves.includes("phone") ? <Smartphone className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden /> : <Monitor className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />}
                   <div className="min-w-0 flex-1">
                     <p className="flex flex-wrap items-center gap-2">
                       <span data-provider className="font-mono text-prose font-semibold">{computer.name}</span>
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
                       {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
                     </p>
-                    {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver (Computerd): it dials this server.</p>}
-                    <p className="mt-2 text-small text-muted-foreground">{`${wordsOf(computer.kind).label} · ${computer.os} · ${computer.arch} · driver ${computer.driver} · paired ${when(computer.created_at)}${computer.seen_at ? ` · last attached ${when(computer.seen_at)}` : ""}`}</p>
+                    {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
+                    {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
+                    <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
+                    {computer.groups.length > 0 && <p data-offers className="mt-1 text-small text-muted-foreground">{offersOf(computer)}</p>}
+                    <p className="mt-1 text-small text-muted-foreground">{`Driver ${computer.driver} · paired ${when(computer.created_at)}${computer.seen_at ? ` · last attached ${when(computer.seen_at)}` : ""}`}</p>
                   </div>
                   <Button size="sm" onClick={() => { setRemoving(computer.id); setProblem(null); }} disabled={removing !== null}>Remove</Button>
                 </div>
@@ -225,7 +252,7 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
               </li>
             ))}
           </ul>
-        : <p className="border p-4 text-body text-muted-foreground">None paired yet. Pair a computer, then type its code into Computerd.</p>}
+        : <p className="border p-4 text-body text-muted-foreground">None paired yet. Pair a computer, then type the server address and its code into the driver on it.</p>}
     </section>
   );
 }

@@ -35,15 +35,16 @@ export const pairedOf = (row: PairedComputerRow): PairedComputer => ({
   labels: { ...row.labels },
 });
 
-/** A paired computer as a provider of `registry`: the setting kinds its paired hello serves, no keys, no mount, the
- *  machine's own network ("open": a run never narrows a person's own machine), never metered. */
+/** A paired computer as a provider of `registry`: named by its name and its os, as an agent's computer picker lists it;
+ *  the setting kinds its paired hello serves, no keys, no mount, the machine's own network ("open": a run never narrows
+ *  a person's own machine), never metered. */
 export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals">): ProviderEntry {
   const hello = row.hello as Partial<HelloResult>;
   const configuration = { kind: String(hello.kind ?? ""), groups: Array.isArray(hello.groups) ? [...hello.groups] : [] } as unknown as KindCapabilities;
   const kinds = (Object.keys(registry.SETTING_KINDS) as ComputerSettingKind[]).filter((kind) => kind !== "none" && registry.servingRefusals(configuration, kind).length === 0);
   return {
     id: row.id,
-    label: row.name,
+    label: typeof hello.os === "string" ? `${row.name} (${hello.os})` : row.name,
     kinds,
     keys: [],
     mounts: [],
@@ -71,6 +72,6 @@ export function pairedProvider(row: PairedComputerRow, hub: AttachHub | undefine
  *  driver dialed this server). Asked at a run's start, as a vendor's readiness is; another run's hold is the claim's. */
 export function pairedRefusal(row: PairedComputerRow, hub: Pick<AttachHub, "online"> | undefined): string | undefined {
   if (hub === undefined) return ONE_PROCESS_WORDS;
-  if (!hub.online(row.id)) return `This agent's computer is ${row.name}, which is not attached now: open its driver (Computerd), which dials this server, then start the run again.`;
+  if (!hub.online(row.id)) return `This agent's computer is ${row.name}, which is not attached now: open its driver on that computer, which dials this server, then start the run again.`;
   return undefined;
 }

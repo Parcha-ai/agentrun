@@ -257,7 +257,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
     /** One account-level read of a provider with its saved keys; it never makes a computer. */
     testComputer: (provider: string) => call<ComputerTest>("POST", `/computers/${encodeURIComponent(provider)}/test`),
-    /** A code that pairs a person's own computer: its driver (Computerd) trades it for its own token, once, before it
+    /** A code that pairs a person's own computer: its driver, on any OS, trades it for its own token, once, before it
      *  expires. No Idempotency-Key: a second POST is a second code, and the first still pairs until it expires. */
     createPairing: () => call<Pairing>("POST", "/computers/pairings"),
     /** Removes a paired computer (204): its token ends, its socket closes, and a run holding it loses it. */

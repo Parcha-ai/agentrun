@@ -23,7 +23,7 @@ import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./s
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { withPaired } from "./workspace/attached-computers.js";
-import { type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { type ComputerSettingKind, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -137,7 +137,7 @@ export interface ComputerRoutesOptions {
   /** The person's own computers paired with this server (computer-attach.ts): the store's rows and each one's view.
    *  Each is one more provider of its kind (attached-computers.ts pairedEntry), ready while it is attached. Absent:
    *  none. */
-  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow): PairedView };
+  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow, serves: readonly ComputerSettingKind[]): PairedView };
 }
 
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
@@ -265,9 +265,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const mode = await modeNow();
     // The paired computers, each one more provider of its kind; one not attached now is not ready, saying so.
     const rows = options.paired ? await options.paired.rows() : [];
-    const paired = rows.map((row) => options.paired!.viewOf(row));
     const kinds = withPaired(options.kinds as never, rows) as unknown as KindRegistry;
-    const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver (Computerd), which dials this server`] as const])));
+    const paired = rows.map((row) => options.paired!.viewOf(row, kinds.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? []));
+    const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver on that computer, which dials this server`] as const])));
     const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds as never);
     // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
     // of its key's name.

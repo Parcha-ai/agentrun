@@ -653,12 +653,19 @@ const COMPUTER_PROVIDER = closedWith({
 const PAIRED_COMPUTER = closed({
   id: { type: "string", description: "Its id: an agent's `computer.provider` names it (`{kind: \"desktop\", provider: <id>}`), and DELETE /computers/{computer_id} removes it." },
   name: { type: "string", description: "What the person called it when they paired it." },
-  kind: { type: "string", description: "The machine kind it paired as (its hello's `kind`): `desktop` for a Mac." },
+  kind: { type: "string", description: "The machine kind it paired as (its hello's `kind`, such as `desktop` or `android`)." },
+  serves: { type: "array", items: COMPUTER_KIND, description: "The kinds of an agent's computer setting it serves, from what it paired as: an agent's `computer` names it under one of these." },
   os: { type: "string", description: "Its OS, as its hello said it." },
+  os_version: { type: ["string", "null"], description: "Its OS's version as its driver says it, with a build where the driver knows one; null where it says none." },
+  device: { oneOf: [closed({ maker: { type: "string" }, model: { type: "string" } }), { type: "null" }], description: "The machine, as its driver says it (`maker`, `model`); null where it says none." },
   arch: { type: "string", description: "Its architecture, as its hello said it." },
+  screen: { oneOf: [closed({ width: { type: "number" }, height: { type: "number" }, scale: { type: "number" } }), { type: "null" }], description: "Its main screen in points, and pixels per point; null for a computer with no screen." },
+  groups: { type: "array", items: { type: "string" }, description: "The capability groups its driver offers: its live hello's while it is attached, else the ones it paired with. A run uses only these." },
+  features: { type: "object", additionalProperties: { oneOf: [{ const: true }, closed({ off: { type: "string", description: "Why it is off here, in words a person can act on." } })] }, description: "What its groups can and cannot do on it, by feature name (true, or off with why), as its driver says it: live while attached, else as paired." },
   driver: { type: "string", description: "Its driver's build: its live hello's while it is attached, else the one it last said." },
   online: { type: "boolean", description: "Whether its driver is attached to this server now." },
   held_by_run: { type: ["string", "null"], description: "The run that holds it now; null when none does." },
+  held_until: { type: ["string", "null"], format: "date-time", description: "When the holding run's hold ends, released or not: the run's lifetime. Past it the run's connections close and the next run may claim it, and the computer stays attached. Null when no run holds it." },
   created_at: { type: "string", format: "date-time", description: "When it was paired." },
   seen_at: { type: ["string", "null"], format: "date-time", description: "When it last attached; null before its first." },
 });
@@ -1395,7 +1402,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/computers/pairings": {
     post: {
       operationId: "createPairing", tags: ["local"], summary: "A code that pairs a person's own computer with this server",
-      description: `Settings → Computers → Pair a computer. A new code of eight letters and digits (two groups of four, no 0, O, 1 or I), good once for ${PAIRING_CODE_TTL_MS / 60_000} minutes: the person types it into the driver on their computer (Computerd on a Mac), which trades it for its own token (POST /computers/pair). The server keeps the code's SHA-256, never the code. A new code does not cancel an older one.`,
+      description: `Settings → Computers → Pair a computer. A new code of eight letters and digits (two groups of four, no 0, O, 1 or I), good once for ${PAIRING_CODE_TTL_MS / 60_000} minutes: the person types it, with this server's address, into the driver on their computer, which trades it for its own token (POST /computers/pair). The server keeps the code's SHA-256, never the code. A new code does not cancel an older one.`,
       responses: { "201": json(PAIRING, "The code, and when it expires."), ...errors(401, 429, 500) },
       ...ATTACH_MARK,
     },

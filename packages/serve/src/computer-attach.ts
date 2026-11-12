@@ -38,6 +38,8 @@ export const PAIR_TRIES_PER_MINUTE = 10;
 const PAIR_WINDOW_MS = 60_000;
 /** The most source addresses the pair limit keeps at once; past it, those with no try in the window go first. */
 const PAIR_PEERS = 10_000;
+/** The one key the addresses the full table has no room for are counted under (no address's key has a space). */
+const OVERFLOW_PEER = "every address past the table";
 /** The longest name a person gives a computer, in characters. */
 export const PAIRED_NAME_MAX = 100;
 /** A WebSocket close frame's reason holds at most this many bytes of UTF-8. */
@@ -86,14 +88,16 @@ export class PairTries {
   /** Counts a try from `address`: ok, or how long until the next is let in. */
   allow(address: string): { ok: true } | { ok: false; retryAfterMs: number } {
     const now = this.now();
-    const key = peerKey(address);
-    const recent = (this.#tries.get(key) ?? []).filter((at) => now - at < PAIR_WINDOW_MS);
-    if (recent.length >= PAIR_TRIES_PER_MINUTE) return { ok: false, retryAfterMs: recent[0]! + PAIR_WINDOW_MS - now };
+    let key = peerKey(address);
     if (!this.#tries.has(key) && this.#tries.size >= this.peers) {
       for (const [known, at] of this.#tries) if (!at.some((one) => now - one < PAIR_WINDOW_MS)) this.#tries.delete(known);
+      // A table still full of addresses trying now counts every address it has no room for as one: the table never grows
+      // past its bound, and no address goes uncounted.
+      if (this.#tries.size >= this.peers) key = OVERFLOW_PEER;
     }
-    // A table still full of addresses trying now counts this one with none: the limit never grows without bound.
-    if (this.#tries.has(key) || this.#tries.size < this.peers) this.#tries.set(key, [...recent, now]);
+    const recent = (this.#tries.get(key) ?? []).filter((at) => now - at < PAIR_WINDOW_MS);
+    if (recent.length >= PAIR_TRIES_PER_MINUTE) return { ok: false, retryAfterMs: recent[0]! + PAIR_WINDOW_MS - now };
+    this.#tries.set(key, [...recent, now]);
     return { ok: true };
   }
 }
@@ -134,35 +138,55 @@ export function pairBodyOf(body: unknown): { code: string; name: string; hello: 
  *  protocol version must be this server's. The code stays good, for the driver once it is updated. */
 export function pairRefusal(name: string, hello: HelloResult): string | undefined {
   if (hello.protocol === PROTOCOL_VERSION) return undefined;
-  return `${name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: update whichever is older (the driver: its menu's Check for Updates; this server: whoever runs it updates it), then pair with the same code`;
+  return `${name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: update whichever is older (the driver on that computer, or this server, which whoever runs it updates), then pair with the same code`;
 }
 
-/** A paired computer as GET /v2/computers lists it under `paired`: what it paired as, whether it is attached now, the
- *  driver build of its last hello, and the run that holds it, if one does. */
+/** A paired computer as GET /v2/computers lists it under `paired`: whatever its hello says it is (its os and version, its
+ *  device, its screen, its groups and features: the live hello's while it is attached, else what it paired with), the
+ *  setting kinds it serves, whether it is attached now, its driver's build, and the run that holds it and until when.
+ *  Nothing here is any one OS's: a driver on any OS is shown by the same fields. */
 export type PairedView = {
   id: string;
   name: string;
   kind: string;
+  serves: string[];
   os: string;
+  os_version: string | null;
+  device: { maker: string; model: string } | null;
   arch: string;
+  screen: { width: number; height: number; scale: number } | null;
+  groups: string[];
+  features: Record<string, true | { off: string }>;
   driver: string;
   online: boolean;
   held_by_run: string | null;
+  held_until: string | null;
   created_at: string;
   seen_at: string | null;
 };
 
-export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "hello" | "claimed">): PairedView {
-  const hello = row.hello as Partial<HelloResult>;
+export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "hello" | "claimed" | "deadline">, serves: readonly string[]): PairedView {
+  const paired = row.hello as Partial<HelloResult>;
+  // Kind and os stay what it paired as (another is refused at hello); the rest follows its driver's live hello.
+  const hello: Partial<HelloResult> = hub.hello(row.id) ?? paired;
+  const holder = hub.claimed(row.id)?.[RUN_LABEL] ?? null;
+  const until = holder === null ? undefined : hub.deadline(row.id);
   return {
     id: row.id,
     name: row.name,
-    kind: String(hello.kind ?? ""),
-    os: String(hello.os ?? ""),
-    arch: String(hello.arch ?? ""),
+    kind: String(paired.kind ?? ""),
+    serves: [...serves],
+    os: String(paired.os ?? ""),
+    os_version: typeof hello.osVersion === "string" ? hello.osVersion : null,
+    device: hello.device && typeof hello.device.maker === "string" && typeof hello.device.model === "string" ? { maker: hello.device.maker, model: hello.device.model } : null,
+    arch: String(hello.arch ?? paired.arch ?? ""),
+    screen: hello.screen && typeof hello.screen.width === "number" ? { width: hello.screen.width, height: hello.screen.height, scale: hello.screen.scale } : null,
+    groups: Array.isArray(hello.groups) ? hello.groups.map(String) : [],
+    features: hello.features && typeof hello.features === "object" ? { ...hello.features } : {},
     driver: hub.hello(row.id)?.version ?? row.driver,
     online: hub.online(row.id),
-    held_by_run: hub.claimed(row.id)?.[RUN_LABEL] ?? null,
+    held_by_run: holder,
+    held_until: until === undefined ? null : until.toISOString(),
     created_at: new Date(row.createdAt).toISOString(),
     seen_at: row.seenAt === null ? null : new Date(row.seenAt).toISOString(),
   };
@@ -221,6 +245,9 @@ export interface AttachRoutesOptions {
   /** The socket's liveness timing: the protocol's unless a test gives its own. */
   readonly timing?: AttachTiming;
   readonly now?: () => number;
+  /** Told each socket taken, with its computer, before its hello: the binding's conformance run (attach-conformance.ts)
+   *  watches the raw socket to see how a driver answers a close, a drop and a frame it must refuse. */
+  readonly onSocket?: (computer: string, ws: WebSocket) => void;
 }
 
 /** The pairing routes and the attach socket over one store and one hub. */
@@ -258,11 +285,6 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     return { computer: id, token };
   }
 
-  /** The paired computers, oldest first, each with whether it is attached now. */
-  async function list(): Promise<PairedView[]> {
-    return (await paired.list()).map((row) => pairedView(row, hub));
-  }
-
   /** DELETE /v2/computers/{id}: its token revoked, a run's hold on it ended, its socket closed with 4401. */
   async function remove(id: string): Promise<void> {
     const row = await paired.get(id);
@@ -288,6 +310,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
         sockets.add(ws);
         ws.once("close", () => sockets.delete(ws));
         const attach = attachSocketOf(ws, options.timing);
+        options.onSocket?.(row.id, ws);
         void hub.accept(pairedOf(row), attach).then(async (said) => {
           if (!said.ok) return log("computer_refused", { computer: row.id, code: said.error.code, why: said.error.message });
           await paired.seen(row.id, said.value.version);
@@ -311,7 +334,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     clearTimeout(cut);
   }
 
-  return { createPairing, pair, list, remove, upgrade, close };
+  return { createPairing, pair, remove, upgrade, close };
 }
 
 export type AttachRoutes = ReturnType<typeof createAttachRoutes>;

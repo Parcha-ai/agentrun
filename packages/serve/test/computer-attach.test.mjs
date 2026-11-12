@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairingCodeOf, pairRefusal, PairTries } = await import("../dist/computer-attach.js");
+const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, PairTries } = await import("../dist/computer-attach.js");
 const { pairedEntry, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
 const { PAIRING_CODE_PATTERN, PROTOCOL_VERSION, PROVIDERS, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
 
@@ -37,6 +37,10 @@ test("the pair limit lets a source address try ten times a minute, then says how
   small.allow("192.0.2.1");
   small.allow("192.0.2.2");
   assert.deepEqual(small.allow("192.0.2.3"), { ok: true }, "a full table still lets a new address try");
+  for (let i = 1; i < PAIR_TRIES_PER_MINUTE; i++) assert.deepEqual(small.allow(i % 2 ? "192.0.2.3" : `192.0.2.${100 + i}`), { ok: true });
+  assert.equal(small.allow("192.0.2.3").ok, false, "the addresses a full table has no room for are counted together, never let through uncounted");
+  clock.now += 60_000;
+  assert.deepEqual(small.allow("192.0.2.3"), { ok: true }, "a minute on, the table has room again");
 });
 
 test("the pair body: its code in its one form, a name on one line, and the driver's hello; each wrong field named", () => {
@@ -75,11 +79,25 @@ test("a paired computer is one more provider of the registry: its id, its name, 
   const row = { id: "cmp-abc", name: "vesper-mac", hello: HELLO, driver: "0.2.0", labels: {}, createdAt: 1, seenAt: null, revokedAt: null };
   const entry = pairedEntry(row, registry);
   assert.deepEqual({ ...entry, capabilities: entry.capabilities.map((one) => one.kind) }, {
-    id: "cmp-abc", label: "vesper-mac", kinds: ["desktop"], keys: [], mounts: [], network: ["open"], metered: false, capabilities: ["desktop"], defaultImage: { desktop: "attached" },
+    id: "cmp-abc", label: "vesper-mac (macos)", kinds: ["desktop"], keys: [], mounts: [], network: ["open"], metered: false, capabilities: ["desktop"], defaultImage: { desktop: "attached" },
   });
   const phone = pairedEntry({ ...row, hello: { ...HELLO, os: "android", kind: "android", groups: ["screen", "input.touch", "apps", "ui"] } }, registry);
-  assert.deepEqual(phone.kinds, ["phone"], "a phone pairs as a phone");
+  assert.deepEqual({ kinds: phone.kinds, label: phone.label }, { kinds: ["phone"], label: "vesper-mac (android)" }, "a phone pairs as a phone, named by its os");
   assert.equal(withPaired(registry, []), registry, "none paired: the registry as it is");
   assert.deepEqual(withPaired(registry, [row]).PROVIDERS.map((one) => one.id), [...PROVIDERS.map((one) => one.id), "cmp-abc"]);
   assert.throws(() => pairedProvider(row, undefined), (error) => error.code === "computer_unavailable" && error.message === ONE_PROCESS_WORDS);
+});
+
+test("a paired computer is listed as its hello says, the live one's while attached, with the run that holds it and the deadline its hold ends by", () => {
+  const row = { id: "cmp-abc", name: "desk", hello: { ...HELLO, os: "windows", osVersion: "11" }, driver: "0.2.0", labels: {}, createdAt: 0, seenAt: 1000, revokedAt: null };
+  const live = { ...row.hello, version: "0.2.1", osVersion: "11 24H2", device: { maker: "Acme", model: "Book" }, screen: { width: 1920, height: 1080, scale: 1 }, features: { "ui.tree": { off: "no grant" } } };
+  const deadline = new Date(5000);
+  const hub = (attached, holder) => ({ online: () => attached, hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
+  assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
+    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
+    driver: "0.2.0", online: false, held_by_run: null, held_until: null, created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
+  });
+  const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
+  assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features: live.features, driver: "0.2.1", online: true });
+  assert.deepEqual({ held_by_run: held.held_by_run, held_until: held.held_until }, { held_by_run: "run-1", held_until: deadline.toISOString() });
 });
