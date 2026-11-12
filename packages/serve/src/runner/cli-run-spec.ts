@@ -19,9 +19,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
-import { noNewPrivsPrefix } from "@parcha/pi-durable-disk/internals";
 import type { AdapterNeeds } from "../adapters.js";
-import { confineOf, standsIn, thinkingFor } from "../adapters.js";
+import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -65,6 +64,7 @@ import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { githubAppAccess } from "./github-app.js";
+import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 
@@ -88,6 +88,8 @@ type RevisionBody = {
   readonly model?: string;
   readonly approvals?: Approvals;
   readonly skills?: Record<string, unknown>;
+  /** What the server checks out in the run's folder before its first turn (pr-checkout.ts). */
+  readonly checkout?: Checkout;
 };
 
 /** The run's model and the catalog that prices it, as main chooses a CLI run's (app.ts wireModels and runModels): on the
@@ -259,7 +261,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // named for the run and this claim's epoch; revoke at the run's end (below). mountControl (a test's loopback control-plane
     // fake) is spread into the mount, so no test reaches the real control plane. TODO(k2 lazy mint): the mint moves into
     // computerForClaim (a mounting computer only), with the ttl the run's lifetime bound (not this fixed figure). As pi does.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one.
+    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go. The claim's Archil keys go
   // from memory last, once nothing more reads the disk.
   holds.hold({ archil, keys: archil });
@@ -268,17 +271,21 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ? await openRunWorkspace({ mode: 1, agentId: runRow.agentId, runId: claim.runId, data: deps.data, log })
     : await openRunWorkspace({ mode: 2, agentId: runRow.agentId, runId: claim.runId, archil, log });
   holds.hold({ ws });
+  // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts).
+  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
+  holds.hold({ checkout });
   if (launch.files?.length) await copyRunFiles(deps.data, claim.runId, ws.workspace, launch.files);
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
-    // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does.
+    // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does, with
+    // what became of the agent's own computer said on the run's timeline.
     // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
     // whose computer is a browser is refused in words at its claim, before anything is made.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
 
@@ -345,7 +352,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const env = cliRunEnv(deps.env, deps.data, claimed);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
-  // (pi-durable-disk's noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
+  // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
   // or a command it runs reaches grants nothing; none on macOS. Where setpriv is not usable the run is refused, in pi's words.
   const confine = confineOf(noNewPrivsPrefix());
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
@@ -487,15 +494,15 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
         }
       }
       // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
-      // own MCP as the loop wraps it.
+      // own MCP as the loop wraps it. Its model nodes run on the session's one model: what each node's trace says it ran on.
       gate.learn(workflows);
-      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}) });
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), modelName: () => chosen.model.modelId });
     }
   }
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
-    system: [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line)),
+    system: [environmentLine(), checkout?.note, instructions, guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
     tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),

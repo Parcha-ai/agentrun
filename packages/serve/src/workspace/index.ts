@@ -39,5 +39,6 @@ export {
 } from "./computer-deps.js";
 export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type ImageWait, type OpenComputerView, type ProviderMakers, type ViewEnd } from "./computer-for-claim.js";
 export { JANITOR_EVERY_MS, type JanitorDeps, type ProviderSweep, startJanitor, sweepServerComputers } from "./computer-janitor.js";
+export { agentComputerOf, agentComputerView, ownerGoneOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
 export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";

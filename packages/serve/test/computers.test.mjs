@@ -91,6 +91,26 @@ test("a provider that offers images by name lists them for the kind, its default
   assert.equal("images" in providerOf(view, "desktop", "e2b"), false);
 });
 
+test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready, and a kind only such computers serve is not offered, in words; a host list leaves them as they are", async (t) => {
+  const keys = { PHONE_HARNESS_API_KEY: "fake", BROWSERBASE_API_KEY: "fake", BROWSERBASE_PROJECT_ID: "project", KERNEL_API_KEY: "fake" };
+  const none = await (await setup(t, { env: { ...keys, AGENTRUN_BOX_ALLOW: "none" } })).routes.view();
+  for (const [kind, id, label] of [["phone", "phone-harness", "Phone harness"], ["browser", "browserbase", "Browserbase"], ["browser", "kernel", "Kernel"]]) {
+    const provider = providerOf(none, kind, id);
+    assert.equal(provider.ready, false, `${id} is never usable on a server with no network`);
+    assert.equal(provider.why, `${label} needs a network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network, or set AGENTRUN_BOX_ALLOW to a host list`);
+    assert.equal(provider.network, "needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none");
+  }
+  for (const kind of ["phone", "browser"]) {
+    assert.equal(kindOf(none, kind).offered, false, `${kind}: every provider of it needs a network`);
+    assert.equal(kindOf(none, kind).why, `every provider of a ${kind} computer needs a network, and this server's AGENTRUN_BOX_ALLOW is none (no network)`);
+  }
+  // A computer with no network of its own, or one that takes the list, is as it was.
+  assert.deepEqual([kindOf(none, "sandbox").offered, providerOf(none, "sandbox", "docker").ready, providerOf(none, "desktop", "orgo").network], [true, true, "no network, so this server's allow-list isn't offered"]);
+  // A host list: the vendor's own network runs, and Settings says the list doesn't reach it.
+  const listed = await (await setup(t, { env: { ...keys, AGENTRUN_BOX_ALLOW: "pypi.org" } })).routes.view();
+  assert.deepEqual([providerOf(listed, "phone", "phone-harness").ready, kindOf(listed, "phone").offered, providerOf(listed, "phone", "phone-harness").network], [true, true, "the vendor's own network; this server's allow-list doesn't apply"]);
+});
+
 test("Mode 2 today: Docker's sandbox can't mount the owner's disk; Daytona, Modal and E2B mount it from Archil, so the sandbox is offered, each waiting on its own key; a desktop, phone or browser is", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
@@ -349,20 +369,28 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   const view = await routes.view();
   const daytona = providerOf(view, "sandbox", "daytona").gpu;
   assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.mounts], [["H100"], 1, true, true, "earth", { cpus: 16, memoryMb: 102400, diskMb: 409600 }, []]);
-  assert.match(daytona.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which daytona-gpu cannot take: its user is not root and it has no Archil client");
+  // Mode 2 mounts the run's folder from Archil, which no GPU computer can yet: why, and what to use instead.
+  // Each provider's own reason, from its descriptor; never a field of the view.
+  const noFolder = (label) =>
+    ({
+      Daytona: "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.",
+      Modal: "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.",
+    })[label];
+  assert.equal("unmounted" in daytona, false, "the reason is in why, not a field of its own");
+  assert.equal(daytona.why, noFolder("Daytona"));
   const modal = providerOf(view, "sandbox", "modal").gpu;
   assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, []]);
-  assert.match(modal.why, /^a GPU computer here takes no archil mount: it is not proven/, "Mode 2 mounts the run's folder from Archil, which Modal's GPU computers have not proven");
+  assert.equal(modal.why, noFolder("Modal"));
   assert.equal(providerOf(view, "sandbox", "docker").gpu, undefined, "Docker declares no GPU");
   assert.equal(providerOf(view, "desktop", "e2b").gpu, undefined, "only a sandbox takes GPUs");
 
   await routes.saveKeys("daytona", { DAYTONA_API_KEY: "good-d" });
   await routes.saveKeys("modal", { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" });
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }), /^Daytona can't give this agent's computer its GPUs: a GPU computer here takes no archil mount: it is not proven/);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }), `${noFolder("Daytona")} (Settings → Computers)`);
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), "Daytona can't give this agent's computer its GPUs: gpu.type \"T4\" is not one this provider offers: H100 (Settings → Computers)");
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), /gpu.count 2 is not a whole number from 1 to 1/);
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona" }), undefined, "a Daytona sandbox with no GPU is as before");
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), /^Modal can't give this agent's computer its GPUs: a GPU computer here takes no archil mount: it is not proven/);
+  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }), `${noFolder("Modal")} (Settings → Computers)`);
   assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "a Modal sandbox with no GPU is as before");
   const local = (await setup(t)).routes;
   assert.match(await local.claimRefusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^Docker can't give this agent's computer its GPUs: this provider offers no GPU/);

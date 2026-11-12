@@ -205,9 +205,11 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
     const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
     if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
     traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
-      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown };
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; model?: unknown; tier?: unknown };
       if (typeof one.label !== "string" || typeof one.status !== "string") return [];
-      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0 }];
+      // A model node's model and tier, each through the run's cut as the label is.
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0,
+        ...(typeof one.model === "string" ? { model: said(one.model) } : {}), ...(typeof one.tier === "string" ? { tier: said(one.tier) } : {}) }];
     }));
   }
   if (!traces.size) return rows;

@@ -57,6 +57,7 @@ test("Orgo desktops: create({ os }) builds the Windows or the macOS provider, da
 		groups: ["exec", "files", "screen", "input.pointer", "input.keys"],
 		maxLifetimeMs: 720 * HOUR,
 		release: ["delete"],
+		persistence: { keepsState: true, resume: false },
 	});
 	const mac = setup("macos").provider;
 	assert.equal(mac.capabilities().os, "macos");
@@ -188,6 +189,30 @@ test("Orgo Windows connect: hello is the desktop's; screen.shot is a PNG of the 
 	assert.equal((await client.call("screen.read", { id: "nope", offset: 0 })).error.code, "not_found");
 	await connected.value.close();
 	assert.equal((await client.call("ping", {})).error.code, "gone");
+});
+
+test("Orgo Windows screen.shot: a connection closed while the region deflates holds no bytes and answers gone", async () => {
+	const base = fakeOrgoDesktop({ os: "windows" });
+	let served = false;
+	const fetch = async (...args) => {
+		const response = await base.fetch(...args);
+		if (String(args[0]).includes("/screenshot")) served = true;
+		return response;
+	};
+	const provider = create({ os: "windows", apiKey: KEY, workspaceId: WORKSPACE, apiUrl: API, fetch, timeouts: TIMEOUTS });
+	const { ref } = seeded({ fake: base });
+	const connected = await provider.connect(ref);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	const { client } = connected.value;
+	// Once Orgo's screenshot is read the region is cut synchronously, then deflated off the loop: the first turn the loop
+	// gets back is inside that deflate, and that is where the connection closes.
+	const shot = client.call("screen.shot", { region: [0, 0, 1280, 720] });
+	while (!served) await new Promise((resolve) => setImmediate(resolve));
+	await new Promise((resolve) => setImmediate(resolve));
+	await connected.value.close();
+	const answer = await shot;
+	assert.equal(answer.ok, false);
+	assert.equal(answer.error.code, "gone");
 });
 
 test("Orgo Windows input: a down that first releases a press still held, cancelled while that release waits on Orgo, says aborted, not bad input", async () => {
@@ -387,7 +412,18 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.deepEqual((await call("files.write", { path: `${dir}\\big.bin`, data: big.toString("base64") })).value, { size: big.length });
 	assert.ok(fake.api.requests.some(({ path, form }) => path === "/files/upload" && form?.get("destPath") === "C:\\ProgramData\\agentrun\\staging"), "a large write goes through the upload");
 	assert.deepEqual(fake.boxOf(ref.id).files.get(`${dir}\\big.bin`), big);
-	assert.ok(![...fake.boxOf(ref.id).files.keys()].some((path) => path.startsWith("C:\\ProgramData\\agentrun\\staging\\")), "the staged copy is gone");
+	const staged = () => [...fake.boxOf(ref.id).files.keys()].filter((path) => path.startsWith("C:\\ProgramData\\agentrun\\staging\\"));
+	assert.deepEqual(staged(), [], "the staged copy is gone");
+	// A large write that fails leaves no uploaded copy: one the script refuses (onto a folder, under a missing folder), and
+	// one whose script call never answers (Orgo's 503), which the provider removes itself.
+	assert.equal((await call("files.write", { path: dir, data: big.toString("base64") })).error.code, "is_dir");
+	assert.equal((await call("files.write", { path: `${dir}\\none\\big.bin`, data: big.toString("base64") })).error.code, "not_found");
+	fake.boxOf(ref.id).notReady = 1;
+	assert.equal((await call("files.write", { path: `${dir}\\lost.bin`, data: big.toString("base64") })).ok, false);
+	// A script cut off by Orgo's time limit answers ok with a timeout: its uploaded copy is removed the same way.
+	fake.boxOf(ref.id).filesTimeout = true;
+	assert.equal((await call("files.write", { path: `${dir}\\slow.bin`, data: big.toString("base64") })).ok, false);
+	assert.deepEqual(staged(), [], "no failed write leaves its uploaded copy");
 	assert.equal((await call("files.stat", { path: `${dir}\\a.txt` })).value.type, "file");
 	assert.equal((await call("files.stat", { path: dir })).value.type, "dir");
 	assert.equal((await call("files.stat", { path: `${dir}\\none` })).error.code, "not_found");
@@ -454,9 +490,20 @@ test("Orgo Windows files: write and read back (inline, and through the upload pa
 	assert.deepEqual([decode((await call("files.read", { path: `${dir}\\b.txt` })).value.data), box.files.has(`${dir}\\held.txt`)], ["new", false]);
 	assert.equal((await call("files.remove", { path: `${dir}\\sub` })).error.code, "invalid");
 	assert.deepEqual((await call("files.remove", { path: `${dir}\\sub`, recursive: true })).value, {});
-	assert.equal((await call("files.read", { path: `${dir}\\sub\\only.txt` })).error.code, "not_found");
+	// A .NET file error says its own code, not the wrapper's: a missing file is not_found, one its ACL denies is denied,
+	// each in the inner error's words; a bad request is invalid.
+	const missing = await call("files.read", { path: `${dir}\\sub\\only.txt` });
+	assert.equal(missing.error.code, "not_found");
+	assert.match(missing.error.message, /Could not find file/);
+	assert.doesNotMatch(missing.error.message, /Exception calling/);
+	await call("files.write", { path: `${dir}\\locked.txt`, data: Buffer.from("x").toString("base64") });
+	fake.boxOf(ref.id).denied.add(`${dir}\\locked.txt`);
+	const denied = await call("files.read", { path: `${dir}\\locked.txt` });
+	assert.equal(denied.error.code, "denied", JSON.stringify(denied));
+	assert.match(denied.error.message, /Access to the path .* is denied/);
 	assert.equal((await call("files.read", { path: dir })).error.code, "is_dir");
 	assert.equal((await call("files.read", { path: "relative\\x" })).error.code, "invalid");
+	assert.equal((await call("files.read", { path: `${dir}\\locked.txt`, offset: -1 })).error.code, "invalid", "a bad offset is a bad request");
 	assert.equal((await call("tar.pull.begin", { path: dir })).error.code, "unsupported");
 	assert.equal((await call("process.list", {})).error.code, "unsupported");
 });

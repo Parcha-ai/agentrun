@@ -7,6 +7,9 @@ export type RunnerStore = Pick<Store, "claim" | "renew" | "renewMany" | "release
   /** The runs' live view (run_live): the runner's live ticker writes each run's held state there. A store without it (a
    *  test's) has no live view. */
   readonly live?: Store["live"];
+  /** The server's settings, for the one the runner removes at a run's end (browser-wait-ended.ts). A store without it (a
+   *  test's) keeps none. */
+  readonly settings?: Store["settings"];
 };
 
 /** The store's fence: a write under an epoch that moved. */
