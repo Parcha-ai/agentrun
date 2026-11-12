@@ -705,6 +705,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
+| `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
 A desktop's and a phone's tools are one set over the computer's groups. With the `ui` group, `computer_observe` returns
 the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
@@ -712,8 +713,11 @@ set, click, type, key, scroll, drag, nav), each step saying its route and whethe
 ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
 `computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
 network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
-declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`.
-| `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
+declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. On pi, a run
+with a desktop or a phone also has pi's code mode (`codemode`), whose scripts call the run's tools and have the same
+`computer` bound; the call is held to the kind's setting. In Codex's code mode, a script's call of a computer tool
+answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
