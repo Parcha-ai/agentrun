@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: breaking
+---
+The computer protocol is 0.2: a new `ui` group sees one app's window as named elements (`ui.observe`) and acts on it by short lists of steps that settle before they answer (`ui.act`), and `hello` says the screen's size and what the computer can and cannot do (`hello.screen`, `hello.features`). Breaking: the `apps.ui_tree` group and method are gone, replaced by the `ui` group; read a screen's elements with `ui.observe`, whose nodes are a flat list with refs, ARIA roles and bounds in window points, in place of the nested tree.
+- `ui.act` steps: `press`, `set`, `perform`, `click`, `type`, `key`, `nav`, `scroll` and `drag`, by ref or at a point read from a state, with an optional `expect` checked on the computer. Each step answers the route that ran (`semantic`, `page`, `background`, `foreground`) and whether a readback verified it. A ref whose element is gone, or a point whose window changed under it, is refused with the new error kind `stale`.
+- `hello.features` names what is on, or off with the reason (`ui.image`, `ui.background`, `ui.foreground`, `ui.page`, `ui.nav`, `apps.background`). `apps.launch` takes `url` (a deep link) and `background`.
+- `UiEngine` implements the group's rules over a `UiSource`; the phone harness's Android answers `ui` through it, over uiautomator and adb's input (foreground only, unverified).
+- agentrun-serve's phone tree tool reads `ui.observe`; its nodes' roles are ARIA names (`button`, `textbox`) in place of Android class names.

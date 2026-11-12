@@ -98,7 +98,7 @@ test("a sandbox: today's computer list, attached; no kind tools", async () => {
 test("a phone: the runner's folder and shell, and the phone's tools on its touch and apps calls", async () => {
   const root = scratch();
   const phone = fakeDesktop(root);
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree", "input.keys"] }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui", "input.keys"] }, { mode: 2, context: ctx });
   assert.deepEqual(names(run), [...LOCAL, ...PHONE]);
   const tools = run.hostTools(PHONE);
   assert.equal((await call(tools, "phone_screen", {})).images[0].data, PNG.toString("base64"));
@@ -116,80 +116,84 @@ test("a phone: the runner's folder and shell, and the phone's tools on its touch
   ]);
 });
 
-test("a phone that does not declare apps.ui_tree or input.keys (an iPhone today) is offered neither phone_tree nor phone_key, and a call of either is refused in words", async () => {
+test("a phone that does not declare ui or input.keys (an iPhone today) is offered neither phone_tree nor phone_key, and a call of either is refused in words", async () => {
   const root = scratch();
   const iphone = fakeDesktop(root);
   const run = await runTools(localWorkspace(root), { kind: "phone", computer: iphone, groups: PHONE_GROUPS }, { mode: 2, context: ctx });
   assert.deepEqual(names(run), [...LOCAL, ...PHONE.filter((name) => name !== "phone_tree" && name !== "phone_key")]);
   assert.deepEqual(await run.registry.invoke("phone_tree", {}, { hands: run.hands, callId: "t", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its UI tree" });
   assert.deepEqual(await run.registry.invoke("phone_key", { key: "back" }, { hands: run.hands, callId: "k", signal: new AbortController().signal }), { text: "", error: "this phone does not offer its keys" });
-  assert.ok(!iphone.methods().includes("apps.ui_tree") && !iphone.calls.some(([method]) => method === "input.actions"), "nothing reached the phone");
+  assert.ok(!iphone.methods().includes("ui.observe") && !iphone.calls.some(([method]) => method === "input.actions"), "nothing reached the phone");
   // One declared, the other not: only that one is offered.
-  const android = await runTools(localWorkspace(scratch()), { kind: "phone", computer: fakeDesktop(root), groups: [...PHONE_GROUPS, "apps.ui_tree"] }, { mode: 2, context: ctx });
+  const android = await runTools(localWorkspace(scratch()), { kind: "phone", computer: fakeDesktop(root), groups: [...PHONE_GROUPS, "ui"] }, { mode: 2, context: ctx });
   assert.deepEqual(names(android).filter((name) => name === "phone_tree" || name === "phone_key"), ["phone_tree"]);
 });
 
 test("an Android list row (a clickable layout whose title sits on a child text) is named by its first inner text, marked so; the search bar by its inner text or label", async () => {
   const root = scratch();
   const phone = fakeDesktop(root);
-  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
-  const text = (value, bounds) => node("android.widget.TextView", { text: value, bounds });
-  // Settings' top screen, as Android 15 gives it: each row a clickable LinearLayout, its title and summary child TextViews.
-  const row = (y, title, summary) => node("android.widget.LinearLayout", { bounds: [0, y, 720, 150], clickable: true, children: [
-    node("android.widget.ImageView", { bounds: [30, y + 45, 60, 60] }),
-    node("android.widget.RelativeLayout", { bounds: [120, y + 20, 560, 110], children: [text(title, [120, y + 20, 560, 50]), text(summary, [120, y + 75, 560, 40])] }),
-  ] });
-  phone.overrides["apps.ui_tree"] = () => ({
-    root: node("android.widget.FrameLayout", {
-      bounds: [0, 0, 720, 1600],
-      children: [
-        node("android.widget.LinearLayout", { id: "com.android.settings:id/search_action_bar", bounds: [20, 200, 680, 100], clickable: true, children: [node("android.widget.TextView", { label: "Search settings", bounds: [100, 220, 400, 60] })] }),
-        row(550, "Network & internet", "Mobile, Wi-Fi, hotspot"),
-        row(700, "Connected devices", "Bluetooth, pairing"),
-        row(850, "Apps", "Default apps, app management"),
-      ],
-    }),
-    nodes: 20,
+  let refs = 0;
+  // A flat ui.observe list: a node after its parent, the parent named by ref.
+  const flat = (role, extra, kids = []) => {
+    const ref = `@e${++refs}`;
+    return [{ ref, role, ...extra }, ...kids.flatMap((kid) => kid.map((n) => (n.parent ? n : { ...n, parent: ref })))];
+  };
+  const text = (value, bounds) => flat("text", { name: value, bounds });
+  // Settings' top screen: each row a button (an unnamed tappable group) whose title and summary sit on child texts.
+  const row = (y, title, summary) => flat("button", { actions: ["ACTION_CLICK"], bounds: [0, y, 720, 150] }, [
+    flat("image", { bounds: [30, y + 45, 60, 60] }),
+    flat("group", { bounds: [120, y + 20, 560, 110] }, [text(title, [120, y + 20, 560, 50]), text(summary, [120, y + 75, 560, 40])]),
+  ]);
+  phone.overrides.hello = () => ({ screen: { width: 360, height: 800, scale: 2 } });
+  phone.overrides["ui.observe"] = () => ({
+    state: "s1",
+    app: { id: "com.android.settings", name: "Settings" },
+    window: { id: "w1", bounds: [0, 0, 360, 800] },
+    // Window points: half the screenshot's pixels at scale 2.
+    nodes: flat("generic", { bounds: [0, 0, 360, 800] }, [
+      flat("group", { id: "com.android.settings:id/search_action_bar", actions: ["ACTION_CLICK"], bounds: [10, 100, 340, 50] }, [flat("text", { name: "Search settings", bounds: [50, 110, 200, 30] })]),
+      row(550, "Network & internet", "Mobile, Wi-Fi, hotspot").map((n) => ({ ...n, bounds: n.bounds.map((v) => v / 2) })),
+    ]),
     truncated: false,
   });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree"] }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui"] }, { mode: 2, context: ctx });
   const answer = await call(run.hostTools(["phone_tree"]), "phone_tree", {});
   assert.deepEqual(answer.text.split("\n"), [
-    "4 nodes you can tap or type into, of 20 on the screen. Coordinates are a phone_screen screenshot's pixels.",
-    '- LinearLayout "Search settings" (inner text) [com.android.settings:id/search_action_bar]: center (360, 250), bounds 20,200 680x100',
-    '- LinearLayout "Network & internet" (inner text): center (360, 625), bounds 0,550 720x150',
-    '- LinearLayout "Connected devices" (inner text): center (360, 775), bounds 0,700 720x150',
-    '- LinearLayout "Apps" (inner text): center (360, 925), bounds 0,850 720x150',
+    "2 nodes you can tap or type into, of 8 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- group "Search settings" (inner text) [com.android.settings:id/search_action_bar]: center (360, 250), bounds 20,200 680x100',
+    '- button "Network & internet" (inner text): center (360, 625), bounds 0,550 720x150',
   ]);
 });
 
-test("a phone's tree is its apps.ui_tree, flattened to the nodes a model can tap or type into; its keys are back and home as the phone's buttons, enter as a key", async () => {
+test("a phone's tree is its ui.observe, the nodes a model can tap or type into, in screenshot pixels (points times the screen's scale); its keys are back and home as the phone's buttons, enter as a key", async () => {
   const root = scratch();
   const phone = fakeDesktop(root);
-  const node = (role, extra) => ({ role, enabled: true, children: [], ...extra });
-  phone.overrides["apps.ui_tree"] = () => ({
-    root: node("android.widget.FrameLayout", {
-      bounds: [0, 0, 720, 1280],
-      children: [
-        node("android.widget.EditText", { id: "com.example.mail:id/to", text: "", label: "To", bounds: [20, 150, 680, 80], clickable: true, focused: true }),
-        node("android.widget.LinearLayout", { bounds: [0, 1100, 720, 180], children: [node("android.widget.Button", { text: "Send", bounds: [500, 1150, 200, 80], clickable: true })] }),
-        node("android.widget.TextView", { text: "New message", bounds: [20, 60, 400, 60] }),
-        node("android.widget.Button", { text: "Disabled", bounds: [20, 1150, 200, 80], clickable: true, enabled: false }),
-      ],
-    }),
-    nodes: 6,
+  phone.overrides.hello = () => ({ screen: { width: 360, height: 640, scale: 2 } });
+  phone.overrides["ui.observe"] = () => ({
+    state: "s1",
+    app: { id: "com.example.mail", name: "Mail" },
+    window: { id: "w1", bounds: [0, 0, 360, 640] },
+    // Window points; the screenshot is 720x1280 pixels.
+    nodes: [
+      { ref: "@e1", role: "generic", bounds: [0, 0, 360, 640] },
+      { ref: "@e2", role: "textbox", id: "com.example.mail:id/to", name: "To", value: "", bounds: [10, 75, 340, 40], parent: "@e1", flags: ["focused"] },
+      { ref: "@e3", role: "group", bounds: [0, 550, 360, 90], parent: "@e1" },
+      { ref: "@e4", role: "button", name: "Send", bounds: [250, 575, 100, 40], parent: "@e3" },
+      { ref: "@e5", role: "text", name: "New message", bounds: [10, 30, 200, 30], parent: "@e1" },
+      { ref: "@e6", role: "button", name: "Disabled", bounds: [10, 575, 100, 40], parent: "@e1", flags: ["disabled"] },
+    ],
     truncated: false,
   });
-  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "apps.ui_tree", "input.keys"] }, { mode: 2, context: ctx });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui", "input.keys"] }, { mode: 2, context: ctx });
   const tools = run.hostTools(["phone_tree", "phone_key"]);
   assert.deepEqual(await call(tools, "phone_tree", {}), { isError: false, text: [
     "2 nodes you can tap or type into, of 6 on the screen. Coordinates are a phone_screen screenshot's pixels.",
-    '- EditText "To" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
-    '- Button "Send": center (600, 1190), bounds 500,1150 200x80',
+    '- textbox "To" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
+    '- button "Send": center (600, 1190), bounds 500,1150 200x80',
   ].join("\n") });
   for (const key of ["back", "home", "enter"]) await call(tools, "phone_key", { key });
-  assert.deepEqual(phone.calls.filter(([method]) => method === "input.actions" || method === "apps.ui_tree"), [
-    ["apps.ui_tree", {}],
+  assert.deepEqual(phone.calls.filter(([method]) => method === "input.actions" || method === "ui.observe"), [
+    ["ui.observe", {}],
     ["input.actions", { actions: [{ type: "button", name: "back" }] }],
     ["input.actions", { actions: [{ type: "button", name: "home" }] }],
     ["input.actions", { actions: [{ type: "key", keys: ["enter"] }] }],
