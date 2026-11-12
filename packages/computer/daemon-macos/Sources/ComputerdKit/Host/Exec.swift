@@ -11,22 +11,19 @@ import Glibc
 public enum Exec {
 	static let killGrace: Double = 2000
 
-	// posix_spawn's opaque types are a pointer on Darwin and a struct on Glibc; each starts empty, for its init call.
-	static func blankActions() -> posix_spawn_file_actions_t {
-		#if canImport(Darwin)
-		nil
-		#else
-		posix_spawn_file_actions_t()
-		#endif
-	}
-
-	static func blankAttr() -> posix_spawnattr_t {
-		#if canImport(Darwin)
-		nil
-		#else
-		posix_spawnattr_t()
-		#endif
-	}
+	// posix_spawn's opaque types: Darwin's calls take an optional pointer, Glibc's a struct. Each starts empty, for its
+	// init call.
+	#if canImport(Darwin)
+	typealias SpawnActions = posix_spawn_file_actions_t?
+	typealias SpawnAttr = posix_spawnattr_t?
+	static func blankActions() -> SpawnActions { nil }
+	static func blankAttr() -> SpawnAttr { nil }
+	#else
+	typealias SpawnActions = posix_spawn_file_actions_t
+	typealias SpawnAttr = posix_spawnattr_t
+	static func blankActions() -> SpawnActions { posix_spawn_file_actions_t() }
+	static func blankAttr() -> SpawnAttr { posix_spawnattr_t() }
+	#endif
 
 	public static func run(_ p: ExecRunParams, clock: any Clock = SystemClock()) async throws -> ExecRunResult {
 		guard let program = p.argv.first, !program.isEmpty else { throw RPCError.invalid("argv needs at least a program") }
