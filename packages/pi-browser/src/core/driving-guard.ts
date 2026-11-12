@@ -13,7 +13,7 @@ export const PERSON_HAD_UNUSED = "This call waited while the person had the brow
 
 /** The mark (in a call's result details) of an act the person's take made stale: the person drove the session through the
  *  live view while the call waited, so the snapshot its element ids came from no longer stands. Its timeline row reads
- *  neutral, in plain words (pi-durable-agent's timeline), never as a failure. */
+ *  neutral, in plain words (serve's timeline), never as a failure. */
 export const PAGE_CHANGED_WHILE_HELD = "page_changed_while_held";
 /** Told to the model by such an act: nothing was done, and its next step is a snapshot. */
 export const PAGE_CHANGED_FOR_MODEL = "The person changed the page while they had the browser, so this action was not done. Take a snapshot first, then act on the page as it is now.";

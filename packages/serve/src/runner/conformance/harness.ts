@@ -741,6 +741,8 @@ const CASES: readonly Case[] = [
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
       // Why it stopped is on the run row, staged in the end commit: one place for every harness.
       assert.match(row.summary ?? "", /stopped/, `the run says why it stopped: ${JSON.stringify(row.summary)}`);
+      // A person's stop, told from a cancel in the store: its turn is over, not the run (a message reopens it).
+      assert.equal(row.outcome, "stopped", `the run's outcome says a person stopped it: ${JSON.stringify(row)}`);
       assert.ok(row.endedAt !== null, "its end commit stamped ended_at");
       assert.ok((await w.commandRow(stop.id)).takenAt !== null, "the stop row is taken");
       // The live timeline: one row says the person stopped it, worded the same on every harness, and nothing a person
@@ -765,8 +767,9 @@ const CASES: readonly Case[] = [
       const { calls, messages } = await w.read();
       assert.ok(calls.every((call) => call.status !== "pending"), `no call left pending: ${JSON.stringify(calls)}`);
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
-      // The end main's cancel writes: stopped, its summary "cancelled", staged in the end commit.
+      // The end main's cancel writes: stopped, its summary "cancelled" and its outcome 'cancelled', staged in the end commit.
       assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(row.outcome, "cancelled", `the run's outcome says it was cancelled: ${JSON.stringify(row)}`);
       const taken = await w.commandRow(cancel.id);
       assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
       await assert.rejects(sendCommand(w.server, RUN, { kind: "steer", body: { text: "go on" } }), RunFinal, "a cancelled run takes no more messages");
@@ -783,6 +786,7 @@ const CASES: readonly Case[] = [
       const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
       const row = await w.ended("stopped");
       assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(row.outcome, "cancelled", `the run's outcome says it was cancelled: ${JSON.stringify(row)}`);
       assert.equal(ran.asked, 0, "the asked call never ran");
       const taken = await w.commandRow(cancel.id);
       assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);

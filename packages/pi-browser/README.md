@@ -10,7 +10,7 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.5.0 exactly (its
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=24.22.3`, pi 1.5.0 exactly (its
 pi-durable and chord peers). ESM only: the
 package has `import` entries and no `require` entry.
 
@@ -284,7 +284,7 @@ The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly. CI te
   sealed: no inference, no cache, and no trace endpoint, so no trace is exported. Stagehand attaches one client to a browser
   at a time: closing a driver disconnects it, so the next attach is allowed.
 - `/driver/cdp`: `cdpDriver()`, the driver of every AgentRun browser computer (Browserbase's, Kernel's, or the computer
-  package's `local` provider's Chrome on this machine), over its CDP URL. It is raw CDP: no Stagehand, and nothing loaded into the browser. `snapshot` is Chrome's
+  package's `local-chrome` provider's Chrome on this machine), over its CDP URL. It is raw CDP: no Stagehand, and nothing loaded into the browser. `snapshot` is Chrome's
   accessibility tree with the same "frame-node" ids (`[0-42]`: the frame's place, then Chrome's backend node id). `run`
   takes actions only. Each action is scrolled into view, hit-tested at its centre, and pressed and released there, or
   typed with inserted text and a real last key. Each answers one line: `[ok] click [0-42] button "Add" -> page changed`
