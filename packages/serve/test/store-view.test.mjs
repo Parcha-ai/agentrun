@@ -654,12 +654,12 @@ test("a value handed to the run (its agent's saved sign-in), straddling the old 
   assert.equal(served.slice(head.length, served.length - tail.length), "[redacted]", "the handed value's place");
 });
 
-test("a cancelled run (the store's stopped state) reads cancelled, with no result, error or review", async (t) => {
+test("a cancelled run (the store's stopped state, outcome 'cancelled') reads cancelled, with no result, error or review", async (t) => {
   const { store } = await storeOn(t);
   await agent(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: {}, title: "Stop me", place: { mode: "runner" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(claim, { state: "stopped", summary: "cancelled", endedAt: T0 + 2_000 });
+  await store.runs.update(claim, { state: "stopped", summary: "cancelled", outcome: "cancelled", endedAt: T0 + 2_000 });
 
   const view = await viewOverStore(store, "run-1", deps);
   assert.equal(view.status, "cancelled");

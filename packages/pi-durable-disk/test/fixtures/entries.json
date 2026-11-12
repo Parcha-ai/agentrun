@@ -122,6 +122,7 @@
       "confineTestHooks",
       "doorProof",
       "newestSettledInput",
+      "noNewPrivsPrefix",
       "processTable",
       "profilePragmas",
       "runPath",

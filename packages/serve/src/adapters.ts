@@ -109,6 +109,10 @@ export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
  *  adapter (src/harness-opencode) takes it only under its own guard (AGENTRUN_OPENCODE_STANDIN=1, under a test runner). */
 export const OPENCODE_STANDIN_ENV = "AGENTRUN_SERVE_OPENCODE_STANDIN";
 
+/** Whether a test's stand-in runs in place of harness `id`'s own CLI in `env` (CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV):
+ *  its adapter then loads nothing installed, so a run of it needs no first-use install. */
+export const standsIn = (id: string, env: NodeJS.ProcessEnv): boolean => (id === codexFacts.id && Boolean(env[CODEX_STANDIN_ENV])) || (id === openCodeFacts.id && Boolean(env[OPENCODE_STANDIN_ENV]));
+
 /** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
  *  is never taken from one (runs.ts lastLogLine). */
 export const HARNESS_LOG_EVENT = "harness";
@@ -180,6 +184,13 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
  *  which its own check took: skills.ts). */
 export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string> };
+
+/** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
+ *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
+export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
+  if (!prefix.length) return undefined;
+  return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
+}
 
 
 /** The model key a run on `harness` (one on an adapter, by its wire's route) of `model` (the revision's; none, the host's default for the

@@ -1,13 +1,13 @@
 {
   "name": "agentrun-dsl-workspace",
   "private": true,
-  "version": "0.1.0-beta.34",
+  "version": "0.1.0-beta.35",
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "scripts": {
     "build": "node scripts/check-node.mjs && node scripts/build-console.mjs && node scripts/build-workspaces.mjs",

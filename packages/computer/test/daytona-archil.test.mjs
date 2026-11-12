@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { ARCHIL_MOUNT_LABEL, DaytonaProvider, EPOCH_LABEL, readBackOf, RUN_LABEL } from "../dist/index.js";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ARCHIL_MOUNT_LABEL, EPOCH_LABEL, readBackOf, RUN_LABEL } from "../dist/index.js";
 import { API, ARCHIL_HELPER, fakeDaytona, KEY, scriptOf, statusText } from "./fake-daytona.mjs";
 
 const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, goneMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };

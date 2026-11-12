@@ -17,7 +17,7 @@ keyless example, and the install lines.
 ## Requirements
 
 - Linux with `setpriv` (util-linux), or macOS for development ([On macOS](#on-macos)). Windows is not supported.
-- Node 22.19 or later, to run the package and its unit tests.
+- Node 24.22.3 or later, to run the package and its unit tests.
 - `@earendil-works/pi-durable` and `@earendil-works/chord`, `1.5.0` exactly, as peer dependencies. CI runs its whole suite on 1.5.0.
 
 A run lives on a directory of one machine ([A run on a local directory](#a-run-on-a-local-directory)). Placing a run on
@@ -362,4 +362,4 @@ npm test            # unit tests: no disk, no network, no model
 npm run typecheck
 ```
 
-The package and its unit tests run on Node 22.19 or later.
+The package and its unit tests run on Node 24.22.3 or later.

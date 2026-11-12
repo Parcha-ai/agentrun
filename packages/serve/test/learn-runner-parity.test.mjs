@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { createPiRunner } from "@parcha/agentrun-pi";
+import { createPiRunner } from "../dist/workflow/runner.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "../dist/learn/index.js";
 
 /** Whether the learned runner refuses `fields` (an agent node's) before it starts a session: its request-time checks. */
