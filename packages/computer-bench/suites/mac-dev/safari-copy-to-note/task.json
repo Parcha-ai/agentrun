@@ -1,0 +1,86 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.safari.copy-to-note",
+  "version": 1,
+  "title": "Copy one value from a web page into a new note",
+  "split": "heldout",
+  "tags": ["safari", "notes", "cross-app", "copy"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Safari", "com.apple.Notes"] },
+  "params": {
+    "customer": {
+      "pick": [
+        { "name": "Ana Ortiz", "code": "ORD-58213" },
+        { "name": "Ben Ito", "code": "ORD-30977" },
+        { "name": "Chloe Ruiz", "code": "ORD-74406" },
+        { "name": "Dev Patel", "code": "ORD-12658" },
+        { "name": "Ema Novak", "code": "ORD-90341" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No note of this title is left from an earlier run, in Recently Deleted either.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Close windows a run left on the page, so the front window is the one setup opens.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Write the orders page fresh.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A new Safari window on the orders page.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "start"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "Safari shows a list of open orders. In Notes, make a new note titled \"Order {{nonce}}\" whose second line is the order number of {{customer.name}}, as written on the page.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 420 },
+  "checks": [
+    {
+      "id": "one-note",
+      "kind": "exec",
+      "why": "Exactly one live note (not in Recently Deleted) has the title.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "lines",
+      "kind": "exec",
+      "why": "The note's non-empty lines are the title and the customer's order number, nothing else: not another customer's, not the whole table.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "lines"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "Order {{nonce}}|{{customer.code}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the note, and again from Recently Deleted.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Close the window on the page.",
+      "params": { "argv": ["osascript", "-e", "{{file:safari.applescript}}", "teardown"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the page.",
+      "params": { "argv": ["sh", "-c", "rm -rf /tmp/computer-bench-{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make the note with the order number as its second line.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "make", "<div>Order {{nonce}}</div><div>{{customer.code}}</div>"], "timeoutMs": 60000 }
+    }
+  ]
+}

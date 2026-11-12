@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.settings.dock-autohide",
+  "version": 1,
+  "title": "Turn Dock auto-hiding on or off in System Settings",
+  "split": "dev",
+  "tags": ["settings", "dock", "toggle"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "params": {
+    "mode": {
+      "pick": [
+        { "say": "on", "start": "false", "set": "true", "want": "1" },
+        { "say": "off", "start": "true", "set": "false", "want": "0" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the Mac's own value for teardown, then set the opposite of the asked state and restart the Dock so it shows.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.systempreferences" } }
+  ],
+  "instruction": "Using System Settings, turn {{mode.say}} automatically hiding and showing the Dock.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "autohide",
+      "kind": "exec",
+      "why": "com.apple.dock autohide, which the \"Automatically hide and show the Dock\" switch of System Settings › Desktop & Dock writes, is the asked state (1 on, 0 off).",
+      "argv": ["defaults", "read", "com.apple.dock", "autohide"],
+      "stdout": { "equals": "{{mode.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Quit System Settings.",
+      "params": { "argv": ["osascript", "-e", "if application id \"com.apple.systempreferences\" is running then", "-e", "tell application id \"com.apple.systempreferences\" to quit", "-e", "end if"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Put back the Mac's own value and restart the Dock.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Write the asked state and restart the Dock, as the switch does.",
+      "params": { "argv": ["sh", "-c", "defaults write com.apple.dock autohide -bool {{mode.set}} && killall Dock"], "timeoutMs": 30000 }
+    }
+  ]
+}

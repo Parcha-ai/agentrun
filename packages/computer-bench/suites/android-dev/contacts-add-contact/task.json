@@ -1,0 +1,70 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.contacts.add-contact",
+  "version": 1,
+  "title": "Add a contact with a mobile number in Contacts",
+  "split": "dev",
+  "tags": ["contacts", "create"],
+  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"] },
+  "params": {
+    "who": {
+      "pick": [
+        { "first": "Rosa", "last": "Quintero" },
+        { "first": "Tomas", "last": "Lindqvist" },
+        { "first": "Amara", "last": "Okafor" },
+        { "first": "Wen", "last": "Zhao" }
+      ]
+    },
+    "phone": {
+      "pick": [
+        { "say": "415 555 0134", "re": "data1=\\D*(?:1\\D+)?4\\D*1\\D*5\\D*5\\D*5\\D*5\\D*0\\D*1\\D*3\\D*4(?!\\d)" },
+        { "say": "212 555 0187", "re": "data1=\\D*(?:1\\D+)?2\\D*1\\D*2\\D*5\\D*5\\D*5\\D*0\\D*1\\D*8\\D*7(?!\\d)" },
+        { "say": "617 555 0142", "re": "data1=\\D*(?:1\\D+)?6\\D*1\\D*7\\D*5\\D*5\\D*5\\D*0\\D*1\\D*4\\D*2(?!\\d)" },
+        { "say": "312 555 0199", "re": "data1=\\D*(?:1\\D+)?3\\D*1\\D*2\\D*5\\D*5\\D*5\\D*0\\D*1\\D*9\\D*9(?!\\d)" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No contact with this run's nonce is left from an earlier try, so the contact can't exist before the agent starts.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the contacts app on its list, with its contacts permissions granted so no prompt stands in the way.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "open"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Contacts, add a new contact named \"{{who.first}} {{who.last}} {{nonce}}\" (first name {{who.first}}, last name \"{{who.last}} {{nonce}}\") with the mobile number {{phone.say}}. Save it.",
+  "budget": { "steps": 35, "usd": 1.5, "wall_s": 450 },
+  "checks": [
+    {
+      "id": "one-contact",
+      "kind": "exec",
+      "why": "Exactly one contact shows with the display name \"{{who.first}} {{who.last}} {{nonce}}\" (ContactsProvider's contacts table). Setup removed every contact holding the nonce, so an agent that does nothing gets 0.",
+      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "count", "{{who.first}} {{who.last}} {{nonce}}"],
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "number",
+      "kind": "exec",
+      "why": "The contact holds the phone number {{phone.say}}: the digits in order, with any spaces, dashes, brackets or a leading +1 the Contacts app's formatting adds.",
+      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "phones", "{{who.first}} {{who.last}} {{nonce}}"],
+      "stdout": { "matches": "{{phone.re}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete every contact holding the nonce, whoever made it.",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "purge", "{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "add", "computer-bench-{{nonce}}", "{{who.first}} {{who.last}} {{nonce}}", "{{phone.say}}"], "timeoutMs": 30000 }
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.clock.alarm-time",
+  "version": 1,
+  "title": "Read the time of a labelled alarm in Clock",
+  "split": "dev",
+  "tags": ["clock", "info", "answer"],
+  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"] },
+  "params": {
+    "t": {
+      "pick": [
+        { "h": "7", "m": "20", "dh": "8", "dm": "40", "re": "(?<![\\d:])(?:0?7[:.]20\\s*a\\.?\\s?m|07[:.]20(?!\\s*p))" },
+        { "h": "18", "m": "5", "dh": "6", "dm": "5", "re": "(?<![\\d:])(?:18[:.]05|0?6[:.]05\\s*p\\.?\\s?m)" },
+        { "h": "5", "m": "50", "dh": "17", "dm": "50", "re": "(?<![\\d:])(?:0?5[:.]50\\s*a\\.?\\s?m|05[:.]50(?!\\s*p))" },
+        { "h": "21", "m": "35", "dh": "9", "dm": "35", "re": "(?<![\\d:])(?:21[:.]35|0?9[:.]35\\s*p\\.?\\s?m)" }
+      ]
+    },
+    "lab": {
+      "pick": [
+        { "say": "Dentist", "decoy": "Gym" },
+        { "say": "School run", "decoy": "Standup" },
+        { "say": "Flight", "decoy": "Laundry" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No enabled alarm with this run's asked label is left from an earlier try.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.say}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "No enabled alarm with this run's decoy label is left from an earlier try.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.decoy}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The alarm the agent is asked about, made without UI (SKIP_UI) at the picked time.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.SET_ALARM", "--ei", "android.intent.extra.alarm.HOUR", "{{t.h}}", "--ei", "android.intent.extra.alarm.MINUTES", "{{t.m}}", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.say}} {{nonce}}", "--ez", "android.intent.extra.alarm.SKIP_UI", "true"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "A decoy alarm with another label, at a time that shares the hour or minute digits with the asked one, so reading the wrong row or dropping AM/PM gives a wrong answer.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.SET_ALARM", "--ei", "android.intent.extra.alarm.HOUR", "{{t.dh}}", "--ei", "android.intent.extra.alarm.MINUTES", "{{t.dm}}", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.decoy}} {{nonce}}", "--ez", "android.intent.extra.alarm.SKIP_UI", "true"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open the Clock app on its alarm list.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.intent.action.SHOW_ALARMS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "In the Clock app, find the alarm labelled \"{{lab.say}} {{nonce}}\". What time is it set for? Give the time with AM or PM, or in 24-hour form, in your final answer. Don't change any alarm.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "time",
+      "kind": "answer",
+      "why": "The final answer gives the asked alarm's time, {{t.h}}:{{t.m}} in 24-hour terms, written either as 24-hour time or as 12-hour time with the right AM or PM. The decoy's time doesn't match. An agent that answers nothing fails.",
+      "text": { "matches": "{{t.re}}", "flags": "i" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Dismiss the asked alarm: a one-time alarm made with SKIP_UI is deleted.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.say}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Dismiss the decoy alarm the same way.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.decoy}} {{nonce}}"], "timeoutMs": 20000 }
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.chrome.read-page",
+  "version": 1,
+  "title": "Read a code from a web page in Chrome",
+  "split": "dev",
+  "tags": ["chrome", "info", "answer"],
+  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.chrome"] },
+  "params": {
+    "port": { "int": [20000, 29999] },
+    "o": {
+      "pick": [
+        { "ask": "Blue", "d1": "Green", "d2": "Orange", "c1": "7f31d2", "c2": "e0a95b" },
+        { "ask": "Bakery", "d1": "Pharmacy", "d2": "Hardware", "c1": "3b8e07", "c2": "c41f9a" },
+        { "ask": "Table 4", "d1": "Table 7", "d2": "Table 2", "c1": "9d02c6", "c2": "58ab13" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Stop a server an earlier try left on this port (the bracket keeps pkill's pattern from matching this shell).",
+      "params": { "argv": ["sh", "-c", "pkill -f 'nc -L -p {{port}}[ ]'; true"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Write the HTTP answer: a small page whose table gives the asked order this run's nonce as its code, beside two decoy orders.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}\n{\nprintf 'HTTP/1.0 200 OK\\r\\nContent-Type: text/html; charset=utf-8\\r\\nConnection: close\\r\\n\\r\\n'\ncat <<'PAGE'\n{{file:page.html}}\nPAGE\n} > $f.http"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Serve the page on the phone's loopback, and prove it is served before the agent starts.",
+      "params": { "argv": ["sh", "-c", "{{file:serve.sh}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Bring Chrome up on example.com in the bench's tab, so a page an earlier run left isn't what shows.",
+      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", "https://www.example.com/", "-p", "com.android.chrome", "--es", "com.android.browser.application_id", "computer-bench"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In Chrome, open http://127.0.0.1:{{port}}/ and find the pickup code for the {{o.ask}} order. Give that code in your final answer.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "code",
+      "kind": "answer",
+      "why": "The final answer holds the asked order's code, this run's nonce, and neither decoy code ({{o.c1}}, {{o.c2}}). The nonce is only on the served page, so it can't be known without reading it; an agent that answers nothing fails.",
+      "text": { "matches": "^(?![\\s\\S]*(?:{{o.c1}}|{{o.c2}}))[\\s\\S]*{{nonce}}", "flags": "i" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Stop the run's server and delete its files.",
+      "params": { "argv": ["sh", "-c", "pkill -f 'nc -L -p {{port}}[ ]'; rm -f /data/local/tmp/computer-bench-{{nonce}}.http /data/local/tmp/computer-bench-{{nonce}}.sh; true"], "timeoutMs": 20000 }
+    }
+  ]
+}

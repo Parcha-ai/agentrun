@@ -1,0 +1,62 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.textedit.edit-number",
+  "version": 1,
+  "title": "Change one number in an open text file and save it",
+  "split": "heldout",
+  "tags": ["textedit", "files", "edit"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.TextEdit"] },
+  "params": {
+    "line": { "pick": ["Food", "Power", "Travel"] },
+    "amount": { "int": [120, 980] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Close documents a run left open from the folder, so TextEdit reads the fresh file.",
+      "params": { "argv": ["osascript", "-e", "{{file:close.applescript}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "budget.txt with every amount at 1000 or more (so never the asked one), and a pristine copy; TextEdit opens it.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "TextEdit has budget.txt open. Change the {{line}} amount to {{amount}} and save the file.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "new-amount",
+      "kind": "exec",
+      "why": "The saved file has the line \"{{line}}: {{amount}}\" exactly once.",
+      "argv": ["sh", "-c", "grep -c -x '{{line}}: {{amount}}' \"$HOME/Documents/computer-bench-{{nonce}}/budget.txt\" || true"],
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "rest-same",
+      "kind": "exec",
+      "why": "The saved file is the pristine one with only that line's amount changed: every other line kept, nothing added, still plain text.",
+      "argv": ["sh", "-c", "exp=$(sed 's/^{{line}}: .*/{{line}}: {{amount}}/' /tmp/computer-bench-{{nonce}}/budget.orig) && got=$(cat \"$HOME/Documents/computer-bench-{{nonce}}/budget.txt\") && [ \"$got\" = \"$exp\" ] && echo same || echo differs"],
+      "stdout": { "equals": "same" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the document without saving.",
+      "params": { "argv": ["osascript", "-e", "{{file:close.applescript}}"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Remove the folder and the pristine copy.",
+      "params": { "argv": ["sh", "-c", "rm -rf \"$HOME/Documents/computer-bench-{{nonce}}\" /tmp/computer-bench-{{nonce}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Write the file with the one amount changed.",
+      "params": { "argv": ["sh", "-c", "sed 's/^{{line}}: .*/{{line}}: {{amount}}/' /tmp/computer-bench-{{nonce}}/budget.orig > \"$HOME/Documents/computer-bench-{{nonce}}/budget.txt\""], "timeoutMs": 30000 }
+    }
+  ]
+}

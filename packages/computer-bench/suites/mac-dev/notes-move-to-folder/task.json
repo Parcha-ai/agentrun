@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.notes.move-to-folder",
+  "version": 1,
+  "title": "Move a note into another folder",
+  "split": "dev",
+  "tags": ["notes", "organise"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes"] },
+  "params": {
+    "title": { "pick": ["Lease scan", "Gift ideas", "Warranty info", "Recipe swaps"] },
+    "folder": { "pick": ["Home", "Personal", "Archive", "Later"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "The folder exists and is empty, and the note is in the Notes folder, not the asked one.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.Notes" } }
+  ],
+  "instruction": "In Notes, move the note \"{{title}} {{nonce}}\" into the folder \"{{folder}} {{nonce}}\".",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "in-folder",
+      "kind": "exec",
+      "why": "The one live note with the title (not in Recently Deleted) has the asked folder as its container.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "where"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "{{folder}} {{nonce}}" }
+    },
+    {
+      "id": "text-kept",
+      "kind": "exec",
+      "why": "The note's text is what setup wrote: it was moved, not retyped or emptied.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "lines"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "{{title}} {{nonce}}|filed by computer-bench" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the note (again from Recently Deleted) and the folder.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "teardown"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Move the note into the folder.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "move"], "timeoutMs": 60000 }
+    }
+  ]
+}

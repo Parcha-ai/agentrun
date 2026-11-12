@@ -1,0 +1,16 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "fake.notes.front",
+  "version": 1,
+  "title": "Bring Notes to the front (fake world)",
+  "split": "heldout",
+  "tags": ["fake"],
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["apps"] },
+  "setup": [{ "method": "apps.launch", "params": { "id": "fake.settings" } }],
+  "instruction": "Open Notes.",
+  "budget": { "steps": 3, "usd": 0.1, "wall_s": 10 },
+  "checks": [
+    { "id": "front", "kind": "app", "why": "Notes is the app in front.", "front": "fake.notes" }
+  ],
+  "oracle": [{ "method": "apps.launch", "params": { "id": "fake.notes" } }]
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "macosworld.86b5d27f",
+  "version": 1,
+  "title": "Write a one-line AppleScript that gets the frontmost app's name",
+  "split": "dev",
+  "source": {
+    "suite": "macOSWorld",
+    "id": "86b5d27f-e61e-1eb1-3b5c-267952a90cd3",
+    "revision": "e2ca8334b3765537e5c1c428ce57990248a1bb5f",
+    "licence": "CC-BY-NC-4.0; ported by reference (our own instruction, setup and checks; no source text copied)",
+    "changes": "Instruction written in our own words. The source only activated Script Editor; here setup also closes its open documents without saving and makes one new, empty document, so the front document is known to be empty. The source's check is kept (run the front document's text and see \"Script Editor\"), made exact (the name alone, or with .app) instead of a grep, and a second check holds the one-line part of the instruction, which the source did not check. Teardown closes the documents without saving and quits Script Editor."
+  },
+  "tags": ["script-editor", "applescript", "write"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.ScriptEditor2"] },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Close Script Editor's documents without saving, make one new empty document, and bring Script Editor to the front.",
+      "params": { "argv": ["osascript", "-e", "tell application id \"com.apple.ScriptEditor2\"", "-e", "close every document saving no", "-e", "make new document", "-e", "activate", "-e", "end tell"], "timeoutMs": 60000 }
+    }
+  ],
+  "instruction": "In Script Editor, write a single line of AppleScript that gets the name of the app whose window is in front right now. Don't run it.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "returns-name",
+      "kind": "exec",
+      "why": "The front document's text, run by osascript while Script Editor is in front, prints Script Editor's name (with or without .app). Setup left the document empty, which prints nothing, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "osascript -e 'tell application id \"com.apple.ScriptEditor2\" to get contents of front document' 2> /dev/null | osascript - 2> /dev/null; true"],
+      "timeoutMs": 60000,
+      "stdout": { "matches": "^Script Editor(\\.app)?$" }
+    },
+    {
+      "id": "one-line",
+      "kind": "exec",
+      "why": "The front document holds exactly one line that is not blank (Script Editor may end lines with a carriage return, so those count as line ends too).",
+      "argv": ["sh", "-c", "osascript -e 'tell application id \"com.apple.ScriptEditor2\" to get contents of front document' 2> /dev/null | tr '\\r' '\\n' | grep -c '[^[:space:]]'; true"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close Script Editor's documents without saving and quit it.",
+      "params": { "argv": ["osascript", "-e", "if application id \"com.apple.ScriptEditor2\" is running then", "-e", "tell application id \"com.apple.ScriptEditor2\"", "-e", "close every document saving no", "-e", "quit", "-e", "end tell", "-e", "end if"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Type the one-liner into the front document and leave Script Editor in front, without running it.",
+      "params": { "argv": ["osascript", "-e", "tell application id \"com.apple.ScriptEditor2\"", "-e", "set contents of front document to \"tell application \\\"System Events\\\" to get name of first application process whose frontmost is true\"", "-e", "activate", "-e", "end tell"], "timeoutMs": 60000 }
+    }
+  ]
+}

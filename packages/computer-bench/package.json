@@ -1,0 +1,41 @@
+{
+  "name": "@parcha/agentrun-computer-bench",
+  "version": "0.1.0-beta.35",
+  "private": true,
+  "description": "computer-bench: tasks as data, a generic runner, checks of the computer's real state through the computer protocol, one agentic grader, and reports per arm (harness, surface, model).",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=24.22.3"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "computer-bench": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fake-world": {
+      "types": "./dist/fake-world.d.ts",
+      "default": "./dist/fake-world.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "ajv": "^8.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/computer-bench"
+  }
+}

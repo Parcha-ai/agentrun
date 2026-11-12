@@ -1,0 +1,56 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.settings.dock-position",
+  "version": 1,
+  "title": "Move the Dock to another edge of the screen in System Settings",
+  "split": "heldout",
+  "tags": ["settings", "dock", "choice"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "params": {
+    "pos": {
+      "pick": [
+        { "say": "on the left", "start": "bottom", "want": "left" },
+        { "say": "on the right", "start": "bottom", "want": "right" },
+        { "say": "at the bottom", "start": "left", "want": "bottom" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the Mac's own value for teardown, then put the Dock on an edge that is not the asked one and restart it so it shows.",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.systempreferences" } }
+  ],
+  "instruction": "Using System Settings, put the Dock {{pos.say}} of the screen.",
+  "budget": { "steps": 15, "usd": 1, "wall_s": 180 },
+  "checks": [
+    {
+      "id": "orientation",
+      "kind": "exec",
+      "why": "com.apple.dock orientation, which \"Position on screen\" in System Settings › Desktop & Dock writes, is the asked edge (no key reads as bottom, the default).",
+      "argv": ["sh", "-c", "defaults read com.apple.dock orientation 2>/dev/null || echo bottom"],
+      "stdout": { "equals": "{{pos.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Quit System Settings.",
+      "params": { "argv": ["osascript", "-e", "if application id \"com.apple.systempreferences\" is running then", "-e", "tell application id \"com.apple.systempreferences\" to quit", "-e", "end if"], "timeoutMs": 30000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Put back the Mac's own value and restart the Dock.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Write the asked edge and restart the Dock, as the setting does.",
+      "params": { "argv": ["sh", "-c", "defaults write com.apple.dock orientation -string {{pos.want}} && killall Dock"], "timeoutMs": 30000 }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "macosworld.17fed363",
+  "version": 1,
+  "title": "Set notification previews to Never in System Settings",
+  "split": "dev",
+  "source": {
+    "suite": "macOSWorld",
+    "id": "17fed363-d017-b26c-22f2-ec1865306075",
+    "revision": "e2ca8334b3765537e5c1c428ce57990248a1bb5f",
+    "licence": "CC-BY-NC-4.0; ported by reference (our own instruction, setup and checks; no source text copied)",
+    "changes": "Instruction written in our own words. Start state as in the source (System Settings quit, com.apple.ncprefs content_visibility set to 2), but setup first keeps the Mac's own value and teardown puts it back. The check reads the same key and wants exactly 1 (the source's grep for \"1\" also matched values such as 10). No param: the source shows only that Never is 1, so the other choices' values are not known well enough to pick from."
+  },
+  "tags": ["settings", "notifications"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the Mac's own preview setting for teardown, quit System Settings, and start from When Unlocked (2).",
+      "params": { "argv": ["sh", "-c", "{{file:setup.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "instruction": "In the notification settings, make notification previews show never.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "previews-never",
+      "kind": "exec",
+      "why": "com.apple.ncprefs content_visibility, which the Show Previews menu of System Settings › Notifications writes, is 1 (Never). Setup left 2, so an agent that does nothing fails.",
+      "argv": ["defaults", "read", "com.apple.ncprefs", "content_visibility"],
+      "timeoutMs": 20000,
+      "stdout": { "equals": "1" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Quit System Settings and put the Mac's own value back.",
+      "params": { "argv": ["sh", "-c", "{{file:restore.sh}}"], "timeoutMs": 30000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Write Never (1), as the Show Previews menu does.",
+      "params": { "argv": ["defaults", "write", "com.apple.ncprefs", "content_visibility", "-int", "1"], "timeoutMs": 20000 }
+    }
+  ]
+}

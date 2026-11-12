@@ -1,0 +1,21 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "fake.settings.volume-judged",
+  "version": 1,
+  "title": "Turn the volume down a little (fake world, judged)",
+  "split": "dev",
+  "tags": ["fake", "judged"],
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["ui"], "apps": ["fake.settings"] },
+  "setup": [
+    { "method": "exec.run", "params": { "argv": ["set", "volume", "8"], "timeoutMs": 1000 } },
+    { "method": "apps.launch", "params": { "id": "fake.settings" } }
+  ],
+  "instruction": "The volume is too loud. Turn it down a little, but not off.",
+  "budget": { "steps": 6, "usd": 0.1, "wall_s": 10 },
+  "checks": [
+    { "id": "lower", "kind": "exec", "why": "The volume is below 8 and above 0; whether that is 'a little' is the grader's call.", "argv": ["get", "volume"], "stdout": { "oneOf": ["1", "2", "3", "4", "5", "6", "7"] } }
+  ],
+  "sufficient": false,
+  "teardown": [{ "method": "exec.run", "params": { "argv": ["set", "volume", "5"], "timeoutMs": 1000 } }],
+  "oracle": [{ "method": "exec.run", "params": { "argv": ["set", "volume", "6"], "timeoutMs": 1000 } }]
+}

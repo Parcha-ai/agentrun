@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.notes.new-note",
+  "version": 2,
+  "title": "Make a note with a given title and one line of body",
+  "split": "dev",
+  "tags": ["notes", "create"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes"] },
+  "params": {
+    "title": { "pick": ["Groceries", "Trip ideas", "Q3 plan", "Books to read"] },
+    "line": { "pick": ["oat milk and eggs", "call the plumber", "ship phase 2", "pack the charger"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No note of this title is left from an earlier run, in Recently Deleted either.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.Notes" } }
+  ],
+  "instruction": "In Notes, make a new note. Its title (first line) is \"{{title}} {{nonce}}\" and its second line is \"{{line}}\".",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "one-note",
+      "kind": "exec",
+      "why": "Exactly one live note (not in Recently Deleted) has the title: Notes names a note by its first line.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "lines",
+      "kind": "exec",
+      "why": "The note's non-empty lines, read from its plain text, are the title and then the asked line, nothing else.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "lines"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "{{title}} {{nonce}}|{{line}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the note, and again from Recently Deleted.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make the note; Notes takes its name from the first line of the body.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "make", "<div>{{title}} {{nonce}}</div><div>{{line}}</div>"], "timeoutMs": 60000 }
+    }
+  ]
+}

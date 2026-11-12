@@ -1,0 +1,46 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.device-name",
+  "version": 1,
+  "title": "Read the phone's device name from Settings",
+  "split": "dev",
+  "tags": ["settings", "info", "answer"],
+  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "params": {
+    "label": { "pick": ["Desk phone", "Lab handset", "Field unit", "Spare phone", "Kitchen tablet"] }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own device name once (\"null\" when it has none), so teardown puts it back.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || settings get global device_name > $f"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Name the phone with the nonce, so the answer can't be known or guessed without reading it on the phone. About phone shows Settings.Global.DEVICE_NAME as the device name.",
+      "params": { "argv": ["settings", "put", "global", "device_name", "{{label}} {{nonce}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "What is this phone's device name, as Settings shows it? Give the name exactly in your final answer. Don't change anything.",
+  "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
+  "checks": [
+    {
+      "id": "named",
+      "kind": "answer",
+      "why": "The final answer holds the name setup gave the phone, \"{{label}} {{nonce}}\". The nonce is in no instruction, so only a read of the phone gives it; an agent that answers nothing fails.",
+      "text": { "contains": "{{label}} {{nonce}}", "caseless": true }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own device name back (delete the key when it had none), and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; v=$(cat $f 2>/dev/null); if [ -z \"$v\" ] || [ \"$v\" = null ]; then settings delete global device_name; else settings put global device_name \"$v\"; fi; rm -f $f"], "timeoutMs": 20000 }
+    }
+  ]
+}

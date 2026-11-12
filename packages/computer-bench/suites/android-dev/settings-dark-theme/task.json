@@ -1,0 +1,55 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "android.settings.dark-theme",
+  "version": 1,
+  "title": "Turn the dark theme on or off in Settings",
+  "split": "dev",
+  "tags": ["settings", "toggle"],
+  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "params": {
+    "mode": {
+      "pick": [
+        { "say": "on", "want": "yes", "start": "no" },
+        { "say": "off", "want": "no", "start": "yes" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Keep the phone's own night mode once (a retried setup keeps the first copy), so teardown puts it back.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; [ -e $f ] || cmd uimode night > $f"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Start from the other theme, so the agent has to change it.",
+      "params": { "argv": ["cmd", "uimode", "night", "{{mode.start}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Open Settings at its home page, whatever screen an earlier run left it on.",
+      "params": { "argv": ["am", "start", "-W", "--activity-clear-task", "-a", "android.settings.SETTINGS"], "timeoutMs": 20000 }
+    }
+  ],
+  "instruction": "Using the Settings app, turn the dark theme {{mode.say}}.",
+  "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
+  "checks": [
+    {
+      "id": "night-mode",
+      "kind": "exec",
+      "why": "The system's night mode is what was asked: `cmd uimode night` prints \"Night mode: yes\" or \"Night mode: no\". Setup left the other value, so an agent that does nothing fails.",
+      "argv": ["cmd", "uimode", "night"],
+      "stdout": { "equals": "Night mode: {{mode.want}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Put the phone's own night mode back (yes, no or auto; anything else becomes no) and drop the saved copy.",
+      "params": { "argv": ["sh", "-c", "f=/data/local/tmp/computer-bench-{{nonce}}.orig; v=$(sed -n 's/^Night mode: //p' $f 2>/dev/null); case \"$v\" in yes|no|auto) cmd uimode night $v ;; *) cmd uimode night no ;; esac; rm -f $f"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    { "method": "exec.run", "params": { "argv": ["cmd", "uimode", "night", "{{mode.want}}"], "timeoutMs": 20000 } }
+  ]
+}

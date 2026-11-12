@@ -1,0 +1,62 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.calendar.move-event",
+  "version": 1,
+  "title": "Move an event to another time the same day",
+  "split": "heldout",
+  "tags": ["calendar", "edit", "dates"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.iCal"] },
+  "params": {
+    "title": { "pick": ["Budget review", "Haircut", "Lunch with Priya", "Car service"] },
+    "slot": {
+      "pick": [
+        { "say": "8:00 AM", "h": 8, "m": 0, "want": "08:00" },
+        { "say": "1:30 PM", "h": 13, "m": 30, "want": "13:30" },
+        { "say": "3:00 PM", "h": 15, "m": 0, "want": "15:00" },
+        { "say": "4:45 PM", "h": 16, "m": 45, "want": "16:45" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "The calendar holds only the event, at 10:00 the day after tomorrow, which is not the asked time.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.iCal" } }
+  ],
+  "instruction": "In Calendar, the event \"{{title}} {{nonce}}\" (calendar \"computer-bench {{nonce}}\") is the day after tomorrow at 10:00 AM. Move it to {{slot.say}} on the same day, keeping it one hour long.",
+  "budget": { "steps": 30, "usd": 1.5, "wall_s": 420 },
+  "checks": [
+    {
+      "id": "one-event",
+      "kind": "exec",
+      "why": "Exactly one event of the calendar has the title: it was moved, not copied.",
+      "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "when",
+      "kind": "exec",
+      "why": "The event is still the day after tomorrow (two days after today, computed when the check runs), now starts at the asked time and lasts 60 minutes.",
+      "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "when"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "+2d {{slot.want}} 60m" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the calendar and its events.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "teardown"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Set the event's start and end to the asked hour of the same day.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "move"], "timeoutMs": 60000 }
+    }
+  ]
+}
