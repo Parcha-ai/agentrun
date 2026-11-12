@@ -1,27 +1,26 @@
-// Where the Docker a server runs boxes on has the server's files. On a host, the server's paths are the daemon's own, and
-// a box binds the run's work/ by its path: nothing here is asked. A server in a container of that Docker's own, given its
+// Where the Docker a server runs computers on has the server's files. On a host, the server's paths are the daemon's own,
+// and a computer binds the run's folder by its path: nothing here is asked. A server in a container of that Docker's own, given its
 // socket (compose.yaml at the repository's root), has paths the daemon does not: the daemon has only what it mounted
 // into the server's container. One layout is supported: the data directory on a named volume of the server's own
 // container, as compose.yaml makes it. The server reads its own container's id from /proc/self/mountinfo (Docker binds
 // /etc/hostname from `<its root>/containers/<id>/hostname`), asks Docker for that container's mounts, and takes the
-// named volume that holds the data directory; a box then mounts the run's work/ and its egress directory as that volume's
-// subpaths (pi-transport's Docker `paths`, `volume-subpath`: Docker Engine 26 and later), never the volume's root, and a
-// run's Docker computer mounts its run's folder and its daemon copy the same way (workspace/computer-deps.ts
-// dockerVolumeOf, the Docker provider's `volume`). Any other layout, or an older engine, is a reason, said once at the
-// start, and docker is unavailable: a guess would make every box fail at its create.
+// named volume that holds the data directory; a run's Docker computer then mounts its run's folder and its daemon copy as
+// that volume's subpaths (`volume-subpath`: Docker Engine 26 and later), never the volume's root (workspace/
+// computer-deps.ts dockerVolumeOf, the Docker provider's `volume`). Any other layout, or an older engine, is a reason,
+// said once at the start, and docker is unavailable: a guess would make every computer fail at its create.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
-/** Where the daemon has the data directory: the named volume mounted at `at`, as pi-transport's Docker `paths` takes it. */
+/** Where the daemon has the data directory: the named volume mounted at `at`. */
 export type BoxPaths = { at: string; volume: string };
 
 /** The server's Docker files: its own (`here`, a host), through its container's named volume (`paths`), or none, and why. */
 export type DockerPaths = { here: true } | { paths: BoxPaths } | { reason: string };
 
-/** The one way a server in a container runs boxes. */
+/** The one way a server in a container runs Docker computers. */
 export const IN_COMPOSE = "run AgentRun in a container with `docker compose up` from compose.yaml (its named data volume is how boxes reach a run's files)";
 /** An engine that cannot mount a volume's subpath. */
 export const OLD_ENGINE = "Docker Engine <26 can't mount a named volume's subpath: upgrade to Docker 26+";
@@ -104,13 +103,6 @@ export async function dockerPathsForRuns(env: NodeJS.ProcessEnv, data: string, p
 /** Under `--faux` only: a file the server reads as its /proc/self/mountinfo (server.ts fauxMountinfo). */
 export const FAUX_MOUNTINFO_ENV = "AGENTRUN_SERVE_FAUX_MOUNTINFO";
 
-/** What the server hands a run's process: the paths, as JSON; empty on a host. */
-export const RUN_BOX_PATHS_ENV = "AGENTRUN_RUN_BOX_PATHS";
-
-
-/** The directory the runs' egress proxy sockets are in, for a server in a container: on its data volume, so a box can
- *  mount its run's (box-egress.ts egressDir). */
-export const egressParentOf = (data: string): string => `${data}/box-egress`;
 
 /** Its own container's id, from /proc/self/mountinfo: the source of the /etc/hostname Docker bound in. */
 export function ownContainerOf(mountinfo: string): string | undefined {

@@ -32,10 +32,8 @@ Boxes: docker (on by default; set AGENTRUN_BOXES to change).
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
 
-When the box image is not built yet, a line after the banner says its first build is under way (`Preparing the Docker
-box image (first start only, a few minutes); agents can be made now, and their first run waits for it.`), and another
-when it ends (`The Docker box image is ready.`, or why it failed). `npx @parcha/agentrun` prints the `Boxes:` line and
-these two on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
+A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
+`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
 runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
 AgentRun.`); see [Boxes](#boxes).
 
@@ -93,11 +91,9 @@ node packages/serve/dist/cli.js
 Its log says `event=boxes available=docker`, and its banner's last line `Boxes: docker (on by default; set
 AGENTRUN_BOXES to change). docker boxes reach only pypi.org, files.pythonhosted.org, registry.npmjs.org, registry.yarnpkg.com,
 github.com, and codeload.github.com.` (on Linux; elsewhere it says why the box has no
-network: [Sandbox](#sandbox)). The first start builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
-about 300 MB, a minute or two, the build alone on the network): its banner then says `Boxes: docker is preparing
-(building the box image (python, git, curl, node, npm, rg)).`, and the log `event=box_image ... state=preparing`, then
-`state=ready` with how long it took; a later start finds it built. A run that needs its box sooner waits for it, with a
-row on its timeline saying so. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
+network: [Sandbox](#sandbox)). The first sandbox run builds [the box's image](#the-boxs-image) (python 3.12, git, curl, node, npm and rg,
+about 300 MB, a minute or two, the build alone on the network), with a row on its timeline saying so; a later run finds
+it built. In a second shell, export the two `AGENTRUN_` lines it printed (a later start prints
 where the key is: `export AGENTRUN_API_KEY=$(cat ~/.local/share/agentrun/agents/.token)`). Then make a sandbox agent,
 run it, watch it, and read the file it wrote:
 
@@ -142,9 +138,7 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
 `wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
-One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)), and with a Docker box,
-`event=box_image` says whether its image is `ready`, `preparing` (being built or pulled) or `unavailable` and why, again
-when that ends; quiet keeps them too.
+One line at start, `event=boxes`, says which boxes this server has ([Boxes](#boxes)); quiet keeps it too.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -314,8 +308,7 @@ remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox"
 place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
 The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
-(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, ready or still preparing its image (its first
-run then waits for the image, with one timeline row). The place is written on the agent's first revision, so its answers
+(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker. The place is written on the agent's first revision, so its answers
 show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
 "bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
 ([background processes](#background-processes)). A definition that
@@ -345,8 +338,8 @@ or none (`422` on a sandbox, with the runner place as its `fix`). In `capabiliti
 with a `reason` (`no box is set up on this server: …`, each box's own reason) when no box this server has can run it and
 the server is in Mode 1.
 
-`GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready`,
-`preparing` while the server builds or pulls its image, or `unavailable`) and, when it is not ready, the `reason`.
+`GET /v2/capabilities` lists `places`: the modes, the default, a new agent's place, and each box with `available`, its `state` (`ready` or
+`unavailable`) and, when it is unavailable, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
 `capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
@@ -634,25 +627,19 @@ is Modal's default sandbox runtime (gVisor), not a virtual machine: the server d
 
 ### The box's image
 
-A Docker box starts from this server's own image by default: `agentrun-box`, python 3.12 (`python:3.12-slim`, pinned by
-its digest) with git, curl, node and npm (Debian's `nodejs` and `npm`), rg (`ripgrep`), `socat` (the relay to the box's
-network proxy, when it has one) and their certificates, about 360 MB. Its
-recipe is `BOX_RECIPE` in `src/box-image.ts`, its base `BOX_BASE` there. The server builds it on first use
-(`docker build`, at most 10 minutes, its context a private directory under `TMPDIR` holding the recipe alone as its
-`Dockerfile`, removed after), tags it with the recipe's hash (`agentrun-box:<12 hex>`) and labels it with the whole hash
-(`agentrun.box-image`), and builds again only when the recipe changes: a start that finds the image with this recipe's
-hash uses it. To move the base, read the tag's index digest again from Docker Hub (the comment beside `BOX_BASE` says
-how) and put it there: the recipe's hash changes, and so does the image's tag, so the next start builds it. The build
-reaches the network, for the base image and apt; a box made from it never does through Docker's (`--network none`). A build that fails
-leaves the box unavailable with the reason ([Boxes](#boxes)). Images of older recipes stay until you remove them:
-`docker image ls --filter label=agentrun.box-image` lists them all, and `docker image rm agentrun-box:<12 hex>` removes
-one.
+A Docker box's computer starts from the computer package's own image by default: python 3.12 (`python:3.12-slim`,
+pinned by its digest) with git, curl, node and npm, rg and `socat` (the relay to the computer's egress proxy), about
+360 MB. Its recipe is `DOCKER_RECIPE` in `packages/computer/src/docker/image.ts`. The Docker provider builds it on the
+first run that needs it, tags it with the recipe's hash (`agentrun-computer:<12 hex>`) and labels it with the whole hash
+(`agentrun.computer.recipe`), and builds again only when the recipe changes; the run waiting on the build shows it on its
+timeline. Nothing is built or pulled at the server's start. Images of older recipes stay until you remove them:
+`docker image ls --filter label=agentrun.computer.recipe` lists them. An `agentrun-box:*` image an earlier server built
+is used by nothing: `docker image rm` it.
 
-A box reaches its package registries (on Linux), so `pip install` and `npm install` work in it, but not `apt-get`: the
-box runs as this server's user, with no root. For other tools, name another image
-in `AGENTRUN_DOCKER_IMAGE`: the server then pulls it when Docker has none (at most 10 minutes) and builds nothing.
-This image, its build and the wait for it are the Docker box's alone: a Daytona box is made by the server from
-Daytona's own image, and a Daytona run never waits on this one.
+A box reaches its package registries, so `pip install` and `npm install` work in it, but not `apt-get`: the box runs as
+this server's user, with no root. For other tools, name another image in `AGENTRUN_DOCKER_IMAGE`: the provider then pulls
+it on the first run that needs it, and builds nothing. This image is the Docker box's alone: a box on another provider
+starts from that provider's own.
 
 ```sh
 AGENTRUN_DOCKER_IMAGE=python:3.12-bookworm AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
@@ -815,7 +802,7 @@ only those hosts (the default list, a sandbox's package registries, is no browsi
 
 **Docker.** A Docker computer runs where this server's Docker answers. With `AGENTRUN_BOXES` not set at all (a plain
 `npx @parcha/agentrun`), the server probes `docker` at its start (within 5 s) and offers it when Docker answers
-(`ready`, or `preparing` while its image is built or pulled, as [the box's image](#the-boxs-image) says); `AGENTRUN_BOXES`,
+(`ready`); `AGENTRUN_BOXES`,
 when set, lists what it probes, and `AGENTRUN_BOXES=none` probes nothing. One log line says what it found:
 
     event=boxes available=<ids or none> unavailable=<ids> <id>="<why>" ...
@@ -1784,8 +1771,8 @@ then the body, cut at 16 KiB, inside `<trigger-payload source="webhook" scheme="
 whatever the sender wrote is data, not an instruction. The tag names the signature scheme, the event as that scheme
 reads it (`event="..."`), the JSON body's top-level `action` (`action="..."`) and an unsigned delivery id
 (`delivery="..."`, GitHub's `X-GitHub-Delivery`) and, for a GitHub delivery, its pull request or issue's `number="..."`
-(`pull_request.number`, else `issue.number`) and a pull request's `head_sha="..."` (40 hex; a comment event has none, so
-no `head_sha` at all), read from the signed body so the payload's cut never loses them, each when there is one, so an
+(`pull_request.number`, else `issue.number`) and a pull request's `head_sha="..."` and `base_sha="..."` (40 hex each; a
+comment event has neither, so no `head_sha` or `base_sha` at all), read from the signed body so the payload's cut never loses them, each when there is one, so an
 agent's instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
 the body, in any case, is defused.
 
@@ -1949,6 +1936,22 @@ expires, so a long run's calls never carry an expired token. When that mint fail
 it expires; then the run's calls of that server are answered, unsent, that its GitHub App token expired and a new one
 could not be made, with GitHub's reason, and the next launch (a resume) mints a fresh one.
 
+An agent whose definition says `checkout: pull_request` starts each run a GitHub event about a pull request started in a
+checkout of it, made by the server at each claim before the first turn ([runner/pr-checkout.ts](src/runner/pr-checkout.ts)).
+It reads the repository, number, head and base from the server's own payload tag, only on a run a github trigger started
+(its launch's input origin) and never from anyone's words, and runs one
+command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init repo`, a fetch of the head and
+the base 50 commits deep, deepened until their merge base is in (about 3,200 commits at most), then a detached checkout
+of the head, with refs `pr/head`, `pr/base` and `pr/merge-base`. The fetch takes an installation token minted for that
+one repository with `permissions: {contents: "read"}` alone, handed to the command on its stdin and turned there into an
+`Authorization` header in git's environment, scoped to GitHub's site; it is never in argv, `.git/config`, the remote's
+URL (`https://github.com/<owner>/<repo>.git`), the run's folder, the agent's environment or a log line, and it is revoked
+once the fetch is done. Git there reads no system or global config and fetches no tags or submodules. With no App, or one
+not installed on the repository, the fetch is anonymous, which a public repository answers. The run's system prompt
+carries one line: the checkout's facts, or why there is none (no pull request named, a fetch that failed, with git's
+last words), so its instructions can read the change through the GitHub MCP instead. The checkout is removed when the
+claim ends, and the next claim of the run makes it again.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
@@ -1981,7 +1984,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), `max_tool_calls` (agentic only, on pi): the tool calls each conversation of a run may make ([tool-call budget](#tool-call-budget)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0, and `cap_mode`, how such a cap prices a request, `expected` or `strict` ([spend cap](#spend-cap)), `max_tool_calls` (agentic only, on pi): the tool calls each conversation of a run may make ([tool-call budget](#tool-call-budget)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a trigger starts is handed that trigger's last completed `result.output` after its message. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |

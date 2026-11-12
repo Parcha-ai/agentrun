@@ -1,7 +1,6 @@
 // Workspace exec on an Archil disk: one serverless exec call (archil-disk.ts) that mounts the workspace's folder and
-// its exec spill folder, and nothing else of the disk. Taken from pi-transport's box/archil-exec.ts, which has no
-// caller: the call, its 300 s cut, the hold on the folder with a queue, and the mapping of the exit and of the deadline.
-// The rest (boxes, records, sweeps) is not.
+// its exec spill folder, and nothing else of the disk: the call, its 300 s cut, the hold on the folder with a queue, and
+// the mapping of the exit and of the deadline.
 //
 // Archil runs one shell line in a fresh container with two folders of the disk, each a mount's `subdirectory`, held for
 // the line (no other client writes in them meanwhile; a second one waits up to queueMs):
