@@ -45,6 +45,12 @@ export interface FakeUiOptions {
 	features?: Features;
 	/** The settle window the engine waits for; default 50 ms, so tests stay quick. */
 	quietMs?: number;
+	/**
+	 * It cannot tell which elements background input reaches, as on a Mac, where a click posted to the app may never
+	 * reach a view that takes real input only. A click on a foreground element without foreground: true then goes the
+	 * background route, lands nowhere, and answers verified false. Default false: such a click is refused denied.
+	 */
+	blindBackground?: boolean;
 }
 
 /** What one app is doing: its screen, the screens behind it, its fields' values, its switches, its focus, its window. */
@@ -106,6 +112,7 @@ export class FakeUiDriver implements UiSource {
 	readonly calls: Array<[string, unknown]> = [];
 	readonly #features: Features;
 	readonly #quietMs: number;
+	readonly #blind: boolean;
 	readonly #running = new Map<string, AppState>();
 	#front: string | undefined;
 	#frames = 0;
@@ -126,6 +133,7 @@ export class FakeUiDriver implements UiSource {
 			...options.features,
 		};
 		this.#quietMs = options.quietMs ?? 50;
+		this.#blind = options.blindBackground ?? false;
 	}
 
 	/** A connection's own ui engine: its refs and states are that connection's alone (wire.md, The ui group). */
@@ -216,7 +224,7 @@ export class FakeUiDriver implements UiSource {
 		const windowId = `${id}#main`;
 		if (target?.window !== undefined && target.window !== windowId) return fail("not_found", `${id} has no window ${target.window}; its window is ${windowId}`);
 		const screen = app.screens[state.screen];
-		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, ...element }) => {
+		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, ...element }) => {
 			const value = state.values.get(element.key) ?? element.value;
 			const flags = [...(element.flags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
 			return { ...element, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
@@ -243,21 +251,29 @@ export class FakeUiDriver implements UiSource {
 		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
 		/** The route a pointer step takes, or why it may not run. */
 		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
-			if (target?.route === "foreground" || this.#features["ui.background"] !== true) {
+			const only = target?.route === "foreground";
+			if (only && this.#blind && !foreground && this.#features["ui.background"] === true) return ok("background");
+			if (only || this.#features["ui.background"] !== true) {
 				if (this.#features["ui.foreground"] !== true) return fail("unsupported", "no route reaches it: ui.background and ui.foreground are off here");
 				if (!foreground) return fail("denied", `${target?.name ?? "this point"} takes foreground input only, which moves the user's pointer, and this call does not allow it: pass foreground: true`);
 				return ok("foreground");
 			}
 			return ok("background");
 		};
+		/** A pointer step by its route: an element it reaches is pressed, and a counting one verified by its count. */
+		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
+			if (hit === undefined || right || (hit.route === "foreground" && route !== "foreground")) return { route, verified: false };
+			this.#press(state, hit);
+			if (hit.counts !== true) return { route, verified: false };
+			state.values.set(hit.key, String(Number(state.values.get(hit.key) ?? hit.value ?? "0") + 1));
+			return { route, verified: true };
+		};
 		const target = scripted(element?.key);
 		if (target?.flags?.includes("disabled")) return fail("invalid", `${target.name ?? "the element"} is disabled`);
 		if ("press" in step || ("perform" in step && step.action === target?.actions?.[0])) {
 			if (target?.route === "foreground") {
 				const route = pointer(target);
-				if (!route.ok) return route;
-				this.#press(state, target);
-				return ok({ route: route.value, verified: false });
+				return route.ok ? ok(land(target, route.value)) : route;
 			}
 			this.#press(state, target as FakeElement);
 			return ok({ route: "semantic", verified: true });
@@ -281,9 +297,7 @@ export class FakeUiDriver implements UiSource {
 		if ("click" in step) {
 			const hit = target ?? (Array.isArray(step.click) ? scripted(view.elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number]))?.key) : undefined);
 			const route = pointer(hit);
-			if (!route.ok) return route;
-			if (hit !== undefined && step.button !== "right") this.#press(state, hit);
-			return ok({ route: route.value, verified: false });
+			return route.ok ? ok(land(hit, route.value, step.button === "right")) : route;
 		}
 		if ("type" in step) {
 			const into = target ?? scripted(state.focus);

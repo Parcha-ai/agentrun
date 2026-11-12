@@ -91,13 +91,15 @@ Every kind's Core also covers:
 The `ui` group's rules are checked on a small app whose behaviour the suite knows, so a case checks what a driver did
 with no model: `ai.agentrun.ui-fixture` (`packages/computer/src/conformance/ui-fixture.ts`). Its home window has a
 "Name" field, a "Wi-Fi" switch, "Save" (which shows "Saved" a moment after its press, so only an expect sees it), "Next"
-(which opens a second page after a moment and a transition) and a "Canvas" that only foreground input reaches. The
-second page has "Back".
+(which opens a second page after a moment and a transition) and a "Canvas" that only foreground input reaches, whose
+value is the number of clicks that reached it. The second page has "Back".
 
 A driver's conformance image installs the fixture, built for its OS from that description. Its cases are Full: a
 computer without it skips them in words. They check observe's shape on a known window, refs that survive a change and
 go `stale` when their element leaves, a point refused `stale` once its window changed, an expect met and one unmet, the
-route each step reports, and each feature: on, it does what it says; off, it is refused with its own sentence.
+route each step reports, a click never answered verified unless it landed (on the canvas without `foreground: true`,
+a driver may refuse it `denied` or post it unverified; with it, the click lands and is verified by its count), and each
+feature: on, it does what it says; off, it is refused with its own sentence.
 
 `@parcha/agentrun-computer/fake-ui-driver` runs the fixture with no Mac and no phone, over the wire: in process
 (`fakeUiConnection`, `fakeUiProvider`) or on stdin and stdout. Drivers and surfaces test against it.

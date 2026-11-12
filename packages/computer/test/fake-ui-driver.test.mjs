@@ -57,6 +57,32 @@ test("with ui.tree off, observe answers the image and the reason with no nodes, 
 	assert.equal(statuses(both)["ui.features-off-refused"], "pass", reasonOf(both, "ui.features-off-refused"));
 });
 
+test("the canvas: a driver blind to which views background input reaches posts the click unverified and passes; one that verifies a click that never landed fails", { timeout: 60_000 }, async () => {
+	const c = await fakeUiConnection({ blindBackground: true });
+	await c.client.call("apps.launch", { id: APP });
+	const canvasOf = async () => (await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "canvas");
+	const canvas = await canvasOf();
+	assert.equal(canvas.value, "0");
+	const posted = await c.client.call("ui.act", { steps: [{ click: canvas.ref }] });
+	assert.deepEqual(posted.value.steps, [{ route: "background", verified: false }], "posted, and it cannot tell whether it landed");
+	assert.equal((await canvasOf()).value, "0", "it did not land");
+	const real = await c.client.call("ui.act", { steps: [{ click: canvas.ref }], foreground: true });
+	assert.deepEqual(real.value.steps, [{ route: "foreground", verified: true }]);
+	assert.equal((await canvasOf()).value, "1", "real input reached it, and the count read back verifies it");
+	await c.close();
+	const blind = await run(fakeUiProvider({ blindBackground: true }), ["ui.route-reported"]);
+	assert.equal(statuses(blind)["ui.route-reported"], "pass", reasonOf(blind, "ui.route-reported"));
+	class Boasting extends FakeUiDriver {
+		async run(step, context) {
+			const done = await super.run(step, context);
+			return done.ok && "click" in step ? { ok: true, value: { ...done.value, verified: true } } : done;
+		}
+	}
+	const boasting = await run(fakeUiProvider({ blindBackground: true }, (options) => new Boasting(options)), ["ui.route-reported"]);
+	assert.equal(statuses(boasting)["ui.route-reported"], "fail");
+	assert.match(reasonOf(boasting, "ui.route-reported"), /the click answered verified, and the canvas's count did not move/);
+});
+
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
 	class Mumbling extends FakeUiDriver {
 		async handle(engine, method, params, signal) {

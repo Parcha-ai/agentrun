@@ -203,6 +203,9 @@ The result:
 - Each step that ran answers its `route` and whether a readback `verified` it. The routes, best first: `semantic` (an
   accessibility action), `page` (a page's own script, feature `ui.page`), `background` (input posted to the app, feature
   `ui.background`), `foreground` (real input, feature `ui.foreground`, only with `foreground: true`).
+- `verified: true` means a readback saw the step's effect, never less. Input posted to an app may not reach a view
+  that takes real input only, and the driver cannot always tell: such a step answers `verified: false`. A step the
+  driver knows needs the foreground route, in a call without `foreground: true`, is refused `denied`.
 - A step that may not run answers `{"error": {"kind", "message"}}`, and it is the last result: the steps after it do
   not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`.
 - `state` is the window after the act settled, `changed` whether it differs from before the steps, and `expect` is

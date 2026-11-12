@@ -3,8 +3,9 @@
 // that act, in words. Its windows, in points:
 //
 //   home     "UI fixture" heading, a "Name" text field, a "Wi-Fi" switch (its secondary text "Networks nearby", the
-//            node's desc), "Save", "Next", and a "Canvas" that takes
-//            foreground input only (no semantic or background route reaches it)
+//            node's desc), "Save", "Next", and a "Canvas" that takes foreground input only (no semantic or
+//            background route reaches it). The canvas's value is the number of clicks that reached it, "0" at launch,
+//            which is how a driver reads back whether its click landed.
 //   saved    home, plus the text "Saved": Save shows it SAVED_MS after its press, so only an expect sees it
 //   second   "Second page" heading and "Back": Next opens it NEXT_MS after its press, with a transition of NEXT_ANIMATE_MS
 //            first. Back returns home. The Name field is not on it, so its ref is stale there.
@@ -34,8 +35,10 @@ export interface FakeElement {
 	press?: FakeEffect;
 	/** What enter does while this element has the focus. */
 	enter?: FakeEffect;
-	/** The best route that reaches it; default semantic. A foreground element is refused unless the call allows it. */
+	/** The best route that reaches it; default semantic. Only foreground input reaches a foreground element. */
 	route?: UiRoute;
+	/** Its value is the number of clicks that reached it, so a driver can read back whether one landed. */
+	counts?: boolean;
 }
 
 export interface FakeScreen {
@@ -62,7 +65,7 @@ const home: FakeElement[] = [
 	{ key: "wifi", role: "switch", name: "Wi-Fi", desc: "Networks nearby", id: "wifi", bounds: [16, 96, 60, 28], actions: ["AXPress"] },
 	{ key: "save", role: "button", name: "Save", id: "save", bounds: [16, 136, 80, 28], actions: ["AXPress"], press: { go: "saved", after: SAVED_MS } },
 	{ key: "next", role: "button", name: "Next", id: "next", bounds: [112, 136, 80, 28], actions: ["AXPress"], press: { go: "second", after: NEXT_MS, animateMs: NEXT_ANIMATE_MS } },
-	{ key: "canvas", role: "image", name: "Canvas", id: "canvas", bounds: [16, 180, 200, 100], route: "foreground" },
+	{ key: "canvas", role: "image", name: "Canvas", id: "canvas", value: "0", bounds: [16, 180, 200, 100], route: "foreground", counts: true },
 ];
 
 /** The fixture's app, as the fake ui driver runs it. */
