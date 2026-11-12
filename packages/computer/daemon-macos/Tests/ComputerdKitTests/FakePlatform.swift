@@ -22,6 +22,8 @@ final class FakeOS: @unchecked Sendable {
 	var elements: [Int: Element] = [:]
 	var order: [Int] = []
 	var window = UiWindow(id: "7", title: "Notes", bounds: Rect(100, 50, 800, 600))
+	/// False once the app's last window closed: then no target resolves.
+	var hasWindow = true
 	var app = UiApp(id: "com.apple.Notes", name: "Notes", pid: 42)
 	var trusted = true
 	var screenRecording = true
@@ -88,7 +90,8 @@ struct FakeAX: Accessibility {
 	func resolve(_ target: Target?) throws -> ResolvedTarget {
 		try os.with { os in
 			if let app = target?.app, app != os.app.id { throw RPCError.notFound("\(app) is not running") }
-			if let window = target?.window, window != os.window.id { throw RPCError.notFound("no window \(window)") }
+			if let window = target?.window, window != os.window.id || !os.hasWindow { throw RPCError.notFound("no window \(window)") }
+			if !os.hasWindow { throw RPCError.notFound("\(os.app.id) has no window open") }
 			return ResolvedTarget(app: os.app, pid: 42, window: os.window)
 		}
 	}
@@ -168,7 +171,8 @@ struct FakeCapture: Capture {
 		try os.with { os in
 			os.log.append("capture.resolve")
 			if let app = target?.app, app != os.app.id { throw RPCError.notFound("\(app) is not running") }
-			if let window = target?.window, window != os.window.id { throw RPCError.notFound("no window \(window)") }
+			if let window = target?.window, window != os.window.id || !os.hasWindow { throw RPCError.notFound("no window \(window)") }
+			if !os.hasWindow { throw RPCError.notFound("\(os.app.id) has no window open") }
 			return ResolvedTarget(app: os.app, pid: 42, window: os.window)
 		}
 	}

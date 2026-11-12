@@ -375,6 +375,38 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(since.diff, UiDiff(added: [], removed: [], changed: []), "the act's state already shows Later")
 	}
 
+	func testAStepThatClosesItsWindowFollowsTheAppsNextWindow() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.add(9, "menuitem", name: "super+w", actions: ["AXPress"])
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 9" else { return }
+			// Window 7 closes; window 8, the app's other one, is now its main window.
+			os.with { os in
+				os.window = UiWindow(id: "8", title: "Other", bounds: Rect(200, 80, 600, 400))
+				os.elements[5]?.name = "Other note"
+			}
+		}
+		let result = try await engine.act(UiActParams(steps: [.key("super+w"), .key("super+s")], expect: Expect(text: "Other note", timeoutMs: 1000)))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 0)?.1, true, "the window it closed is gone: a change")
+		XCTAssertNotNil(ran(result, 1), "the next step runs on the next window")
+		XCTAssertEqual(result.expect, .met)
+		let after = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(after.window.id, "8", "the act's state is the next window's")
+	}
+
+	func testAStepThatClosesTheLastWindowIsNotFoundInWords() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.add(9, "menuitem", name: "super+w", actions: ["AXPress"])
+		os.react = { entry, os in
+			if entry == "ax.AXPress 9" { os.with { $0.hasWindow = false } }
+		}
+		let message = await throwsKind(.notFound) { try await engine.act(UiActParams(steps: [.key("super+w")])) }
+		XCTAssertTrue(message?.contains("has no window left: the step closed window 7") == true, message ?? "")
+	}
+
 	func testExpectUnmetAfterItsTimeout() async throws {
 		let engine = os.engine()
 		let start = os.now

@@ -252,8 +252,9 @@ public actor UIEngine {
 		let foreground = params.foreground ?? false
 
 		let first = try await look(target)
-		// Every later look is of the window the first one found, even if another app comes to the front.
-		let window = first.target.asTarget
+		// Every later look is of the window the first one found, even if another app comes to the front; when a step
+		// closes it, of the app's next main window (settleAfterStep).
+		var window = first.target.asTarget
 		var view = first
 		var results: [StepResult] = []
 		var refused = false
@@ -263,13 +264,19 @@ public actor UIEngine {
 				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground)
 				results.append(.ran(route: route, verified: verified))
 				view = after
+				window = after.target.asTarget
 			} catch let error as RPCError where Self.stepKinds.contains(error.kind) {
 				results.append(.error(StepError(kind: error.kind, message: error.message)))
 				refused = true
 				break
 			}
 		}
-		if refused || params.steps.isEmpty { view = try await settle(window) }
+		if refused {
+			// A step refused because it closed the app's last window ends the call with that not_found, in its words.
+			view = try await settleAfterStep(view.target)
+		} else if params.steps.isEmpty {
+			view = try await settle(window)
+		}
 		var outcome: ExpectOutcome?
 		if let expect = params.expect, !refused {
 			let settled = view
@@ -493,7 +500,7 @@ public actor UIEngine {
 				reasons.append("\(attempt.route.rawValue): \(unavailable.reason)")
 				continue
 			}
-			let after = try await settle(view.target.asTarget)
+			let after = try await settleAfterStep(view.target)
 			switch check {
 			case .readback(let holds): return (attempt.route, holds(), after)
 			case .change: return (attempt.route, view.fingerprint != after.fingerprint, after)
@@ -566,6 +573,21 @@ public actor UIEngine {
 	}
 
 	// MARK: settle and expect
+
+	/// The settled look after a step: of the step's window, or, when the step closed it (super+w on its last tab), of
+	/// the app's next main window, which the rest of the act follows, as a nav step follows the front window. With no
+	/// window left the step is refused not_found. (Once UiActResult.state is optional, this answers window "closed".)
+	func settleAfterStep(_ target: ResolvedTarget) async throws -> View {
+		do {
+			return try await settle(target.asTarget)
+		} catch let error as RPCError where error.kind == .notFound {
+			do {
+				return try await settle(Target(app: target.app.id, window: nil))
+			} catch let next as RPCError where next.kind == .notFound {
+				throw RPCError.notFound("\(target.app.id) has no window left: the step closed window \(target.window.id), and no other is open (\(next.message))")
+			}
+		}
+	}
 
 	/// Looks until two looks quietMs apart are the same, or settleMaxMs passed: the settled look.
 	func settle(_ target: Target?) async throws -> View {
