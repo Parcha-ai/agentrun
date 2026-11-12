@@ -407,7 +407,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
 export function agentView(
   entry: AgentEntry,
   origin: string,
-  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number } } = {},
+  extra: { signIns?: readonly object[]; learning?: { pending: number }; runs?: { count: number; live: number }; ownComputer?: Record<string, unknown> | null } = {},
 ) {
   const { agent, revision } = entry;
   const body = (revision?.body ?? {}) as Body;
@@ -424,6 +424,8 @@ export function agentView(
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),
     sign_ins: extra.signIns ?? [],
     runs: extra.runs ?? { count: 0, live: 0 },
+    // Its own computer, kept between runs where its setting is persistent: the provider, the computer and its state.
+    own_computer: extra.ownComputer ?? null,
     region: "local",
     home_etag: etagOf(entry),
     archived_at: agent.archivedAt == null ? null : new Date(agent.archivedAt).toISOString(),

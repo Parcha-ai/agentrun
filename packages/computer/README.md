@@ -2081,6 +2081,54 @@ built for.
   - The live run needs Orgo's Scale plan or a Windows computer bought on the plan; the macOS run needs Orgo's Mac
     access.
 
+### An agent's own computer on Orgo (persistence)
+
+The Linux desktop declares `capabilities().persistence` (`{ keepsState: true, resume: true }`) and takes
+`spec.owner: { agent }` with no `lifetimeMs`: a computer that belongs to the agent and outlives the run (see
+"Persistent computers: an agent's own"). The Windows desktop's code declares it too, without resume; a Mac declares
+none.
+
+- **Its name** is `computer-<hex>-o<the owner's hash>`, with no run, epoch or deadline, and it has no Orgo end.
+- **Its labels live in a ledger.** Orgo holds no labels, and a detached computer is never woken to read its labels
+  file, so the provider keeps an agent's computer's labels (the owner's, the claim's run and epoch) and when it was
+  detached in a ledger: the `ledger` option, which Orgo's descriptor declares, so serve passes its computer ledger and
+  they outlive a restart. Without one it is kept in memory. `list` reads them with nothing run inside, and gives
+  `owned`, `owner`, `detachedAt`, and `deadline` undefined. A ledger has `put`, `get`, `list`, `remove` and `swap`:
+  `swap(was, entry)` writes entry only while the kept entry is still `was` as read (a compare-and-set; serve's is one
+  SQL statement), and says whether it did.
+- **No entry, no labels.** An agent's computer with no ledger entry is listed `owned` with no labels and no owner, to
+  an unfiltered list alone. The janitor can't read its owner, so it keeps it. Attach and detach refuse it in words,
+  and nothing reads its labels file instead: release it with delete.
+- **`release(ref, "detach")`** is for an agent's computer alone; a run's computer refuses it and runs on:
+  - Linux: Orgo's suspend saves memory and disk, and computerd init with them. `persistence.resume` is true.
+  - Windows: Orgo's stop archives its disk (files, apps and settings, not memory), and it reads `frozen`. `resume` is
+    false.
+  - macOS declares no persistence: Orgo stops no Mac, so `check()` refuses an owner.
+- **`attach({ id }, { claim })`** from a later run starts or resumes it first: attaching an agent's computer is asking
+  for it. A run's computer that isn't running is still never woken, and is never taken under a claim. Under a claim
+  the computer carries the claim's run and epoch, in the ledger and its labels file. A claim of the same run below
+  the epoch it carries is refused as fenced, and nothing changes. An attach that started or resumed the computer and
+  then fails a check stops or suspends it again, as it was found. One rule keeps attaches, detaches and deletes apart:
+  each takes the ledger entry with a busy marker (`swap`) before anything is done to the computer, and every other is
+  refused (busy) until it is settled. The holder renews the marker with `swap` right before each step that wakes,
+  stops, suspends or replaces what runs in the computer (a put-back, a daemon's replacement, its labels file written
+  after a wake), and only the holder settles the entry, each write a `swap` from the entry it last wrote. A holder
+  whose `swap` finds the entry changed (its marker went stale past 15 minutes and another took it, or it was removed)
+  does nothing more to the computer, and its attach or detach answers an error, never ok. So of two attaches of one
+  run racing, the lower epoch is refused however they interleave, and an older attach never ends the programs or
+  sleep of a newer one. One provider's attaches and detaches of a computer take turns. Its read-back spec carries
+  `owner`.
+- **`release(ref, "delete", { claim })`** deletes an agent's computer only while its ledger entry carries exactly that
+  claim's run and epoch and nobody holds it busy; otherwise it is refused in words (fenced, or busy) and runs on. A
+  claim that made a computer and then lost the agent's hold deletes it this way, so a later claim that found and took
+  it keeps it. A run's computer refuses a delete under a claim.
+- **Init on Linux.** An owned computer's init ends its programs at its deadline, `maxLifetimeMs` out, and has no
+  most in practice: each attach moves the deadline `maxLifetimeMs` out again (`deadline.extend`). A desktop left
+  detached past that, or whose daemon is another version (the package was upgraded meanwhile), gets its daemon
+  installed again at its next attach: the old init is stopped by its process, then every step create takes, the disk
+  kept, and the attach notes say the daemon was replaced and why. A run's computer is refused instead. `extend`
+  refuses an owned computer: it has no janitor's deadline to move.
+
 ## Browsers: Browserbase and Kernel
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon

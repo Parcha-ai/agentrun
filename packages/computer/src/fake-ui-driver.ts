@@ -31,7 +31,7 @@ import {
 } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, kindRefusals } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
-import { UiEngine, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
+import { featureOff, UiEngine, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
 
 export { type FakeApp, type FakeEffect, type FakeElement, type FakeScreen, NEXT_ANIMATE_MS, NEXT_MS, SAVED_MS, UI_FIXTURE } from "./conformance/ui-fixture.js";
 
@@ -249,16 +249,17 @@ export class FakeUiDriver implements UiSource {
 		const state = this.#running.get(view.app.id) as AppState;
 		const app = this.apps.get(view.app.id) as FakeApp;
 		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
-		/** The route a pointer step takes, or why it may not run. */
+		/** The route an input step (a pointer, typing, a key) takes, or why it may not run, in the off features' words. */
 		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
 			const only = target?.route === "foreground";
-			if (only && this.#blind && !foreground && this.#features["ui.background"] === true) return ok("background");
-			if (only || this.#features["ui.background"] !== true) {
-				if (this.#features["ui.foreground"] !== true) return fail("unsupported", "no route reaches it: ui.background and ui.foreground are off here");
-				if (!foreground) return fail("denied", `${target?.name ?? "this point"} takes foreground input only, which moves the user's pointer, and this call does not allow it: pass foreground: true`);
-				return ok("foreground");
-			}
-			return ok("background");
+			const backgroundOff = featureOff(this.#features, "ui.background");
+			if (only && this.#blind && !foreground && backgroundOff === undefined) return ok("background");
+			if (!only && backgroundOff === undefined) return ok("background");
+			const why = only ? `${target?.name ?? "it"} takes foreground input only` : backgroundOff;
+			const foregroundOff = featureOff(this.#features, "ui.foreground");
+			if (foregroundOff !== undefined) return fail("unsupported", `no route reaches it: ${why}, and ${foregroundOff}`);
+			if (!foreground) return fail("denied", `${why}, so only the foreground route reaches it, which moves the user's pointer, and this call does not allow it: pass foreground: true`);
+			return ok("foreground");
 		};
 		/** A pointer step by its route: an element it reaches is pressed, and a counting one verified by its count. */
 		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
@@ -276,7 +277,7 @@ export class FakeUiDriver implements UiSource {
 				return route.ok ? ok(land(target, route.value)) : route;
 			}
 			this.#press(state, target as FakeElement);
-			return ok({ route: "semantic", verified: true });
+			return ok({ route: "semantic", verified: this.#shownAtOnce(target as FakeElement) });
 		}
 		if ("perform" in step) {
 			if (!(target?.actions ?? []).includes(step.action)) return fail("unsupported", `${target?.name ?? "the element"} has no action ${step.action}`);
@@ -295,21 +296,30 @@ export class FakeUiDriver implements UiSource {
 			return ok({ route: "semantic", verified: true });
 		}
 		if ("click" in step) {
-			const hit = target ?? (Array.isArray(step.click) ? scripted(view.elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number]))?.key) : undefined);
+			// A point lands on what the app draws there, whether or not the view carries its elements (ui.tree off).
+			const hit = target ?? (Array.isArray(step.click) ? app.screens[state.screen].elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number])) : undefined);
 			const route = pointer(hit);
-			return route.ok ? ok(land(hit, route.value, step.button === "right")) : route;
+			if (!route.ok) return route;
+			// A double or triple click lands as many times; a right click once.
+			let landed = land(hit, route.value, step.button === "right");
+			for (let more = step.button === "right" ? 0 : (step.count ?? 1) - 1; more > 0; more--) landed = land(hit, route.value);
+			return ok(landed);
 		}
 		if ("type" in step) {
 			const into = target ?? scripted(state.focus);
-			if (into === undefined || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: "background", verified: false });
+			const route = pointer(into);
+			if (!route.ok) return route;
+			if (into === undefined || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
 			state.focus = into.key;
 			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
-			return ok({ route: "background", verified: true });
+			return ok({ route: route.value, verified: true });
 		}
 		if ("key" in step) {
 			const focused = scripted(state.focus);
+			const route = pointer(focused);
+			if (!route.ok) return route;
 			if (step.key === "enter" && focused?.enter !== undefined) this.#apply(state, focused.enter);
-			return ok({ route: "background", verified: false });
+			return ok({ route: route.value, verified: false });
 		}
 		if ("nav" in step) {
 			if (step.nav === "back") {
@@ -325,6 +335,12 @@ export class FakeUiDriver implements UiSource {
 
 	#inside([x, y, w, h]: [number, number, number, number], [px, py]: [number, number]): boolean {
 		return px >= x && py >= y && px < x + w && py < y + h;
+	}
+
+	/** Whether a press's effect is there to read back as soon as it ran: a toggle, a focus, or a screen opened at once. */
+	#shownAtOnce(element: FakeElement): boolean {
+		if (["switch", "checkbox", "textbox", "searchbox"].includes(element.role)) return true;
+		return element.press !== undefined && (element.press.after ?? 0) === 0;
 	}
 
 	#press(state: AppState, element: FakeElement): void {
@@ -368,12 +384,14 @@ export function serveUiLines(driver: FakeUiDriver, input: Readable, output: Writ
 	const error = (id: unknown, kind: DaemonErrorKind, message: string, code = codeOf(kind)) => reply({ jsonrpc: "2.0", id: id ?? null, error: { code, message, data: { kind } } });
 	const line = async (text: string) => {
 		if (Buffer.byteLength(text) > MAX_LINE_BYTES) return error(null, "limit", "the request is over the line limit", JSONRPC_CODES.invalidRequest);
-		let message: { id?: number | string; method?: unknown; params?: unknown };
+		let parsed: unknown;
 		try {
-			message = JSON.parse(text);
+			parsed = JSON.parse(text);
 		} catch {
 			return error(null, "invalid", "the line is not JSON", JSONRPC_CODES.parse);
 		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return error(null, "invalid", "a request is a JSON object", JSONRPC_CODES.invalidRequest);
+		const message = parsed as { id?: number | string; method?: unknown; params?: unknown };
 		if (message.method === CANCEL_METHOD) {
 			running.get((message.params as { id?: number | string } | undefined)?.id ?? "")?.abort();
 			return;

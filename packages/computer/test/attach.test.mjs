@@ -119,6 +119,47 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.equal(hub.online("c-1"), false);
 });
 
+test("a revoke while the computer says hello closes that socket too: a removed computer never comes back", async () => {
+	const hub = new AttachHub();
+	let answer;
+	const gate = new Promise((resolve) => {
+		answer = resolve;
+	});
+	class Slow extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "hello") await gate;
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const driver = new Slow();
+	const paired = pairedFor(driver);
+	const [serve, computer] = socketPair();
+	serveUiSocket(driver, computer);
+	const accepting = hub.accept(paired, serve);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	hub.revoke(paired.id, "the owner removed this computer");
+	answer();
+	const accepted = await accepting;
+	assert.equal(accepted.ok, false);
+	assert.equal(serve.closed.code, ATTACH_CLOSE.unauthorized);
+	assert.equal(hub.online(paired.id), false, "it is not back in the hub");
+	driver.close();
+});
+
+test("a hello with no protocol or version is closed with protocol and the update words, never left open", async () => {
+	const hub = new AttachHub();
+	const mac = new FakeUiDriver();
+	class Blank extends FakeUiDriver {
+		hello() {
+			return {};
+		}
+	}
+	const blank = await dial(hub, pairedFor(mac), new Blank());
+	assert.equal(blank.accepted.ok, false);
+	assert.equal(blank.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(blank.accepted.error.message, /answered hello without its protocol and version: update the driver on Test Mac/);
+});
+
 test("a driver updated within the protocol is accepted, and the provider's version and groups follow its live hello", async () => {
 	const hub = new AttachHub();
 	const driver = new FakeUiDriver();
@@ -160,6 +201,33 @@ test("one run holds an attached computer; offline refuses create; release never 
 	assert.equal(serve.closed.code, ATTACH_CLOSE.unauthorized);
 	assert.equal(redials(ATTACH_CLOSE.unauthorized), false);
 	assert.equal(hub.claimed(paired.id), undefined);
+	driver.close();
+});
+
+test("a run's release closes its connections: their calls in flight are cancelled and later ones refused, so the next run's computer is its own; a narrowed network is refused", async () => {
+	const driver = new FakeUiDriver();
+	const hub = new AttachHub();
+	const paired = pairedFor(driver);
+	const provider = attachedProvider(paired, hub);
+	await dial(hub, paired, driver);
+	const spec = { image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } };
+	for (const network of ["none", { allow: ["example.com"] }]) {
+		const refused = await provider.create({ ...spec, network });
+		assert.equal(refused.error.code, "refused");
+		assert.match(refused.error.message, /a person's own machine on its own network, which a run cannot block or limit/);
+	}
+	assert.equal((await provider.network({ id: paired.id, name: paired.name }, "none")).error.code, "refused");
+	assert.equal((await provider.create(spec)).ok, true);
+	const first = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	await first.client.call("apps.launch", { id: APP });
+	const waiting = first.client.call("ui.act", { steps: [], expect: { text: "never", timeoutMs: 30_000 } });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).ok, true);
+	assert.equal((await waiting).error.code, "aborted", "the released run's call in flight is cancelled");
+	assert.equal((await first.client.call("ping", {})).error.code, "gone", "and its later calls are refused");
+	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).ok, true);
+	const second = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	assert.equal((await second.client.call("ping", {})).ok, true, "the next run's connection works over the same socket");
 	driver.close();
 });
 

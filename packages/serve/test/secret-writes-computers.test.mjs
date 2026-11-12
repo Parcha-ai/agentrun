@@ -15,7 +15,7 @@ const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const json = { "content-type": "application/json" };
 /** A value shaped like a vendor's key, from the planted-secret harness: never a real one. */
 const planted = () => plantedValue("computer-key");
-const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
+const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
 const doc = openapiDocument(() => undefined);
 
 test("the computer and Archil key fields are marked in the document, and each marked operation has its predicate", () => {
@@ -25,7 +25,7 @@ test("the computer and Archil key fields are marked in the document, and each ma
   assert.equal(doc.paths["/computers/{provider}/keys"].put.requestBody.content["application/json"].schema.additionalProperties["x-agentrun-secret"], true);
   const archilBody = doc.paths["/workspace/archil"].put.requestBody.content["application/json"].schema;
   assert.equal(archilBody.properties.keys.properties.ARCHIL_API_KEY["x-agentrun-secret"], true);
-  for (const field of ["diskId", "region", "s3Url", "image"]) assert.equal(archilBody.properties[field]?.["x-agentrun-secret"], undefined, `${field} is no secret`);
+  for (const field of ["region", "s3Url", "image"]) assert.equal(archilBody.properties[field]?.["x-agentrun-secret"], undefined, `${field} is no secret`);
 });
 
 test("saveComputerKeys: every request to a computer's keys is a secret write, whatever its body: a value, a null (a removal), an empty body or none", () => {
@@ -98,7 +98,7 @@ test("on the server: the token is 403 for a computer key's save or removal and f
   for (const [what, sent] of [
     ["the account key", { headers: { ...json, ...bearer }, body: { ...SETTINGS, keys: { ARCHIL_API_KEY: planted() } } }],
     ["an all-null removal", { headers: { ...json, ...bearer }, body: { ...SETTINGS, keys: { ARCHIL_API_KEY: null } } }],
-    ["the disk, region and S3 URL alone", { headers: { ...json, ...bearer }, body: SETTINGS }],
+    ["the region and S3 URL alone", { headers: { ...json, ...bearer }, body: SETTINGS }],
     ["an empty body", { headers: { ...json, ...bearer }, body: {} }],
     ["no body", { headers: bearer }],
   ]) {

@@ -13,6 +13,11 @@ export type NetworkForm = "none" | "open" | "allow";
 export interface ComputerOwner {
 	/** The agent's id: a non-empty string with no NUL byte (ownerProblem). */
 	agent: string;
+	/**
+	 * The server the agent is on, where more than one server shares a vendor account: two servers may each have an agent
+	 * of one id, and each owns its own computer. A non-empty string with no NUL byte. Absent: the agent's id alone.
+	 */
+	server?: string;
 	/** How long the computer may stay detached before the janitor deletes it. Absent: it stays until it is deleted. */
 	idleTtlMs?: number;
 }
@@ -257,10 +262,12 @@ export function runLifetimeMs(spec: Pick<ComputerSpec, "lifetimeMs">): number {
 
 /** Why owner is not an agent's ownership, in words, or undefined when it is one. */
 export function ownerProblem(owner: unknown): string | undefined {
-	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, idleTtlMs? }";
-	const { agent, idleTtlMs } = owner as Partial<ComputerOwner>;
+	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, server?, idleTtlMs? }";
+	const { agent, server, idleTtlMs } = owner as Partial<ComputerOwner>;
 	if (typeof agent !== "string" || agent === "") return "owner.agent must be the agent's id, a non-empty string";
 	if (agent.includes("\0")) return "owner.agent cannot hold a NUL byte: no provider takes one in a label";
+	if (server !== undefined && (typeof server !== "string" || server === "")) return "owner.server, when given, is the server's id, a non-empty string";
+	if (typeof server === "string" && server.includes("\0")) return "owner.server cannot hold a NUL byte: no provider takes one in a label";
 	if (idleTtlMs !== undefined && !(Number.isSafeInteger(idleTtlMs) && idleTtlMs > 0)) return `owner.idleTtlMs is a whole number of milliseconds above 0, not ${JSON.stringify(idleTtlMs)}`;
 	return undefined;
 }
@@ -408,6 +415,16 @@ export interface AttachContext extends CallContext {
  */
 export type ReleaseHow = "stop" | "delete" | "detach";
 
+/**
+ * release's context: with a claim (a provider that declares persistence), a delete of an agent's computer is that claim's
+ * alone: done only while the computer still carries exactly the claim's run and epoch and no attach or detach holds it,
+ * else refused in words (fenced, or busy) with the computer as it was. So a claim that made the computer and lost it
+ * deletes it only where no later claim has taken it. A provider with no persistence has no agent's computer to fence.
+ */
+export interface ReleaseContext extends CallContext {
+	claim?: ComputerClaim;
+}
+
 /** A live connection to a computer's daemon. */
 export interface ComputerConnection {
 	client: ComputerClient;
@@ -443,8 +460,9 @@ export interface ComputerProvider {
 	/**
 	 * Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. A
 	 * "detach" is refused in words, the computer as it was, on a provider with no persistence and on a run's computer.
+	 * context.claim: a delete under that claim alone (ReleaseContext).
 	 */
-	release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>>;
+	release(ref: ComputerRef, how: ReleaseHow, context?: ReleaseContext): Promise<Result<void>>;
 	/**
 	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. A
 	 * ttlMs that would move it earlier, or past that cap, is refused in words with the deadline unchanged: an extend

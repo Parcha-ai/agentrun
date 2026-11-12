@@ -70,10 +70,11 @@ const home: FakeElement[] = [
 
 /** The fixture's app, as the fake ui driver runs it. */
 export const UI_FIXTURE: FakeApp = {
-	id: "ai.agentrun.ui-fixture",
+	// A valid Android package name and macOS bundle id alike (no hyphen), in a window that fits a small phone's portrait.
+	id: "ai.agentrun.uifixture",
 	name: "UI fixture",
 	start: "home",
-	size: [480, 320],
+	size: [320, 320],
 	screens: {
 		home: { title: "UI fixture", elements: home },
 		saved: { title: "UI fixture", elements: [...home, { key: "saved", role: "text", name: "Saved", bounds: [208, 136, 80, 28] }] },

@@ -89,7 +89,8 @@ Every kind's Core also covers:
 ## The ui fixture
 
 The `ui` group's rules are checked on a small app whose behaviour the suite knows, so a case checks what a driver did
-with no model: `ai.agentrun.ui-fixture` (`packages/computer/src/conformance/ui-fixture.ts`). Its home window has a
+with no model: `ai.agentrun.uifixture` (`packages/computer/src/conformance/ui-fixture.ts`), a window of 320 by 320
+points, which fits a small phone in portrait. Its home window has a
 "Name" field, a "Wi-Fi" switch, "Save" (which shows "Saved" a moment after its press, so only an expect sees it), "Next"
 (which opens a second page after a moment and a transition) and a "Canvas" that only foreground input reaches, whose
 value is the number of clicks that reached it. The second page has "Back".

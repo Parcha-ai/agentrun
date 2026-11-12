@@ -155,6 +155,11 @@ The server maps an attached computer to a provider so a run takes it like any ot
 - **Claim, not make.** `create` claims the computer for a run, with the run's labels: refused `gone` while it is not
   attached, `refused` while another run holds it. `release` with `delete` ends the run's hold and deletes nothing;
   `stop` is refused. A person's machine is never made, stopped or deleted by a run.
+- **A run's connections end with its hold.** Each `connect` gives a connection over the one socket. Closing it, or the
+  run's release, cancels its calls still running and refuses its later ones `gone`, so a run done with the computer
+  cannot reach it once another run holds it.
+- **Its network is its own.** A run asks for network `open`; `none` or an allow list is refused at `create` and at
+  `network`, because a run cannot block or limit a person's machine.
 - **Lists and attach** find it by its id, or by its own labels with the holding run's.
 - **The policy** (which apps a run may use, which routes) stays the server's, as for every computer: the driver offers
   what its `hello` declares, and the server's claim narrows it.
