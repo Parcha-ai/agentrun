@@ -11,7 +11,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
 import { EffectOutcomeUnknownError, runWorkflow } from '@parcha/agentrun-dsl';
 import { FROZEN_SNAPSHOT_SCHEMA_V4, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { committedRoutes, durableDoc, readJournal } from '../dist/workflow/readers.js';
+import { durableDoc, readJournal } from '../dist/workflow/readers.js';
 import { documentStore } from '../dist/workflow/store.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
@@ -104,8 +104,6 @@ test('document store: the readers see a journal from the store file, wherever th
   // A directory is not a store file: the readers never look inside one for a layout.
   assert.throws(() => readJournal(directory, 'run-1'));
   assert.throws(() => durableDoc(directory, 'agentrun.driver', 'run-1'));
-  assert.deepEqual(committedRoutes({ pin: { routes: { 'root/0': { answer: 1 } } } }), { 'root/0': { answer: 1 } });
-  assert.deepEqual(committedRoutes(null), {});
   await harness.close(ctx);
 });
 

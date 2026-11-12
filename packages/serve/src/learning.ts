@@ -83,7 +83,6 @@ export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
  *  nor written to the cache. */
 export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
-export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
 /** The variable that names the grader's model, as `--grade-model` does. */
 export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
 /** The model this server grades on, by name: `given` (`--grade-model`), else GRADE_MODEL_ENV, else its strong tier
