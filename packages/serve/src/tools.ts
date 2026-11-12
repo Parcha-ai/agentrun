@@ -277,12 +277,15 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
   },
 });
 
-/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. An
+ *  image block's `data` is its pixels' base64, not text, and is kept whole: the cut reads a run of more than 8,192
+ *  characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), which no model takes as an image. */
 function cutStrings<T>(value: T, cut: (text: string) => string): T {
   if (typeof value === "string") return cut(value) as T;
   if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+    const image = (value as { type?: unknown }).type === "image";
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, image && key === "data" ? item : cutStrings(item, cut)])) as T;
   }
   return value;
 }

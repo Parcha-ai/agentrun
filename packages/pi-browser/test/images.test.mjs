@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { captureWithinBudget, imageSize, SCREENSHOT_MAX_EDGE_PX, ScreenshotBudgetError } from "../dist/index.js";
+import { captureParams, captureWithinBudget, imageSize, SCREENSHOT_MAX_EDGE_PX, ScreenshotBudgetError } from "../dist/index.js";
 
 const u16 = (n) => [(n >> 8) & 0xff, n & 0xff];
 const u32 = (n) => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
@@ -34,67 +34,96 @@ test("bytes that are not a whole PNG header or a JPEG with a frame before its sc
   ]) assert.equal(imageSize(bytes), null, name);
 });
 
-const capturer = (images) => {
+test("CDP's capture parameters: a clip moves to the document, a full page is the document's clip beyond the viewport, a scaled viewport is its own clip", () => {
+  const layout = { cssVisualViewport: { pageX: 0, pageY: 300, clientWidth: 1273, clientHeight: 624 }, cssContentSize: { width: 1273, height: 5016.4 } };
+  assert.deepEqual(captureParams({ type: "jpeg", quality: 40.4 }, layout), { format: "jpeg", quality: 40 }, "the viewport at the device's pixels: no clip");
+  assert.deepEqual(captureParams({ type: "png", quality: 40 }, layout), { format: "png" }, "no quality for a PNG");
+  assert.deepEqual(captureParams({ type: "jpeg", scale: 0.5 }, layout), { format: "jpeg", clip: { x: 0, y: 300, width: 1273, height: 624, scale: 0.5 } });
+  assert.deepEqual(captureParams({ fullPage: true, scale: 0.25 }, layout), { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: 1273, height: 5017, scale: 0.25 } });
+  assert.deepEqual(captureParams({ clip: { x: 10, y: 20, width: 30, height: 40 } }, layout), { format: "png", clip: { x: 10, y: 320, width: 30, height: 40, scale: 1 } });
+});
+
+/** A page as Chrome captures it: `css` (its viewport and its document, in CSS pixels) times its device scale and the
+ *  scale asked, rounded; `bytes` the base64 bytes it comes to at a quality and pixel count, so the byte budget can bite. */
+const page = ({ viewport = { width: 1288, height: 711 }, document = 8319, dpr = 1, bytes = () => 0, scales = true } = {}) => {
   const calls = [];
   const capture = async (options) => {
     calls.push(options);
-    const image = images[Math.min(calls.length - 1, images.length - 1)];
-    return { data: image.toString("base64"), mimeType: image[0] === 0x89 ? "image/png" : "image/jpeg" };
+    const factor = dpr * (scales ? options.scale ?? 1 : 1);
+    const width = Math.round((options.clip ? options.clip.width : viewport.width) * factor);
+    const height = Math.round((options.clip ? options.clip.height : options.fullPage ? document : viewport.height) * factor);
+    const pad = Math.ceil(bytes(width * height, options) * 3 / 4);
+    const image = options.type === "png" ? png(width, height, pad) : jpeg(width, height, { pad });
+    return { data: image.toString("base64"), mimeType: options.type === "png" ? "image/png" : "image/jpeg" };
   };
   return { capture, calls };
 };
 
 test("an image within budget is the first capture, taken as requested", async () => {
-  const { capture, calls } = capturer([jpeg(1280, 720)]);
+  const { capture, calls } = page();
   const shot = await captureWithinBudget(capture, {});
   assert.deepEqual(calls, [{ fullPage: false, type: "jpeg", quality: 40 }]);
-  assert.deepEqual(shot.size, { type: "jpeg", width: 1280, height: 720 });
+  assert.deepEqual(shot.size, { type: "jpeg", width: 1288, height: 711 });
   assert.equal(shot.adjusted, null);
   assert.equal(shot.mimeType, "image/jpeg");
 });
 
-test("the long edge may reach the limit but not pass it; past it, a viewport JPEG at CSS scale is taken", async () => {
-  const fits = capturer([png(1280, SCREENSHOT_MAX_EDGE_PX)]);
+test("a viewport over the long edge on a dense display is scaled to fit it, as the region asked", async () => {
+  const { capture, calls } = page({ dpr: 2 });
+  const shot = await captureWithinBudget(capture, { type: "png" });
+  assert.deepEqual(calls.map((o) => [o.fullPage, o.type, o.scale]), [[false, "png", undefined], [false, "png", SCREENSHOT_MAX_EDGE_PX / 2576]]);
+  assert.deepEqual(shot.size, { type: "png", width: 2000, height: 1104 });
+  assert.deepEqual(shot.adjusted, { why: "long_edge", first: { type: "png", width: 2576, height: 1422 } });
+});
+
+test("the long edge may reach the limit but not pass it; a full page that stays readable shrinks, a longer one is the viewport", async () => {
+  const fits = page({ document: SCREENSHOT_MAX_EDGE_PX });
   assert.equal((await captureWithinBudget(fits.capture, { type: "png", fullPage: true })).adjusted, null);
-  const tall = capturer([png(1280, SCREENSHOT_MAX_EDGE_PX + 1), jpeg(1280, 720)]);
-  const shot = await captureWithinBudget(tall.capture, { type: "png", fullPage: true });
-  assert.deepEqual(tall.calls, [{ fullPage: true, type: "png" }, { fullPage: false, type: "jpeg", quality: 40, scale: "css" }]);
-  assert.deepEqual(shot.adjusted, { why: "long_edge", first: { type: "png", width: 1280, height: SCREENSHOT_MAX_EDGE_PX + 1 } });
+  const long = page({ document: 3_000 });
+  const shrunk = await captureWithinBudget(long.capture, { fullPage: true });
+  assert.deepEqual([shrunk.options.fullPage, shrunk.size], [true, { type: "jpeg", width: 859, height: 2000 }], "the whole page, two thirds of its size");
+  const stripe = page({ document: 23_302, dpr: 2 });
+  const viewport = await captureWithinBudget(stripe.capture, { fullPage: true });
+  assert.deepEqual(stripe.calls.map((o) => [o.fullPage, o.scale]), [[true, undefined], [false, undefined], [false, SCREENSHOT_MAX_EDGE_PX / 2576]]);
+  assert.deepEqual([viewport.options.fullPage, viewport.size.width, viewport.adjusted.first.height], [false, 2000, 46604]);
 });
 
-test("over the byte budget, quality steps down 40, 25, 10 and stops at the first that fits", async () => {
-  const big = jpeg(100, 100, { pad: 2_000 }), small = jpeg(100, 100);
-  const budget = { maxEdgePx: 2_000, maxBase64Bytes: small.toString("base64").length };
-  const { capture, calls } = capturer([big, big, big, small]);
-  const shot = await captureWithinBudget(capture, { scale: "device" }, budget);
-  assert.deepEqual(calls.map((o) => [o.quality, o.scale]), [[40, "device"], [40, "css"], [25, "css"], [10, "css"]]);
+test("over the byte budget, quality steps down 40, 25, 10, then the pixels shrink until it fits", async () => {
+  const budget = { maxEdgePx: 2_000, maxBase64Bytes: 100_000 };
+  // Ten base64 bytes a pixel at quality 40, fewer at 25 and 10: still over at 10, so the capture is shrunk.
+  const { capture, calls } = page({ viewport: { width: 200, height: 100 }, bytes: (pixels, o) => pixels * (o.quality === 10 ? 6 : o.quality === 25 ? 8 : 10) });
+  const shot = await captureWithinBudget(capture, {}, budget);
+  assert.deepEqual(calls.slice(0, 3).map((o) => [o.quality, o.scale]), [[40, undefined], [25, undefined], [10, undefined]]);
+  assert.ok(calls.length >= 4 && calls.at(-1).scale < 1, JSON.stringify(calls));
+  assert.ok(Buffer.byteLength(shot.data) <= budget.maxBase64Bytes);
   assert.equal(shot.adjusted.why, "base64_bytes");
-  assert.deepEqual(shot.options, { fullPage: false, type: "jpeg", quality: 10, scale: "css" });
 });
 
-test("a requested quality caps every retake, and a retake that repeats an earlier attempt is not taken again", async () => {
-  const big = jpeg(100, 100, { pad: 2_000 });
-  const budget = { maxEdgePx: 2_000, maxBase64Bytes: 1_000 };
-  const low = capturer([big]);
-  await assert.rejects(captureWithinBudget(low.capture, { quality: 20 }, budget), ScreenshotBudgetError);
-  assert.deepEqual(low.calls.map((o) => [o.quality, o.scale]), [[20, undefined], [20, "css"], [10, "css"]]);
-  const same = capturer([big]);
-  await assert.rejects(captureWithinBudget(same.capture, { quality: 40, scale: "css" }, budget), ScreenshotBudgetError);
-  assert.deepEqual(same.calls.map((o) => o.quality), [40, 25, 10]);
+test("a requested quality caps every retake", async () => {
+  const budget = { maxEdgePx: 2_000, maxBase64Bytes: 100_000 };
+  const { capture, calls } = page({ viewport: { width: 200, height: 100 }, bytes: (pixels, o) => (o.quality > 10 ? pixels * 10 : 0) });
+  await captureWithinBudget(capture, { quality: 20 }, budget);
+  assert.deepEqual(calls.map((o) => o.quality), [20, 10]);
 });
 
-test("an image whose size cannot be read is never returned", async () => {
-  const { capture } = capturer([Buffer.from("not an image at all"), jpeg(640, 480)]);
-  const shot = await captureWithinBudget(capture, {});
+test("a capture whose size cannot be read is retaken once as a viewport JPEG, and never returned", async () => {
+  let n = 0;
+  const shot = await captureWithinBudget(async () => ({ data: (n++ === 0 ? Buffer.from("not an image at all") : jpeg(640, 480)).toString("base64"), mimeType: "image/png" }), { type: "png" });
   assert.deepEqual(shot.size, { type: "jpeg", width: 640, height: 480 });
-  assert.equal(shot.adjusted.first, null);
+  assert.deepEqual(shot.adjusted, { why: "unreadable", first: null });
+  const never = await captureWithinBudget(async () => ({ data: Buffer.from("not an image at all").toString("base64"), mimeType: "image/png" }), {}).catch((e) => e);
+  assert.ok(never instanceof ScreenshotBudgetError);
+  assert.match(never.message, /not a PNG or JPEG whose size can be read/);
 });
 
-test("an image still over budget after every retake throws a ScreenshotBudgetError after four captures", async () => {
-  const { capture, calls } = capturer([png(4_000, 4_000)]);
-  const error = await captureWithinBudget(capture, { type: "png", fullPage: true }).catch((e) => e);
+test("a driver that does not scale: a full page is the viewport, and a viewport over budget throws a ScreenshotBudgetError", async () => {
+  const full = page({ document: 3_000, scales: false });
+  const shot = await captureWithinBudget(full.capture, { fullPage: true });
+  assert.deepEqual(full.calls.map((o) => [o.fullPage, o.scale]), [[true, undefined], [true, 2000 / 3000], [false, undefined]]);
+  assert.deepEqual(shot.size, { type: "jpeg", width: 1288, height: 711 });
+  const dense = page({ dpr: 2, scales: false });
+  const error = await captureWithinBudget(dense.capture, {}).catch((e) => e);
   assert.ok(error instanceof ScreenshotBudgetError);
   assert.equal(error.name, "ScreenshotBudgetError");
-  assert.match(error.message, /2000 px .* 900000 base64 bytes/);
-  assert.equal(calls.length, 4);
+  assert.match(error.message, /does not take this capture smaller than 2576x1422/);
 });
