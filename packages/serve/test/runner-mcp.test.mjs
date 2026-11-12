@@ -57,7 +57,7 @@ const lastResult = (sent) => {
  * `script` with the run's MCP (`grants`), its gate the tool gate's permissions over `settings` (an mcp: tool asks by
  * default). Runs until the run is not running, or `until(row)` says so.
  */
-async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
+async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], prices, seal = headers, capUsd, before, until, ms = 20_000, hostTools = {}, events, onCommand, network, auth = "bearer", fakeToken = TOKEN, githubAppAccess, launchInput, launchSealed, held, timing = STEADY, opened = [], serverNow, inspect, beforeIntent = async () => {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-"));
   // `serverNow`: the test's own handle on the store reads its clock (a claim taken over when it is moved past the lease);
   // the runner's handle keeps the wall clock.
@@ -85,7 +85,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ claim, store: { mcp: store.mcp, runs: store.runs, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
@@ -519,7 +519,10 @@ test("R18: a message's new credential (the steer's launchSealed) reaches a runni
   let fakeUrl;
   const hostTools = { wait: { name: "wait", replaySafe: false, run: async () => (toolRuns(), await waiting, "waited") } };
   const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { call: "wait", args: {} }, { call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
+  // What the claim hands the run's redactors: a token handed mid-run must join them before a call carries it.
+  const held = [];
   const running = mcpRun(t, {
+    held,
     script, grants: ["mcp:fake/add"], hostTools, settings: { "mcp:fake/add": { permission: "allow" }, wait: { permission: "allow" } }, auth: "per_run",
     fakeToken: (authorization) => authorization === `Bearer ${current}`, launchSealed: handed(RUN_TOKEN),
     onCommand: (command) => command.kind === "steer" && steerTaken(),
@@ -536,4 +539,5 @@ test("R18: a message's new credential (the steer's launchSealed) reaches a runni
   assert.equal(lastResult(sent), "5", "the call after the message went with the new credential");
   assert.equal(toolCalls(fake, "add").length, 2);
   assert.deepEqual(openRunMcpAuth(KEY, "run-1", (await server.runs.launch("run-1")).sealed), {}, "erased at the run's end");
+  for (const value of [RUN_TOKEN, NEXT, `Bearer ${NEXT}`]) assert.ok(held.includes(value), "each handed credential, bare and as its header, joined the run's redactors");
 });

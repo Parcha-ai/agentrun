@@ -80,6 +80,10 @@ export interface McpClaimOptions {
   /** For tests only (no environment or CLI flag maps onto it): the one origin a github_app server may have, a fake for
    *  GitHub's hosted MCP (GITHUB_MCP_ORIGIN). */
   githubMcpOrigin?: string;
+  /** Each credential value a per_run server's handed headers carry (each header's value, and a Bearer's bare token),
+   *  handed to the run's redactors as the claim opens them: at the claim, and at each fresh() after a message hands the
+   *  run a new one, before any call carries it. */
+  hold?: (values: string[]) => void;
   /** For tests: the timer a github_app token's refresh and expiry are armed on. */
   githubTimer?: GithubTimer;
   /** For tests: the timer a wait on another claim's refresh lease, and its next read of the row, are armed on. */
@@ -334,6 +338,8 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
     if (!given) return { unopened: UNUSABLE.perRunMissing };
     if (given.origin !== new URL(url).origin) return { unopened: UNUSABLE.damaged };
+    const values = Object.values(given.headers).flatMap((value) => [value, ...(/^Bearer\s+(.+)$/i.exec(value)?.slice(1) ?? [])]);
+    options.hold?.(values);
     return { headers: { ...given.headers } };
   };
 
