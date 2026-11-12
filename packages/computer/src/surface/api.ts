@@ -4,8 +4,7 @@
 // core (core.ts): a script's call, a per-step tool and the claim's MCP endpoint return the same values.
 //
 // A member of Computer marked `@group <name> [<name> ...]` exists only on a computer that declares one of those groups
-// (its hello), and one marked `@unless <name>` only on a computer that doesn't, so a model is never offered what the
-// computer can't do, nor two ways to do one thing. The steps are the protocol's own (UiStep): one step language for a
+// (its hello), so a model is never offered what the computer can't do. The steps are the protocol's own (UiStep): one step language for a
 // script, a tool call and the wire.
 import type { ComputerKind, ComputerOs, FileType, InputAction, Point, Rect, ScreenSize, UiExpect, UiNode, UiRef, UiRoute, UiStep } from "../protocol.js";
 
@@ -166,9 +165,9 @@ export interface Computer {
 		/** A screenshot, as an image; with region, only that part, in the whole screen's pixels. */
 		shot(options?: { region?: Rect }): Promise<Image>;
 	};
-	/** Raw input at screenshot pixels, for a computer with no ui group: with one, an app's steps reach the same.
-	 *  @group input.pointer input.touch input.keys
-	 *  @unless ui */
+	/** Raw input at screenshot pixels: the screen, not an app. With the ui group, prefer an app's steps; this reaches
+	 *  what they can't (a drag from one app to another, a swipe from the screen's edge, a pinch, outside every window).
+	 *  @group input.pointer input.touch input.keys */
 	readonly input: {
 		act(actions: InputAction[]): Promise<InputResult>;
 	};

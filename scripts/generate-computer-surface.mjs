@@ -124,13 +124,10 @@ const members = computerNode.members.map((member) => {
   const tag = ts.getJSDocTags(member).find((each) => each.tagName.text === 'group');
   const groups = typeof tag?.comment === 'string' ? tag.comment.trim().split(/\s+/).filter(Boolean) : [];
   if (tag && groups.length === 0) throw new Error(`Computer.${member.name?.getText(api)}: @group names no group`);
-  // `@unless ui`: not there on a computer with that group (raw input, where ui's steps reach the same).
-  const unlessTag = ts.getJSDocTags(member).find((each) => each.tagName.text === 'unless');
-  const unless = typeof unlessTag?.comment === 'string' ? unlessTag.comment.trim().split(/\s+/).filter(Boolean) : [];
-  for (const group of [...groups, ...unless]) if (!protocol.GROUPS.includes(group)) throw new Error(`Computer.${member.name?.getText(api)}: @group or @unless ${group} is not one of the protocol's groups`);
+  for (const group of groups) if (!protocol.GROUPS.includes(group)) throw new Error(`Computer.${member.name?.getText(api)}: @group ${group} is not one of the protocol's groups`);
   const text = member.getFullText(api).replace(/^\s*\n/, '').split('\n').map((line) => line.replace(/^\t/, '')).join('\n').trim().replace(/\t/g, '  ');
   const uses = [...referencesOf(member)].filter((used) => listed.has(used));
-  return { ...(groups.length > 0 ? { groups } : {}), ...(unless.length > 0 ? { unless } : {}), uses, text: text.replace(/\n/g, '\n  '), compact: compactOf(member, api) };
+  return { ...(groups.length > 0 ? { groups } : {}), uses, text: text.replace(/\n/g, '\n  '), compact: compactOf(member, api) };
 });
 const computerDoc = textOf(computerNode, api).split('\ninterface Computer')[0].trim();
 
@@ -157,7 +154,7 @@ const declarations = (keep) => {
     '/** The computer this script drives. */\ndeclare const computer: Computer;',
   ].join('\n\n');
 };
-const dts = `${HEADER}\n// The \`computer\` object a script drives. A member marked @group exists only on a computer that declares that group, and one marked @unless only on a computer that does not.\n\n${declarations(() => true)}\n`;
+const dts = `${HEADER}\n// The \`computer\` object a script drives. A member marked @group exists only on a computer that declares that group.\n\n${declarations(() => true)}\n`;
 
 // --- the tools' schemas -------------------------------------------------------------------------------------------
 const program = TJS.programFromConfig(resolve(root, 'packages/computer/tsconfig.json'), [apiPath]);
@@ -203,10 +200,9 @@ const schemaOf = (name) => {
 const schemas = Object.fromEntries(Object.entries(TOOL_ARGS).map(([tool, name]) => [tool, schemaOf(name)]));
 if (!JSON.stringify(schemas.computer_act).includes('"press"')) throw new Error('computer_act did not take the protocol\'s steps');
 for (const start of Object.keys(SHORT)) if (!shortened.has(start)) throw new Error(`SHORT["${start}"] matches no description: remove it`);
-// A step as JSON Schema is nine closed objects, about four times its TypeScript: computer_act's description declares the
-// steps instead (ACT_STEPS), once, and the schema takes a list of objects. The computer refuses a step it can't read,
-// in words, as it does a script's.
-schemas.computer_act.properties.steps.items = { type: 'object' };
+// The steps stay typed (one anyOf of the protocol's closed step shapes, no descriptions), so a provider can constrain
+// the call to them; computer_act's description declares them once more as TypeScript (ACT_STEPS), the words a model
+// reads them by.
 const actSteps = ['UiStep', 'UiRef', 'Point'].map((name) => printedOf(wireTypes.get(name), wire)).join(' ');
 
 const kernel = `${HEADER}
@@ -215,19 +211,19 @@ const kernel = `${HEADER}
 /** Each per-step tool's parameters, as JSON Schema. */
 export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in ${Object.keys(TOOL_ARGS).map((tool) => JSON.stringify(tool)).join(' | ')}]: object } = ${JSON.stringify(schemas, null, 2)};
 
-/** computer_act's steps, declared once in its description: its schema takes a list of objects. */
+/** computer_act's steps as TypeScript, for its description: its schema types them, with no words. */
 export const ACT_STEPS = ${JSON.stringify(actSteps)};
 
 /** The types \`computer\` names, in order, each with the types it names, in the compact form a model reads: one line,
  *  no comments (spec/computer/computer.d.ts has them). */
 const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] = ${JSON.stringify(typeList.map(({ name, compactUses, compact }) => ({ name, uses: compactUses, text: compact })), null, 2)};
-/** Computer's members, each with the groups it needs one of, the groups it is not there with, and the types it names. */
-const MEMBERS: readonly { groups?: readonly string[]; unless?: readonly string[]; uses: readonly string[]; text: string }[] = ${JSON.stringify(members.map(({ groups, unless, uses, compact }) => ({ ...(groups ? { groups } : {}), ...(unless ? { unless } : {}), uses, text: compact })), null, 2)};
+/** Computer's members, each with the groups it needs one of and the types it names. */
+const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; text: string }[] = ${JSON.stringify(members.map(({ groups, uses, compact }) => ({ ...(groups ? { groups } : {}), uses, text: compact })), null, 2)};
 
 /** The declarations a script on a computer with these groups reads: the types its members reach, Computer with only
  *  the members its groups offer, and \`declare const computer\`, one line each. */
 export function computerDeclarations(groups: readonly string[]): string {
-  const members = MEMBERS.filter((member) => (member.groups === undefined || member.groups.some((group) => groups.includes(group))) && !member.unless?.some((group) => groups.includes(group)));
+  const members = MEMBERS.filter((member) => member.groups === undefined || member.groups.some((group) => groups.includes(group)));
   const uses = new Map(TYPES.map((type) => [type.name, type.uses]));
   const reached = new Set<string>();
   const visit = (name: string): void => {

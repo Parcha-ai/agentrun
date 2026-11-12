@@ -69,6 +69,10 @@ const page = JSON.parse(await tools.computer_observe({ app: "com.android.setting
 const about = page.elements.find((node) => node.name === "About phone");
 ```
 
+**The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
+screenshot pixels, for what the app's window can't reach: a swipe from the screen's top edge opens the notification
+shade (`{ type: "swipe", path: [[540, 5], [540, 1200]] }`), and anything outside the app.
+
 ## How to work: observe, then act by ref, then check
 
 1. **Observe** first. Find your target by its name, role or id, and note its ref. A list row is often an unnamed

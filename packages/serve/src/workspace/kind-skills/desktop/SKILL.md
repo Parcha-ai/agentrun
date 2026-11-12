@@ -73,6 +73,10 @@ const notes = JSON.parse(await tools.computer_observe({ app: "com.apple.Notes" }
 const title = notes.elements.find((node) => node.role === "textbox" && node.name === "Title");
 ```
 
+**The screen itself.** Prefer an app's steps. A script's `computer.input.act([...])` is the screen-level way out, at
+screenshot pixels (`computer.screen.shot()`), for what one app's window can't reach: a drag from one app to another (a
+file from Finder into a Mail message), or anything outside every window.
+
 ## How to work: observe, then act by ref, then check
 
 1. **Observe** the app first. Find your target by its name and role, and note its ref.

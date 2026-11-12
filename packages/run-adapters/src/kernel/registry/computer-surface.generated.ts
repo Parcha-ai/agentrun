@@ -37,7 +37,188 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
         "maxItems": 100,
         "type": "array",
         "items": {
-          "type": "object"
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "press": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "press"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "set": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "set",
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "perform": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "perform"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "click": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {
+                        "type": "number"
+                      }
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "button": {
+                  "enum": [
+                    "left",
+                    "right"
+                  ],
+                  "type": "string"
+                },
+                "count": {
+                  "enum": [
+                    1,
+                    2,
+                    3
+                  ],
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "click"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "into": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "type"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "key"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "nav": {
+                  "enum": [
+                    "app_switch",
+                    "back",
+                    "home"
+                  ],
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "nav"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "scroll": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "items": {
+                        "type": "number"
+                      }
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "dx": {
+                  "type": "number"
+                },
+                "dy": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "scroll"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "drag": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "ms": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "drag"
+              ]
+            }
+          ]
         }
       },
       "expect": {
@@ -111,7 +292,7 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
   }
 };
 
-/** computer_act's steps, declared once in its description: its schema takes a list of objects. */
+/** computer_act's steps as TypeScript, for its description: its schema types them, with no words. */
 export const ACT_STEPS = "type UiStep = { press: UiRef; } | { set: UiRef; value: string; } | { perform: UiRef; action: string; } | { click: UiRef | Point; button?: \"left\" | \"right\"; count?: 1 | 2 | 3; } | { type: string; into?: UiRef; } | { key: string; } | { nav: \"back\" | \"home\" | \"app_switch\"; } | { scroll: UiRef | Point; dx?: number; dy?: number; } | { drag: Point[]; ms?: number; }; type UiRef = string; type Point = [ x: number, y: number ];";
 
 /** The types `computer` names, in order, each with the types it names, in the compact form a model reads: one line,
@@ -301,8 +482,8 @@ const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] 
     "text": "interface FileInfo { path: string; type: FileType; size: number; mtimeMs: number; }"
   }
 ];
-/** Computer's members, each with the groups it needs one of, the groups it is not there with, and the types it names. */
-const MEMBERS: readonly { groups?: readonly string[]; unless?: readonly string[]; uses: readonly string[]; text: string }[] = [
+/** Computer's members, each with the groups it needs one of and the types it names. */
+const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; text: string }[] = [
   {
     "uses": [
       "Card"
@@ -343,9 +524,6 @@ const MEMBERS: readonly { groups?: readonly string[]; unless?: readonly string[]
       "input.touch",
       "input.keys"
     ],
-    "unless": [
-      "ui"
-    ],
     "uses": [
       "InputAction",
       "InputResult"
@@ -375,7 +553,7 @@ const MEMBERS: readonly { groups?: readonly string[]; unless?: readonly string[]
 /** The declarations a script on a computer with these groups reads: the types its members reach, Computer with only
  *  the members its groups offer, and `declare const computer`, one line each. */
 export function computerDeclarations(groups: readonly string[]): string {
-  const members = MEMBERS.filter((member) => (member.groups === undefined || member.groups.some((group) => groups.includes(group))) && !member.unless?.some((group) => groups.includes(group)));
+  const members = MEMBERS.filter((member) => member.groups === undefined || member.groups.some((group) => groups.includes(group)));
   const uses = new Map(TYPES.map((type) => [type.name, type.uses]));
   const reached = new Set<string>();
   const visit = (name: string): void => {

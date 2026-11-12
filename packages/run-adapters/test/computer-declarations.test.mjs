@@ -36,12 +36,12 @@ test("a computer's declarations hold only the types its members reach: no elemen
   assert.match(mac, /type UiStep/);
 });
 
-test("a ui computer's declarations offer no raw input, and read compactly: no comments, one line each, steps named once by computer_act", () => {
+test("a ui computer's declarations keep raw input, and read compactly: no comments, one line each, steps named by computer_act", () => {
   const mac = computerDeclarations(["ui", "screen", "apps", "input.pointer", "input.keys"]);
-  assert.doesNotMatch(mac, /readonly input|type InputAction/, "a ui computer's steps reach what raw input would");
-  assert.match(errorsOf(mac, `return computer.input.act([]);`).join("\n"), /Property 'input' does not exist/);
+  assert.match(mac, /readonly input: \{ act\(actions: InputAction\[\]\): Promise<InputResult>; \};/, "the screen-level way out stays");
+  assert.deepEqual(errorsOf(mac, `return computer.input.act([{ type: "drag", path: [[10, 10], [900, 400]] }]);`), []);
   assert.doesNotMatch(mac, /\/\*\*/, "no doc comments: the kind skill and the tools' words say them");
   assert.match(mac, /^type UiStep = object; \/\/ computer_act's steps$/m);
   assert.match(mac, /^interface App \{ [^\n]* \}$/m, "one line a declaration");
-  assert.ok(mac.length < 3_000, `a Mac's declarations stay short: ${mac.length} characters`);
+  assert.ok(mac.length < 4_000, `a Mac's declarations stay short: ${mac.length} characters`);
 });

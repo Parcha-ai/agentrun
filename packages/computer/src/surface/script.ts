@@ -61,7 +61,7 @@ export function bindComputer(call: Call, card: Card): Computer {
 		});
 	if (has("ui")) computer.app = (id?: string) => bind(id);
 	if (has("screen")) computer.screen = freeze({ shot: (options: { region?: unknown } = {}) => call("screenshot", options) });
-	if (!has("ui") && (has("input.pointer") || has("input.touch") || has("input.keys"))) computer.input = freeze({ act: (actions: unknown[]) => call("input.act", { actions }) });
+	if (has("input.pointer") || has("input.touch") || has("input.keys")) computer.input = freeze({ act: (actions: unknown[]) => call("input.act", { actions }) });
 	if (has("exec")) computer.shell = freeze({ run: (command: unknown, options: object = {}) => call("shell.run", { ...options, command }) });
 	if (has("files"))
 		computer.files = freeze({

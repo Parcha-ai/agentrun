@@ -76,11 +76,12 @@ test("a point read against a state the window has left is refused as stale, in t
   assert.match(JSON.stringify(stale.structured ?? stale.text), /stale/, stale.text);
 });
 
-test("a step the computer can't read is refused in words, by the tool and by a script alike: computer_act's schema types no step", async () => {
+test("a step the computer can't read is refused in words, by the tool and by a script alike", async () => {
   const { tools } = await fakeRun();
   const act = tools.find((tool) => tool.name === "computer_act");
-  assert.deepEqual(act.inputSchema.properties.steps.items, { type: "object" }, "the steps are declared in the description, once");
-  assert.match(act.description, /type UiStep = \{ press: UiRef; \}/);
+  assert.equal(act.inputSchema.properties.steps.items.anyOf.length, 9, "the schema types each step shape");
+  assert.match(act.description, /type UiStep = \{ press: UiRef; \}/, "and the description declares them as TypeScript");
+  // A provider that doesn't constrain its calls to the schema can still send one: the computer refuses it.
   const byTool = await call(tools, "computer_act", { app: UI_FIXTURE.id, steps: [{ tap: "@e1" }] });
   const byScript = await call(tools, "computer_script", { code: `return await computer.app(${JSON.stringify(UI_FIXTURE.id)}).act([{ tap: "@e1" }]);` });
   for (const [how, answer] of [["tool", byTool], ["script", byScript]]) {
