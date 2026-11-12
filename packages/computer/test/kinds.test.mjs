@@ -88,7 +88,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	const key = (name, option, required = true) => ({ name, option, required });
 	assert.deepEqual(rows, [
 		{ id: "docker", label: "Docker", keys: [], metered: false },
-		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false)], metered: true },
+		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false), key("DAYTONA_ARCHIL_EGRESS", "archilEgress", false)], metered: true },
 		{ id: "modal", label: "Modal", keys: [key("MODAL_TOKEN_ID", "tokenId"), key("MODAL_TOKEN_SECRET", "tokenSecret")], metered: true },
 		{ id: "e2b", label: "E2B", keys: [key("E2B_API_KEY", "apiKey")], metered: true },
 		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey"), key("ORGO_WORKSPACE_ID", "workspaceId")], metered: true },

@@ -3,8 +3,8 @@
 # at /workspace. It does four things and nothing else, each with fixed arguments to the archil client, to find and chown,
 # or to computerd:
 #
-#   mount  <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
-#   revoke <disk> <region> agents/<agent>/runs/<run>/work   the disk token as one line on fd 0
+#   mount  <disk> <region> agents/<agent>/runs/<run>/work [egress=<gateway>:<mount lane>:<data lane>]   the token on fd 0
+#   revoke <disk> <region> agents/<agent>/runs/<run>/work [egress=<gateway>:<mount lane>:<data lane>]   the token on fd 0
 #   serve
 #   checkin
 #
@@ -12,6 +12,15 @@
 #         then every path of the mounted tree that is not agentrun-tool's is given to it (the links themselves, never
 #         followed, and never past the mount): the disk's object API makes files root's, 644, and while a computer holds
 #         the folder no outside write lands (Archil refuses it), so what the object API made is all there at the mount.
+#         With egress=<gateway>:<mount lane>:<data lane> (an IPv4 address and two ports, neither 8100 nor 32050), the
+#         archil client reaches Archil through that egress gateway alone, set up before it runs: `computerd archil-relay`
+#         listens on the computer's loopback (127.0.0.1:3129), and an nftables table of the helper's own (inet
+#         agentrun_archil, replaced whole) redirects root's TCP to 8100 (the mount endpoint) and 32050 (the file servers)
+#         to it and resets every other TCP to those ports. The relay carries each connection to the gateway's lane for
+#         its port with a PROXY v2 header naming the original destination, and the gateway admits it only to a
+#         destination that proves, by certificate, the Archil name the client asked for. A relay or a table that cannot
+#         be set up exits 4 and runs nothing; a relay that cannot reach the gateway later closes the connection, so the
+#         client reaches nothing. Both stay as long as the computer. With no egress, nothing of this is set.
 # revoke  the same with --force: takes the folder back from a computer that is gone and left its delegation behind.
 # serve   becomes `computerd sync-serve`, resident, holding no token: on its socket it takes one fixed byte and answers
 #         the exit code of `archil sync /workspace` (every write so far durable), coalesced; it exits when the mount
@@ -20,7 +29,7 @@
 #
 # The archil client and serve run as root in the computer's own network namespace, which reaches Archil; init and every
 # tool run in a namespace of their own with loopback alone (computerd init --own-network), so the tools have no network
-# and reach no daemon of the provider's. This helper sets no firewall.
+# and reach no daemon of the provider's. Without egress this helper sets no firewall.
 #
 # Install it root:root 0755 at /usr/local/sbin/agentrun-archil. The provider runs it as root through its own exec (the
 # image's user is root), never through sudo: the image has none. The run's tools run as agentrun-tool, through
@@ -29,12 +38,13 @@
 # The token is read from fd 0 and handed to archil only in the environment of its exec (archil reads it nowhere else),
 # never as an argument and never in a file. Every argument is checked here, whoever calls: a caller that is not root, a
 # wrong verb or count, a newline, a disk, region or folder of any other shape (an absolute path, `.` or `..`, an empty
-# or extra segment), a mountpoint that is a link or not empty, or a token of any other shape exits 2 and runs nothing.
+# or extra segment), an egress of any other shape, a mountpoint that is a link or not empty, or a token of any other
+# shape exits 2 and runs nothing.
 # A serve or checkin with nothing mounted exits 3 and runs nothing. A mount or revoke in a computer whose /proc lets a
 # user see another's processes (no hidepid=2 or invisible) exits 4 and runs nothing; each first remounts /proc with
 # hidepid=2, which a computer whose root may not remount leaves as it was. A mount the client refuses answers the
 # client's exit code; a mount whose tree cannot then be given to agentrun-tool exits 4. A serve whose computerd is not
-# root's alone exits 4.
+# root's alone exits 4, and so does a mount or revoke with egress whose computerd is not.
 set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -53,6 +63,7 @@ FIND=/usr/bin/find
 TOOL=agentrun-tool
 TOOL_UID=2510
 COMPUTERD=/opt/agentrun/computerd
+NFT=/usr/sbin/nft
 SOCK=/run/agentrun-archil/archil.sock
 ROOT_UID=0
 HELD_TOP=/
@@ -76,12 +87,25 @@ matches() { printf '%s\n' "$1" | grep -Eqx -- "$2"; }
 # Whether $MP is in the mount table, as an archil mount (fuse.archil) or as anything (any).
 listed() { awk -v m="$MP" -v t="$1" '$2 == m && (t == "any" || $3 == t) { f = 1 } END { exit !f }' "$MOUNTS"; }
 
+# The relay's port on the computer's loopback (computerd's archilrelay.Address) and Archil's two ports.
+RELAY_PORT=3129
+ARCHIL_PORTS='8100, 32050'
+
 take() {
-  [ "$#" -eq 3 ] || refuse "$verb takes <disk> <region> agents/<agent>/runs/<run>/work"
-  disk=$1 region=$2 folder=$3
+  [ "$#" -eq 3 ] || [ "$#" -eq 4 ] || refuse "$verb takes <disk> <region> agents/<agent>/runs/<run>/work and at most egress=<gateway>:<mount lane>:<data lane>"
+  disk=$1 region=$2 folder=$3 egress=${4-}
   matches "$disk" 'dsk-[0-9a-f]{16}|[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}' || refuse "the disk is a disk id (dsk-...) or owner/name"
   matches "$region" '[a-z0-9]+-[a-z0-9][a-z0-9-]{0,62}' || refuse "the region is a provider, a dash and its region, lowercase letters, digits and dashes"
   matches "$folder" 'agents/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/runs/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/work' || refuse "the folder is agents/<agent>/runs/<run>/work, nothing else"
+  if [ "$#" -eq 4 ]; then
+    # egress=<IPv4>:<port>:<port>, as mount-archil.ts checks it; computerd archil-relay checks the same again.
+    port='([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])'
+    matches "$egress" "egress=((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]):$port:$port" || refuse "egress is egress=<gateway>:<mount lane>:<data lane>, an IPv4 address and two ports"
+    lanes=${egress#egress=}
+    gateway=${lanes%%:*} lanes=${lanes#*:}
+    mount_lane=${lanes%%:*} data_lane=${lanes#*:}
+    [ "$mount_lane" != "$data_lane" ] && [ "$mount_lane" != 8100 ] && [ "$mount_lane" != 32050 ] && [ "$data_lane" != 8100 ] && [ "$data_lane" != 32050 ] || refuse "egress's two lanes differ, and neither is 8100 or 32050, which the computer redirects to the relay"
+  fi
   # The computer's /proc (its last mount there) must hide each user's processes from the others, hidepid=2 or invisible
   # as newer kernels name it: else the run's tools could see this root archil client's. No image sets it, so it is
   # remounted so first, as root may where it holds CAP_SYS_ADMIN; a computer where that fails is refused by the check.
@@ -104,6 +128,8 @@ take() {
   IFS= read -r token || [ -n "$token" ] || refuse "no token on fd 0"
   [ "${#token}" -ge 16 ] && [ "${#token}" -le 4096 ] || refuse "the token is not a disk token"
   case "$token" in *[!A-Za-z0-9._~+/=-]*) refuse "the token is not a disk token" ;; esac
+  # Every argument and the token checked: the way out is set right before the client that takes it.
+  [ -z "$egress" ] || route
   # In the environment of archil's command alone (an assignment before the command, never exported to this shell's own,
   # which was fixed at its start), and archil runs as root, so no other user reads it there.
   rc=0
@@ -115,6 +141,32 @@ take() {
   # mount (-xdev). Nothing outside lands while this computer holds the folder, so this once is enough.
   "$FIND" "$MP" -xdev ! -uid "$TOOL_UID" -exec "$CHOWN" -h "$TOOL:$TOOL" {} + || {
     printf 'agentrun-archil: %s is mounted, but this computer cannot give its tree to %s, so the tools could not write it\n' "$MP" "$TOOL" >&2
+    exit 4
+  }
+}
+
+# The archil client's way out through the egress gateway: the relay first, so every redirected connection meets it, then
+# the table, whole (made, dropped and made again in one transaction, so a mount found again replaces its own).
+route() {
+  rootsalone || { printf 'agentrun-archil: computerd at %s is not root'"'"'s alone, so no relay runs and nothing is mounted\n' "$COMPUTERD" >&2; exit 4; }
+  "$COMPUTERD" archil-relay --gateway "$gateway" --mount-lane "$mount_lane" --data-lane "$data_lane" </dev/null || {
+    printf 'agentrun-archil: the archil relay to %s did not start, so nothing is mounted\n' "$gateway" >&2
+    exit 4
+  }
+  printf '%s\n' \
+    'table inet agentrun_archil' \
+    'delete table inet agentrun_archil' \
+    'table inet agentrun_archil {' \
+    '  chain redirect {' \
+    '    type nat hook output priority -100; policy accept;' \
+    "    meta skuid 0 meta nfproto ipv4 tcp dport { $ARCHIL_PORTS } redirect to :$RELAY_PORT" \
+    '  }' \
+    '  chain fence {' \
+    '    type filter hook output priority 0; policy accept;' \
+    "    tcp dport { $ARCHIL_PORTS } reject with tcp reset" \
+    '  }' \
+    '}' | "$NFT" -f - || {
+    printf 'agentrun-archil: the redirect to the archil relay could not be set, so nothing is mounted\n' >&2
     exit 4
   }
 }

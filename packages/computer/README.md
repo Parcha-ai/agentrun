@@ -431,7 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -874,6 +874,14 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
   computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
   as `{ other }`, in words. The token is never in a label, a read-back or an error.
+- **An Archil egress gateway (Daytona, `archilEgress` / `DAYTONA_ARCHIL_EGRESS`).** For a target whose runners reach
+  Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as `10.60.0.40:18100:42050`, parcha-proxy's
+  archil-egress). The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
+  an nftables table of its own (`inet agentrun_archil`) that redirects root's TCP to 8100 (the mount endpoint) and 32050
+  (the file servers, at the raw addresses the mount endpoint returns) to the relay and resets every other TCP to those
+  ports. The relay sends each connection to the gateway's lane for its port with a PROXY v2 header naming the original
+  destination; the gateway admits only a destination that proves, by certificate, the Archil name the client asked for.
+  A relay that cannot reach the gateway closes the connection, so the client reaches nothing. Unset, nothing changes.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.

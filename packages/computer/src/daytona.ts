@@ -19,8 +19,10 @@ import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mo
 import {
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
+	type ArchilEgress,
 	type ArchilMount,
 	type ArchilRoot,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilRefusals,
@@ -110,6 +112,12 @@ export interface DaytonaProviderOptions {
 	sandboxClass?: "container" | "linux-vm";
 	/** The Daytona target (region); default the organization's. */
 	target?: string;
+	/**
+	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
+	 * lane>` such as 10.60.0.40:18100:42050 (parcha-proxy's archil-egress): for a target whose runners reach Archil only
+	 * through it. Unset, the client reaches Archil as the sandbox's network allows, as before.
+	 */
+	archilEgress?: string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -651,6 +659,7 @@ export class DaytonaProvider implements ComputerProvider {
 	readonly #arch: string;
 	readonly #class: "container" | "linux-vm";
 	readonly #target: string | undefined;
+	readonly #archilEgress: ArchilEgress | undefined;
 	/** The snapshot its GPU computers are made from, their GPU, and the mounts they take. */
 	readonly #gpu: DaytonaGpuSnapshot;
 	readonly #uid: string;
@@ -669,6 +678,7 @@ export class DaytonaProvider implements ComputerProvider {
 		arch = "amd64",
 		sandboxClass = "container",
 		target,
+		archilEgress,
 		gpuSnapshot,
 		daemonUser = TOOL_USER,
 		autoStopMinutes = 0,
@@ -699,6 +709,7 @@ export class DaytonaProvider implements ComputerProvider {
 		this.#arch = arch;
 		this.#class = sandboxClass;
 		this.#target = target;
+		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		this.#gpu = daytonaGpuSnapshot(gpuSnapshot);
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#webSocket = webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike);
@@ -882,6 +893,7 @@ export class DaytonaProvider implements ComputerProvider {
 				self: ref,
 				releaseOlder: () => releaseOlder(this, run, epoch as number, signal ? { signal } : {}),
 				timeoutMs: this.#timeouts.execMs,
+				...(this.#archilEgress ? { egress: this.#archilEgress } : {}),
 				...(signal ? { signal } : {}),
 			});
 			if (!mounted.ok) return mounted;
