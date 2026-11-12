@@ -624,7 +624,9 @@ export function catalogPrice(catalog: ReadonlyMap<string, readonly Listed[]>, id
 const flippedForms = (id: string): string[] => [...new Set([id.replace(/(\d)-(\d)/g, "$1.$2"), id.replace(/(\d)\.(\d)/g, "$1-$2")])].filter((form) => form !== id);
 
 /** `id`'s price in `catalog` (listedPrice): its own entries' metered price when the catalog lists one; else its flipped
- *  forms' (flippedForms), only when every metered entry they hold has one price; else the metered price a gateway lists
+ *  forms' (flippedForms), only when every metered entry they hold has one base price (input, output, cacheRead,
+ *  cacheWrite; a long-context `tiers` table is not part of the comparison), the entry that carries `tiers` when one does
+ *  (a long prompt is priced at the higher tier, erring high), else the first; else the metered price a gateway lists
  *  under a vendor's id for it (`<vendor>/<id>`, the named vendor's first: pi-ai lists the bare id of some models only
  *  under subscription plans, at $0, and the gateways that meter them under the vendor's). A flip that finds different
  *  prices leaves the model unpriced, and so does an id with no metered entry anywhere (#2339: a plan's $0 never prices a
@@ -635,8 +637,10 @@ function catalogEntries(catalog: ReadonlyMap<string, readonly Listed[]>, id: str
   if (listed) return listed;
   const flipped = flippedForms(id).flatMap((form) => (catalog.get(form) ?? []).filter(({ cost }) => cost.input + cost.output > 0));
   if (flipped.length) {
-    const one = JSON.stringify(flipped[0]!.cost);
-    return flipped.every((entry) => JSON.stringify(entry.cost) === one) ? flipped[0]!.cost : undefined;
+    const base = ({ input, output, cacheRead, cacheWrite }: ModelCost) => JSON.stringify([input, output, cacheRead, cacheWrite]);
+    const one = base(flipped[0]!.cost);
+    if (!flipped.every((entry) => base(entry.cost) === one)) return undefined;
+    return (flipped.find((entry) => entry.cost.tiers?.length) ?? flipped[0]!).cost;
   }
   return vendorPrice(catalog, id, named);
 }
