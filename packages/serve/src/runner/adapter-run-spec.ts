@@ -64,6 +64,7 @@ import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerReadyWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
+import type { RunComputerHold } from "./computer-journal.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -93,6 +94,8 @@ export interface ClaimDeps {
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   readonly hold?: unknown;
+  /** The run's desktop or phone and the person's hold on it: the spec's `computer` (AdapterRunSpec.computer). */
+  readonly held?: RunComputerHold;
   release(): Promise<void>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
@@ -678,6 +681,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
+    // The run's desktop or phone and the person's hold on it, as the claim made them: the loop shows it up and applies a
+    // take-over and a hand-back to it.
+    ...(computer.held ? { computer: computer.held } : {}),
     workRoot: root,
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
