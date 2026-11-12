@@ -24,7 +24,7 @@ type DriverRecord = { binding: string | null; inputs: Record<string, string> | n
 /** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
  *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
 /** `immutable`: a file nothing writes again. `unlocked`: a file a process may hold under an exclusive lock with its WAL
- *  in heap (a run's own, written as pi-durable-disk's exclusive profile writes it): read with no locking (`vfs=unix-none`)
+ *  in heap (a run's own, written under an exclusive lock): read with no locking (`vfs=unix-none`)
  *  and an exclusive locking mode, the WAL read into heap, so the read neither waits on the writer nor makes a -shm. */
 export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
 
@@ -110,13 +110,9 @@ export function durableDoc<T = Record<string, unknown>>(file: string, kind: stri
   return (withDurableFile(file, (db) => sessionDoc(db, kind, key), options) ?? undefined) as T | undefined;
 }
 
-/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order, in whichever form the store holds: the single
- *  document's `receipts` list, or the keyed documents (one row each, in the order of their keys). A reader that folds decisions from the
- *  store uses this and not `durableDoc(file, "agentrun.decisions").receipts`, which is nothing in the keyed form. */
+/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order: the keyed documents, one row each, in the order of their keys. */
 export function durableDecisions(file: string, options: DurableReadOptions = {}): Array<Record<string, unknown>> {
   return withDurableFile(file, (db) => {
-    const single = sessionDoc(db, "agentrun.decisions") as { receipts?: unknown } | undefined;
-    if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
     const count = (sessionDoc(db, "agentrun.decisions.count") as { count?: unknown } | undefined)?.count;
     const rows: Array<Record<string, unknown>> = [];
     if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
@@ -147,11 +143,4 @@ export function readJournal(file: string, key: string, options: DurableReadOptio
     });
     return { binding: doc.binding, inputs: doc.inputs, generation: doc.generation, revision: doc.revision, state: doc.state, notes: doc.notes, effects };
   }, options) ?? undefined;
-}
-
-/** Every committed route decision a frozen snapshot holds (each judge's answer, whole), by execution path. Empty for a
- *  state that is no snapshot. */
-export function committedRoutes(state: unknown): Record<string, Json> {
-  const routes = (state as { pin?: { routes?: Record<string, Json> } } | null)?.pin?.routes;
-  return routes && typeof routes === "object" && !Array.isArray(routes) ? { ...routes } : {};
 }

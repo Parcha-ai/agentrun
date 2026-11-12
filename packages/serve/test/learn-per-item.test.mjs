@@ -1,7 +1,7 @@
 // A count or size cap broken by some items of a run's answer leaves those items out and keeps the rest (propose.ts over
 // learn/check.ts): a ninth new note, a note over its size, a second skill, and a note that takes the notes superseded past
-// the cap are each left out, named in `left`, and the other items go on to the grader. Only what no one item is past (the
-// index's total) still refuses the whole answer.
+// the cap are each left out, named in `left`, and the other items go on to the grader; past the index's lines, the notes
+// that add lines are left out from the answer's end.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +17,8 @@ import { note } from "./learn-format-support.mjs";
 const AGENT = "agent-1";
 const block = (file, text) => `\`\`\`note ${file}\n${text}\`\`\``;
 const skillBlock = (name) => `\`\`\`\`skill ${name}\n---\nname: ${name}\ndescription: Do ${name}\n---\nStep one.\n\`\`\`\``;
-const notes = (n, from = 0) => Array.from({ length: n }, (_, i) => block(`n${from + i}.md`, note({ name: `N${from + i}`, description: `D${from + i}` })));
+/** `n` new notes, each its own rule (one copy of each rule: notes of one body are duplicates, #2256). */
+const notes = (n, from = 0) => Array.from({ length: n }, (_, i) => block(`n${from + i}.md`, note({ name: `N${from + i}`, description: `D${from + i}`, body: `Rule ${from + i}: check it first.\n` })));
 
 /** A learning folder whose main holds `seed` (file to text), and proposeRun over `answer` against it. */
 async function proposed(t, answer, seed = {}) {
@@ -69,11 +70,11 @@ test("a second skill is left out and the first skill and the notes are kept", as
 test("a note that takes the notes superseded past the cap is left out, after a first pass that left out another", async (t) => {
   // Twelve active notes; a.md supersedes eight of them, b.md a ninth (past the cap), and c.md is over the size cap: the
   // first pass names c.md alone (the supersedes count is asked only of a rest with no other problem), the second b.md.
-  const seed = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`old${i}.md`, note({ name: `Old${i}`, description: `Old ${i}` })]));
+  const seed = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`old${i}.md`, note({ name: `Old${i}`, description: `Old ${i}`, body: `Old rule ${i}.\n` })]));
   const olds = (from, n) => Array.from({ length: n }, (_, i) => `old${from + i}.md`).join(", ");
   const answer = [
-    block("a.md", note({ name: "A", description: "A", extra: `supersedes: [${olds(0, CAPS.supersedes)}]\n` })),
-    block("b.md", note({ name: "B", description: "B", extra: `supersedes: [${olds(CAPS.supersedes, 1)}]\n` })),
+    block("a.md", note({ name: "A", description: "A", body: "Rule A.\n", extra: `supersedes: [${olds(0, CAPS.supersedes)}]\n` })),
+    block("b.md", note({ name: "B", description: "B", body: "Rule B.\n", extra: `supersedes: [${olds(CAPS.supersedes, 1)}]\n` })),
     block("c.md", note({ name: "C", description: "C", body: `${"x".repeat(CAPS.runNote)}\n` })),
   ].join("\n\n");
   const result = await proposed(t, answer, seed);
@@ -85,12 +86,12 @@ test("a note that takes the notes superseded past the cap is left out, after a f
 test("a note left out past the supersedes cap holds none of what it names: a later note superseding one of them is kept", async (t) => {
   // a.md supersedes seven active notes, b.md two more (nine: past the cap, so left out), and c.md one of b.md's two:
   // with b.md out, c.md takes the count to eight, and supersedes what no kept note does.
-  const seed = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`old${i}.md`, note({ name: `Old${i}`, description: `Old ${i}` })]));
+  const seed = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`old${i}.md`, note({ name: `Old${i}`, description: `Old ${i}`, body: `Old rule ${i}.\n` })]));
   const olds = (from, n) => Array.from({ length: n }, (_, i) => `old${from + i}.md`).join(", ");
   const answer = [
-    block("a.md", note({ name: "A", description: "A", extra: `supersedes: [${olds(0, CAPS.supersedes - 1)}]\n` })),
-    block("b.md", note({ name: "B", description: "B", extra: `supersedes: [${olds(CAPS.supersedes - 1, 2)}]\n` })),
-    block("c.md", note({ name: "C", description: "C", extra: `supersedes: [${olds(CAPS.supersedes - 1, 1)}]\n` })),
+    block("a.md", note({ name: "A", description: "A", body: "Rule A.\n", extra: `supersedes: [${olds(0, CAPS.supersedes - 1)}]\n` })),
+    block("b.md", note({ name: "B", description: "B", body: "Rule B.\n", extra: `supersedes: [${olds(CAPS.supersedes - 1, 2)}]\n` })),
+    block("c.md", note({ name: "C", description: "C", body: "Rule C.\n", extra: `supersedes: [${olds(CAPS.supersedes - 1, 1)}]\n` })),
   ].join("\n\n");
   const result = await proposed(t, answer, seed);
   assert.equal(result.state, "proposed", JSON.stringify(result));
@@ -113,4 +114,18 @@ test("a path outside what a run may write refuses the whole answer, past the cha
   const result = await proposed(t, [...notes(CAPS.changes), outside].join("\n\n"));
   assert.equal(result.state, "dropped", JSON.stringify(result).slice(0, 400));
   assert.ok(result.problems.some(({ rule, path }) => rule === "outside" && path === "../outside.md"), JSON.stringify(result.problems.filter(({ rule }) => rule !== "too_many_notes")));
+});
+
+// #2256 review (PRRT_kwDOUmdVMs62DEyt): a.md supersedes a note the folder does not hold, b.md says its rule and
+// supersedes nothing. The pass that leaves a.md out keeps b.md: a refused note never makes its rule's valid copy a
+// duplicate, so the rule survives.
+test("a note left out for what it supersedes keeps no rule: its valid copy beside it is kept", async (t) => {
+  const answer = [
+    block("a.md", note({ name: "A", description: "A", body: "Retry a flaky fetch twice.\n", extra: "supersedes: [missing.md]\n" })),
+    block("b.md", note({ name: "B", description: "B", body: "Retry a flaky fetch twice.\n" })),
+  ].join("\n\n");
+  const result = await proposed(t, answer);
+  assert.equal(result.state, "proposed", JSON.stringify(result));
+  assert.equal(result.notes, 1, JSON.stringify(result));
+  assert.deepEqual(leftOf(result), [["supersedes", "a.md"]]);
 });

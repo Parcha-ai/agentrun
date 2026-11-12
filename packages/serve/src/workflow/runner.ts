@@ -11,7 +11,6 @@ import type { PiRunnerOptions, PiSession, PiSessionOptions, PiToolDefinition } f
 export type { PiRunnerOptions, PiSession, PiSessionFactory } from "./types.js";
 
 export type PiRunner = NonNullable<WorkflowDeps["runNode"]>;
-export type PiNodeRequest = Parameters<PiRunner>[0];
 
 export { PiRunError } from "./run-error.js";
 

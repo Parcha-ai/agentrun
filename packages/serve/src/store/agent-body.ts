@@ -1,4 +1,4 @@
-// The agent body validator (the P4 fold of pi-durable-agent's agent-store.ts bodyOf, with kinds.ts's canonical JSON): what
+// The agent body validator (with canonical JSON): what
 // a revision's stored body may be, checked before anything is written, so a refusal makes no agent and no revision. It is
 // the one check the control plane runs over a revision's body, kept with the store (A) it writes into. The body keeps a
 // skill path to its text's SHA-256 (two revisions with the same files are one body); the texts ride beside it on the
@@ -56,13 +56,13 @@ export type RevisionComputer = { kind: string; provider?: string; image?: string
 export type ToolSettings = Record<string, unknown>;
 /** The model of each tier an agentic revision names (its definition's `model_tiers`: fast, strong), each "provider/model-id". */
 export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" }
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" }
   | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
@@ -135,7 +135,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
-    if (input.learning !== undefined && typeof input.learning !== "boolean") invalid("learning is not true or false");
+    if (input.learning !== undefined && typeof input.learning !== "boolean" && input.learning !== "notes") invalid("learning is not true, false or \"notes\"");
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
     if (input.checkout !== undefined && input.checkout !== "pull_request") invalid("the checkout is not pull_request");
     if (input.modelTiers !== undefined && !(isObject(input.modelTiers) && Object.keys(input.modelTiers).length && Object.entries(input.modelTiers).every(([tier, ref]) => (tier === "fast" || tier === "strong") && typeof ref === "string" && ref !== ""))) invalid("the modelTiers are not fast and strong to a non-empty model");

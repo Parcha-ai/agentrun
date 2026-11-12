@@ -1,5 +1,6 @@
 // DockerProvider's attach, list and network against the fake docker in test/fake-docker.mjs: no Docker needed.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { sweep } from "../dist/index.js";
 import { container, fakeDocker, idOf, valuesOf } from "./fake-docker.mjs";
@@ -306,6 +307,33 @@ test("sweep() on Docker deletes the stopped computer past its deadline, since li
 	assert.deepEqual(swept, { ok: true, value: { deleted: [B], kept: 1, leftovers: [] } });
 	assert.ok(calls().some((args) => args[0] === "rm" && args.at(-1) === B));
 	assert.deepEqual(names().sort(), [A, "computer-0000000000cc", "postgres"].sort(), "only the expired computer is gone");
+});
+
+test("list() and sweep() read a labelled container made with no --mount, whose inspect has no HostConfig.Mounts: one such container never fails the list", async () => {
+	// As `docker run --label agentrun.computer=1 ...` makes one: Docker leaves HostConfig.Mounts out when it is empty, and
+	// its template fails the whole inspect on a key the map lacks (the fake runs templates as Docker does).
+	const bare = container({ name: "computer-0000000000dd", labels: { run: "1" }, deadline: PAST });
+	delete bare.HostConfig.Mounts;
+	bare.Mounts = [];
+	const { provider, names } = fakeDocker({ containers: [container({ name: A, labels: { run: "1" } }), bare] });
+	const listed = await provider.list({ run: "1" });
+	assert.equal(listed.ok, true, listed.ok ? "" : listed.error.message);
+	assert.deepEqual(listed.value.map((info) => info.ref.name).sort(), [A, "computer-0000000000dd"]);
+	const swept = await sweep(provider, { labels: { run: "1" }, now: new Date() });
+	assert.equal(swept.ok, true, swept.ok ? "" : swept.error.message);
+	assert.deepEqual(swept.value.deleted, ["computer-0000000000dd"]);
+	assert.deepEqual(names(), [A]);
+});
+
+test("the fake runs a template as Docker does: a key the inspect lacks fails the call in Docker's words, and index reads it as null", async () => {
+	const bare = container({ name: A });
+	delete bare.HostConfig.Mounts;
+	const { program: docker } = fakeDocker({ containers: [bare] });
+	const strict = spawnSync(docker,["inspect", "--type", "container", "--format", "{{json .HostConfig.Mounts}}", A], { encoding: "utf8" });
+	assert.equal(strict.status, 1);
+	assert.match(strict.stderr, /template parsing error: .* at <\.HostConfig\.Mounts>: map has no entry for key "Mounts"/);
+	const indexed = spawnSync(docker, ["inspect", "--type", "container", "--format", '{{json (index .HostConfig "Mounts")}}', A], { encoding: "utf8" });
+	assert.deepEqual([indexed.status, indexed.stdout], [0, "null\n"]);
 });
 
 test("list() inspects at most 50 computers a call, and only the fields it reports, so a fleet past one inspect's 16 MiB is listed whole", async () => {

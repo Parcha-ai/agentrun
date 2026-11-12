@@ -92,5 +92,8 @@ export const DAYTONA = defineProvider({
 	// A linux computer, with GPUs when asked.
 	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
+	// A Daytona computer that mounts the run's folder from Archil needs a snapshot of box/Dockerfile (build-daytona.py
+	// builds one and prints its name): the operator names it here, and the default snapshot stands while unset.
+	imageEnv: "AGENTRUN_DAYTONA_SNAPSHOT",
 	load: () => import("../daytona.js"),
 });
