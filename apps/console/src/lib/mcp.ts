@@ -26,6 +26,10 @@ export type McpAuth = { type: Exclude<McpAuthType, "oauth"> | "oauth"; token?: s
 export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
 
 /** The grant `definition.tools` holds for a server's tool, and the server and tool a grant names (null: not one). */
+/** What a preview's tool list is: the tools the server offers, listed with this credential, not what it lets this
+ *  credential do (a read-only token sees write tools too). Shown with every preview. */
+export const PREVIEW_SCOPE_NOTE = "These are the tools the server offers, not what this credential allows: a read-only token still sees its write tools. A call the credential can't make is refused by the server when a run makes it.";
+
 export const mcpGrant = (server: string, tool: string) => `mcp:${server}/${tool}`;
 export function grantOf(name: string): { server: string; tool: string } | null {
   const m = /^mcp:([^/]+)\/(.+)$/.exec(name);

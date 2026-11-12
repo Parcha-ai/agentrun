@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/field";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, signInFailure } from "@/lib/mcp";
+import { type McpAuth, type McpPreview, mcpProblem, type McpRefresh, type McpServer, PREVIEW_SCOPE_NOTE, signInFailure } from "@/lib/mcp";
 
 type Problem = ReturnType<typeof mcpProblem>;
 type SignIn = { server: string; ok: boolean; error?: string };
@@ -292,6 +292,7 @@ function ServerForm({ v2, saved, given, writable, signIn, onCancel, onSaved }: {
         <section aria-label="Preview" className="border bg-background p-3">
           <p className="font-mono text-small text-muted-foreground">MCP {preview.protocol}{preview.server_info?.name ? ` · ${preview.server_info.name}${preview.server_info.version ? ` ${preview.server_info.version}` : ""}` : ""} · {preview.tools.length} tool{preview.tools.length === 1 ? "" : "s"}</p>
           {preview.instructions && <p className="mt-2 whitespace-pre-wrap text-small">{preview.instructions}</p>}
+          <p className="mt-2 text-small text-muted-foreground">{PREVIEW_SCOPE_NOTE}</p>
           <ul aria-label="Tools it lists" className="mt-2 divide-y border">
             {preview.tools.map((t) => (
               <li key={t.name} className="px-3 py-2"><span className="font-mono text-body">{t.name}</span>{t.title && <span className="ml-2 text-small">{t.title}</span>}

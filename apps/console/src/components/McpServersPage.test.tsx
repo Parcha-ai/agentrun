@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { McpServersPage } from "./McpServersPage";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { McpServer } from "@/lib/mcp";
+import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
 import recorded from "@/fixtures/mcp.requests.json";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
@@ -95,6 +95,10 @@ describe("Settings → MCP servers, adding one", () => {
     expect(tools).toEqual([expect.stringContaining("add"), expect.stringContaining("slow_write")]);
     expect(tools[0]).toContain("Add two numbers.");
     expect(tools[0]).toContain("Add");
+    // The list is what the server offers, not what this credential allows: said with the preview.
+    expect(p.host.querySelector('[aria-label="Preview"]')?.textContent).toContain(PREVIEW_SCOPE_NOTE);
+    expect(PREVIEW_SCOPE_NOTE).toContain("not what this credential allows");
+    expect(PREVIEW_SCOPE_NOTE).toContain("refused by the server");
     await p.click(/^Save$/);
     expect(s.writes()).toEqual([expected("preview"), expected("save")]);
     // Saved: the list shows it, and no input or text on the page holds the token.
