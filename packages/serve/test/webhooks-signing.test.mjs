@@ -308,6 +308,23 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     assert.equal(hook.got.length, 0, "nothing reached this machine");
   });
 
+  test("a try whose name's lookup never answers does not hold the server's stop: close() gives the lookup up and returns, the try is cut", async (t) => {
+    const dir = await scratch(t);
+    const answers = [["192.0.2.10"]];
+    let hung = false;
+    // The first answer is the PUT's check; the try's own lookup never answers.
+    const on = await webhookOn(t, dir, { privateTargets: false, lookup: () => (answers.length ? Promise.resolve(answers.shift()) : ((hung = true), new Promise(() => {}))) });
+    const webhooks = await on.open();
+    await webhooks.save({ url: "http://hangs.example/hook" });
+    const tried = webhooks.test();
+    for (const end = Date.now() + 5_000; !hung; await new Promise((resolve) => setTimeout(resolve, 10))) assert.ok(Date.now() < end, "the try reached its lookup");
+    const from = Date.now();
+    await webhooks.close();
+    assert.ok(Date.now() - from < 3_000, `close() waited ${Date.now() - from} ms on a lookup that never answers`);
+    const attempt = await tried;
+    assert.equal(attempt.status_code, null);
+  });
+
   test("a PUT that changes the URL makes a new secret, shown once, and keeps the old one retired; a PUT that keeps the URL keeps the secret; GET shows the URL's origin and a short tail, never the whole of it", async (t) => {
     const first = await receiver(t);
     const second = await receiver(t);

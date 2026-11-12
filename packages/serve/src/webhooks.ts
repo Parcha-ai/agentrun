@@ -103,6 +103,15 @@ export type Attempt = { webhook_id: string; type: MessageType; at: string; statu
 type Signing = "sealed" | "unreadable";
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/** `work`'s result, or `signal`'s reason the moment it aborts: a lookup that never answers is given up on, not waited out. */
+const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 export { signatureOf } from "./standard-webhooks.js";
 
 /** The mark of the wait a run stands at, its webhook-id's marker: one per ask, however often or whenever the run is read,
@@ -467,15 +476,17 @@ export class Webhooks {
   /** The address a try dials for `url`, checked: every address its name resolves to now is public (unless the operator
    *  allows private ones), and the connection goes to the one checked, so a name that resolves again between the check
    *  and the connect cannot reach another. A refusal in words. */
-  private async dialled(url: URL): Promise<{ dispatcher?: Agent } | { refused: string }> {
+  private async dialled(url: URL, signal: AbortSignal): Promise<{ dispatcher?: Agent } | { refused: string }> {
     if (this.privateTargets) return {};
     const host = url.hostname.replace(/^\[|\]$/g, "");
     if (LOCAL_NAME.test(host)) return { refused: `refused: ${host} is not a public host` };
     const { isPrivateAddress, pinnedLookup } = await import("@parcha/pi-browser");
     let addresses: string[];
     try {
-      addresses = net.isIP(host) ? [host] : await this.lookup(host);
+      addresses = net.isIP(host) ? [host] : await abortable(this.lookup(host), signal);
     } catch (error) {
+      // The try's own bound, cut or the server stopping: the lookup is given up on, never waited out.
+      if (signal.aborted) return { refused: (signal.reason as Error | undefined)?.name === "TimeoutError" ? `no answer in ${TIMEOUT_MS / 1000} s` : "not reached: the server is stopping" };
       return { refused: `not reached: ${(error as { code?: string }).code ?? "its name does not resolve"}` };
     }
     if (!addresses.length || addresses.some(isPrivateAddress)) return { refused: `refused: ${host} is not a public host` };
@@ -586,12 +597,14 @@ export class Webhooks {
       const timestamp = String(Math.floor(now / 1000));
       const started = performance.now();
       const target = new URL(config.url);
-      const dial = await this.dialled(target);
+      // One bound for the whole try, its name's lookup included, and the server's stop cuts it all (close()).
+      const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.stop.signal]);
+      const dial = await this.dialled(target, signal);
       if ("refused" in dial) failure = dial.refused;
       else {
         try {
           const res = await undiciFetch(target, {
-            method: "POST", redirect: "manual", signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.stop.signal]),
+            method: "POST", redirect: "manual", signal,
             headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(secret, id, timestamp, post.body) },
             body: post.body,
             ...(dial.dispatcher ? { dispatcher: dial.dispatcher } : {}),
