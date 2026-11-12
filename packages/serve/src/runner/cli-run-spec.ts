@@ -491,9 +491,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
         }
       }
       // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
-      // own MCP as the loop wraps it.
+      // own MCP as the loop wraps it. Its model nodes run on the session's one model: what each node's trace says it ran on.
       gate.learn(workflows);
-      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}) });
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), modelName: () => chosen.model.modelId });
     }
   }
   const session: SessionSpec = {

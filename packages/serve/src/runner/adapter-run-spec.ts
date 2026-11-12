@@ -579,7 +579,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp)).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -781,6 +781,9 @@ export async function learnedWorkflowHostTool(opts: {
   /** The claim's MCP (mcp-run.ts mcpForClaim), when its revision grants an MCP tool: its call nodes may name its tools by
    *  catalog name, each run through the run's own MCP as the loop wraps it. */
   readonly mcp?: Pick<ClaimMcp, "tools" | "catalogOf">;
+  /** The model a node on the session's own port runs on (a node of no tier, or of a tier not in `tiers`), as the run's
+   *  route names it: what its trace says it ran on. A node of a tier in `tiers` names that tier's model. */
+  readonly modelName?: (tier: string | undefined) => string | undefined;
 }): Promise<HostTool | undefined> {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
@@ -794,7 +797,7 @@ export async function learnedWorkflowHostTool(opts: {
     if ("why" in model) throw new Error(`the run's ${tier} model could not be reached: ${model.why}`);
     return { provider: tierProvider(tier!), modelId: model.model };
   };
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...(opts.modelName ? { modelName: opts.modelName } : {}) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -903,7 +906,7 @@ export async function webHostTools(host: ToolHost, granted: readonly string[], c
   return tools;
 }
 
-async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp, modelName?: (tier: string | undefined) => string | undefined): Promise<AdapterRunSpec["session"]["tools"]> {
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. learned_workflow
   // binds below with no web tool, so a learned run with no web tool still lists it.
@@ -917,7 +920,7 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // the session's tools the harness is told of: its model nodes run on the session's proxied models (run.ledger.models),
   // each a request on the run's one route labelled learned_workflow. The agent's scoped keys (host.env) are its call
   // nodes'.
-  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers, ...(mcp ? { mcp } : {}) });
+  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers, ...(mcp ? { mcp } : {}), ...(modelName ? { modelName } : {}) });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal

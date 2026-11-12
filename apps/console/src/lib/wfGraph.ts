@@ -6,6 +6,7 @@
 // the selected node or item. Every label, branch name and value is data from a workflow document or a run: it reaches the
 // drawing only as text nodes, and every attribute is a number, a fixed word or a node's path.
 import { mcpCallTool } from "./mcp";
+import { kindWithModel, ranOnWords } from "./nodeModel";
 import type { NodeMeta } from "./workflowDoc";
 
 export type GraphInput = { nodes: { path: string; kind: string; label?: string; via?: string }[] };
@@ -22,6 +23,8 @@ export type GraphMarks = {
   items?: Record<string, ItemMark[]>;
   verdict?: Record<string, string>;
   selected?: { path: string; item?: number | null } | null;
+  /** What a run's model nodes ran on, by path: the model, and the tier the node asked for when it named one. */
+  ran?: Record<string, { model: string; tier?: string }>;
 };
 
 const NS = "http://www.w3.org/2000/svg";
@@ -103,7 +106,9 @@ function group(ctx: Ctx, node: Node, shape: string) {
   const l = look(ctx, node.path);
   const meta = ctx.marks.meta?.[node.path];
   const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
-  let title = `${node.label} (${node.kind}${mcp ? `: ${mcp.tool} on ${mcp.server}, an MCP server's tool` : node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${meta.model ? ` ${meta.model}` : ""}` : ""})`;
+  const ran = ctx.marks.ran?.[node.path];
+  const shownModel = meta?.decision ? (ran?.model ?? meta.model) : meta?.model;
+  let title = `${node.label} (${node.kind}${mcp ? `: ${mcp.tool} on ${mcp.server}, an MCP server's tool` : node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${shownModel ? ` ${shownModel}` : ""}` : ""}${ran && !meta?.decision ? `, ${ranOnWords(ran)}` : ""})`;
   if (l.state) title += `: ${l.state.replace("-", " ")}`;
   if (l.tag) title += `${l.state ? ", " : ": "}${l.tag.toLowerCase()}`;
   if (meta?.questions?.length) title += `\n${meta.questions.map((q) => `• ${q.text}`).join("\n")}`;
@@ -141,8 +146,10 @@ function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
   const word = l.state in WORD ? WORD[l.state] : l.state;
   const nq = meta?.questions?.length ?? 0;
   // An MCP server's tool (`mcp:<server>/<tool>`) reads as "<tool> on <server>", with an MCP badge; any other by its name.
+  // A model node a run ran names its tier and the model it ran on; a decision's model is on its chip row.
   const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
-  const kind = node.kind + (mcp ? ` · ${mcp.tool} on ${mcp.server}` : meta?.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : "") + (meta?.decision && nq ? ` · ${nq} ${nq === 1 ? "question" : "questions"}` : "");
+  const ran = ctx.marks.ran?.[node.path];
+  const kind = (ran && !meta?.decision ? kindWithModel(node.kind, ran) : node.kind) + (mcp ? ` · ${mcp.tool} on ${mcp.server}` : meta?.tool ? ` · ${meta.tool}` : node.via ? ` · ${node.via}` : "") + (meta?.decision && nq ? ` · ${nq} ${nq === 1 ? "question" : "questions"}` : "");
   const badges = [meta?.images?.length ? "IMG" : "", meta?.web ? "WEB" : "", mcp ? "MCP" : ""].filter(Boolean);
   const badgeW = badges.reduce((s, b) => s + tagWidth(b) + 4, 0);
   if (l.selected) g.appendChild(el("rect", { x: x - 4, y: y - 4, width: W + 8, height: h + 8, class: "sel" }));
@@ -160,7 +167,9 @@ function card(ctx: Ctx, g: SVGElement, node: Node, x: number, y: number) {
     const pw = tag(g, x + 24, y + 38, meta.provider, "chip");
     const v = verdict ? clipVerdict(verdict, fits(W - 44 - pw - 20, VERDICT)) : "";
     const room = W - 40 - pw - (v ? wide(v, VERDICT) + 10 : 0);
-    if (meta.model && room > 24) g.appendChild(el("text", { x: x + 24 + pw + 6, y: y + 47.5, class: "model" }, clip(meta.model, fits(room, SMALL))));
+    // The model its provider answered with, once the run has it, else the one its definition names.
+    const model = ran?.model ?? meta.model;
+    if (model && room > 24) g.appendChild(el("text", { x: x + 24 + pw + 6, y: y + 47.5, class: "model" }, clip(model, fits(room, SMALL))));
     if (v) g.appendChild(el("text", { x: x + W - 10, y: y + 47.5, class: "verdict", "text-anchor": "end" }, v));
   } else if (verdict) g.appendChild(el("text", { x: x + W - 10, y: y + 17, class: "verdict", "text-anchor": "end" }, verdict));
   if (l.tag) tag(g, x + W - tagWidth(l.tag), y - 7, l.tag);
