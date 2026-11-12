@@ -122,7 +122,7 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. `archil`: Mode 2
  *  over that disk fake, Archil's control plane the fake as a fetch function (`control`: no port, every request recorded). `env`: more of the
  *  runner's environment; `model`: the launch's model. */
-async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" }, prepare } = {}) {
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" }, prepare, deps: given = {} } = {}) {
   const control = archil ? archilControlFetch() : undefined;
   // A second net: in Mode 2, any fetch to a host other than this machine's loopback is refused and recorded (`outbound`).
   const outbound = [];
@@ -168,7 +168,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
   let models = createModels();
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...more };
-  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } } : {}) };
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } } : {}), ...given };
   built = await spec.cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
   return { spec: built, dir, cwd: scratchFolder(dir, "agent-1", RUN), control, outbound };
 }
@@ -310,12 +310,19 @@ for (const [source, owner] of [["schedule", true], ["webhook", false]]) {
 
 test("a CLI's install is looked up in the server's data directory (deps.data), as main's server names it to its runs (AGENTRUN_SERVE_DATA), never under the runner's HOME/.local/share", async (t) => {
   // The runner's own environment names no data directory, and its HOME is a folder of the test's: claude-agent's Agent SDK
-  // is installed in neither, so building the spec says where it looked.
+  // is installed in neither, so the claim installs it, into the server's data. The install is a stand-in that refuses,
+  // naming where it was asked to install (no test reaches npm): the spec says where it looked.
   const home = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-home-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const env = { HOME: home, XDG_DATA_HOME: "", [DATA_ENV]: "", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` };
-  const failed = await specOn(t, "claude-agent", { env, model: { provider: "anthropic", modelId: "claude-haiku-4-5" } }).then(() => undefined, (error) => error);
+  const asked = [];
+  const installForClaim = async (_entry, dir) => {
+    asked.push(dir);
+    throw new Error(`Claude Code is not installed in ${dir}, and this test installs nothing`);
+  };
+  const failed = await specOn(t, "claude-agent", { env, model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, deps: { installForClaim } }).then(() => undefined, (error) => error);
   assert.ok(failed, "the Agent SDK is installed nowhere here, so the spec is refused");
+  assert.equal(asked.length, 1, "the claim asked to install it, once");
   assert.match(failed.message, new RegExp(`${join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^/\\s]+/harnesses/claude-agent`), `looked up under the server's data: ${failed.message}`);
   assert.ok(!failed.message.includes(join(home, ".local", "share")), `nothing under the runner's HOME/.local/share: ${failed.message}`);
 });

@@ -160,7 +160,9 @@ export async function message(
     );
     if (declined) return { mode: "answer", messageId };
   }
-  if (moment.terminal) throw finished(moment);
+  // A person's message puts no check of the run's end in front of its steer: the store's reopen alone says whether an ended
+  // run opens again with it (steerOrReopen). A trigger's message to an ended run is refused here, as before.
+  if (queue && moment.terminal) throw finished(moment);
   // Paused at its cap: a message would be refused for the same room, so the cap is raised first.
   if (moment.pausedWords !== undefined) {
     throw new ApiError("budget_reached", `The run is paused at its ${money(moment.maxCostUsd ?? 0)} cap: raise the cap first. ${moment.pausedWords}`, { details: { cap_usd: moment.maxCostUsd ?? null } });
@@ -174,12 +176,40 @@ export async function message(
     const queued = await queue({ kind: "steer", body });
     return { mode, messageId, ...(queued ? { skipped: queued.skipped } : {}) };
   }
-  await sendCommand(store, moment.id, { kind: "steer", body });
+  await steerOrReopen(store, moment, { kind: "steer", body });
   return { mode, messageId };
 }
 
 /** A steer command row, as message() writes it. */
 export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
+
+/** The message's steer row: one door. A run the store holds final takes no new row (RunFinal); the message then goes
+ *  through runs.reopen, which opens the run again with the steer in one transaction when the store says it may
+ *  (reopenableWhere: an agentic run that completed, or that a person stopped, as the console offers a follow-up to both).
+ *  Any other (cancelled, failed, a workflow's, an imported or a learning run) answers 409 finished, nothing written. */
+async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand): Promise<void> {
+  try {
+    await sendCommand(store, moment.id, command);
+  } catch (error) {
+    if (!(error instanceof RunFinal)) throw error;
+    try {
+      await store.runs.reopen(moment.id, command);
+    } catch (again) {
+      if (!(again instanceof RunFinal)) throw again;
+      // Refused: another message may have opened the run again meanwhile, so the steer is sent once more, to the run now
+      // running. Refused that too, the run takes no message.
+      try {
+        await sendCommand(store, moment.id, command);
+      } catch (last) {
+        if (!(last instanceof RunFinal)) throw last;
+        // Worded by the run's end as the store holds it now: the moment may have been read before that end (a race).
+        const state = (await store.runs.get(moment.id))?.state;
+        const terminalKind = state === "failed" ? "failed" : state === "stopped" ? "cancelled" : "completed";
+        throw finished({ ...moment, terminal: true, terminalKind });
+      }
+    }
+  }
+}
 
 /** The raise command rows this run already has, newest last: the cap each names, and whether its runner has taken it. */
 async function raiseRows(store: RunsStore, runId: string): Promise<{ capUsd: number; taken: boolean }[]> {
@@ -476,10 +506,17 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const { external, revision } = inline;
   const ref = externalKey(external);
   const mapped = await store.agents.byExternal(ref);
-  const entry: AgentEntry = (mapped && (await getAgent(store, mapped.id))) || {
-    agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
-    revision: null, version: 0, revisions: 0, sizes: new Map(),
-  };
+  const stored = mapped ? await getAgent(store, mapped.id) : null;
+  // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
+  // so its launch is prepared under them: a workflow run's title names the version it runs. A run of a version already
+  // stored keeps the agent's as they are, as a run of any agent's earlier revision does.
+  const firstOfVersion = !stored || !(await store.agents.hasExternalVersion(stored.agent.id, external.version));
+  const entry: AgentEntry = stored
+    ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
+    : {
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        revision: null, version: 0, revisions: 0, sizes: new Map(),
+      };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });

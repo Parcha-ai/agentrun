@@ -621,6 +621,14 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
+  // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
+  // (adapter-run-spec.ts), never by this table; not a host tool (host-tools.ts REPLAY), so another harness refuses it.
+  subagent: {
+    summary: "Run a subagent: a fresh conversation with only the call's prompt, on the agent's own model (or one of its model tiers, fast or strong, when the call names one), with a subset of the agent's own tools (bash among them, under the agent's bash policy), under the run's permissions and cap; answers with its final text. A call may narrow its child's tool-call budget (max_tool_calls) and set its effort (low, medium, high). Several calls in a turn run at once, at most 4 at a time; a subagent starts none of its own. pi only.",
+    needs: [],
+    nodes: false,
+    bind: async () => ({ tools: [], extensions: [] }),
+  },
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
     (args, run) => pdfPages(args, { work: localWorkspace(run.work), documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
