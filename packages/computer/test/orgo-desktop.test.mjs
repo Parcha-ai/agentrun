@@ -190,6 +190,30 @@ test("Orgo Windows connect: hello is the desktop's; screen.shot is a PNG of the 
 	assert.equal((await client.call("ping", {})).error.code, "gone");
 });
 
+test("Orgo Windows screen.shot: a connection closed while the region deflates holds no bytes and answers gone", async () => {
+	const base = fakeOrgoDesktop({ os: "windows" });
+	let served = false;
+	const fetch = async (...args) => {
+		const response = await base.fetch(...args);
+		if (String(args[0]).includes("/screenshot")) served = true;
+		return response;
+	};
+	const provider = create({ os: "windows", apiKey: KEY, workspaceId: WORKSPACE, apiUrl: API, fetch, timeouts: TIMEOUTS });
+	const { ref } = seeded({ fake: base });
+	const connected = await provider.connect(ref);
+	assert.equal(connected.ok, true, JSON.stringify(connected));
+	const { client } = connected.value;
+	// Once Orgo's screenshot is read the region is cut synchronously, then deflated off the loop: the first turn the loop
+	// gets back is inside that deflate, and that is where the connection closes.
+	const shot = client.call("screen.shot", { region: [0, 0, 1280, 720] });
+	while (!served) await new Promise((resolve) => setImmediate(resolve));
+	await new Promise((resolve) => setImmediate(resolve));
+	await connected.value.close();
+	const answer = await shot;
+	assert.equal(answer.ok, false);
+	assert.equal(answer.error.code, "gone");
+});
+
 test("Orgo Windows input: a down that first releases a press still held, cancelled while that release waits on Orgo, says aborted, not bad input", async () => {
 	// Orgo's click for the release is held until the batch is cancelled.
 	let holding = false;
