@@ -34,7 +34,8 @@
     "ajv": "^8.18.0"
   },
   "devDependencies": {
-    "@parcha/agentrun-computer": "0.1.0-beta.35"
+    "@parcha/agentrun-computer": "0.1.0-beta.35",
+    "@parcha/agentrun-serve": "0.1.0-beta.35"
   },
   "repository": {
     "type": "git",

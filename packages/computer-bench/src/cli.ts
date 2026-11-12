@@ -91,7 +91,7 @@ function armsOf(path: string): Arm[] {
 }
 
 /** fake: the fake world and the fake agents. serve: an AgentRun serve at --serve, with AGENTRUN_TOKEN from the
- *  environment (it needs the hold, bench-call and release routes README.md lists). */
+ *  environment (it needs the held-computer routes README.md lists). */
 function backendOf(name: string | undefined, url: string | undefined): Backend {
 	if ((name ?? "fake") === "fake") return fakeBackend({ agents: FAKE_AGENTS });
 	if (name === "serve") {

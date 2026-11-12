@@ -81,8 +81,8 @@ channel: `verify` runs both and names every check that passes an untouched state
 The agent's calls go through a tap (`src/tap.ts`) that records them, keeps the budget, and denies a method outside the
 groups the agent is given (exec on a phone is the bench's, not the agent's). After each act it takes a frame on the
 bench's channel: the whole screen where the computer has the screen group, else the front window's image through
-`ui.observe` where `ui.image` is on. A backend whose agent's calls are recorded elsewhere (serve's journal) reports them
-as steps instead.
+`ui.observe` where `ui.image` is on. A backend whose agent's calls are recorded elsewhere (serve's Timeline) reports
+them as steps instead.
 
 ## The run record
 
@@ -164,30 +164,37 @@ it, and `options.definition` any other field of the definition as it is, such as
 
 ## What serve needs
 
-serve releases a run's computer when the run ends, and has no channel for anyone but the agent, so it can't run a bench
-yet. `src/serve.ts` is written against these routes (`SERVE_CONTRACT`), and `test/serve.test.mjs` proves it on a fake
-serve that keeps them. The files they touch are held (`packages/serve/src/openapi.ts`, `computers.ts`,
-`workspace/resolve-computer.ts`, `workspace/computer-for-claim.ts` and the generated clients), so they are a change for
-serve's owner:
+One concept, a held computer. `src/serve.ts` is written against these routes (`SERVE_CONTRACT`); `test/serve.test.mjs`
+proves it on a fake serve that keeps them, and runs the preflight against this repository's serve, which finds nothing
+missing.
 
-1. `POST /agents/{agent_id}/runs` takes `hold: "bench"`, `max_tool_calls` and `labels`: the run claims its computer and
-   holds it, `computer.state` `held`, and does not start its agent; `POST /runs/{run_id}/start` starts it.
-2. `POST /runs/{run_id}/computer/call` `{method, params}` answers `{ok, value}` or `{ok: false, error}`: the bench's
-   channel to a held run's computer, for every group the computer has (exec on a phone included, which the agent is not
-   given), journalled as the bench's.
-3. The computer stays held after the run ends until `POST /runs/{run_id}/computer/release` (404 `not_found` once
-   released, a message other than "no route"), or a hold timeout; a release of a run whose agent never started ends the
-   run.
-4. serve journals each of the agent's computer calls as `agentrun.computer.step`, in the shape of this package's
-   `Step`, readable as `GET /runs/{run_id}/journal?kind=...&after=` `{entries, has_more, next_after}`.
-5. `GET /runs/{run_id}` answers `computer {state, provider, agent_groups, why}`, `cost {usd}`, `answer` (the text of
-   the agent's last turn) and `error {code}`; a platform failure's code is one of `computer_unavailable`,
-   `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`.
+1. `POST /agents/{agent_id}/runs` with `hold: true` (and `hold_minutes`, 1 to 120, default 30): the run claims its
+   computer and waits, its agent not started, `computer.held.state` `waiting`; `POST /runs/{run_id}/start` starts the
+   agent. Only for a sandbox, a desktop or a phone.
+2. `POST /runs/{run_id}/computer/call` `{method, params}` answers the computer's answer verbatim, `{ok, value}` or
+   `{ok: false, error}`, for any method of the computer protocol (others are 422): the bench's channel, for every group
+   the computer has (exec on a phone included, which the agent is not given). The owner's token or session only; a run
+   never holds that token, so no agent reaches its own computer this way.
+3. After the agent ends the run keeps its computer (`held.state` `ended`) until `POST /runs/{run_id}/computer/release`
+   (404 `not_found` once let go, a message other than "no route"), or until `hold_minutes` pass with no call. Released
+   after the agent's end, the run ends as its agent did; released before the start, it ends cancelled.
+4. The agent's steps come from `GET /runs/{run_id}/timeline`: each `tool_use` and its `tool_result` row (the tool's
+   name, its input preview, success or failure). No journal route. The rows carry no protocol detail, so a serve run's
+   steps have no ui.act routes or verified counts; a `computer_calls` field on a tool_result row would carry them.
+5. `GET /runs/{run_id}` answers `computer {state, provider, why, held {state, minutes, until, why}}`, `cost {usd,
+   so_far_usd}`, `result {final_answer}` once the run completed, and `error {code}`; a platform failure's code is one of
+   `computer_unavailable`, `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`. The
+   answer the checks read is the Timeline's `final_answer` row, there once the agent ends, before the release.
+6. Budgets: the money budget is the run's `max_cost_usd`. The step budget is the agent's `max_tool_calls` on pi (one
+   agent per arm, kind and budget there); on every harness the bench counts the Timeline's tool calls and cancels the
+   run past it, which lets the computer go, so the checks after a cancel find it gone. Labels are gone: the bench's
+   agent ids say which bench run made them.
 
-Until serve has them, `--backend serve` stops before it claims any computer, with one error that names each route serve
-lacks (a 404 "no route" or a 405), the body fields it keeps none of (a 422 `not_allowed`), and the item above that asks
-for it. It asks once, of an agent and a run nobody has, so the asking claims nothing. A route that goes missing later
-stops the bench at the first episode that needs it, its computer released where serve can.
+When serve lacks one, `--backend serve` stops before it claims any computer, with one error that names each route serve
+lacks (a 404 "no route" or a 405), what its OpenAPI document leaves out (`RunCreate.hold`, `Run.computer.held`), and
+the item above that asks for it. It asks once, of a run nobody has, so the asking claims nothing. A route that goes
+missing later stops the bench at the first episode that needs it (a body field it keeps none of is a 422 "The body
+keeps no field"), its computer released where serve can.
 
 ## Live runs
 
@@ -200,7 +207,8 @@ the dev split; then the held-out split once, for the numbers a report states.
 `npm test` runs `test/*.test.mjs` against `dist` at $0: the schema and every suite; the runner on the fake world
 (passes and fails, the record, checks before release, infra re-runs, refusals, grants, the three budgets, images,
 stale steps, null and oracle, parallel); the grader with fake judges and a fake fetch; the statistics, the report,
-labels, verify and the command line; the serve backend on a fake serve; and the runner on the protocol's own fake ui
-driver over its line stream (the fixture suite's verify, right and wrong agents, each act's routes, verified count,
-states and window frames, a stale ref, and oracles that fail in words). The last needs `@parcha/agentrun-computer`
-built: it is a dev dependency, and the package's source imports nothing from it.
+labels, verify and the command line; the serve backend on a fake serve, and its preflight on this repository's serve;
+and the runner on the protocol's own fake ui driver over its line stream (the fixture suite's verify, right and wrong
+agents, each act's routes, verified count, states and window frames, a stale ref, and oracles that fail in words).
+Those two need `@parcha/agentrun-serve` and `@parcha/agentrun-computer` built: they are dev dependencies, and the
+package's source imports nothing from them.

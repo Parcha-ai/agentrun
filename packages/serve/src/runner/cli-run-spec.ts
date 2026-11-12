@@ -63,6 +63,7 @@ import { bookedSpend, cliRunMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldSpecOf } from "./held-run.js";
 import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
@@ -288,6 +289,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
+  const heldComputer = heldSpecOf(launch, computer.computer);
 
   // The CLI works in the run's scratch folder on this machine (its working directory), its own files (home, state, the
   // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
@@ -572,6 +574,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const total = costUsd === null || paid === null ? null : costUsd + paid;
       return { ...(total !== null ? { costUsd: total } : {}), metrics };
     },
+    // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
+    ...(heldComputer ? { held: heldComputer } : {}),
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.
     release: () => holds.release(),
