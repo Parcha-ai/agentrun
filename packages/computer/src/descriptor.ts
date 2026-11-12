@@ -86,8 +86,8 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly ledger?: { readonly option: string };
 	/**
 	 * The server's own environment variables its provider reads on this machine, by name (Local Chrome's, where it finds
-	 * Chrome): a server passes their values, and no other variable of its own, as `options.env`. The provider itself reads
-	 * no environment.
+	 * Chrome; a cloud browser's, the gateway a server reaches its API through): a server passes their values, and no other
+	 * variable of its own, as `options.env`. The provider itself reads no environment.
 	 */
 	readonly hostEnv?: readonly string[];
 	/**
