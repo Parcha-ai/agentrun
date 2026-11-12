@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
@@ -28,7 +27,7 @@ const KEPT = {
 const CONFIG = { label: "node-a", run: "run-vault-chrome", vault: { sessionKey: "chrome-1", origins: [ORIGIN] }, policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
 
 test("durable adapter, real Chrome: the kept cookie is in the jar when the driver attaches, a stranger's cookie is not put back, and the release captures the session", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
-  const profileRoot = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "vault-durable-"));
+  const profileRoot = scratchSync(t, "vault-durable-");
   t.after(() => fs.rmSync(profileRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }), { timeout: 30_000 });
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot, args: [] } });
   const atDriver = []; const captured = []; const events = [];
@@ -60,7 +59,7 @@ test("durable adapter, real Chrome: the kept cookie is in the jar when the drive
 });
 
 test("durable adapter, a Chrome the run's launcher started and the host names as an OWN endpoint: it is offered to the vault, a kept cookie is in its jar when the driver attaches, the release is captured, and the drain after it finishes", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
-  const userData = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "vault-endpoint-"));
+  const userData = scratchSync(t, "vault-endpoint-");
   const child = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userData}`, "--no-first-run", "--password-store=basic", "--use-mock-keychain", "--remote-allow-origins=*", "about:blank"], { stdio: "ignore", detached: true, env: { ...process.env, TMPDIR: ownTmp(t) } });
   t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, { timeout: 30_000 });
   t.after(() => fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }), { timeout: 30_000 });
@@ -96,7 +95,7 @@ test("durable adapter, a Chrome the run's launcher started and the host names as
 });
 
 test("a capture of a local Chrome is discarded when a person begins driving while it is read, and kept when no one does", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
-  const userData = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "vault-gate-"));
+  const userData = scratchSync(t, "vault-gate-");
   const child = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userData}`, "--no-first-run", "--password-store=basic", "--use-mock-keychain", "--remote-allow-origins=*", "about:blank"], { stdio: "ignore", detached: true, env: { ...process.env, TMPDIR: ownTmp(t) } });
   t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, { timeout: 30_000 });
   t.after(() => fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }), { timeout: 30_000 });

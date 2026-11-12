@@ -2,13 +2,12 @@
 // back and reload work, and the stream moves to a page opened later. Only the stream: the server and the viewer page are tested apart.
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { rm } from "node:fs/promises";
 import test from "node:test";
 import { openStream } from "../dist/live-view/stream.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 
 const settle = (ms) => new Promise((r) => setTimeout(r, ms));
 const within = (ms, work) => Promise.race([Promise.resolve(work).catch(() => undefined), settle(ms)]);
@@ -59,7 +58,7 @@ function browserCall(url, method, params) {
 
 test("a real Chrome: frames are JPEGs, a click and typed text reach the page, a wheel scrolls it, a dialog is shown and answered, an address, back and reload work, and a page opened later is followed", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
   const web = await site();
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "lv-stream-"));
+  const root = await scratch(t, "lv-stream-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
   let ref = null;
   let stream = null;

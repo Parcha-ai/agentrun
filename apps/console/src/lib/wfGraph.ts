@@ -107,7 +107,8 @@ function group(ctx: Ctx, node: Node, shape: string) {
   const meta = ctx.marks.meta?.[node.path];
   const mcp = meta?.tool ? mcpCallTool(meta.tool) : null;
   const ran = ctx.marks.ran?.[node.path];
-  let title = `${node.label} (${node.kind}${mcp ? `: ${mcp.tool} on ${mcp.server}, an MCP server's tool` : node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${meta.model ? ` ${meta.model}` : ""}` : ""}${ran && !meta?.decision ? `, ${ranOnWords(ran)}` : ""})`;
+  const shownModel = meta?.decision ? (ran?.model ?? meta.model) : meta?.model;
+  let title = `${node.label} (${node.kind}${mcp ? `: ${mcp.tool} on ${mcp.server}, an MCP server's tool` : node.via ? ` via ${node.via}` : ""}${meta?.provider ? `, ${meta.provider}${shownModel ? ` ${shownModel}` : ""}` : ""}${ran && !meta?.decision ? `, ${ranOnWords(ran)}` : ""})`;
   if (l.state) title += `: ${l.state.replace("-", " ")}`;
   if (l.tag) title += `${l.state ? ", " : ": "}${l.tag.toLowerCase()}`;
   if (meta?.questions?.length) title += `\n${meta.questions.map((q) => `• ${q.text}`).join("\n")}`;

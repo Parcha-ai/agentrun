@@ -81,6 +81,23 @@ describe("drawWorkflowGraph, a run's model nodes and their models", () => {
   });
 });
 
+// A decision card names the model it ran on; its hover names the same one, not the workflow's declared model.
+describe("drawWorkflowGraph, a decision's hover", () => {
+  it("names the model the run used, the same as its card, and the declared one when nothing ran", () => {
+    const flow = { v: 2, name: "t", root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick.", out: "Out", as: "a" }] } };
+    const graph = workflowGraph(flow);
+    const meta = { "/root/steps/0": { decision: true, provider: "openrouter", model: "declared-model" } } as never;
+    const hover = (ran?: Record<string, { model: string; tier?: string }>) => {
+      const s = svg();
+      drawWorkflowGraph(s, graph, { meta, ran } as never);
+      return s.querySelector('g[data-path="/root/steps/0"] title')?.textContent;
+    };
+    expect(hover({ "/root/steps/0": { model: "actual-model-7b" } })).toContain("openrouter actual-model-7b");
+    expect(hover({ "/root/steps/0": { model: "actual-model-7b" } })).not.toContain("declared-model");
+    expect(hover()).toContain("openrouter declared-model");
+  });
+});
+
 // The count a page prints beside a graph is the boxes the drawing shows: on a workflow with a fan, frames and nesting too.
 describe("drawnNodeCount", () => {
   it("counts the boxes the drawing shows, not the root chain the steps sit on", async () => {
