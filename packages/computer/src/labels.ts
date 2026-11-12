@@ -2,8 +2,13 @@
 // and computers: a new claim is epoch + 1, and it releases every computer of the run labelled with a lower epoch
 // (releaseOlder, in janitor.ts). Both names live here alone, with the run label's hash: a provider whose computers keep
 // only that (Orgo's names) lists it under RUN_HASH_LABEL, so a caller can still tell whose run a computer is.
+//
+// An agent's persistent computer carries its owner as more labels, set at create: agentrun.owner=agent:<id>, the
+// agent's server when the owner names one, and the owner's idle TTL when it set one. The run and epoch labels then name
+// the claim that holds it now.
 import { createHash } from "node:crypto";
 import { epochProblem } from "./mount.js";
+import { type ComputerOwner, ownerProblem } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
 export { epochProblem };
@@ -36,8 +41,62 @@ export function runHash(run: string): string {
 	return out;
 }
 
+/** The agent a persistent computer belongs to, as agent:<id>. */
+export const OWNER_LABEL = "agentrun.owner";
+/** The server that agent is on, when the owner names one (owner.server). */
+export const OWNER_SERVER_LABEL = "agentrun.owner-server";
+/** The owner's idle TTL of a persistent computer, in milliseconds, in decimal: how long it may stay detached. */
+export const IDLE_TTL_LABEL = "agentrun.idle-ttl-ms";
+
+/** A whole number as a label holds it: decimal digits, no sign, no leading zero, no space. */
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+
+/**
+ * The labels of an agent's computer: its owner, its server when the owner names one, and its idle TTL when the owner
+ * set one. Throws, in words, on an owner that is not one.
+ */
+export function ownerLabels(owner: ComputerOwner): Record<string, string> {
+	const problem = ownerProblem(owner);
+	if (problem !== undefined) throw new TypeError(problem);
+	return {
+		[OWNER_LABEL]: `agent:${owner.agent}`,
+		...(owner.server === undefined ? {} : { [OWNER_SERVER_LABEL]: owner.server }),
+		...(owner.idleTtlMs === undefined ? {} : { [IDLE_TTL_LABEL]: String(owner.idleTtlMs) }),
+	};
+}
+
+/** The labels an owner's listing filters by: its agent's, and its server's when it names one (no idle TTL). */
+export function ownerFilter(owner: Pick<ComputerOwner, "agent" | "server">): Record<string, string> {
+	const { [IDLE_TTL_LABEL]: _, ...labels } = ownerLabels({ agent: owner.agent, ...(owner.server === undefined ? {} : { server: owner.server }) });
+	return labels;
+}
+
+/**
+ * A computer's owner, read from its labels: undefined for a run's computer (no owner label). An owner label that is not
+ * agent:<id>, a server label that is not a server id, or an idle TTL that is not a decimal whole number above 0, is
+ * invalid, in words naming what it reads.
+ */
+export function ownerOf(labels: Record<string, string> | undefined): Result<ComputerOwner | undefined> {
+	if (typeof labels !== "object" || labels === null || Array.isArray(labels)) return fail("invalid", "the computer's labels are not a map of names to strings");
+	if (!Object.hasOwn(labels, OWNER_LABEL)) return ok(undefined);
+	const text: unknown = labels[OWNER_LABEL];
+	const agent = typeof text === "string" && text.startsWith("agent:") ? text.slice("agent:".length) : undefined;
+	if (agent === undefined || ownerProblem({ agent }) !== undefined) return fail("invalid", `the label ${OWNER_LABEL} reads ${JSON.stringify(text)}, not agent:<id>`);
+	let owner: ComputerOwner = { agent };
+	if (Object.hasOwn(labels, OWNER_SERVER_LABEL)) {
+		const server: unknown = labels[OWNER_SERVER_LABEL];
+		if (typeof server !== "string" || ownerProblem({ agent, server }) !== undefined) return fail("invalid", `the label ${OWNER_SERVER_LABEL} reads ${JSON.stringify(server)}, not a server's id`);
+		owner = { agent, server };
+	}
+	if (!Object.hasOwn(labels, IDLE_TTL_LABEL)) return ok(owner);
+	const ttl: unknown = labels[IDLE_TTL_LABEL];
+	const idleTtlMs = typeof ttl === "string" && DECIMAL.test(ttl) ? Number(ttl) : Number.NaN;
+	if (!(Number.isSafeInteger(idleTtlMs) && idleTtlMs > 0)) return fail("invalid", `the label ${IDLE_TTL_LABEL} reads ${JSON.stringify(ttl)}, not a whole number of milliseconds above 0`);
+	return ok({ ...owner, idleTtlMs });
+}
+
 /** An epoch as a label holds it: decimal digits, no sign, no leading zero, no space. */
-const EPOCH_TEXT = /^(?:0|[1-9][0-9]*)$/;
+const EPOCH_TEXT = DECIMAL;
 
 /**
  * Why run is not a run id, in words, or undefined when it is one: a non-empty string with no NUL byte. That is the

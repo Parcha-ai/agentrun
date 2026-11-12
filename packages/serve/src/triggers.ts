@@ -82,7 +82,7 @@ export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cos
 type Trigger = Omit<TriggerRow, "source" | "target"> & { source: Source; target: Target };
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
-/** A run's provenance, kept in its serve.json: the trigger that started it, and the firing. `name`: the trigger's name as
+/** A run's provenance, kept with its launch row: the trigger that started it, and the firing. `name`: the trigger's name as
  *  it was at the firing, put on the run so its Timeline row names the trigger without a store read (runs.ts
  *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
 export type RunTrigger = { id: string; firing_key: string; name?: string };
@@ -910,7 +910,7 @@ export class Triggers {
   }
 
   /** A run's title, from the trigger that starts it: "<its source> <its name>" (the word its Timeline row begins with,
-   *  pi-durable-agent's TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
+   *  TRIGGER_LABELS), and the event its payload's tag names, when one does ("Webhook reviews:
    *  pull_request opened"); never its input, which may be a sender's markup. */
   private titleOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): string {
     const source = TRIGGER_LABELS[trigger.source.kind as TriggerSource] ?? trigger.source.kind;
@@ -920,7 +920,7 @@ export class Triggers {
     return `${source} ${trigger.name}${event ? `: ${event}${action ? ` ${action}` : ""}` : ""}`;
   }
 
-  /** Who a firing's input is from (pi-durable-agent's MessageOrigin): the trigger, by its definition as it fires, never
+  /** Who a firing's input is from (a MessageOrigin): the trigger, by its definition as it fires, never
    *  by its payload. Only a source whose words are its owner's (a schedule's, fired on time or by hand) gives owner true;
    *  a pushed source's come from outside, its body empty or not. */
   private originOf(trigger: Trigger): MessageOrigin {

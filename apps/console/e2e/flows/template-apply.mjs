@@ -4,7 +4,7 @@
 import { check } from "../harness.mjs";
 
 const TEMPLATE = "kyb";
-const RISK = "medium";
+const RISK = "high";
 const AGENT_NAME = `KYB due diligence (${RISK} risk appetite)`;
 
 export default {

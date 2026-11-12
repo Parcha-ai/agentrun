@@ -14,7 +14,10 @@
 //
 // The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. Under a bash policy
 // (`bashPolicy`, the revision's tool_settings.bash.policy) it adds the policy's (bash-read-only.ts policyEnv): git's
-// config locked down, and a prelude that runs git only where git holds the whole lock-down (policyPrelude). TMPDIR is .agentrun/tmp in
+// config locked down, and a prelude that runs git only where git holds the whole lock-down (policyPrelude). On Archil's
+// serverless exec (Mode 2, no computer) each of its commands runs with no network (ExecOptions.network "deny"), or, where
+// the owner's Archil plan takes no network policy, with it open and a line saying so (archil.ts). Only the shell's
+// commands: the server's own execs on the folder (a checkout's fetch) keep theirs. TMPDIR is .agentrun/tmp in
 // the run's folder, and bash's full output goes to .agentrun/output/<id> there; the run's end sweeps both.
 //
 // The computer's check: `check` is the mount check attach takes (attach.ts MountCheck), which the caller builds with
@@ -33,7 +36,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, capabilityToolDefs, createRegistry, endBackground, type Registry } from "@parcha/agentrun-kernel/kernel";
-import type { ComputerClient, Group } from "@parcha/agentrun-computer";
+import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
@@ -53,12 +56,12 @@ import type { Workspace } from "./workspace.js";
  * - phone: a screen, touch and apps; never attached;
  * - browser: what the run's browser tool drives it by (its CDP URL through its provider); no tools of the registry's,
  *   never attached.
- * `groups`: what the computer offers (its hello's groups), which fill its kind's ports.
+ * `hello`: what a desktop or a phone said it is when the claim connected it; its groups fill its kind's ports.
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
-  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly groups: readonly Group[]; readonly check?: MountCheck }
-  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
+  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly hello: HelloResult; readonly check?: MountCheck }
+  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly hello: HelloResult }
   | { readonly kind: "browser"; readonly browser: ClaimBrowser };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
@@ -70,7 +73,7 @@ export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick
  *  provider mounts the folder; none for any other. */
 function mountedIn(computer: RunComputer | undefined): { readonly computer: AttachableComputer; readonly check: MountCheck } | undefined {
   if (computer?.kind === "sandbox") return computer;
-  if (computer?.kind === "desktop" && computer.check && computer.groups.includes("files") && computer.groups.includes("exec")) return { computer: computer.computer, check: computer.check };
+  if (computer?.kind === "desktop" && computer.check && computer.hello.groups.includes("files") && computer.hello.groups.includes("exec")) return { computer: computer.computer, check: computer.check };
   return undefined;
 }
 
@@ -80,14 +83,16 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
-    const screen = computer.groups.includes("screen");
-    const input = computer.groups.includes("input.pointer") || computer.groups.includes("input.keys");
+    const { groups } = computer.hello;
+    const screen = groups.includes("screen");
+    const input = groups.includes("input.pointer") || groups.includes("input.keys");
     return screen && input ? { ports: { screen: screenOf(client), input: inputOf(client) }, kinds: ["desktop"], without: [] } : { ports: {}, kinds: [], without: [] };
   }
   if (computer?.kind === "phone") {
-    if (!computer.groups.includes("screen") || !computer.groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
-    const tree = computer.groups.includes("apps.ui_tree");
-    const keys = computer.groups.includes("input.keys");
+    const { groups } = computer.hello;
+    if (!groups.includes("screen") || !groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
+    const tree = groups.includes("apps.ui_tree");
+    const keys = groups.includes("input.keys");
     return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }
   return { ports: {}, kinds: [], without: [] };
@@ -142,7 +147,9 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
   const env = { ...shellEnv({ tmpdir: `${cwd}/${TMP_DIR}`, ...(mounted === undefined ? { home: cwd } : {}) }), ...policyEnv(options.bashPolicy) };
   // And a prelude: git run only where it holds the whole lock-down (policyPrelude).
   const prelude = policyPrelude(options.bashPolicy);
-  const fileEnv = piEnv(attached, { cwd, aliases: names.slice(1), env, defaultTimeoutS: maxExecS, ...(prelude ? { prelude } : {}) });
+  // And on Archil's serverless exec, no network for the shell's commands.
+  const network = options.bashPolicy !== undefined && mounted === undefined && options.mode === 2 ? { network: "deny" as const } : {};
+  const fileEnv = piEnv(attached, { cwd, aliases: names.slice(1), env, defaultTimeoutS: maxExecS, ...(prelude ? { prelude } : {}), ...network });
   const tools = Object.fromEntries([...fileTools(), bashTool()].map((tool) => [tool.name, tool]));
   const read = mounted === undefined ? tools.read! : readAnywhereInComputer(tools.read!, attached, names, env);
   const executor = (tool: typeof read) => piExecutor(tool, fileEnv, options.context);
@@ -153,7 +160,7 @@ export async function runHands(workspace: Workspace, computer: RunComputer | und
     workspace: attached,
     // The computer's processes, for the five background tools: the attached Workspace's own; none when the folder is not
     // attached. The kind's ports beside them.
-    hands: { ...handsOf(attached, { maxExecS, env, ...(prelude ? { prelude } : {}), ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
+    hands: { ...handsOf(attached, { maxExecS, env, ...(prelude ? { prelude } : {}), ...network, ...(mounted === undefined ? {} : { processes: attached.process }) }), ...ports },
     shell,
     kinds,
     without,

@@ -19,8 +19,8 @@ When this runs from a pipeline or a periodic QA job, the scope is fixed here and
 
 ## How to run
 
-Node 24.11 or later (`.nvmrc` pins 24.21.0); anything older is refused. npm 11
-is the documented toolchain, but `npm ci` also works with npm 10.9 (the npm bundled with Node 22.23.2).
+Node 24.22.3 or later (`.nvmrc` pins 24.22.3); anything older is refused. npm 11
+is the documented toolchain.
 
 ```sh
 npm ci --ignore-scripts
@@ -142,13 +142,13 @@ same ground with no key.
 | --- | --- |
 | Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
 | Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
-| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `@parcha/pi-durable-agent/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
+| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `packages/serve/src/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/disk/agents/<agent>/runs/<id>/work/`; the run's record is in the store, not its folder. The run's claim is its row in `runs` (`epoch`, `runner`, `claimed_until`), and a message, stop, cancel, raise or approval is a row of `commands` that its runner reads |
 | Adapters it calls | `dispatch.ts` reads the run's launch record and picks its loop (`harness-loops.ts` `resolveRunnerLoop`); `adapter-loop.ts` drives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`: pi is `runner/adapters/pi.ts`, the others are `packages/run-adapters-*`. The cap is the loop's `beforeRequest` on the run's model port (`modelPortFor`), the one ledger for every harness; a CLI harness's requests reach it through `startModelProxy` under a `ProviderPolicy` |
 | Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `REPLAY` class (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
 | Takes from places | The run's Workspace and its computer, both opened at the claim (`workspace/run-workspace.ts`, `workspace/computer-for-claim.ts`), from the revision's `computer` setting (`definition.place` is its API view); see Places below |
 | Gives the console | The routes above, and `GET /v2/stats` `analytics`, summed from the `RunMetrics` each run's end writes to its row |
-| Gives the learning loop | Not wired into serve yet. The seam is run-adapters' `followUpOnce` (one more turn, held to `reserveUsd`), which learn's `reflectBudget` sizes |
+| Gives the learning loop | Not wired into serve yet. |
 
 **Alone.** No model key, no tool key, no box and no console. Build as in [How to run](#how-to-run), without the console
 lines. Then:
@@ -302,7 +302,7 @@ run's claim from the kernel. It gives back:
   run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from the run's `work/inputs/`,
   as `runner/adapter-run-spec.ts` and `runner/cli-run-spec.ts` send it, on every harness.
 - Serve, a run's computer as the run shows it (`computer-view.ts`: `GET /v2/runs/{id}/computer`, who drives now), read from
-  the store through `computerViewOf` (`computer-routes.ts`), which also holds the owner's take-over and hand-back routes.
+  the store through `computerHoldOf`; `computer-routes.ts` holds the owner's take-over and hand-back routes.
 
 **Alone.** Computers are faked: `--faux` swaps in three faux providers (`faux-computers.ts`: `faux-sandbox`,
 `faux-broken` and a faux desktop), and the workspace tests use a fake computer (`test/workspace-fake-computer.mjs`). Put
@@ -346,6 +346,31 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
    plus `Files for this run: "inputs/notes.txt" (<n> B).`, reads it and answers with its text; on claude-agent and codex
    the first `user_message` names both files with their sizes; a run given none is sent its `content` unchanged; a name
    with `", ` or an RTL override stays inside its quotes, escaped; a link at `work/inputs` lists nothing.
+7. **An Android phone, end to end** (live: it rents one cloud Android from the phone harness, a few minutes at about
+   5 cents a minute; UNTESTED without its key). The phone's version comes from the server's API alone: QA runs no adb.
+   What the server needs:
+   - `adb` (Android platform-tools) on the server's `PATH`: the phone provider drives the phone with it. The deploy
+     image carries it on amd64 (r35.0.2); on arm64, or a host without it, `GET /v2/computers` shows `phone-harness`
+     not ready with `adb isn't installed on this server (no adb command on PATH): install Android platform-tools, then
+     restart AgentRun`, and the case is UNTESTED.
+   - The key saved: `PUT /v2/computers/phone-harness/keys {"PHONE_HARNESS_API_KEY": …}`, then
+     `POST /v2/computers/phone-harness/test` → ok, with words on what it read and nothing rented. `GET /v2/computers`
+     shows `phone-harness` ready.
+   - No live session on the account before the case (`GET https://api.phone-harness.com/sessions`, the key as a bearer:
+     none `provisioning` or `ready`), so the run's phone is the account's one live session.
+
+   The case: an agent whose computer is `{ "kind": "phone", "provider": "phone-harness" }` (an Android: the provider
+   makes no iPhone yet), with instructions to use its phone, and a run whose input is "Open the Settings app on your phone,
+   find which Android version the phone runs (Settings → About phone), and answer with that version number alone."
+   Once the phone is connected, the run's timeline (`GET /v2/runs/{id}/timeline`) has a `phase` row with the phone's own
+   words for its version, read with getprop when it connected: `The phone is ready: Android <version> (<arch>), from
+   Phone harness.`
+
+   It passes when the run completes; its timeline shows that row, then `phone_open` of `com.android.settings` (or a tap
+   that opens it) and a `phone_tree` or `phone_screen` read of the About phone page; its final answer names the version
+   in that row (a phone of this account said `15`); the phone is released at the run's end (a minute later the
+   account lists no session `provisioning` or `ready`: `GET https://api.phone-harness.com/sessions`, the key as a
+   bearer); and no key is in any answer, the timeline or the server's log.
 
 ### Console, import and analytics
 

@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, StoreConstraint, type StoreRole, storeTarget } from "../../store/index.js";
+import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
 import { type AnswerData, KINDS, MESSAGE_SENT_AGAIN } from "../journal-kinds.js";
@@ -741,6 +741,8 @@ const CASES: readonly Case[] = [
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
       // Why it stopped is on the run row, staged in the end commit: one place for every harness.
       assert.match(row.summary ?? "", /stopped/, `the run says why it stopped: ${JSON.stringify(row.summary)}`);
+      // A person's stop, told from a cancel in the store: its turn is over, not the run (a message reopens it).
+      assert.equal(row.outcome, "stopped", `the run's outcome says a person stopped it: ${JSON.stringify(row)}`);
       assert.ok(row.endedAt !== null, "its end commit stamped ended_at");
       assert.ok((await w.commandRow(stop.id)).takenAt !== null, "the stop row is taken");
       // The live timeline: one row says the person stopped it, worded the same on every harness, and nothing a person
@@ -765,8 +767,9 @@ const CASES: readonly Case[] = [
       const { calls, messages } = await w.read();
       assert.ok(calls.every((call) => call.status !== "pending"), `no call left pending: ${JSON.stringify(calls)}`);
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
-      // The end main's cancel writes: stopped, its summary "cancelled", staged in the end commit.
+      // The end main's cancel writes: stopped, its summary "cancelled" and its outcome 'cancelled', staged in the end commit.
       assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(row.outcome, "cancelled", `the run's outcome says it was cancelled: ${JSON.stringify(row)}`);
       const taken = await w.commandRow(cancel.id);
       assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
       await assert.rejects(sendCommand(w.server, RUN, { kind: "steer", body: { text: "go on" } }), RunFinal, "a cancelled run takes no more messages");
@@ -783,6 +786,7 @@ const CASES: readonly Case[] = [
       const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
       const row = await w.ended("stopped");
       assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(row.outcome, "cancelled", `the run's outcome says it was cancelled: ${JSON.stringify(row)}`);
       assert.equal(ran.asked, 0, "the asked call never ran");
       const taken = await w.commandRow(cancel.id);
       assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
@@ -801,10 +805,13 @@ const CASES: readonly Case[] = [
       await sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId, note: "not on a Friday" } });
       await w.ended("ended");
       assert.equal(ran.asked, 0, "denied, it never ran");
-      const { answers, messages } = await w.read();
+      const { answers, messages, calls } = await w.read();
       // The fields this case is about; its time is the loop's clock's (adapter-pi-approval-entries pins it).
       assert.deepEqual(answers.map(({ callId: id, approved, decision, note }) => ({ callId: id, approved, decision, note })), [{ callId, approved: false, decision: "deny", note: "not on a Friday" }], "the answer is a deny that keeps the note");
-      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      // What the model said after the asked call: its answer to the refusal. What it said with the call, before the gate
+      // asked (a CLI's "Calling asked."), is on the record before the call's row, as pi keeps a call's text in its message.
+      const asked = calls.find((call) => call.callId === callId);
+      const said = messages.filter((message) => message.role === "model" && message.entry > (asked?.startEntry ?? -1)).map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
       // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
       // refusal its own way (pi: a blocked call's error) around them.
@@ -886,7 +893,7 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
-      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), StoreConstraint, "a second answer to one approval is never written");
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
@@ -912,7 +919,7 @@ const CASES: readonly Case[] = [
       const won = settled.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof sendCommand>>> => r.status === "fulfilled");
       const lost = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       assert.equal(won.length, 1, `one answer is written, not both: ${JSON.stringify(settled.map((r) => r.status))}`);
-      assert.ok(lost[0]?.reason instanceof StoreConstraint, `the other is refused by the store: ${String(lost[0]?.reason)}`);
+      assert.ok(lost[0]?.reason instanceof AnswerTaken, `the other is refused by the store as answered already (AnswerTaken), never a bare constraint: ${String(lost[0]?.reason)}`);
       await w.ended("ended");
       const winner = won[0]!.value;
       assert.equal(ran.asked, winner.kind === "approve" ? 1 : 0, "the run acted on the answer written, never the other");
@@ -1053,5 +1060,3 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
-
-export const CONFORMANCE_CASES: readonly ConformanceCase[] = CASES.map((entry) => entry.id);

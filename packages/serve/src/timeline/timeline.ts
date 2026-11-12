@@ -59,7 +59,7 @@ export type TimelineEvent = {
   usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
-  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number }[];
+  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -92,13 +92,21 @@ export const CALL_REFUSED = "agentrun.refused";
 
 /** Whether pi's error for a request is the model proxy's own refusal of it for the run's spend cap, before it was sent:
  *  the proxy's JSON body after the HTTP status pi-ai puts first, read by its fields (`type` "agentrun_proxy", `code`
- *  "spend_cap_reached", as the proxy writes them), never by its words. Any other error, a provider's 400 included, is not. */
+ *  "spend_cap_reached", as the proxy writes them), never by its words. Any other error, a provider's 400 included, is not.
+ *  pi-ai puts the status first in either of its clients' forms: the Responses client's "400 {...}" with the fields under
+ *  `error`, or the Messages client's "<api> API error (400): {...}" with them at the top (the runner's pi route speaks
+ *  Messages to the session's proxy). */
 function proxyCapRefusal(errorMessage: unknown): boolean {
   if (typeof errorMessage !== "string") return false;
   const at = errorMessage.indexOf("{");
-  if (at < 0 || !/^\d{3}\s*$/.test(errorMessage.slice(0, at))) return false;
+  if (at < 0) return false;
+  const head = errorMessage.slice(0, at);
+  // The provider's name is any word with no space (agentrun-session today; a route's own, such as openrouter/anthropic):
+  // the body's fields, never the name, say whose refusal it is.
+  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return false;
   try {
-    const error = (JSON.parse(errorMessage.slice(at)) as { error?: { type?: unknown; code?: unknown } } | null)?.error;
+    const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } } | null;
+    const error = body?.error ?? body;
     return error?.type === "agentrun_proxy" && error.code === "spend_cap_reached";
   } catch {
     return false;
@@ -631,10 +639,16 @@ function createProjector(options: TimelineOptions) {
    *  the output as it came (`view`), as its status is; only the words the summary shows of that are redacted. */
   const resultRow = (conv: number, rowId: string, tool: { name: string; callId: string | null; round?: number }, named: string, view: { text: string; isError: boolean; details?: unknown }, shown: { text: string }, parent?: string) => {
     const outcome = outcomeOf(tool.name, view);
+    // The words the summary shows of it, read from the whole output as redacted (`shown`), never from the output as it
+    // came: an outcome that takes the output apart (a learned workflow's lines, joined) could split a held value the
+    // whole text's redaction finds into pieces the summary's own redaction no longer would (#2452). Whether it failed
+    // is still read from the output as it came: one whose redacted output gives no words reads failed with no detail, never
+    // ok, and never the detail as it came.
+    const worded = shown.text === view.text ? outcome : outcomeOf(tool.name, { ...view, text: shown.text });
     // A call refused before it ran is named refused already (refusedLabel): its row says why, never that it failed.
     const failedSummary = refused(view) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     return make("tool_result", conv, rowId, {
-      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : outcome ? `${named}: ${saidOf(outcome.text)}` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
       tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent,
     });
@@ -1005,7 +1019,7 @@ export function endedOnTurnEndingTool(entries: readonly EntryLike[]): string | u
   return last.tool_use_id ?? undefined;
 }
 
-/** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields
+/** A workflow's decision receipt as its run's store keeps it (workflow/decisions.ts's DecisionRow): the fields
  *  runMetricsOf reads. */
 export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknown; status?: unknown; driver_spend?: unknown };
 

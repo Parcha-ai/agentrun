@@ -1,12 +1,13 @@
-// The workflow run view read from the one store's journal (pi-durable-agent/workflow readWorkflowRun/workflowCarry with a
-// pi Storage), in place of a per-run store file. A real workflow (the DSL's durable runner, a faux model node) runs on a
+// The workflow run view read from the one store's journal (readWorkflowRun/workflowCarry), in place of a per-run store file. A real workflow (the DSL's durable runner, a faux model node) runs on a
 // run's journal in the one store; the view and the carry read back from that journal match the run: its completed node, its
 // output, and the carry the store keeps. No HTTP server, no per-run process: the engine runs on the store directly.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
-import { createWorkflowExtension, nodeRunner, taskScope } from "@parcha/agentrun-pi/durable";
+import { createWorkflowExtension } from "../dist/workflow/task.js";
+import { nodeRunner } from "../dist/workflow/node-runner.js";
+import { taskScope } from "../dist/workflow/node.js";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../dist/workflow-run.js";
 import { storeOn } from "./store-helpers.mjs";

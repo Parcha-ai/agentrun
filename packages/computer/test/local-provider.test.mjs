@@ -1,4 +1,4 @@
-// The local browser (src/local.ts) over a fake Chrome (fake-chrome.mjs): a create starts it under a supervisor with a
+// The local browser (src/local-chrome.ts) over a fake Chrome (fake-chrome.mjs): a create starts it under a supervisor with a
 // fresh profile, its debugging port on loopback and the fence's arguments; connect hands over its DevTools URL; release
 // ends it and removes its files; its deadline ends it though the process that made it is gone; a Chrome that cannot start
 // its sandbox, root and a missing executable are refused in words. No real Chrome: test/local-chrome-live.test.mjs is
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import { CHROME_FLAGS, chromeFence, findChrome, NO_CHROME } from "../dist/chrome.js";
 import { PROVIDERS } from "../dist/kinds.js";
-import { create, LocalBrowserProvider } from "../dist/local.js";
+import { create, LocalBrowserProvider } from "../dist/local-chrome.js";
 import { providerModule } from "../dist/providers.js";
 
 const FAKE = fileURLToPath(new URL("./fake-chrome.mjs", import.meta.url));
@@ -63,7 +63,7 @@ test("capabilities: a browser on this host, open to public addresses, CDP only, 
 		{ kind: "browser", isolation: "host", network: ["open", "allow"], daemon: "none", groups: ["cdp"], lifetime: "janitor", release: ["delete"] },
 	);
 	assert.equal(caps.maxLifetimeMs, 24 * 60 * 60_000);
-	const entry = PROVIDERS.find((one) => one.id === "local");
+	const entry = PROVIDERS.find((one) => one.id === "local-chrome");
 	assert.deepEqual([entry.keys, entry.metered, entry.kinds, entry.mounts], [[], false, ["browser"], []], "no key, nothing billed, kind browser");
 });
 
@@ -196,7 +196,7 @@ test("a browser made with an allowlist: its proxy reaches only the listed hosts,
 test("the deadline ends the browser though the process that made it is gone: a crashed run leaves no Chrome", async () => {
 	const root = join(scratch, "crashed");
 	// A process that makes a browser of 1.5 s and exits at once, without releasing it.
-	const maker = `import { LocalBrowserProvider } from ${JSON.stringify(new URL("../dist/local.js", import.meta.url).href)};
+	const maker = `import { LocalBrowserProvider } from ${JSON.stringify(new URL("../dist/local-chrome.js", import.meta.url).href)};
 const made = await new LocalBrowserProvider({ executablePath: ${JSON.stringify(CHROME)}, root: ${JSON.stringify(root)}, uid: ${UID} }).create({ image: "chromium", lifetimeMs: 1500, network: "open" });
 process.stdout.write(JSON.stringify(made));
 process.exit(0);`;
@@ -287,11 +287,11 @@ test("a relative root is made absolute once, so the profile Chrome is given and 
 });
 
 test("the registry builds it from its options alone; an id that is not one is refused", async () => {
-	const module = await providerModule("local");
+	const module = await providerModule("local-chrome");
 	assert.deepEqual(module.MOUNT, []);
 	assert.deepEqual(module.CAPABILITIES, [{ kind: "browser", groups: ["cdp"] }]);
 	const built = await module.create({ executablePath: CHROME, root: join(scratch, "registry") });
-	assert.equal(built.id, "local");
+	assert.equal(built.id, "local-chrome");
 	assert.ok(create() instanceof LocalBrowserProvider);
 	for (const bad of ["../x", "lb-zz", ""]) assert.equal((await built.release({ id: bad, name: bad }, "delete")).error.code, "invalid", bad);
 });

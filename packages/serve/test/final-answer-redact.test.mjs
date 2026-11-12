@@ -18,7 +18,7 @@ const noKey = (text, where) => {
 };
 
 async function answered(t, content) {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("quotes"))).status, 201);
   const started = await api("POST", "/agents/quotes/runs", { input: { content } });
@@ -45,7 +45,7 @@ test("a long final answer (about 50 KB) quoting a held key near its end is serve
 });
 
 test("an unattended run's answer of 6,000 characters reads whole in its result, its Timeline row and the Timeline's live pages, as the console's Report and Timeline show it (#2224)", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
   const { api } = await serve(t);
   // Unattended (approvals never), as the release-notes template's run that read cut at 2,000.
   assert.equal((await api("POST", "/agents", agent("notes", { approvals: "never" }))).status, 201);
@@ -78,7 +78,7 @@ test("an answer one character past a timeline row's cap (2001) is served whole b
 });
 
 test("a workflow's output carrying a held key in a string field is served with it redacted, the record's shape kept", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
   const { api } = await serve(t);
   const flow = {
     v: 2, name: "keyed",
@@ -100,7 +100,7 @@ test("a workflow's output carrying a held key in a string field is served with i
 });
 
 test("a workflow output carrying a held key as a property name, nested too, is served with no piece of it", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
   const { api } = await serve(t);
   const flow = {
     v: 2, name: "named",
@@ -130,7 +130,7 @@ test("two property names that redact to the same name withhold their object whol
 // A view reads the answer the server already redacted for this run and these held values: a console polls a run's view,
 // and an answer a run was made to write can be large.
 test("a run's view redacts its answer once per held key set: a second view reads nothing again", { timeout: 90_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY }, NAMES);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("long-sk"))).status, 201);
   const started = await api("POST", "/agents/long-sk/runs", { input: { content: "Answer with a megabyte of sk- runs." } });
@@ -148,7 +148,7 @@ test("a run's view redacts its answer once per held key set: a second view reads
 
 test("a value saved as a key after a run's answer was first served is redacted from the next view", { timeout: 90_000 }, async (t) => {
   const later = ["not-a-secret", "later-key-0123456789abcdef"].join("-");
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: CUT_KEY, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, [...NAMES, "AGENTRUN_SEAL_KEY", "PARALLEL_API_KEY"]);
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("later"))).status, 201);
   const started = await api("POST", "/agents/later/runs", { input: { content: "Answer quoting the later key." } });
@@ -184,7 +184,7 @@ const KEYLESS = ["not-a-secret", "no-digits-here"].join("-");
 const DIGITS = ["1234", "5678", "9012"].join("");
 
 test("a workflow output quoting an all-digit held key as a number is served with it withheld, and its other numbers kept", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: DIGITS }, NAMES);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: DIGITS }, NAMES);
   const { api } = await serve(t);
   const flow = {
     v: 2, name: "numbered",

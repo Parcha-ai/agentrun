@@ -79,7 +79,6 @@ export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
  *  nor written to the cache. */
 export type Tokens = { input: number; cache_read: number; cache_write: number; output: number };
-export const NO_TOKENS: Tokens = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
 /** The variable that names the grader's model, as `--grade-model` does. */
 export const GRADE_MODEL_ENV = "AGENTRUN_SERVE_GRADE_MODEL";
 /** The model this server grades on, by name: `given` (`--grade-model`), else GRADE_MODEL_ENV, else its strong tier
@@ -92,7 +91,7 @@ export type NoteRuns = Map<string, { given: number; read: number }>;
 export type NoteUsed = { file: string; name: string };
 /** A note a run's learning added to the folder (`learned`): its file, its name, and the notes it superseded. */
 export type NoteLearned = NoteUsed & { supersedes: string[] };
-/** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
+/** A run's learning as the store keeps it. Past the view's four fields: the checker's `problems` (printable), the
  *  grader's `verdict` and the blob of each note it read superseded (`graded`, by file), both kept before the merge, the
  *  merge commit, and what the grade cost (null when unknown, never 0), which is in no run's totals; the notes the run
  *  started with (`given`: each note its # Learned section names, whole or as an index line, set as it is seeded) and read
@@ -149,7 +148,7 @@ const isText = (value: unknown): value is string => typeof value === "string";
 /** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
  *  `given` from its start, `read` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, and the skill
  *  and the workflow draft it merged (`skills`, `workflows`, each `pending` while it waits), each only when it holds one.
- *  serve.json's are read as untrusted: an entry out of shape is left out. */
+ *  the stored ones are read as untrusted: an entry out of shape is left out. */
 export function notesView({ state, given, read: opened, learned, pending, skills, workflows }: Learning, shown: Shown, settled: boolean): { given?: NoteUsed[]; read?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[]; skills?: LearnedFile[]; workflows?: LearnedFile[] } {
   const refs = (list: NoteUsed[] | undefined) => (Array.isArray(list) ? list.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : []);
   const started = refs(given);
@@ -215,8 +214,9 @@ export const LEARNING_LABEL = "learning";
  *  secrets, then shortened to its head and tail, shortMessage; absent in a proposal kept before the grader read them). */
 export const PROPOSAL = "learning-proposal.json";
 /** A run's proposal: its notes, skill and drafts, each draft's dry run by its workflow.json's path (learn/skills.ts
- *  draftDryRun: passed, or not run and why), and what was said in the run. */
-export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; asked?: string[]; triggered?: Triggered[] };
+ *  draftDryRun: passed, or not run and why), the skill of each draft's name as the folder holds it at the seed
+ *  (`drafted`, its SKILL.md: shown to the grader beside the draft, never graded or merged), and what was said in the run. */
+export type Proposal = { seed: string; notes: { file: string; text: string }[]; files?: { file: string; text: string }[]; dryRuns?: Record<string, DraftDryRun>; drafted?: { file: string; text: string }[]; asked?: string[]; triggered?: Triggered[] };
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */
 export type Triggered = { source: string; text: string };

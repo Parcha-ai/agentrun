@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import {
 	COMPUTER_LABEL,
 	DAEMON_IN_COMPUTER,
@@ -52,18 +53,22 @@ import {
 	type ComputerSpec,
 	type CreatedComputer,
 	checkGpu,
-	checkLifetime,
+	checkTenure,
 	type GpuCapability,
 	type GpuSpec,
-	type NetworkForm,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
+
+/** This module's failures: one with code vendor names Modal. */
+const fail = failFor("modal");
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
 export interface ModalApp {
@@ -195,37 +200,18 @@ export interface ModalProviderOptions {
 }
 
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = ["archil"];
-/** The network a Modal computer's programs get: none, a network of their own (isolation.ts OWN_NETWORK_ONLY). */
-export const NETWORK: readonly NetworkForm[] = ["none"];
+export const MOUNT: readonly MountKind[] = MODAL.mounts;
 
 /** The runtime a Modal sandbox runs under: vm, or gvisor for a GPU computer (Modal offers GPUs on gVisor only). */
 export type ModalRuntime = "vm" | "gvisor";
 
-/**
- * The GPU types Modal takes, by its own names (guide/gpu, 11-10): "A100" is the 40 GB one, "A100-40GB" its explicit
- * name. Its "H100!" and "B200+" variants (no upgrade to an H200; a B200 or B300) are not offered: what a computer gets
- * should be what it asked for.
- */
-export const MODAL_GPU_TYPES = ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"] as const;
-/** The most GPUs Modal gives one container: 8 (guide/gpu; an A10 container takes at most 4, which Modal refuses in words past). */
-export const MODAL_GPU_MAX = 8;
-/**
- * The GPUs Modal offers, as capabilities().gpu and CAPABILITIES declare them: on gVisor, Modal's one GPU runtime;
- * preemptible, as Modal may end a GPU container to free capacity; no mount yet, the Archil client's FUSE mount not
- * being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
- * namespace itself (a live probe, 11-11: unshare -n refused, unshare -Urn allowed).
- */
-export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({ types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" });
-/** A copy of MODAL_GPU, so no caller can change the provider's own. */
+/** A copy of its descriptor's MODAL_GPU, so no caller can change the provider's own. */
 const modalGpuCapability = (): GpuCapability => ({ ...MODAL_GPU, types: [...MODAL_GPU.types], mounts: [] });
 /** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
 const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
 
-/** The machine kind, groups and GPUs of its one configuration: a linux computer, with GPUs when asked. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"], gpu: modalGpuCapability() }];
-/** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. */
-export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
+/** The machine kind, groups and GPUs of its one configuration (its descriptor's): a linux computer, with GPUs when asked. */
+export const CAPABILITIES: readonly KindCapabilities[] = MODAL.capabilities;
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
@@ -552,8 +538,9 @@ function codeOf(error: unknown): ComputerErrorCode {
 	// gRPC's FAILED_PRECONDITION on an exec: the sandbox is ending on its own ("Modal Sandbox is shutting down", from
 	// TaskExecStart, when its command, init, has exited). Gone, so create waits to read why.
 	if (code === 9) return "gone";
-	return "modal";
+	return "vendor";
 }
+
 
 /** Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. */
 function race<T>(promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
@@ -829,7 +816,7 @@ export class ModalProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: [...NETWORK],
+			network: [...MODAL.network],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",
@@ -857,11 +844,11 @@ export class ModalProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
+		const { image, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
 			refuse("image", `an image is required: a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}`);
 		} else if (image.includes("\0")) refuse("image", NUL);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Modal"));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
@@ -914,7 +901,7 @@ export class ModalProvider implements ComputerProvider {
 		const app = await this.#theApp(signal);
 		if (!app.ok) return app;
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		const deadline = new Date(Date.now() + runLifetimeMs(spec)).toISOString();
 		// An Archil mount is made under the run's claim (check() held the spec to both labels), for the tool user alone.
 		const archil = spec.mount?.kind === "archil" ? { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) } : undefined;
 		const user = archil === undefined ? (userOf(spec.user) ?? this.#user) : ARCHIL_USER;
@@ -967,7 +954,7 @@ export class ModalProvider implements ComputerProvider {
 			...(spec.gpu === undefined ? {} : { gpu: modalGpu(spec.gpu) }),
 			command,
 			// Modal ends the sandbox at its timeout: the lifetime, in the whole seconds the SDK takes.
-			timeoutMs: Math.ceil(spec.lifetimeMs / 1000) * 1000,
+			timeoutMs: Math.ceil(runLifetimeMs(spec) / 1000) * 1000,
 			workdir,
 			cpu: Math.min(CPU_REQUEST, cpuLimit),
 			cpuLimit,
@@ -1350,7 +1337,7 @@ export class ModalProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return { ...fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
+			return { ...vendorFail("modal",`cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value, close });
 	}
@@ -1537,7 +1524,7 @@ export class ModalProvider implements ComputerProvider {
 	 * loses nothing (every call that changed it synced, and the next claim revokes the hold), so it is said through
 	 * onNote, and the release succeeds once the sandbox is gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);

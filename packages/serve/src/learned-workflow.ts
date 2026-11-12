@@ -6,8 +6,8 @@
 // unavailable, a model node that names any tool, a code node or a shell or executor call is refused before any node
 // runs, never after earlier ones spent), then runs it with the workflow DSL's runWorkflow:
 //   - a model node (agent, decide, extract, report) on the run's model of its tier, else the run's own model (the one
-//     model the run was made with and handed the key of: app.ts), in a fresh session of its own (agentrun-pi's host
-//     runner), with no tool of its own;
+//     model the run was made with and handed the key of: app.ts), in a fresh session of its own (the host
+//     runner, workflow/host-session.ts), with no tool of its own;
 //   - a call node `via: "tool"` on the tool table's effect, as a workflow revision's (app.ts), for a tool the agent has,
 //     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
 //     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
@@ -27,6 +27,7 @@ import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
+import { PORT_PROVIDER } from "./port-models.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
 import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
@@ -94,37 +95,42 @@ export const LEARNED_WORKFLOW_TOOL = "learned_workflow";
 const LINE_MAX = 120;
 const VALUE_MAX = 60;
 
-/** One line of a learned workflow's output for its row: an object's fields as `name value`, each value whole or, when
- *  longer than VALUE_MAX, only as its size, and whole fields only until LINE_MAX. Nothing is ever cut inside a value:
- *  the timeline redacts the line as it says it (its summary's words), and its redactor matches a held value only whole,
- *  so a cut value could leave a prefix it would not find. Newlines are flattened, so the one line it keeps holds every
- *  field. An output already cut for the model (learnedText) says so. */
+/** One line of a learned workflow's output for its row: an object's fields as `name value`, and a text output (learnedOutput
+ *  hands one back as it is, #2412) its lines, each value or line whole or, when longer than VALUE_MAX, only as its size,
+ *  and whole ones only until LINE_MAX. Nothing is ever cut inside a value or a line: the timeline redacts the line as it
+ *  says it (its summary's words), and its redactor matches a held value only whole, so a cut one could leave a prefix it
+ *  would not find. Newlines are flattened, so the one line it keeps holds every part. An output already cut for the
+ *  model (learnedText) says so. */
 export function outputLine(text: string): string | undefined {
   const clipped = /\n\[the workflow's output is cut at (\d+) of (\d+) characters\]$/.exec(text);
   if (clipped) return `its output is long, cut at ${clipped[1]} of ${clipped[2]} characters`;
-  let output: unknown;
-  try {
-    output = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
   const said = (value: unknown): string => {
     const flat = (typeof value === "string" ? value : JSON.stringify(value) ?? String(value)).replace(/\s+/g, " ").trim();
     return flat.length > VALUE_MAX ? `(${flat.length} characters)` : flat;
   };
-  if (!output || typeof output !== "object" || Array.isArray(output)) return said(output);
-  const fields: string[] = [];
-  let length = 0;
-  for (const [key, value] of Object.entries(output as Record<string, unknown>)) {
-    const field = `${key} ${said(value)}`;
-    if (fields.length && length + 2 + field.length > LINE_MAX) {
-      fields.push("…");
-      break;
+  /** `parts` whole, joined by `by`, until LINE_MAX: then an ellipsis. */
+  const joined = (parts: readonly string[], by: string): string | undefined => {
+    const kept: string[] = [];
+    let length = 0;
+    for (const part of parts) {
+      if (kept.length && length + by.length + part.length > LINE_MAX) {
+        kept.push("…");
+        break;
+      }
+      kept.push(part);
+      length += (kept.length > 1 ? by.length : 0) + part.length;
     }
-    fields.push(field);
-    length += (fields.length > 1 ? 2 : 0) + field.length;
+    return kept.length ? kept.join(by) : undefined;
+  };
+  let output: unknown;
+  try {
+    output = JSON.parse(text);
+  } catch {
+    // Text, as it is: its lines that hold words.
+    return joined(text.split("\n").filter((line) => line.trim()).map(said), " / ");
   }
-  return fields.length ? fields.join(", ") : undefined;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return said(output);
+  return joined(Object.entries(output as Record<string, unknown>).map(([key, value]) => `${key} ${said(value)}`), ", ");
 }
 
 // The timeline's words for a learned workflow's call: the workflow it ran (its name), and, once it returns, its output.
@@ -156,6 +162,10 @@ export type LearnedWorkflowRun = {
   models: RunModels;
   /** The run's model a model node of `tier` runs on: the tier's, else the run's own. */
   modelOf(tier: string | undefined): ModelRef | undefined;
+  /** The session's model as a person reads it, the id the run's route names it by: what a node's trace says it ran on
+   *  (its `model`) when modelOf answers with the session's own port (PORT_PROVIDER), whose model id names no model. A
+   *  ref of another provider (a tier's own model) is named by its model id. */
+  modelName?(tier: string | undefined): string | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
   /** The run's gate's permission of a tool now (tool-gate.ts RunGate policy): a call node's tool set to ask or deny is
@@ -182,7 +192,7 @@ export type LearnedWorkflowRun = {
  *  host's result bound, which each CLI is told to pass whole (host-bounds.test). */
 export const LEARNED_CLIP = 60_000;
 
-/** `text`, a learned workflow's output as JSON, cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
+/** `text`, a learned workflow's output as its tool hands it back (learnedOutput), cut at LEARNED_CLIP characters (never inside a surrogate pair), saying
  *  so. */
 export function learnedText(text: string): string {
   if (text.length <= LEARNED_CLIP) return text;
@@ -196,13 +206,26 @@ export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without 
 
 /** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
  *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
- *  one; what it answers), then each workflow on a line of its own (workflowLine): its name, its input's fields and the
- *  line its README says what it does with. */
+ *  one; what it answers: a text output as it is, to reply with unchanged, since a model handed it otherwise writes its own
+ *  reply around it and a format the workflow's last node wrote is lost, #2412), then each workflow on a line of its own
+ *  (workflowLine): its name, its input's fields and the line its README says what it does with. */
 export const learnedWorkflowDescription = (workflows: readonly LearnedWorkflow[]): string =>
   [
-    "Runs one of this agent's learned workflows in one call, by name, on a JSON input with the fields below (* required). Answers its output as JSON, or why it did not run.",
+    "Runs a learned workflow in one call, by name, on a JSON input: fields below (* required). Text output: reply with it unchanged. Else JSON, or why it did not run.",
     ...workflows.map(workflowLine),
   ].join("\n");
+
+/** A learned workflow's output as its tool hands it back: its text when it is text, a string or an object of one string
+ *  field (a node's record of one field, as a last node that writes the answer gives it), so the lines its last node wrote
+ *  reach the model as lines; else JSON. */
+export function learnedOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const values = Object.values(output);
+    if (values.length === 1 && typeof values[0] === "string") return values[0];
+  }
+  return JSON.stringify(output ?? null);
+}
 
 /** One model request as a pi-ai event stream, sent through `models.completeSimple` as the run's own request, under its
  *  cap: on pi marked and costed on the run's timeline under `learned_workflow` (sideRequests), on another harness booked
@@ -267,7 +290,7 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
   });
 }
 
-/** `flow` run on `input` for `run`: its output as JSON, or why it did not run, and each of its nodes that ran (at most
+/** `flow` run on `input` for `run`: its output as its tool hands it back (learnedOutput), or why it did not run, and each of its nodes that ran (at most
  *  LEARNED_NODES_MAX), none for one refused before any node ran. Never throws, but on an abort. `ledger`: the tool call's,
  *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
  *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. */
@@ -296,9 +319,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
-  // agentrun-pi's root loads its host runner and @earendil-works/pi-coding-agent, an optional peer of agentrun-pi: serve
-  // depends on it (package.json) so an installed server has it, not only this repository.
-  const { createPiHostRunner } = await import("@parcha/agentrun-pi");
+  // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
+  const { createPiHostRunner } = await import("./workflow/host-session.js");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
   const runnerFor = async (tier: string | undefined) => {
     const known = runners.get(tier ?? "default");
@@ -312,8 +334,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     runners.set(tier ?? "default", runner);
     return runner;
   };
+  // Each model node's model and tier by its execution path, as it runs: its node.end (the same path) puts them on its
+  // trace. Never by its label, which a workflow may repeat. Only a model node runs here: a call node never has one.
+  const ranOn = new Map<string, { model: string; tier?: string }>();
   const runNode = async (request: Parameters<NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>[0]) => {
     if (request.tools?.length) throw new Error(`${NODE_TOOLS_REFUSED}: its node "${request.label}" names ${request.tools.join(", ")}`);
+    const tier = typeof request.tier === "string" ? request.tier : undefined;
+    const ref = run.modelOf(tier);
+    const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
+    if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
     return (await runnerFor(request.tier as string | undefined))(request);
   };
@@ -356,15 +385,16 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
-  const onEvent = (event: { type: string; label: string; detail?: unknown }) => {
+  const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0 });
+    const ran = typeof event.executionPath === "string" ? ranOn.get(event.executionPath) : undefined;
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);
     if (result.status !== "complete") return refuse(`it ended ${result.status}`);
-    return { text: learnedText(JSON.stringify(result.output ?? null)), isError: false, nodes };
+    return { text: learnedText(learnedOutput(result.output)), isError: false, nodes };
   } catch (error) {
     if (signal?.aborted) throw error;
     return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}`, isError: true, nodes };
