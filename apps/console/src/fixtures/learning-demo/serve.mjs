@@ -6,13 +6,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [serveIndex, consoleDir, data, port] = process.argv.slice(2);
-const { startServe } = await import(pathToFileURL(serveIndex).href);
+// The server and a runner beside it (serveWithRunner, as the CLI's start): a server alone leaves every run queued.
+const { serveWithRunner } = await import(pathToFileURL(serveIndex).href);
 const faux = new URL("./faux-refunds.mjs", import.meta.url).pathname;
 // No box: the demo's agents run on the runner whether or not this machine has Docker (on by default otherwise).
 process.env.AGENTRUN_BOXES ??= "none";
-const serve = await startServe({ data, port: Number(port), host: "127.0.0.1", faux, learning: "on", console: consoleDir, maxRuns: 6, log: () => {} });
+const { serve, close } = await serveWithRunner({ data, port: Number(port), host: "127.0.0.1", faux, learning: "on", console: consoleDir, maxRuns: 6, log: () => {} });
 writeFileSync(join(data, ".link"), `${serve.url}/?token=${encodeURIComponent(serve.token)}\n`, { mode: 0o600 });
 process.stdout.write(`${JSON.stringify({ url: serve.url, pid: process.pid })}\n`);
-const stop = () => void serve.close().then(() => process.exit(0));
+const stop = () => void close().then(() => process.exit(0));
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);

@@ -47,19 +47,22 @@ export type PromptVariant = { role: "base" | "overlay" | "generic" | "question";
 
 export type RevisionPlace = { mode: string; box?: string };
 /** A revision's computer (computer-setting.ts): its kind and the provider that serves it, ids its host knows, and a
- *  sandbox's GPUs, a type its provider names and how many; `place` is its v2 view. */
-export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
+ *  sandbox's GPUs, a type its provider names and how many; `place` is its v2 view. `image`: one the provider offers for
+ *  the kind, absent for its default. */
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } };
 /** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
 export type ToolSettings = Record<string, unknown>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown> };
+/** The model of each tier an agentic revision names (its definition's `model_tiers`: fast, strong), each "provider/model-id". */
+export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown> }
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" }
   | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
@@ -72,17 +75,19 @@ function placeOf(place: unknown): RevisionPlace {
 /** A GPU type as a body keeps it: the vendor's own name ("T4", "A100-80GB", "RTX-PRO-6000"). */
 const GPU_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** A computer as a body keeps it: `{kind, provider?, gpu?}`, nothing else: kind and provider ids, and gpu `{type, count}`,
- *  a GPU type name and a whole count from 1. */
+/** A computer as a body keeps it: `{kind, provider?, image?, gpu?}`, nothing else: kind and provider ids, image a name
+ *  with no spaces around it, and gpu `{type, count}`, a GPU type name and a whole count from 1. */
 function computerOf(computer: unknown): RevisionComputer {
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "gpu")) invalid("the computer is not {kind, provider?, gpu?}, kind and provider each an id (lowercase letters, digits and dashes)");
-  const ok = computer as { kind: string; provider?: string; gpu?: unknown };
+  const image = isObject(computer) ? computer.image : undefined;
+  const named = (value: unknown) => typeof value === "string" && value !== "" && value === value.trim();
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || Object.keys(computer).some((key) => key !== "kind" && key !== "provider" && key !== "image" && key !== "gpu")) invalid("the computer is not {kind, provider?, image?, gpu?}, kind and provider each an id (lowercase letters, digits and dashes), image a name");
+  const ok = computer as { kind: string; provider?: string; image?: string; gpu?: unknown };
   const gpu = ok.gpu;
   if (gpu !== undefined && (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count") || typeof gpu.type !== "string" || !GPU_TYPE.test(gpu.type) || !Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1)) {
     invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
   }
   const kept = gpu as { type: string; count: number } | undefined;
-  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}) };
+  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any
@@ -131,17 +136,25 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined && typeof input.learning !== "boolean") invalid("learning is not true or false");
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
+    if (input.checkout !== undefined && input.checkout !== "pull_request") invalid("the checkout is not pull_request");
+    if (input.modelTiers !== undefined && !(isObject(input.modelTiers) && Object.keys(input.modelTiers).length && Object.entries(input.modelTiers).every(([tier, ref]) => (tier === "fast" || tier === "strong") && typeof ref === "string" && ref !== ""))) invalid("the modelTiers are not fast and strong to a non-empty model");
+    if (input.maxToolCalls !== undefined && !(Number.isSafeInteger(input.maxToolCalls) && input.maxToolCalls > 0)) invalid("the maxToolCalls is not a whole number above 0");
     const body: AgenticBody = {
       instructions: input.instructions,
       skills: skillShas,
       tools: [...tools],
       ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.modelTiers !== undefined ? { modelTiers: Object.fromEntries(Object.entries(input.modelTiers).sort(([a], [b]) => a.localeCompare(b))) as ModelTiers } : {}),
       ...(input.thinking !== undefined ? { thinking: input.thinking } : {}),
       ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}),
       ...host,
       ...(input.learning !== undefined ? { learning: input.learning } : {}),
       // The JSON Schema its final answer's structured part meets (definition.output_schema): a completed run's result.output.
       ...(input.outputSchema !== undefined ? { outputSchema: structuredClone(input.outputSchema) } : {}),
+      // What the server checks out in each run's folder before its first turn (runner/pr-checkout.ts).
+      ...(input.checkout !== undefined ? { checkout: input.checkout } : {}),
+      // The tool calls each conversation of its runs may make (tool-budget.ts).
+      ...(input.maxToolCalls !== undefined ? { maxToolCalls: input.maxToolCalls } : {}),
       // The agent's unattended policy (PR #2003): the runner's gate reads it from the revision body at claim (`unattended`
       // below: "never" alone is kept).
       ...capped,

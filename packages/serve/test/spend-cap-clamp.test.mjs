@@ -5,10 +5,9 @@
 // model request". pi through a gateway (a Responses endpoint on loopback, so the output on the wire is the one checked);
 // claude-agent and codex through the faux harness, which files the output limit each request was admitted with.
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, responsesEndpoint, runDir, serve, withEnv } from "./support.mjs";
+import { entriesOf } from "./learn-support.mjs";
+import { agent, follow, responsesEndpoint, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
@@ -32,6 +31,17 @@ async function start(api, id, content, extra = {}, definition = {}) {
   return started.body;
 }
 
+/** The run's timeline once its usage row is in: a run reads paused as its park commits, and its usage row can follow a
+ *  moment later. Bounded: a usage row that never comes fails the check below with the rows as they are. */
+async function settledRows(api, runId) {
+  let rows = [];
+  for (let i = 0; i < 50; i++, await new Promise((resolve) => setTimeout(resolve, 100))) {
+    rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+    if (rows.some((row) => row.kind === "usage")) break;
+  }
+  return rows;
+}
+
 /** No row says the run made a model request it never sent: its usage line says it sent none. */
 function noPhantomRequest(rows) {
   for (const row of rows) {
@@ -41,18 +51,10 @@ function noPhantomRequest(rows) {
   assert.deepEqual(rows.filter((row) => row.kind === "usage").map((row) => row.summary), ["no model request sent"]);
 }
 
-/** The run's store records of `kind`, read once its process has let it go. */
-function records(data, runId, kind) {
-  for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-    try {
-      return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === kind);
-    } catch (error) {
-      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
-    } finally {
-      db.close();
-    }
-  }
+/** The run's journal records of `kind`, from the one store (each its kind and its data), as its own run.sqlite held them
+ *  before the runner: the faux harness's `faux.request`, the model proxy's `runner.request`. */
+async function records(data, runId, kind) {
+  return (await entriesOf({ data }, runId, [kind])).map(({ kind: k, ...rest }) => ({ kind: k, data: rest }));
 }
 
 async function gateway(t, price) {
@@ -71,12 +73,14 @@ test("pi: a cap under one request's worst case at the ceiling runs, the request 
   assert.ok(sent >= 15_999 && sent <= 16_000 && sent < GATEWAY_MAX_OUTPUT, `max_output_tokens ${sent}`);
 });
 
-// SKIP (follow-up #2078): a cap that cannot buy the first request's least is not refused as before
-test.skip("pi: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap", async (t) => {
+test("pi: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap", async (t) => {
   // A gateway model reasons, and its reasoning shares max_output_tokens: its least is 1,024 tokens for the answer and the
-  // medium thinking level's 8,192 (pi-ai's table), 9,216 at $1 a million, $0.009216 (rounded up in the words to $0.01).
+  // medium thinking level's 8,192 (pi-ai's table), 9,216 at $1 a million, $0.009216 (rounded up in the words to $0.01). The
+  // agent names medium thinking: one that names none is sent at effort none, its least the answer's 1,024 tokens alone.
   const { api, posts } = await gateway(t, "0,1");
-  const { run, rows } = await ended(api, (await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 })).run_id);
+  const { run_id } = await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 }, { thinking: "medium" });
+  const { run } = await ended(api, run_id);
+  const rows = await settledRows(api, run_id);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
   assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.01, and this run's cap is \$0\.0005\. Raise the cap to at least \$0\.01 to continue\.$/);
   assert.equal(run.cost.usd, 0);
@@ -84,34 +88,31 @@ test.skip("pi: a cap that cannot buy its first request's least is refused before
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-  test.skip(`${harness}: a cap under one request's worst case at the ceiling runs, each request admitted with the output what is left buys`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a cap under one request's worst case at the ceiling runs, each request admitted with the output what is left buys`, { timeout: 90_000 }, async (t) => {
     // At its ceiling a faux request could cost $1.6384; $0.50 buys about 5,000 tokens, less what each answer cost.
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `clamp-${harness}`, "go", { max_cost_usd: 0.5 }, { harness, instructions: "Make three requests." });
     const { run } = await ended(api, run_id);
     assert.equal(run.status, "completed", JSON.stringify(run.error));
-    const limits = records(data, run_id, "faux.request").map((r) => r.data.outputTokensMax);
+    const limits = (await records(data, run_id, "faux.request")).map((r) => r.data.outputTokensMax);
     assert.equal(limits.length, 3, JSON.stringify(limits));
     assert.ok(limits.every((n) => Number.isInteger(n) && n >= 1_024 && n <= 5_000), `each request's output limit: ${JSON.stringify(limits)}`);
-    const held = records(data, run_id, "runner.request").map((r) => r.data.heldUsd);
+    const held = (await records(data, run_id, "runner.request")).map((r) => r.data.heldUsd);
     assert.ok(held.length === 3 && held.every((usd, i) => Math.abs(usd - limits[i] * FAUX_PER_TOKEN) < 1e-9 && usd <= 0.5), `held at each clamped limit: ${JSON.stringify(held)}`);
   });
 
-  // SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-  test.skip(`${harness}: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a cap that cannot buy its first request's least is refused before anything is sent, in plain words, the run made no request, and it pauses at its cap`, { timeout: 90_000 }, async (t) => {
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const { run_id } = await start(api, `tiny-${harness}`, "go", { max_cost_usd: 0.05 }, { harness, instructions: "Make three requests." });
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // 1,024 tokens at $0.0001 are $0.1024: the least cap is $0.11 in the words.
     assert.match(run.pending.said, /^Not sent: the next step needs at least \$0\.11, and this run's cap is \$0\.05\. Raise the cap to at least \$0\.11 to continue\.$/);
-    assert.equal(records(data, run_id, "faux.request").length, 0, "nothing was sent");
-    noPhantomRequest(rows);
+    assert.equal((await records(data, run_id, "faux.request")).length, 0, "nothing was sent");
+    noPhantomRequest(rows.some((row) => row.kind === "usage") ? rows : await settledRows(api, run_id));
   });
 
-  // SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-  test.skip(`${harness}: a run that spends its cap down is refused once what is left cannot buy 1,024 tokens, saying so, the refused request counts as none, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a run that spends its cap down is refused once what is left cannot buy 1,024 tokens, saying so, the refused request counts as none, and the run pauses at its cap`, { timeout: 90_000 }, async (t) => {
     // $0.105 passes the least ($0.1024). The first request is admitted with 1,050 tokens and costs $0.001, the second with
     // 1,040 and costs $0.002; then $0.102 is left, 1,020 tokens: the third is refused.
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
@@ -120,7 +121,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be what was spent and the next request's least: $0.003 + $0.1024, $0.11 up to the cent.
     assert.match(run.pending.said, /^Not sent: this run has spent \$0 of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
-    assert.equal(records(data, run_id, "faux.request").length, 2, "two were sent");
+    assert.equal((await records(data, run_id, "faux.request")).length, 2, "two were sent");
     const usage = rows.findLast((r) => r.kind === "usage")?.usage;
     assert.equal(usage?.requests, 2, JSON.stringify(usage));
     for (const row of rows) assert.doesNotMatch(String(row.summary ?? ""), /over 3 model requests/, JSON.stringify(row));
