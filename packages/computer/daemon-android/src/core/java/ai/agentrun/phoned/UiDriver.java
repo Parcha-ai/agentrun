@@ -113,10 +113,12 @@ public final class UiDriver {
 		boolean full = p.bool("full", false);
 		String since = p.str("since", null);
 		int maxEdge = imageEdge(p);
-		if (maxEdge > 0) {
-			String off = off("ui.image");
-			if (off != null) throw RpcError.unsupported("ui.observe: " + off);
-		}
+		// The window's image comes from the window's bounds the tree gives, so here the tree off is the image off too:
+		// observe has nothing to answer (wire.md: refused denied with both reasons).
+		String treeOff = off("ui.tree");
+		String imageOff = off("ui.image");
+		if (treeOff != null && imageOff != null) throw RpcError.denied("ui.observe: " + treeOff + "; " + imageOff);
+		if (maxEdge > 0 && imageOff != null) throw RpcError.unsupported("ui.observe: " + imageOff);
 		synchronized (hands) {
 			cancel.check();
 			Device.Accessibility a11y = device.accessibility();

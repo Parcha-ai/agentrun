@@ -67,6 +67,7 @@ public final class Phoned implements Wire.Handler {
 		Map<String, Object> f = new LinkedHashMap<>();
 		f.put("apps.background", APPS_BACKGROUND_OFF);
 		Object tree = phone.get("ui.tree");
+		f.put("ui.tree", Boolean.TRUE.equals(tree) ? Boolean.TRUE : tree);
 		f.put("ui.image", Boolean.TRUE.equals(tree) ? Boolean.TRUE : "the window's image comes from the accessibility connection, which is off: " + tree);
 		f.put("ui.background", UI_BACKGROUND_OFF);
 		Object inject = phone.get("input.inject");
@@ -92,12 +93,23 @@ public final class Phoned implements Wire.Handler {
 				"protocol", PROTOCOL,
 				"version", version,
 				"os", "android",
-				"osVersion", facts.release == null || facts.release.isEmpty() ? Json.OMIT : facts.release,
+				"osVersion", osVersion(facts),
 				"kind", "android",
 				"arch", arch(facts.abi),
 				"groups", new ArrayList<Object>(GROUPS),
 				"screen", Json.obj("width", Math.round(d.width / d.scale), "height", Math.round(d.height / d.scale), "scale", d.scale),
-				"features", wireFeatures());
+				"features", wireFeatures(),
+				"device", empty(facts.maker) && empty(facts.model) ? Json.OMIT : Json.obj("maker", empty(facts.maker) ? "unknown" : facts.maker, "model", empty(facts.model) ? "unknown" : facts.model));
+	}
+
+	private static boolean empty(String s) {
+		return s == null || s.trim().isEmpty();
+	}
+
+	/** The Android release with its API level, "15 (API 35)"; the release alone when the level is unknown. */
+	static Object osVersion(Device.Facts facts) {
+		if (empty(facts.release)) return Json.OMIT;
+		return facts.sdk > 0 ? facts.release + " (API " + facts.sdk + ")" : facts.release;
 	}
 
 	@Override

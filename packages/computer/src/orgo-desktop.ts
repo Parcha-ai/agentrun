@@ -50,7 +50,7 @@ import {
 	show,
 	withDeadline,
 } from "./orgo-names.js";
-import { encodePng } from "./phone-harness.js";
+import { encodePng } from "./png.js";
 import {
 	type Button,
 	type ComputerClient,

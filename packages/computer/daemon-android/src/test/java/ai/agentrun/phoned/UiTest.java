@@ -29,7 +29,8 @@ final class UiTest {
 		eq("[0,0,540,1200]", Json.write(window.get("bounds")));
 		Map<String, Object> row = phone.node(seen, "Network & internet");
 		eq("button", row.get("role"));
-		eq("Mobile, Wi-Fi, hotspot", row.get("value"));
+		eq("Mobile, Wi-Fi, hotspot", row.get("desc"));
+		eq(null, row.get("value"));
 		// 0,300 to 1080,500 pixels at 2 pixels a point.
 		eq("[0,150,540,100]", Json.write(row.get("bounds")));
 		eq(Arrays.asList("ACTION_CLICK"), row.get("actions"));
@@ -91,8 +92,9 @@ final class UiTest {
 		eq(270L, image.get("width"));
 		eq(600L, image.get("height"));
 		phone.device.features.put("ui.tree", "UiAutomation is held by another client");
-		String words = refuses("unsupported", () -> phone.call("ui.observe", "{\"image\":true}"));
-		yes(words.contains("ui.image is off here"), words);
+		String words = refuses("denied", () -> phone.call("ui.observe", "{\"image\":true}"));
+		yes(words.contains("ui.tree is off here: UiAutomation is held by another client") && words.contains("ui.image is off here"), words);
+		refuses("denied", () -> phone.call("ui.observe", "{}"));
 	}
 
 	static void testPressByRefIsSemanticAndExpectIsMet() throws Exception {
@@ -149,7 +151,7 @@ final class UiTest {
 		Map<String, Object> field = phone.node(seen, "Network name");
 		eq("textbox", field.get("role"));
 		Map<String, Object> wifiRow = phone.node(seen, "Wi-Fi");
-		eq("Home network", wifiRow.get("value"));
+		eq("Home network", wifiRow.get("desc"));
 		Map<String, Object> toggle = null;
 		for (Object n : list(seen, "nodes")) if ("switch".equals(map(n).get("role"))) toggle = map(n);
 		yes(toggle != null, "the row's own switch is listed");

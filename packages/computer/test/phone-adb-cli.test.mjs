@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
-import { fakePhoneHarness, KEY } from "./fake-phone-harness.mjs";
+import { fakePhoneHarness, KEY, PHONED_JAR } from "./fake-phone-harness.mjs";
 
 const { adbCli, ADB_SERVER_PORT } = await import("../dist/phone-harness.js");
 const conformance = await import("../dist/conformance/phone-harness.js");
@@ -58,6 +58,73 @@ test("adbCli on another port: every spawned adb names that port with -P, as ever
 			[...P, "start-server"],
 			[...P, "-t", "1", "shell", "echo ok"],
 		]);
+	} finally {
+		await server.close();
+	}
+});
+
+/**
+ * A stand-in adb server for open(): host:transport-id:7 binds the socket to its phone (OKAY) and any other id is
+ * FAIL with words; then a service is OKAY, and the stream that follows is the phone program's: its first line comes in
+ * the same chunk as the OKAY, and every line written to it comes back.
+ */
+async function streamServer() {
+	const requests = [];
+	const frame = (status, words) => `${status}${Buffer.byteLength(words).toString(16).padStart(4, "0")}${words}`;
+	const server = createServer((socket) => {
+		let buffer = Buffer.alloc(0);
+		let streaming = false;
+		socket.on("data", (chunk) => {
+			if (streaming) return void socket.write(chunk);
+			buffer = Buffer.concat([buffer, chunk]);
+			while (!streaming && buffer.length >= 4) {
+				const length = Number.parseInt(buffer.subarray(0, 4).toString("latin1"), 16);
+				if (buffer.length < 4 + length) return;
+				const request = buffer.subarray(4, 4 + length).toString("utf8");
+				buffer = buffer.subarray(4 + length);
+				requests.push(request);
+				if (request.startsWith("host:transport-id:")) {
+					if (request === "host:transport-id:7") socket.write("OKAY");
+					else socket.end(frame("FAIL", `device '${request.slice(18)}' not found`));
+				} else {
+					streaming = true;
+					socket.write("OKAY{\"first\":true}\n");
+				}
+			}
+		});
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	return { port: server.address().port, requests, close: () => new Promise((resolve) => server.close(resolve)) };
+}
+
+test("adbCli.open binds a socket to the phone, starts the service, and hands over its stream paused, with nothing of it lost", async () => {
+	const server = await streamServer();
+	try {
+		const script = join(dir, "adb-open");
+		writeFileSync(script, `#!${process.execPath}\n`);
+		chmodSync(script, 0o755);
+		const adb = adbCli(script, { port: server.port });
+		const opened = await adb.open("exec:cat", { timeoutMs: 10_000, transport: "7" });
+		assert.equal(opened.ok, true, JSON.stringify(opened));
+		const stream = opened.value;
+		assert.equal(stream.isPaused(), true, "it comes paused: the caller listens first");
+		assert.deepEqual(server.requests, ["host:transport-id:7", "exec:cat"]);
+		const lines = [];
+		let resolveTwo;
+		const two = new Promise((resolve) => (resolveTwo = resolve));
+		stream.on("data", (chunk) => {
+			lines.push(...chunk.toString("utf8").split("\n").filter(Boolean));
+			if (lines.length >= 2) resolveTwo();
+		});
+		stream.resume();
+		stream.write("{\"echo\":1}\n");
+		await two;
+		assert.deepEqual(lines, ['{"first":true}', '{"echo":1}'], "the bytes after the OKAY are the stream's first, then its echo");
+		stream.destroy();
+
+		const refused = await adb.open("exec:cat", { timeoutMs: 10_000, transport: "9" });
+		assert.equal(refused.ok, false);
+		assert.deepEqual([refused.error.code, refused.error.message], ["vendor", "the adb server refused host:transport-id:9: device '9' not found"]);
 	} finally {
 		await server.close();
 	}
@@ -154,10 +221,11 @@ test("the conformance module's adb option, given as a path, spawns that adb from
 test("the conformance module's adb option, given as a transport, is used as it is", async () => {
 	const fake = fakePhoneHarness();
 	const env = { COMPUTER_PHONE_HARNESS_API_KEY: KEY, COMPUTER_PHONE_HARNESS_LEDGER: join(dir, "transport-ledger.json"), AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS: "1" };
-	const provider = await conformance.createProvider({ env, adb: fake.adb, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep });
+	const provider = await conformance.createProvider({ env, adb: fake.adb, fetch: fake.fetch, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
 	const created = await provider.create({ image: "android", lifetimeMs: 60_000, network: "open" });
 	const connected = await provider.connect(created.value);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
+	assert.equal(fake.running().length, 1, "the given transport started phoned too");
 	assert.ok(fake.serverCalls().some((call) => call.startsWith("host:connect:")), "the given transport carried the connect");
 	await connected.value.close();
 	await provider.release(created.value, "delete");

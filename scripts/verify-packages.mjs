@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
+import { inflateRawSync } from 'node:zlib';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -144,8 +145,10 @@ const usedEndpoints = new Set();
 const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
-  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`)],
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), 'package/dist/phoned.jar'],
 };
+// The phone harness pushes dist/phoned.jar, phoned, to each phone it drives: `npm run build:phoned -w @parcha/agentrun-computer`
+// (a JDK and the Android SDK, after `npm run build`) writes it, a jar whose one entry is classes.dex.
 
 try {
   // JSON keeps the last of two equal keys, so a merge that leaves a key twice passes every later check.
@@ -178,7 +181,7 @@ try {
     const extracted = join(temporary, `inspect-${directory}`);
     await mkdir(extracted);
     await run('tar', ['-xzf', tarball, '-C', extracted]);
-    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd-linux-') ? ': run npm run build:daemon -w @parcha/agentrun-computer (Go) after the build' : ''}`);
+    for (const name of requiredFiles[directory] ?? []) assert.ok(names.includes(name), `${manifest.name} must hold ${name.slice('package/'.length)}${name.includes('/computerd-linux-') ? ': run npm run build:daemon -w @parcha/agentrun-computer (Go) after the build' : name.endsWith('/phoned.jar') ? ': run npm run build:phoned -w @parcha/agentrun-computer (a JDK and the Android SDK) after the build' : ''}`);
     if (directory === 'computer') {
       for (const [arch, machine] of Object.entries(daemonMachines)) {
         const name = `package/dist/computerd-linux-${arch}`;
@@ -187,7 +190,13 @@ try {
         assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && bytes.readUInt16LE(18) === machine, `${name} is a Linux ${arch} ELF`);
         assert.ok(bytes.includes(Buffer.from(manifest.version)), `${name} is stamped with ${manifest.version}: build the daemon again after the version changes`);
       }
-      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, the egress proxy's code, and the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}.`);
+      // d8 writes one entry, classes.dex, deflated; inflating it from its local header reads the dex phoned is.
+      const jar = await readFile(join(extracted, 'package/dist/phoned.jar'));
+      assert.ok(jar.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) && jar.subarray(30, 30 + jar.readUInt16LE(26)).toString() === 'classes.dex' && jar.readUInt16LE(8) === 8, 'package/dist/phoned.jar is a jar whose first entry is classes.dex, deflated');
+      const dex = inflateRawSync(jar.subarray(30 + jar.readUInt16LE(26) + jar.readUInt16LE(28)));
+      assert.ok(dex.subarray(0, 4).toString('latin1') === 'dex\n', 'package/dist/phoned.jar holds a dex file');
+      assert.ok(dex.includes(Buffer.from(manifest.version)), `package/dist/phoned.jar is stamped with ${manifest.version}: run npm run build:phoned again after the version changes`);
+      receipt.checks.push(`${manifest.name} holds LICENSE, NOTICE, its ./mount subpath, the egress proxy's code, the daemon for linux ${Object.keys(daemonMachines).join(' and ')}, each an executable ELF stamped ${manifest.version}, and phoned's dex jar stamped the same.`);
     }
     for (const name of names.filter(n => !n.endsWith('/'))) {
       const content = await readFile(join(extracted, name), 'utf8');

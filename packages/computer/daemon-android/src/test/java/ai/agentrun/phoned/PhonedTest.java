@@ -23,12 +23,14 @@ final class PhonedTest {
 		eq("0.2", hello.get("protocol"));
 		eq("0.0.0-test", hello.get("version"));
 		eq("android", hello.get("os"));
-		eq("15", hello.get("osVersion"));
+		eq("15 (API 35)", hello.get("osVersion"));
 		eq("android", hello.get("kind"));
 		eq("arm64", hello.get("arch"));
+		eq(Json.obj("maker", "Google", "model", "Pixel 9"), hello.get("device"));
 		eq(Arrays.asList("exec", "screen", "input.keys", "input.touch", "apps", "ui"), hello.get("groups"));
 		eq(Json.obj("width", 540L, "height", 1200L, "scale", 2.0), hello.get("screen"));
 		Map<String, Object> features = map(hello.get("features"));
+		eq(true, features.get("ui.tree"));
 		eq(true, features.get("ui.image"));
 		eq(true, features.get("ui.foreground"));
 		eq(true, features.get("ui.nav"));
@@ -37,6 +39,7 @@ final class PhonedTest {
 		phone.device.features.put("ui.tree", "UiAutomation is held by another client");
 		phone.device.features.put("input.inject", "INJECT_EVENTS was refused");
 		Map<String, Object> off = map(phone.call("hello", "{}").get("features"));
+		eq(Json.obj("off", "UiAutomation is held by another client"), off.get("ui.tree"));
 		yes(((String) map(off.get("ui.nav")).get("off")).contains("held by another client"), Json.write(off));
 		eq(Json.obj("off", "INJECT_EVENTS was refused"), off.get("ui.foreground"));
 	}

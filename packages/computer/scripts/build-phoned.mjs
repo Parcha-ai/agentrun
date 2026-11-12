@@ -137,4 +137,6 @@ mkdirSync(dist, { recursive: true });
 const out = join(dist, "phoned.jar");
 rmSync(out, { force: true });
 run(d8, ["--release", "--min-api", String(API), "--lib", androidJar, "--output", out, ...files(classes, ".class")]);
+// build/ is git-ignored, so CI's build output would carry its megabytes of Android's java.base to every test job.
+rmSync(build, { recursive: true, force: true });
 console.log(`build:phoned: ${out} (${statSync(out).size} bytes, ${version})`);

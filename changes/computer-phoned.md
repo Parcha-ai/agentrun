@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-computer
+kind: breaking
+---
+The phone harness's Android is driven by phoned, a driver that runs on the phone, in place of adb shell commands. Breaking: an `adb` option given as a transport of your own must now offer `open(service, { timeoutMs, transport })` beside `run` and `server`, and a package built from source needs `npm run build:phoned` (a JDK 17 and an Android SDK with `platforms;android-30` and `build-tools;35.0.0`) for `dist/phoned.jar`, or the provider's `phoned` option naming the jar.
+- phoned (`packages/computer/daemon-android/`) is plain Java built with javac and d8, no Gradle, into one dex jar. `connect()` pushes it to `/data/local/tmp` under its sha256 when the phone lacks it, starts it as the shell user through `app_process` (scrcpy's way in, credited in `daemon-android/NOTICE-scrcpy.md`) on adb's `exec:` service, and speaks the protocol to it over that socket. Its hello is its own: protocol 0.2, the screen in points, `device`, and each feature on or off with the reason.
+- On the phone: `ui.observe` straight from UiAutomation (rows named from their texts, zero-size nodes dropped, refs stable while the element lives) and `ui.act` by accessibility actions or injected input, settled on accessibility quiet and a new frame and read back before `expect` is checked; `input.actions` through InputManager, a pinch, key combos and holds included, and Unicode text through the clipboard; `screen.shot` and `screen.watch` scaled on the phone; `apps.launch` with a deep link; `exec.run` as the shell user (the `exec` group). A screen marked secure is refused `denied` in words.
+- One phoned answers every connection to a phone (UiAutomation is one per phone). Closing a connection cancels its own calls; the last close ends phoned, then drops the adb transport.
+- `npm run test:phoned` runs phoned's JVM tests and the TypeScript client against its real core over a scripted phone.

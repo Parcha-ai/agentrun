@@ -1,6 +1,6 @@
 // The phone harness for the conformance CLI and the live harness (`--provider phone-harness`): the provider as create()
 // builds it from the settings this module reads (COMPUTER_PHONE_HARNESS_*), with its ledger in a JSON file so a sweep in
-// another process sees the run's phones, and its drifted twin, whose phone's hello reports another version. A phone is
+// another process sees the run's phones, and its drifted twin, which expects phoned to report another version. A phone is
 // rented by the minute, so nothing is built without AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS=1, and a run's phones live at
 // most 10 min.
 // The provider reads no environment: this module reads these names and passes them in as options.
@@ -209,7 +209,7 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 	};
 }
 
-export interface PhoneModuleOptions extends Pick<PhoneProviderOptions, "fetch" | "now" | "sleep" | "baseUrl"> {
+export interface PhoneModuleOptions extends Pick<PhoneProviderOptions, "fetch" | "now" | "sleep" | "baseUrl" | "phoned"> {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	/** The adb runner; default the CLI the settings name. */
@@ -238,7 +238,7 @@ export async function createProvider(options: PhoneModuleOptions = {}): Promise<
 	return create(optionsOf(options));
 }
 
-/** The same provider, whose phone's hello reports another version: connect refuses it, for the drift.version case. */
+/** The same provider, expecting phoned to report another version than its own: connect refuses it, for the drift.version case. */
 export async function createDriftedProvider(options: PhoneModuleOptions = {}): Promise<PhoneHarnessProvider> {
 	return create({ ...optionsOf(options), daemonVersion: "0.0.0-drift" });
 }

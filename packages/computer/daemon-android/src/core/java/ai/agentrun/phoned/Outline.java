@@ -72,6 +72,8 @@ public final class Outline {
 		public final String role;
 		public final String name;
 		public final String value;
+		/** What else it says beside its name: a row's other texts. */
+		public final String desc;
 		public final String id;
 		public final Rect bounds;
 		/** The nearest listed element above it, or null. */
@@ -81,12 +83,13 @@ public final class Outline {
 		/** Compact form lists it: it can be acted on or has a name, or an element it holds does. */
 		boolean kept;
 
-		Entry(AxNode node, String role, String name, String value, Rect bounds, List<String> flags, List<String> actions) {
+		Entry(AxNode node, String role, String name, String value, String desc, Rect bounds, List<String> flags, List<String> actions) {
 			this.node = node;
 			this.key = node.key();
 			this.role = role;
 			this.name = name;
 			this.value = value;
+			this.desc = desc;
 			this.id = Outline.trim(node.viewId());
 			this.bounds = bounds;
 			this.flags = flags;
@@ -95,12 +98,12 @@ public final class Outline {
 
 		/** What diff and the point rule compare: everything a person would see change, without the ref. */
 		public String signature() {
-			return role + "\u0000" + name + "\u0000" + value + "\u0000" + bounds + "\u0000" + flags;
+			return role + "\u0000" + name + "\u0000" + value + "\u0000" + desc + "\u0000" + bounds + "\u0000" + flags;
 		}
 
-		/** Whether its name or its value holds text. */
+		/** Whether its name, its value or its desc holds text. */
 		public boolean holds(String text) {
-			return (name != null && name.contains(text)) || (value != null && value.contains(text));
+			return (name != null && name.contains(text)) || (value != null && value.contains(text)) || (desc != null && desc.contains(text));
 		}
 
 		public Map<String, Object> json(Frame frame) {
@@ -109,6 +112,7 @@ public final class Outline {
 					"role", role,
 					"name", name == null ? Json.OMIT : name,
 					"value", value == null ? Json.OMIT : value,
+					"desc", desc == null ? Json.OMIT : desc,
 					"id", id == null ? Json.OMIT : id,
 					"bounds", frame.points(bounds),
 					"parent", parent == null ? Json.OMIT : parent.ref,
@@ -182,6 +186,7 @@ public final class Outline {
 		if (!bounds.empty() && (full || visible)) {
 			String name = ownName(node);
 			String value = valueOf(node);
+			String desc = null;
 			boolean acts = actionable(node);
 			if (acts && name == null && (node.clickable() || node.longClickable() || node.checkable()) && !node.editable()) {
 				List<String> texts = new ArrayList<>();
@@ -189,10 +194,11 @@ public final class Outline {
 				if (!texts.isEmpty()) {
 					name = texts.get(0);
 					took = true;
-					if (value == null && texts.size() > 1) value = clip(String.join(", ", texts.subList(1, Math.min(texts.size(), ROW_TEXTS))));
+					// The row's other texts say what else it is ("Mobile, Wi-Fi, hotspot"): its desc, not a value it holds.
+					if (texts.size() > 1) desc = clip(String.join(", ", texts.subList(1, Math.min(texts.size(), ROW_TEXTS))));
 				}
 			}
-			entry = new Entry(node, roleOf(node, name, inSearch), name, value, bounds, flagsOf(node, visible), actionsOf(node));
+			entry = new Entry(node, roleOf(node, name, inSearch), name, value, desc, bounds, flagsOf(node, visible), actionsOf(node));
 			entry.parent = parent;
 			entry.kept = full || acts || name != null;
 			if (entry.kept) for (Entry up = parent; up != null && !up.kept; up = up.parent) up.kept = true;
