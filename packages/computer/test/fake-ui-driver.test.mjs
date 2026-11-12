@@ -1,0 +1,193 @@
+// The fake ui driver over the wire, and the ui conformance cases on it: a desktop, a phone and one with features off
+// pass, each feature off refused with its sentence; a driver whose refs do not survive fails ui.refs-stable. Then the
+// driver's own rules: each connection its own refs, settle through a transition, a point stale after a resize and good
+// after a move, the line server's error codes and cancel, and the CLI on stdin and stdout.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
+import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, UI_FIXTURE } from "../dist/fake-ui-driver.js";
+
+const APP = UI_FIXTURE.id;
+const UI_CASES = ["ui.hello", "ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused"];
+const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
+const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason ?? "";
+const run = (provider, ids = UI_CASES) => runConformance(provider, { image: "fake-ui", patience: 5000, cases: conformanceCases.filter((c) => ids.includes(c.id)) });
+
+test("the ui cases pass on a fake desktop: ui.nav off, refused with its sentence", { timeout: 60_000 }, async () => {
+	const provider = fakeUiProvider();
+	const report = await run(provider);
+	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}\n${formatReport(report)}`);
+	assert.deepEqual(report.cleanup.left, []);
+	assert.equal(provider.drivers.size, 0, "every computer the run made is released");
+});
+
+test("the ui cases pass on a fake phone: ui.nav on, apps.background off and refused with its sentence", { timeout: 60_000 }, async () => {
+	const report = await run(fakeUiProvider({ os: "android", kind: "android" }));
+	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+});
+
+test("with ui.image and ui.foreground off, both are refused with their sentences, and the foreground route skips in words", { timeout: 60_000 }, async () => {
+	const features = { "ui.image": { off: "this build reads no pixels" }, "ui.foreground": { off: "the user's pointer is theirs" } };
+	const report = await run(fakeUiProvider({ features }));
+	for (const id of UI_CASES.filter((id) => id !== "ui.route-reported")) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	assert.equal(statuses(report)["ui.route-reported"], "skip");
+	assert.match(reasonOf(report, "ui.route-reported"), /the foreground route is not tested: ui.foreground is off here: the user's pointer is theirs/);
+});
+
+test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
+	class Mumbling extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "apps.launch" && params?.background === true) return { ok: false, error: { code: "unsupported", message: "no" } };
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const report = await run(fakeUiProvider({ os: "android", kind: "android" }, (options) => new Mumbling(options)), ["ui.features-off-refused"]);
+	assert.equal(statuses(report)["ui.features-off-refused"], "fail");
+	assert.match(reasonOf(report, "ui.features-off-refused"), /carries its sentence "an app a phone opens comes to the front": no/);
+});
+
+test("a driver whose refs do not survive a change fails ui.refs-stable", { timeout: 60_000 }, async () => {
+	let looks = 0;
+	class Forgetful extends FakeUiDriver {
+		async look(target, signal) {
+			const looked = await super.look(target, signal);
+			if (!looked.ok) return looked;
+			const era = looks++;
+			const rename = (key) => (key === undefined ? undefined : `${key}#${era}`);
+			return { ok: true, value: { ...looked.value, elements: looked.value.elements.map((e) => ({ ...e, key: rename(e.key), parent: rename(e.parent) })) } };
+		}
+	}
+	const report = await run(fakeUiProvider({}, (options) => new Forgetful(options)), ["ui.refs-stable"]);
+	assert.equal(statuses(report)["ui.refs-stable"], "fail", reasonOf(report, "ui.refs-stable"));
+});
+
+test("refs and states are each connection's own; the apps are the computer's", async () => {
+	const driver = new FakeUiDriver();
+	const a = (await connectUi(driver)).value;
+	const b = (await connectUi(driver)).value;
+	assert.deepEqual(await a.client.call("apps.launch", { id: APP }), { ok: true, value: {} });
+	const seen = await a.client.call("ui.observe", {});
+	const save = seen.value.nodes.find((n) => n.id === "save").ref;
+	const other = await b.client.call("ui.act", { steps: [{ press: save }] });
+	assert.equal(other.ok, false);
+	assert.equal(other.error.code, "invalid");
+	assert.match(other.error.message, /is not a ref this connection was given: observe first/);
+	assert.equal((await b.client.call("ui.observe", {})).value.app.id, APP, "the app a launched is in front for b");
+	await a.close();
+	assert.equal(driver.screenOf(APP), "home", "closing a connection leaves the computer's apps running");
+	await b.close();
+	driver.close();
+});
+
+test("an act settles through a transition before it answers, and its state is the settled window", async () => {
+	const app = {
+		id: "test.slide",
+		name: "Slide",
+		start: "a",
+		size: [300, 200],
+		screens: {
+			a: { elements: [{ key: "go", role: "button", name: "Go", bounds: [10, 10, 80, 28], press: { go: "b", animateMs: 400 } }] },
+			b: { elements: [{ key: "done", role: "text", name: "Done", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const seen = await c.client.call("ui.observe", {});
+	const began = Date.now();
+	const pressed = await c.client.call("ui.act", { steps: [{ press: seen.value.nodes[0].ref }] });
+	assert.ok(Date.now() - began >= 350, `the act waited for the transition: ${Date.now() - began} ms`);
+	assert.equal(pressed.value.changed, true);
+	const after = await c.client.call("ui.observe", { since: pressed.value.state });
+	assert.deepEqual(after.value.diff, { added: [], removed: [], changed: [] }, "nothing moved after the act's settled state");
+	await c.close();
+});
+
+test("a point is stale after its window changed size, and still lands after a move", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const [x, y, w, h] = seen.window.bounds;
+	c.driver.place(APP, [x + 50, y + 30, w, h]);
+	const moved = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [20, 100] }] });
+	assert.deepEqual(moved.value.steps, [{ route: "background", verified: false }], "a move keeps window points good");
+	const now = (await c.client.call("ui.observe", {})).value;
+	c.driver.place(APP, [x, y, w + 40, h]);
+	const resized = await c.client.call("ui.act", { state: now.state, steps: [{ click: [20, 100] }] });
+	assert.equal(resized.value.steps[0].error.kind, "stale");
+	assert.match(resized.value.steps[0].error.message, /changed size since state/);
+	await c.close();
+});
+
+test("the line server: method not found, parse error, a request with no id, and a cancel that ends an expect", async () => {
+	const driver = new FakeUiDriver();
+	const { PassThrough } = await import("node:stream");
+	const { serveUiLines } = await import("../dist/fake-ui-driver.js");
+	const input = new PassThrough();
+	const output = new PassThrough();
+	serveUiLines(driver, input, output);
+	const replies = [];
+	let buffered = "";
+	output.setEncoding("utf8");
+	output.on("data", (chunk) => {
+		buffered += chunk;
+		const lines = buffered.split("\n");
+		buffered = lines.pop();
+		replies.push(...lines.map((line) => JSON.parse(line)));
+	});
+	const reply = async (id) => {
+		for (let i = 0; i < 200; i++) {
+			const found = replies.find((r) => r.id === id);
+			if (found) return found;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		throw new Error(`no reply to ${id}`);
+	};
+	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "screen.capture", params: {} })}\n`);
+	assert.equal((await reply(1)).error.code, -32601);
+	input.write("{not json\n");
+	assert.equal((await reply(null)).error.code, -32700);
+	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "apps.launch", params: { id: APP } })}\n`);
+	await reply(2);
+	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ui.act", params: { steps: [], expect: { text: "never", timeoutMs: 30_000 } } })}\n`);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	input.write(`${JSON.stringify({ jsonrpc: "2.0", method: "$/cancelRequest", params: { id: 3 } })}\n`);
+	const cancelled = await reply(3);
+	assert.equal(cancelled.error.code, -32800);
+	assert.equal(cancelled.error.data.kind, "aborted");
+	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "ui.act", params: { steps: [{ wait: 100 }] } })}\n`);
+	const invalid = await reply(4);
+	assert.equal(invalid.error.code, -32602);
+	assert.equal(invalid.error.data.kind, "invalid");
+	input.end();
+	driver.close();
+});
+
+test("the CLI answers hello and ui.observe on stdin and stdout", async () => {
+	const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/fake-ui-driver.js", import.meta.url))], { stdio: ["pipe", "pipe", "inherit"] });
+	let out = "";
+	child.stdout.setEncoding("utf8");
+	child.stdout.on("data", (chunk) => {
+		out += chunk;
+	});
+	const send = (id, method, params) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+	send(1, "hello", { client: "test" });
+	send(2, "apps.launch", { id: APP });
+	send(3, "ui.observe", {});
+	const replies = await new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`the CLI answered: ${out}`)), 10_000);
+		child.stdout.on("data", () => {
+			const lines = out.split("\n").filter(Boolean);
+			if (lines.length >= 3) {
+				clearTimeout(timer);
+				resolve(lines.map((line) => JSON.parse(line)));
+			}
+		});
+	});
+	child.stdin.end();
+	const byId = Object.fromEntries(replies.map((r) => [r.id, r]));
+	assert.equal(byId[1].result.protocol, "0.2");
+	assert.equal(byId[3].result.app.id, APP);
+	await new Promise((resolve) => child.on("exit", resolve));
+});

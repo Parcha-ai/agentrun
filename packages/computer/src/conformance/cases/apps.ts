@@ -42,7 +42,7 @@ const strings = (value: unknown) => Array.isArray(value) && value.every((one) =>
  * The first way ui.observe's result breaks the protocol, in words, or undefined: its state, app, window and truncated,
  * and each node against UiNode, its bounds inside the window and its parent a node before it.
  */
-function observeWrong(result: unknown): string | undefined {
+export function observeWrong(result: unknown): string | undefined {
 	if (typeof result !== "object" || result === null) return "the result is not an object";
 	const r = result as Record<string, unknown>;
 	if (typeof r.state !== "string" || r.state === "") return `state is ${show(r.state)}, not a state id`;

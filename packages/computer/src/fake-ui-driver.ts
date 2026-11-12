@@ -1,0 +1,498 @@
+// A fake ui driver: scripted apps answered over the wire, with no Mac and no phone. It speaks protocol 0.2's hello,
+// ping, apps and ui groups as JSON-RPC lines (the stdio binding's framing), and runs the ui group through UiEngine, so
+// it keeps every rule a real driver keeps: refs that survive while their element exists, points refused as stale when
+// the window changed under them, an act that settles before it answers, and expect polled until it holds.
+//
+//   const { client, hello, driver } = await fakeUiConnection();    // in process, over a real line stream
+//   runConformance(fakeUiProvider(), { image: "fake-ui", only: ["ui"] })   // as a provider, each connection its own refs
+//   node packages/computer/dist/fake-ui-driver.js [apps.json]      // the same driver on stdin and stdout
+//
+// Its default app is the ui fixture (conformance/ui-fixture.ts). Pass apps of your own to script others.
+import { readFileSync } from "node:fs";
+import { PassThrough, type Readable, type Writable } from "node:stream";
+import { pathToFileURL } from "node:url";
+import { crc32, deflateSync } from "node:zlib";
+import { DaemonClient } from "./client.js";
+import { type FakeApp, type FakeEffect, type FakeElement, UI_FIXTURE } from "./conformance/ui-fixture.js";
+import {
+	CANCEL_METHOD,
+	type ComputerKind,
+	type ComputerOs,
+	type DaemonErrorKind,
+	type Features,
+	type HelloResult,
+	JSONRPC_CODES,
+	MAX_LINE_BYTES,
+	PROTOCOL_VERSION,
+	type UiImage,
+	type UiStep,
+	type UiTarget,
+} from "./protocol.js";
+import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, checkLifetime, kindRefusals } from "./provider.js";
+import { fail, ok, type Result } from "./result.js";
+import { UiEngine, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
+
+export { type FakeApp, type FakeEffect, type FakeElement, type FakeScreen, NEXT_ANIMATE_MS, NEXT_MS, SAVED_MS, UI_FIXTURE } from "./conformance/ui-fixture.js";
+
+export interface FakeUiOptions {
+	/** The apps it has installed. Default the ui fixture alone. */
+	apps?: FakeApp[];
+	/** Default "macos" and "desktop". */
+	os?: ComputerOs;
+	kind?: ComputerKind;
+	/** Over the defaults: ui.image, ui.background and apps.background on; ui.foreground on; ui.nav off on a desktop. */
+	features?: Features;
+	/** The settle window the engine waits for; default 50 ms, so tests stay quick. */
+	quietMs?: number;
+}
+
+/** What one app is doing: its screen, the screens behind it, its fields' values, its switches, its focus, its window. */
+interface AppState {
+	screen: string;
+	history: string[];
+	values: Map<string, string>;
+	checked: Set<string>;
+	focus?: string;
+	/** Until when its window is between two screens: each look then shows a different frame. */
+	animateUntil: number;
+	/** Where its window is, in screen points. */
+	bounds: [number, number, number, number];
+	timers: Set<NodeJS.Timeout>;
+}
+
+const SCREEN = { width: 1440, height: 900, scale: 2 };
+
+/** The methods the fake answers; any other is method-not-found on the wire. */
+export const FAKE_UI_METHODS: ReadonlySet<string> = new Set(["hello", "ping", "apps.list", "apps.launch", "apps.terminate", "ui.observe", "ui.act"]);
+
+/** Error kinds as JSON-RPC codes (wire.md, Errors). */
+const codeOf = (kind: string): number =>
+	kind === "invalid" ? JSONRPC_CODES.invalidParams : kind === "aborted" ? JSONRPC_CODES.requestCancelled : JSONRPC_CODES.server;
+
+/** A PNG of one colour, width x height: enough for a caller to decode its size. */
+function solidPng(width: number, height: number, [r, g, b]: [number, number, number]): Buffer {
+	const row = Buffer.alloc(1 + width * 3);
+	for (let x = 0; x < width; x++) row.set([r, g, b], 1 + x * 3);
+	const raw = Buffer.concat(Array.from({ length: height }, () => row));
+	const chunk = (type: string, data: Buffer) => {
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(data.length);
+		const typed = Buffer.concat([Buffer.from(type, "latin1"), data]);
+		const crc = Buffer.alloc(4);
+		crc.writeUInt32BE(crc32(typed) >>> 0);
+		return Buffer.concat([length, typed, crc]);
+	};
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(width, 0);
+	ihdr.writeUInt32BE(height, 4);
+	ihdr.set([8, 2, 0, 0, 0], 8);
+	return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A colour for a screen's name, so two screens' images differ. */
+const colourOf = (name: string): [number, number, number] => {
+	let hash = 0;
+	for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+	return [hash & 0xff, (hash >> 8) & 0xff, (hash >> 16) & 0xff];
+};
+
+/** The scripted apps, and the protocol methods they answer. */
+export class FakeUiDriver implements UiSource {
+	readonly apps: ReadonlyMap<string, FakeApp>;
+	readonly os: ComputerOs;
+	readonly kind: ComputerKind;
+	/** Every method called, in order, with its params: what a test asserts reached the computer. */
+	readonly calls: Array<[string, unknown]> = [];
+	readonly #features: Features;
+	readonly #quietMs: number;
+	readonly #running = new Map<string, AppState>();
+	#front: string | undefined;
+	#frames = 0;
+
+	constructor(options: FakeUiOptions = {}) {
+		const apps = options.apps ?? [UI_FIXTURE];
+		this.apps = new Map(apps.map((app) => [app.id, app]));
+		this.os = options.os ?? "macos";
+		this.kind = options.kind ?? "desktop";
+		const touch = this.kind === "android" || this.kind === "ios";
+		this.#features = {
+			"apps.background": touch ? { off: "an app a phone opens comes to the front" } : true,
+			"ui.image": true,
+			"ui.background": true,
+			"ui.foreground": true,
+			"ui.nav": touch ? true : { off: "a desktop has no system back, home or app switch" },
+			...options.features,
+		};
+		this.#quietMs = options.quietMs ?? 50;
+	}
+
+	/** A connection's own ui engine: its refs and states are that connection's alone (wire.md, The ui group). */
+	engine(): UiEngine {
+		return new UiEngine(this, { quietMs: this.#quietMs, pollMs: 20 });
+	}
+
+	hello(): HelloResult {
+		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: ["apps", "ui"], screen: SCREEN, features: this.#features };
+	}
+
+	/** The screen an app shows now, by its name; undefined when it is not running. */
+	screenOf(app: string): string | undefined {
+		return this.#running.get(app)?.screen;
+	}
+
+	/** Moves an app's window, or changes its size (points): a point read before a size change is then stale. */
+	place(app: string, bounds: [number, number, number, number]): void {
+		const state = this.#running.get(app);
+		if (state !== undefined) state.bounds = bounds;
+	}
+
+	/** Ends every app and its timers. */
+	close(): void {
+		for (const state of this.#running.values()) for (const timer of state.timers) clearTimeout(timer);
+		this.#running.clear();
+		this.#front = undefined;
+	}
+
+	/** One method call on a connection, as a computer answers it; ui calls go through that connection's engine. */
+	async handle(engine: UiEngine, method: string, params: unknown, signal: AbortSignal = new AbortController().signal): Promise<Result<unknown>> {
+		this.calls.push([method, params]);
+		const p = (params ?? {}) as Record<string, unknown>;
+		switch (method) {
+			case "hello":
+				return ok(this.hello());
+			case "ping":
+				return ok({});
+			case "apps.list":
+				return ok({ apps: [...this.apps.values()].map(({ id, name }) => ({ id, name })), foreground: this.#front ?? null });
+			case "apps.launch":
+				return this.#launch(p);
+			case "apps.terminate": {
+				if (typeof p.id !== "string") return fail("invalid", "apps.terminate: id is not a string");
+				const state = this.#running.get(p.id);
+				for (const timer of state?.timers ?? []) clearTimeout(timer);
+				this.#running.delete(p.id);
+				if (this.#front === p.id) this.#front = undefined;
+				return ok({});
+			}
+			case "ui.observe":
+				return engine.observe(params, signal);
+			case "ui.act":
+				return engine.act(params, signal);
+			default:
+				return fail("unsupported", `${method} is not a method this computer answers: it offers apps and ui`);
+		}
+	}
+
+	#launch(p: Record<string, unknown>): Result<unknown> {
+		if (typeof p.id !== "string") return fail("invalid", "apps.launch: id is not a string");
+		const app = this.apps.get(p.id);
+		if (app === undefined) return fail("not_found", `${p.id} is not installed`);
+		if (p.background === true) {
+			const off = this.#features["apps.background"];
+			if (off !== true) return fail("unsupported", `apps.launch: apps.background is off here${off === undefined ? "" : `: ${off.off}`}`);
+		}
+		if (!this.#running.has(app.id)) {
+			const offset = 40 * this.#running.size;
+			this.#running.set(app.id, { screen: app.start, history: [], values: new Map(), checked: new Set(), animateUntil: 0, bounds: [100 + offset, 80 + offset, ...app.size], timers: new Set() });
+		}
+		if (p.background !== true) this.#front = app.id;
+		return ok({});
+	}
+
+	// --- the ui source ---------------------------------------------------------------------------------------------
+
+	features(): Features {
+		return this.#features;
+	}
+
+	async look(target: UiTarget | undefined): Promise<Result<UiView>> {
+		const id = target?.app ?? this.#front;
+		if (id === undefined) return fail("not_found", "no app is in front: launch one with apps.launch");
+		const state = this.#running.get(id);
+		const app = this.apps.get(id);
+		if (state === undefined || app === undefined) return fail("not_found", `${id} is not running: launch it with apps.launch`);
+		const window = `${id}#main`;
+		if (target?.window !== undefined && target.window !== window) return fail("not_found", `${id} has no window ${target.window}; its window is ${window}`);
+		const screen = app.screens[state.screen];
+		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, ...element }) => {
+			const value = state.values.get(element.key) ?? element.value;
+			const flags = [...(element.flags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
+			return { ...element, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
+		});
+		const between = Date.now() < state.animateUntil;
+		return ok({
+			app: { id, name: app.name },
+			window: { id: window, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: state.bounds },
+			elements,
+			frame: between ? `between:${this.#frames++}` : state.screen,
+		});
+	}
+
+	async image(view: UiView, maxEdge: number): Promise<Result<UiImage>> {
+		const [, , w, h] = view.window.bounds;
+		const fit = Math.min(1, maxEdge / Math.max(w, h));
+		const [width, height] = [Math.max(1, Math.round(w * fit)), Math.max(1, Math.round(h * fit))];
+		return ok({ format: "png", width, height, data: solidPng(width, height, colourOf(view.frame ?? "")).toString("base64") });
+	}
+
+	async run(step: UiStep, { element, view, foreground }: UiStepContext): Promise<Result<UiRun>> {
+		const state = this.#running.get(view.app.id) as AppState;
+		const app = this.apps.get(view.app.id) as FakeApp;
+		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
+		/** The route a pointer step takes, or why it may not run. */
+		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
+			if (target?.route === "foreground" || this.#features["ui.background"] !== true) {
+				if (this.#features["ui.foreground"] !== true) return fail("unsupported", "no route reaches it: ui.background and ui.foreground are off here");
+				if (!foreground) return fail("denied", `${target?.name ?? "this point"} takes foreground input only, which moves the user's pointer, and this call does not allow it: pass foreground: true`);
+				return ok("foreground");
+			}
+			return ok("background");
+		};
+		const target = scripted(element?.key);
+		if (target?.flags?.includes("disabled")) return fail("invalid", `${target.name ?? "the element"} is disabled`);
+		if ("press" in step || ("perform" in step && step.action === target?.actions?.[0])) {
+			if (target?.route === "foreground") {
+				const route = pointer(target);
+				if (!route.ok) return route;
+				this.#press(state, target);
+				return ok({ route: route.value, verified: false });
+			}
+			this.#press(state, target as FakeElement);
+			return ok({ route: "semantic", verified: true });
+		}
+		if ("perform" in step) {
+			if (!(target?.actions ?? []).includes(step.action)) return fail("unsupported", `${target?.name ?? "the element"} has no action ${step.action}`);
+			return ok({ route: "semantic", verified: false });
+		}
+		if ("set" in step) {
+			const scriptedTarget = target as FakeElement;
+			if (scriptedTarget.role === "switch" || scriptedTarget.role === "checkbox") {
+				if (step.value !== "on" && step.value !== "off") return fail("invalid", `a ${scriptedTarget.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
+				if (step.value === "on") state.checked.add(scriptedTarget.key);
+				else state.checked.delete(scriptedTarget.key);
+				return ok({ route: "semantic", verified: true });
+			}
+			if (scriptedTarget.role !== "textbox" && scriptedTarget.role !== "searchbox") return fail("unsupported", `a ${scriptedTarget.role} has no value to set`);
+			state.values.set(scriptedTarget.key, step.value);
+			return ok({ route: "semantic", verified: true });
+		}
+		if ("click" in step) {
+			const hit = target ?? (Array.isArray(step.click) ? scripted(view.elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number]))?.key) : undefined);
+			const route = pointer(hit);
+			if (!route.ok) return route;
+			if (hit !== undefined && step.button !== "right") this.#press(state, hit);
+			return ok({ route: route.value, verified: false });
+		}
+		if ("type" in step) {
+			const into = target ?? scripted(state.focus);
+			if (into === undefined || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: "background", verified: false });
+			state.focus = into.key;
+			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
+			return ok({ route: "background", verified: true });
+		}
+		if ("key" in step) {
+			const focused = scripted(state.focus);
+			if (step.key === "enter" && focused?.enter !== undefined) this.#apply(state, focused.enter);
+			return ok({ route: "background", verified: false });
+		}
+		if ("nav" in step) {
+			if (step.nav === "back") {
+				const back = state.history.pop();
+				if (back !== undefined) state.screen = back;
+			} else if (step.nav === "home") this.#front = undefined;
+			return ok({ route: "semantic", verified: true });
+		}
+		if ("scroll" in step) return ok({ route: "semantic", verified: false });
+		const route = pointer(undefined);
+		return route.ok ? ok({ route: route.value, verified: false }) : route;
+	}
+
+	#inside([x, y, w, h]: [number, number, number, number], [px, py]: [number, number]): boolean {
+		return px >= x && py >= y && px < x + w && py < y + h;
+	}
+
+	#press(state: AppState, element: FakeElement): void {
+		if (element.role === "switch" || element.role === "checkbox") {
+			if (state.checked.has(element.key)) state.checked.delete(element.key);
+			else state.checked.add(element.key);
+		}
+		if (element.role === "textbox" || element.role === "searchbox") state.focus = element.key;
+		if (element.press !== undefined) this.#apply(state, element.press);
+	}
+
+	#apply(state: AppState, effect: FakeEffect): void {
+		const go = () => {
+			state.history.push(state.screen);
+			state.screen = effect.go;
+			state.focus = undefined;
+			state.animateUntil = Date.now() + (effect.animateMs ?? 0);
+		};
+		if (!effect.after) return go();
+		const timer = setTimeout(() => {
+			state.timers.delete(timer);
+			go();
+		}, effect.after);
+		state.timers.add(timer);
+	}
+}
+
+/**
+ * Serves a driver's methods as JSON-RPC lines from input to output (the stdio binding's framing): requests run at once,
+ * replies in any order, $/cancelRequest aborts one, a line over the limit or not JSON gets its error reply.
+ */
+export function serveUiLines(driver: FakeUiDriver, input: Readable, output: Writable): void {
+	const engine = driver.engine();
+	const running = new Map<number | string, AbortController>();
+	let buffered = "";
+	/** A line already over the limit: dropped up to its newline, then answered once. */
+	let overLong = false;
+	const reply = (message: unknown) => {
+		if (output.writable) output.write(`${JSON.stringify(message)}\n`);
+	};
+	const error = (id: unknown, kind: DaemonErrorKind, message: string, code = codeOf(kind)) => reply({ jsonrpc: "2.0", id: id ?? null, error: { code, message, data: { kind } } });
+	const line = async (text: string) => {
+		if (Buffer.byteLength(text) > MAX_LINE_BYTES) return error(null, "limit", "the request is over the line limit", JSONRPC_CODES.invalidRequest);
+		let message: { id?: number | string; method?: unknown; params?: unknown };
+		try {
+			message = JSON.parse(text);
+		} catch {
+			return error(null, "invalid", "the line is not JSON", JSONRPC_CODES.parse);
+		}
+		if (message.method === CANCEL_METHOD) {
+			running.get((message.params as { id?: number | string } | undefined)?.id ?? "")?.abort();
+			return;
+		}
+		if (typeof message.method !== "string" || message.id === undefined) return error(message.id, "invalid", "a request has a method and an id", JSONRPC_CODES.invalidRequest);
+		const controller = new AbortController();
+		running.set(message.id, controller);
+		try {
+			const answered = await driver.handle(engine, message.method, message.params, controller.signal);
+			if (answered.ok) return reply({ jsonrpc: "2.0", id: message.id, result: answered.value });
+			const kind = answered.error.code as DaemonErrorKind;
+			const code = FAKE_UI_METHODS.has(message.method) ? codeOf(kind) : JSONRPC_CODES.methodNotFound;
+			return error(message.id, kind, answered.error.message, code);
+		} finally {
+			running.delete(message.id);
+		}
+	};
+	input.setEncoding("utf8");
+	input.on("data", (chunk: string) => {
+		buffered += chunk;
+		for (let at = buffered.indexOf("\n"); at >= 0; at = buffered.indexOf("\n")) {
+			const text = buffered.slice(0, at).replace(/\r$/, "");
+			buffered = buffered.slice(at + 1);
+			if (overLong) {
+				overLong = false;
+				error(null, "limit", "the request is over the line limit", JSONRPC_CODES.invalidRequest);
+			} else if (text.trim() !== "") void line(text);
+		}
+		// A character is a byte or more, so a buffer longer than the limit in characters is over it in bytes.
+		if (buffered.length > MAX_LINE_BYTES) {
+			overLong = true;
+			buffered = "";
+		}
+	});
+	input.on("end", () => {
+		for (const controller of running.values()) controller.abort();
+		output.end();
+	});
+}
+
+/** A connection over a real line stream to a driver: its client after hello. Closing it leaves the driver's apps running. */
+export async function connectUi(driver: FakeUiDriver): Promise<Result<ComputerConnection>> {
+	const requests = new PassThrough();
+	const replies = new PassThrough();
+	serveUiLines(driver, requests, replies);
+	const client = new DaemonClient({ readable: replies, writable: requests });
+	const hello = await client.call("hello", { client: "fake-ui-driver" });
+	if (!hello.ok) return hello;
+	return ok({ client, hello: hello.value, close: async () => client.close() });
+}
+
+/** A fake ui computer of its own in this process: its connection (after hello), and its driver, ended on close. */
+export async function fakeUiConnection(options: FakeUiOptions = {}): Promise<ComputerConnection & { driver: FakeUiDriver }> {
+	const driver = new FakeUiDriver(options);
+	const connected = await connectUi(driver);
+	if (!connected.ok) throw new Error(`the fake ui driver's hello failed: ${connected.error.message}`);
+	return {
+		...connected.value,
+		driver,
+		close: async () => {
+			await connected.value.close();
+			driver.close();
+		},
+	};
+}
+
+/**
+ * A provider whose computers are fake ui drivers in this process, for the conformance suite and for tools that need a
+ * provider: groups apps and ui, no daemon, deleted on release. Every computer has the options' apps and features; `make`
+ * builds each one's driver (a subclass, for a test of what a broken driver fails).
+ */
+export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: FakeUiOptions) => FakeUiDriver = (given) => new FakeUiDriver(given)): ComputerProvider & { drivers: ReadonlyMap<string, FakeUiDriver> } {
+	const drivers = new Map<string, FakeUiDriver>();
+	const labelsOf = new Map<string, Record<string, string>>();
+	const deadlines = new Map<string, Date>();
+	let next = 1;
+	const capabilities: ComputerCapabilities = {
+		kind: options.kind ?? "desktop",
+		lifetime: "vendor",
+		network: ["none", "open"],
+		isolation: "machine",
+		os: options.os ?? "macos",
+		daemon: "none",
+		groups: ["apps", "ui"],
+		maxLifetimeMs: 60 * 60_000,
+		release: ["delete"],
+	};
+	const missing = (id: string) => fail("not_found", `no fake ui computer ${id}`);
+	return {
+		id: "fake-ui",
+		version: "fake",
+		drivers,
+		capabilities: () => capabilities,
+		check: (spec) => [...kindRefusals(capabilities), ...checkLifetime(spec.lifetimeMs, capabilities)],
+		async create(spec) {
+			const refusals = this.check(spec);
+			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
+			const id = `fake-ui-${next++}`;
+			drivers.set(id, make(options));
+			labelsOf.set(id, { ...spec.labels });
+			deadlines.set(id, new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)));
+			return ok({ id, name: id });
+		},
+		async attach(ref) {
+			const id = "id" in ref ? ref.id : [...labelsOf].find(([, labels]) => Object.entries(ref.labels).every(([key, value]) => labels[key] === value))?.[0];
+			if (id === undefined || !drivers.has(id)) return missing("id" in ref ? ref.id : JSON.stringify(ref.labels));
+			return ok({ id, name: id, spec: { image: "fake-ui", user: "501", network: "none", kind: capabilities.kind, deadline: deadlines.get(id) } });
+		},
+		async list(labels) {
+			const matching = [...labelsOf].filter(([, have]) => Object.entries(labels).every(([key, value]) => have[key] === value));
+			return ok(matching.map(([id, have]) => ({ ref: { id, name: id }, labels: have, deadline: deadlines.get(id), state: "running" as const, network: "none" as const })));
+		},
+		async network(ref) {
+			return drivers.has(ref.id) ? ok("none") : missing(ref.id);
+		},
+		async connect(ref) {
+			const driver = drivers.get(ref.id);
+			return driver === undefined ? missing(ref.id) : connectUi(driver);
+		},
+		async release(ref, how) {
+			if (how === "stop") return fail("unsupported", "a fake ui computer is deleted on release, never stopped");
+			drivers.get(ref.id)?.close();
+			drivers.delete(ref.id);
+			labelsOf.delete(ref.id);
+			deadlines.delete(ref.id);
+			return ok(undefined);
+		},
+	};
+}
+
+// node dist/fake-ui-driver.js [apps.json]: the driver on stdin and stdout, its apps from a JSON file of FakeApp[].
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	const file = process.argv[2];
+	const apps = file === undefined ? undefined : (JSON.parse(readFileSync(file, "utf8")) as FakeApp[]);
+	const driver = new FakeUiDriver(apps === undefined ? {} : { apps });
+	serveUiLines(driver, process.stdin, process.stdout);
+	process.stdin.on("end", () => driver.close());
+}
