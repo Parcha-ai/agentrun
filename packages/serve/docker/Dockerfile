@@ -47,6 +47,24 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
       node_modules/@openai/codex node_modules/@openai/codex-* node_modules/.bin/codex \
  && chmod -R a+rX,go-w /src
 
+# adb (Android platform-tools), which the phone provider drives its phone with from this machine: r35.0.2, its zip
+# pinned by sha256. Google builds platform-tools for x86-64 Linux alone, so the arm64 image carries no adb, and the
+# server says so in Settings → Computers ("this server's image has no adb for arm64 (…): Phone harness needs an x86-64
+# server"). It needs only the C library.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS adb
+ARG TARGETARCH
+ARG PLATFORM_TOOLS_ZIP=https://dl.google.com/android/repository/platform-tools_r35.0.2-linux.zip
+ARG PLATFORM_TOOLS_SHA256=acfdcccb123a8718c46c46c059b2f621140194e5ec1ac9d81715be3d6ab6cd0a
+RUN install -d /opt/adb \
+ && if [ "$TARGETARCH" = amd64 ]; then \
+      apt-get update -qq \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl unzip >/dev/null \
+      && curl -fsSL -o /tmp/platform-tools.zip "$PLATFORM_TOOLS_ZIP" \
+      && echo "$PLATFORM_TOOLS_SHA256  /tmp/platform-tools.zip" | sha256sum -c - \
+      && unzip -q -j /tmp/platform-tools.zip platform-tools/adb -d /opt/adb \
+      && /opt/adb/adb version | grep -q '^Version 35\.0\.2-'; \
+    fi
+
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 COPY --from=node /opt/node/ /usr/local/
 # The node user (1000:1000) the official node image has, which the server runs as and /data belongs to.
@@ -75,6 +93,9 @@ RUN [ "$(node --version)" = v24.22.3 ] && [ "$(command -v node)" = /usr/local/bi
 # its real path, so a link to it runs the same server CLI.
 RUN ln -s /opt/agentrun/packages/serve/launcher/agentrun-serve /usr/local/bin/agentrun-serve \
  && [ "$(command -v agentrun-serve)" = /usr/local/bin/agentrun-serve ]
+# The phone provider's adb on PATH, on amd64 (the adb stage); the arm64 image has none.
+COPY --from=adb /opt/adb/ /usr/local/bin/
+RUN [ "$(dpkg --print-architecture)" != amd64 ] || [ "$(command -v adb)" = /usr/local/bin/adb ]
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production

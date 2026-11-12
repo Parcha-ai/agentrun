@@ -41,7 +41,7 @@ test("the image's build context holds the workspace and the console's sources, a
 test("every stage builds on one digest-pinned debian trixie base, its Node the verified 24.22.3 alone, and the runtime has git 2.40 or newer", async () => {
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
   const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map(([, image, name]) => ({ image, name }));
-  assert.deepEqual(stages.map((stage) => stage.name), ["node", "build", undefined], "a node stage, a build stage and a runtime stage");
+  assert.deepEqual(stages.map((stage) => stage.name), ["node", "build", "adb", undefined], "a node stage, a build stage, the adb stage and a runtime stage");
   assert.match(stages[0].image, /^debian:trixie-slim@sha256:[0-9a-f]{64}$/, "plain Debian, pinned by digest: no other Node in any layer");
   for (const stage of stages) assert.equal(stage.image, stages[0].image, "one base for every stage");
   // The node stage installs the release through install-node.sh, which verifies it against the pinned signer.
@@ -63,6 +63,20 @@ test("every stage builds on one digest-pinned debian trixie base, its Node the v
   const guard = [...runtime.matchAll(/^RUN (?:[^\n]*\\\n)*[^\n]*/gm)].map(([run]) => run).find((run) => run.includes("git --version")) ?? "";
   assert.match(guard, /dpkg --compare-versions "\$v" ge 2\.40\b/, "the build compares the git it installed with 2.40");
   assert.match(guard, /\|\| \{[^}]*\bexit 1; \}/, "an older git fails the build");
+});
+
+test("the amd64 image carries adb from Android platform-tools r35.0.2, its zip pinned by sha256; the arm64 image none", async () => {
+  const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
+  const stage = /^FROM \S+ AS adb\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  assert.match(stage, /^ARG PLATFORM_TOOLS_ZIP=https:\/\/dl\.google\.com\/android\/repository\/platform-tools_r35\.0\.2-linux\.zip$/m, "r35.0.2, from Google");
+  assert.match(stage, /^ARG PLATFORM_TOOLS_SHA256=acfdcccb123a8718c46c46c059b2f621140194e5ec1ac9d81715be3d6ab6cd0a$/m, "the zip's sha256");
+  const at = (text) => stage.indexOf(text);
+  assert.ok(at('if [ "$TARGETARCH" = amd64 ]') >= 0 && at('if [ "$TARGETARCH" = amd64 ]') < at("curl"), "fetched for amd64 alone");
+  assert.ok(at("sha256sum -c") > at("curl") && at("sha256sum -c") < at("unzip -q"), "the zip is checked before anything in it is unpacked");
+  assert.ok(at("adb version") > at("unzip -q"), "the build runs the adb it unpacked, and holds it to 35.0.2");
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+  assert.match(runtime, /^COPY --from=adb \/opt\/adb\/ \/usr\/local\/bin\/$/m, "the runtime has it on PATH");
+  assert.match(runtime, /^RUN \[ "\$\(dpkg --print-architecture\)" != amd64 \] \|\| \[ "\$\(command -v adb\)" = \/usr\/local\/bin\/adb \]$/m, "an amd64 image without it fails the build");
 });
 
 test("the build stage builds the console before the server, so the server's dist carries it, and keeps none of its sources", async () => {
