@@ -13,8 +13,9 @@ computer="$(cd "$here/../.." && pwd)"
 export COMPUTERD="${1:?usage: ui-conformance.sh PATH/TO/computerd COMPUTERD_HOME}" COMPUTERD_HOME="${2:?}"
 report=/tmp/computerd-ci/ui-conformance.json
 
+mkdir -p "$(dirname "$report")"
 cd "$computer"
 status=0
-node dist/conformance/cli.js --provider "$here/conformance.mjs" --only ui --json >"$report" || status=$?
+node "$here/ui-conformance.mjs" "$report" || status=$?
 echo "the conformance CLI exited $status (3: a partial run where every case passed; 1: a case failed or a Core case skipped)"
 python3 -I "$here/ui-conformance-report.py" "$report"

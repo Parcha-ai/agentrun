@@ -11,11 +11,12 @@ import sys
 report = json.load(open(sys.argv[1]))
 results = report.get("results", [])
 marks = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
-lines = ["| | Case | Level | Detail |", "| --- | --- | --- | --- |"]
+lines = ["| | Case | Level | ms | Detail |", "| --- | --- | --- | ---: | --- |"]
 for r in results:
     detail = (r.get("reason") or r.get("error") or r.get("message") or "").replace("|", "/").replace("\n", " ")
-    print(f"{r['status'].upper():5} {r['id']} ({r.get('level')}): {detail}", flush=True)
-    lines.append(f"| {marks.get(r['status'], r['status'])} | {r['id']} | {r.get('level')} | {detail[:400]} |")
+    ms = r.get("ms", "")
+    print(f"{r['status'].upper():5} {r['id']} ({r.get('level')}, {ms} ms): {detail}", flush=True)
+    lines.append(f"| {marks.get(r['status'], r['status'])} | {r['id']} | {r.get('level')} | {ms} | {detail[:400]} |")
 counts = {s: sum(1 for r in results if r["status"] == s) for s in ("pass", "fail", "skip")}
 line = f"ui conformance: {counts['pass']} passed, {counts['fail']} failed, {counts['skip']} skipped"
 print(line)
