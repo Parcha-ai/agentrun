@@ -35,11 +35,6 @@ export interface JsonSchemaObject {
   nullable?: boolean;
 }
 
-/** A zod object for a JSON Schema object (extra properties allowed unless `additionalProperties: false`). */
-export function zodFromJsonSchema(schema: unknown, z: Z): ZodType {
-  return toZodObject(isSchema(schema) ? schema : {}, z);
-}
-
 /** The raw shape (`{ key: zodType }`) of a JSON Schema object, for APIs that take a shape. */
 export function zodShapeFromJsonSchema(schema: unknown, z: Z): Record<string, ZodType> {
   return toZodShape(isSchema(schema) ? schema : undefined, z);

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 import { startSite } from "./fixtures/site.mjs";
 
 const CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), "real-chrome", "child.mjs");
@@ -40,7 +40,7 @@ async function capable(t, dir) {
 }
 
 async function rig(t) {
-  const dir = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "real-chrome-"));
+  const dir = await scratch(t, "real-chrome-");
   // The slow page answers after the batch deadline: a timed-out batch keeps running until its command ends (Stagehand
   // checks its abort between commands), so the next batch waits behind it, then runs.
   const site = await startSite({ slowMs: 5_000 });
