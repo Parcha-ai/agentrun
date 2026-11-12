@@ -59,7 +59,7 @@ export type TimelineEvent = {
   usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
-  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number }[];
+  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */

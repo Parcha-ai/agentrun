@@ -19,9 +19,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { HostTool, SessionSpec } from "@parcha/agentrun-kernel";
-import { noNewPrivsPrefix } from "@parcha/pi-durable-disk/internals";
 import type { AdapterNeeds } from "../adapters.js";
-import { confineOf, standsIn, thinkingFor } from "../adapters.js";
+import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -351,7 +350,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const env = cliRunEnv(deps.env, deps.data, claimed);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
-  // (pi-durable-disk's noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
+  // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
   // or a command it runs reaches grants nothing; none on macOS. Where setpriv is not usable the run is refused, in pi's words.
   const confine = confineOf(noNewPrivsPrefix());
   const built = await entry.adapter(env, { model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}) });
@@ -493,9 +492,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
         }
       }
       // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
-      // own MCP as the loop wraps it.
+      // own MCP as the loop wraps it. Its model nodes run on the session's one model: what each node's trace says it ran on.
       gate.learn(workflows);
-      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}) });
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), modelName: () => chosen.model.modelId });
     }
   }
   const session: SessionSpec = {
