@@ -1,7 +1,9 @@
 // The Archil claim step: once per claim in Mode 2, before the run's loop starts, the claim's Archil disk is made from the
-// server's Archil settings (archil-settings.ts, the store's one settings row) and its keys come from the store's
+// server's Archil settings (archil-settings.ts, the store's one settings row) on the run's own disk (run-disk.ts: the one
+// its launch names, else its agent's, made on its first run), and its keys come from the store's
 // sealed_keys rows under archil-settings.ts's names, opened with the runner's seal key. A saved exec image must be pinned
-// by digest (`<name>@sha256:<64 hex>`): any other refuses the claim before a key is read.
+// by digest (`<name>@sha256:<64 hex>`): any other refuses the claim before a key is read. With none saved, the exec runs
+// in DEFAULT_ARCHIL_EXEC_IMAGE, never Archil's own default (its git is older than a bash policy's floor).
 //
 // One row: "archil.api_key", the account API key the disk's file API and serverless exec take (archil-disk.ts asks for
 // it on every call, and gets it from this step's memory). The disk token a computer's mount takes
@@ -14,13 +16,15 @@
 // refused. A row that is missing, or that does not open under the seal key (sealed under another key, or for another
 // row), refuses in words that name the row and never hold a value. Nothing here reads the environment: the settings,
 // the store's sealed keys and the seal key are handed in.
-import { ARCHIL_API_KEY_ROW, type ArchilSettings } from "../archil-settings.js";
+import { ARCHIL_API_KEY_ROW, type ArchilSettings, DEFAULT_ARCHIL_EXEC_IMAGE } from "../archil-settings.js";
 import type { KeyEnv } from "../key-meta.js";
 import type { SealedKeys } from "../store/store.js";
 import { archilApiKey } from "./archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens, removeRunMountTokens } from "./archil-mount-credential.js";
 import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
+import type { LaunchDisk } from "../run-launch.js";
+import { type RunDisk, type RunDiskOptions, runDiskOf } from "./run-disk.js";
 
 export { ARCHIL_API_KEY_ROW, type ArchilSettings };
 
@@ -52,15 +56,20 @@ export interface ArchilClaimOptions {
   readonly mount?: { readonly runId: string; readonly epoch: number; readonly ttlMs: number; readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** The server's environment, passed in (never read here): an ARCHIL_API_KEY variable overrides the saved key. */
   readonly env?: KeyEnv;
+  /** The run whose disk the claim resolves (run-disk.ts runDiskOf): its agent, the disk its launch record names, and the
+   *  store the agent's disk and the server's id are kept in. */
+  readonly run: { readonly agentId: string; readonly launch?: LaunchDisk; readonly store: RunDiskOptions["store"] };
 }
 
 export interface ArchilClaim {
   /** The claim's disk: its key is this step's, asked for on every call. */
   readonly disk: ArchilDisk;
+  /** Whose disk it is: the run's launch named it (a customer's), or it is the run's agent's. */
+  readonly diskKind: RunDisk["kind"];
   /** The disk's region (a computer's mount names it). */
   readonly region: string;
-  /** The exec image, pinned by digest; undefined for Archil's default. */
-  readonly image: ArchilImage | undefined;
+  /** The exec image, pinned by digest: the saved one, else DEFAULT_ARCHIL_EXEC_IMAGE. */
+  readonly image: ArchilImage;
   /** The run's mount credential's token, minted the first time a mount asks (once per claim), held in memory only. */
   token(): Promise<string>;
   /** Removes the run's mount credential at Archil by its identifier (the computer's release, the run's end). Idempotent:
@@ -80,11 +89,11 @@ const LOST_MINT_REREAD_MS = 2_000;
 export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilClaim> {
   const { settings, sealKey } = options;
   if (settings === undefined) {
-    throw new ArchilClaimRefused("This server's Archil disk is not set up (its disk, region and S3 endpoint): Mode 2 keeps a run's folder on it, so the run can't start.");
+    throw new ArchilClaimRefused("This server's Archil disk is not set up (its key's region and S3 endpoint): Mode 2 keeps a run's folder on an Archil disk, so the run can't start.");
   }
-  let image: ArchilImage | undefined;
+  let image: ArchilImage;
   try {
-    image = settings.image === undefined ? undefined : pinnedImage({ baseImage: settings.image });
+    image = pinnedImage({ baseImage: settings.image ?? DEFAULT_ARCHIL_EXEC_IMAGE });
   } catch (error) {
     throw new ArchilClaimRefused(`This server's Archil exec image ${JSON.stringify(settings.image)} can't be used: ${(error as Error).message}`, { cause: error });
   }
@@ -94,10 +103,20 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   let released = false;
   const apiKey = (await archilApiKey({ ...(options.env ? { env: options.env } : {}), keys: options.keys, sealKey })).value;
   held.add(apiKey);
+  // The run's disk first (run-disk.ts): its launch's, else its agent's, made now when it has none; every call below is on
+  // it alone, the run's mount credential minted, revoked and reclaimed there.
+  const control = { region: settings.region, key: () => apiKey, ...(options.mount?.baseUrl ? { baseUrl: options.mount.baseUrl } : {}), ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}) };
+  let chosen: RunDisk;
+  try {
+    chosen = await runDiskOf({ store: options.run.store, agentId: options.run.agentId, ...(options.mount ? { runId: options.mount.runId } : {}), ...(options.run.launch ? { launch: options.run.launch } : {}), control, signal: options.signal });
+  } catch (error) {
+    held.clear();
+    throw error;
+  }
   let disk: ArchilDisk;
   try {
     disk = (options.makeDisk ?? archilDisk)({
-      disk: settings.diskId,
+      disk: chosen.diskId,
       region: settings.region,
       s3BaseUrl: settings.s3Url,
       key: () => {
@@ -109,13 +128,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     held.clear();
     throw new ArchilClaimRefused(`This server's Archil settings can't make its disk: ${(error as Error).message}`, { cause: error });
   }
-  const credentialOptions: ArchilMountCredentialOptions = {
-    disk: settings.diskId,
-    region: settings.region,
-    key: () => apiKey,
-    ...(options.mount?.baseUrl ? { baseUrl: options.mount.baseUrl } : {}),
-    ...(options.mount?.fetch ? { fetch: options.mount.fetch } : {}),
-  };
+  const credentialOptions: ArchilMountCredentialOptions = { ...control, disk: chosen.diskId };
   let minted: Promise<MountCredential> | undefined;
   /** A mint was asked for since the last revoke: its user may stand at Archil though no answer said so. */
   let asked = false;
@@ -160,6 +173,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   if (options.signal.aborted) lost();
   return {
     disk,
+    diskKind: chosen.kind,
     region: settings.region,
     image,
     secrets: held,

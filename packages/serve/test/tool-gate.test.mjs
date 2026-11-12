@@ -25,16 +25,15 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { REQUESTS_ENV, notedRequests, rolesOf } from "./fixtures/faux-requests.mjs";
-import { agent, call, cookieOf, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, cookieOf, follow, retried, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("faux-gate.mjs")), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const PAGE = "http://public.example/";
-/** The harnesses whose web_fetch parks for approval on the runner: pi's host tools. A CLI harness (codex, claude-agent) is
- *  offered them, but the faux CLI harness these tests run it on never asks the run's gate (the real bridges do): its halves
- *  of these cases come back with follow-up #2371. */
-const PARKS_ON_RUNNER = ["pi"];
+/** The harnesses whose web_fetch parks for approval on the runner: pi's host tools, and codex for the CLI harnesses (the faux
+ *  CLI harness these tests run it on asks the run's gate before each call, as the real claude-agent and codex bridges do). */
+const PARKS_ON_RUNNER = ["pi", "codex"];
 const HARNESSES = ["pi", "claude-agent", "codex"];
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
@@ -65,9 +64,9 @@ async function owner(server) {
 /** Agent `id` on `harness` that fetches `url` once with web_fetch, and one run of it. */
 async function fetching(api, id, harness, url = PAGE, extra = {}) {
   const ask = `Fetch ${url} once.`;
-  const made = await api("POST", "/agents", agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
+  const made = await retried(api)("POST", "/agents",agent(id, { harness, instructions: ask, tools: ["web_fetch"], ...extra }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const run = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
+  const run = await retried(api)("POST", `/agents/${id}/runs`, { input: { content: ask } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body.run_id;
 }
@@ -194,7 +193,7 @@ test("capabilities and an agent's tools show each tool's permission, its default
   // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
   assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
 
-  const made = await api("POST", "/agents", agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
+  const made = await retried(api)("POST", "/agents",agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const own = byName((await api("GET", "/agents/set")).body.tools);
   assert.deepEqual([own.read.permission, own.read.permission_from, own.read.default_permission], ["deny", "server", "deny"], "a server deny is absolute: the agent's own allow does not reach past it");
@@ -348,10 +347,9 @@ test("two conflicting answers to one parked call at once, by the owner's session
   assert.ok(ran.length <= (won === "allow" ? 1 : 0) && ran.every((url) => url === PAGE), `the call ran at most once, and only if allowed: ${JSON.stringify(ran)}`);
 });
 
-test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000, skip: "waits on the faux CLI harness asking the tool gate, as the real claude-agent and codex bridges do (#2371)" }, (t) => askedOn(t, ["claude-agent", "codex"]));
+test("web_fetch set to ask on claude-agent and codex at once: each run parks and is answered as on pi", { timeout: 240_000 }, (t) => askedOn(t, ["claude-agent", "codex"]));
 
-// SKIP (follow-up #2371): its codex run never parks: the faux CLI harness never asks the run's gate
-test.skip("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
+test("an ask answered after the server restarted while the run was parked still runs the call once, on pi and on codex; a cancel marks a call that waits canceled", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
   const answerFirst = await owner(first);
@@ -380,7 +378,10 @@ test.skip("an ask answered after the server restarted while the run was parked s
   assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
 });
 
-// SKIP (follow-up #2371): its codex run never parks: the faux CLI harness never asks the run's gate
+// SKIP (follow-up #2371): written for the per-run process #2244 removed. Its codex run parks now, but nothing kills the
+// run's process at the seam: AGENTRUN_SERVE_TEST_CRASH_AFTER_ANSWER has no reader, and the runner's claim has no crash
+// point between the answer's commit and the parked turn's settle; and the approval id it derives from the call (ap_ and a
+// digest) is 404 on the runner, whose approval is the pending one. It comes back with a runner seam (the stop and reopen work)
 test.skip("a codex run whose process dies between the approval's commit and the parked turn's settle reopens with that turn settled: it is never run again, and the approval's result reaches the model once", { timeout: 180_000 }, async (t) => {
   const dialled = await network(t);
   const exited = join(await scratch(t), "exited");
@@ -435,9 +436,7 @@ async function ownerAgain(server) {
   };
 }
 
-// SKIP (follow-up #2371): on claude-agent and codex the run's call is never refused here: the faux CLI harness (run-adapters'
-// fauxAdapter) runs its host tools without asking the run's gate (the real adapters' tool bridges ask it first), so it runs
-test.skip("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a tool set to deny or ask refuses its run, and a catalog tool is no call node's tool", { timeout: 120_000 }, async (t) => {
+test("a deny refuses the call at once and the run goes on, on every harness; a workflow's call node calling a tool set to deny or ask refuses its run, and a catalog tool is no call node's tool", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const { api } = await serve(t, GATE);
   const denied = await Promise.all(HARNESSES.map(async (harness) => ({ harness, runId: await fetching(api, `denied-${harness}`, harness, PAGE, { tool_settings: { web_fetch: { permission: "deny" } } }) })));
@@ -462,11 +461,11 @@ test.skip("a deny refuses the call at once and the run goes on, on every harness
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
-  const saved = await api("POST", "/agents", { definition: { id: "site", name: "site", workflow: flow, tools: ["web_fetch"] } });
+  const saved = await retried(api)("POST", "/agents",{ definition: { id: "site", name: "site", workflow: flow, tools: ["web_fetch"] } });
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
   // The same deny set in the agent's own tool settings names the agent.
   assert.equal((await api("PUT", "/settings/tools", {})).status, 200);
-  const own = await api("POST", "/agents", { definition: { id: "site-own", name: "site-own", workflow: flow, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "deny" } } } });
+  const own = await retried(api)("POST", "/agents",{ definition: { id: "site-own", name: "site-own", workflow: flow, tools: ["web_fetch"], tool_settings: { web_fetch: { permission: "deny" } } } });
   assert.deepEqual([own.status, own.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny for this agent."]]);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
   const refused = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
@@ -479,7 +478,7 @@ test.skip("a deny refuses the call at once and the run goes on, on every harness
   // A catalog tool (default ask) is no call node's tool here: a workflow whose call node names one is refused at its save,
   // so none runs unapproved.
   const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: "monid.run", args: { endpoint: "/x" }, out: "Page", as: "home", deadline_s: 60 }] } };
-  const catalog = await api("POST", "/agents", { definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
+  const catalog = await retried(api)("POST", "/agents",{ definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
   assert.deepEqual([catalog.status, catalog.body.error?.code, catalog.body.error?.fields?.[0]?.reason], [422, "input_invalid", "not_an_option"], JSON.stringify(catalog.body));
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "allow" } })).status, 200);
   const allowed = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
@@ -507,8 +506,8 @@ test("a deny lifted mid-run is lifted at the next call: a run launched with web_
     assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
     const file = join(go, lifted);
     const ask = `Fetch ${url} again once ${file} exists.`;
-    assert.equal((await api("POST", "/agents", agent(`lifted-${lifted}`, { harness: "pi", instructions: ask, tools: ["web_fetch"] }))).status, 201);
-    const runId = (await api("POST", `/agents/lifted-${lifted}/runs`, { input: { content: ask } })).body.run_id;
+    assert.equal((await retried(api)("POST", "/agents",agent(`lifted-${lifted}`, { harness: "pi", instructions: ask, tools: ["web_fetch"] }))).status, 201);
+    const runId = (await retried(api)("POST", `/agents/lifted-${lifted}/runs`, { input: { content: ask } })).body.run_id;
     const first = await firstFetch(api, runId);
     assert.deepEqual([first.tool_status, first.tool_result_preview], ["failed", deniedText("web_fetch")], `${lifted}: launched denied`);
     assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: lifted } })).status, 200);
@@ -538,7 +537,7 @@ test("a workflow's call node calling web_fetch set to deny: its run is refused b
     root: { node: "chain", steps: [{ node: "call", label: "Read the home page", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "home", deadline_s: 60 }] },
   };
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "deny" } })).status, 200);
-  const saved = await api("POST", "/agents", { definition: { id: "denied", name: "denied", workflow: flow, tools: ["web_fetch"] } });
+  const saved = await retried(api)("POST", "/agents",{ definition: { id: "denied", name: "denied", workflow: flow, tools: ["web_fetch"] } });
   assert.deepEqual([saved.status, saved.body.warnings?.map((w) => w.message)], [201, ["This workflow's call node calls web_fetch, which is set to deny on this server."]]);
   const refused = await api("POST", "/agents/denied/runs", { input: { website: PAGE } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.denied], [409, "agent_not_runnable", ["web_fetch"]]);
@@ -561,7 +560,7 @@ for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its t
       { node: "call", label: "Second read", via: "tool", tool: "web_fetch", args: { url: "{website}" }, out: "Page", as: "second", deadline_s: 60 },
     ] },
   };
-  assert.equal((await api("POST", "/agents", { definition: { id: "twice", name: "twice", workflow: flow, tools: ["web_fetch"] } })).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",{ definition: { id: "twice", name: "twice", workflow: flow, tools: ["web_fetch"] } })).status, 201);
   const started = await api("POST", "/agents/twice/runs", { input: { website: `${PAGE}notes.txt` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   for (let i = 0; !existsSync(`${hold}.waiting`); i++) {
@@ -587,11 +586,11 @@ for (const switched of ["deny", "ask"]) test(`a workflow's call node reads its t
 test("a settings key the agent store would refuse is refused before the agent is made: 422, and its id stays free", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, GATE);
   for (const key of ["monid.foo.bar", "mcp:srv/a/b"]) {
-    const refused = await api("POST", "/agents", agent("keyed", { instructions: "Answer.", tools: ["web_fetch"], tool_settings: { [key]: { permission: "ask" } } }));
+    const refused = await retried(api)("POST", "/agents",agent("keyed", { instructions: "Answer.", tools: ["web_fetch"], tool_settings: { [key]: { permission: "ask" } } }));
     assert.deepEqual([refused.status, refused.body.error?.code], [422, "input_invalid"], `${key}: ${JSON.stringify(refused.body)}`);
   }
   assert.equal((await api("GET", "/agents/keyed")).status, 404, "nothing was stored");
-  assert.equal((await api("POST", "/agents", agent("keyed", { instructions: "Answer.", tools: ["web_fetch"] }))).status, 201, "the same id makes an agent");
+  assert.equal((await retried(api)("POST", "/agents",agent("keyed", { instructions: "Answer.", tools: ["web_fetch"] }))).status, 201, "the same id makes an agent");
 });
 
 const ASKS = (tool) => `This workflow's call node calls ${tool}, which is set to ask, and a workflow's call node can't wait for an approval: set it to allow for this agent.`;
@@ -634,7 +633,7 @@ async function refusedOn(api, harnesses) {
   }
 }
 
-test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000, skip: "waits on the faux CLI harness asking the tool gate, as the real claude-agent and codex bridges do (#2371)" }, async (t) => {
+test("with accounts off, on claude-agent and codex: web_fetch set to ask is refused with words saying so, never parked, and the run goes on", { timeout: 120_000 }, async (t) => {
   const dialled = await network(t);
   const off = await serve(t, { ...GATE, accounts: false, openSetup: false });
   assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
@@ -667,7 +666,7 @@ test("on pi, monid's calls at their default ask park by their settings keys, and
   const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });
   const answer = await owner(server);
   const { api } = server;
-  assert.equal((await api("POST", "/agents", agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
   const started = await api("POST", "/agents/enrich-asks/runs", { input: { content: "Enrich with monid: Ada at Example." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -707,13 +706,12 @@ test("a held key straddling the 2 KiB cut of a parked call's arguments shows no 
 /** A held key for the resume case, its words none a row says itself. */
 const RESUME_KEY = ["not-a-secret", "gate-resume-key", randomBytes(6).toString("hex")].join("-");
 
-test("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi", { timeout: 150_000 }, async (t) => {
+test("once a parked call with a held key in its arguments is approved, the resume message, its timeline row, the run's answer and the run list show no 8 characters of the key, on pi and codex", { timeout: 150_000 }, async (t) => {
   withEnv(t, { PARALLEL_API_KEY: RESUME_KEY });
   await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
   assert.equal((await server.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  // codex parks on web_fetch once the faux CLI harness asks the run's gate (follow-up #2371).
   for (const harness of PARKS_ON_RUNNER) {
     const runId = await fetching(server.api, `resume-${harness}`, harness, `${PAGE}?k=${RESUME_KEY}`);
     const { view } = await parked(server.api, runId);
@@ -767,9 +765,8 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  // Idle with nothing pending. The status word a person's stop leaves is the reopen-stopped work's (mcp-gate.test.mjs's
-  // stopped-literal case waits on it the same way), not this case's.
-  assert.deepEqual([stopped.state, stopped.pending], ["idle", null], "stopped: idle, nothing pending");
+  // A person's stop ends the turn, not the run: input_required and idle with nothing pending, as main's stop leaves one.
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
   // On the runner a parked call has its call's row and no result row of its own (the park writes none).
@@ -797,8 +794,7 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-// SKIP (follow-up #2078): a follow-up after a stop never runs: the run stays cancelled on the runner
-test.skip("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
@@ -838,14 +834,13 @@ test.skip("a stop while an approval waits and a later turn runs withdraws the ca
   assert.deepEqual(await dialled(), [], "the call never ran");
 });
 
-test("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi the model reads the refusal and the message together, the row says so, the message is their own row, and a later allow is 409", { timeout: 150_000 }, async (t) => {
+test("a person's message while an approval waits declines the call, with the message as the reason, in one turn: on pi and codex the model reads the refusal and the message together, the row says so, the message is their own row, and a later allow is 409", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const said = "use the cached copy instead";
-  // codex: once the faux CLI harness asks the run's gate (follow-up #2371).
   for (const harness of PARKS_ON_RUNNER) {
     const runId = await fetching(api, `declined-${harness}`, harness);
     const approval = (await parked(api, runId)).view.pending.id;
@@ -910,7 +905,8 @@ test("a long message that declines a waiting call reaches the model whole: all 5
   assert.ok(final.endsWith(`Reason: ${long}`), `the model got ${final.length} characters, ending ${JSON.stringify(final.slice(-40))}`);
 });
 
-// SKIP (follow-up #2371): its codex run never parks: the faux CLI harness never asks the run's gate
+// SKIP (follow-up #2372): a stop that lands after an allow is the stop work's: the pi run's own rows read "Not run: the run was
+// stopped while it waited" where this case wants "Held for your approval", whatever the CLI harness does
 test.skip("a stop or a cancel that lands after an answer, before the run's process acts on it, wins: nothing runs, nothing resumes, the row says withdrawn, and the record keeps the answer it superseded", { timeout: 240_000 }, async (t) => {
   const dialled = await network(t);
   const first = await serve(t, GATE);
@@ -982,8 +978,8 @@ test("a stop or a cancel cuts an approved call in flight: the tool sees the abor
   const calls = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   for (const [end, said] of [["stop", "stopped"], ["cancel", "cancelled"]]) {
     // monid.run asks by default: the call parks; monid's /slow then runs until its caller stops it.
-    assert.equal((await api("POST", "/agents", agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
-    const runId = (await api("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
+    assert.equal((await retried(api)("POST", "/agents",agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
+    const runId = (await retried(api)("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
     const { view } = await parked(api, runId);
     const before = (await calls()).length;
     assert.equal((await answer(runId, view.pending.id, { decision: "allow" })).status, 204);

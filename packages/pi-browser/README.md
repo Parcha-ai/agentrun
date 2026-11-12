@@ -2,7 +2,7 @@
 
 Your agent gets its own browser, and you can take over and hand it back.
 
-- **Its own browser.** The agent drives a Chrome of its own: a local Chrome, Browserbase or Kernel. It reads pages, clicks, types and takes screenshots. A local Chrome needs no key.
+- **Its own browser.** The agent drives a Chrome of its own: a local Chrome, or a hosted browser its host provides (agentrun-serve's Browserbase and Kernel, through its computer providers). It reads pages, clicks, types and takes screenshots. A local Chrome needs no key.
 - **You can take over and hand it back.** A host mounts the live view in a few lines, and then a person sees the agent's page, uses the mouse and keys, and lets the agent go on. While the person is driving, the agent's browser calls are refused. The agent can also ask a person for a step only a person can do, and wait for the answer. See [Take over and hand back](#take-over-and-hand-back). For now, use the live view with test accounts on practice sites only: the model's own page code can read what a person types there.
 - **Credentials you register stay out of what the model sees.** Credentials you register, and keys of the common shapes, are replaced with `[redacted]` in every tool result, failure, filed page and log. See [Credentials](#credentials).
 - **Every page the agent reads is filed as evidence.** The file holds the page's URL, its title and its SHA-256.
@@ -10,7 +10,7 @@ Your agent gets its own browser, and you can take over and hand it back.
 
 If the process dies, a pi-durable host recovers the session and does not repeat an action. See [For hosts](#for-hosts).
 
-Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=22.19.0`, pi 1.5.0 exactly (its
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node `>=24.22.3`, pi 1.5.0 exactly (its
 pi-durable and chord peers). ESM only: the
 package has `import` entries and no `require` entry.
 
@@ -76,24 +76,23 @@ It prints the page's accessibility tree, the same text `snapshot` gives a model:
 
 ## Demos
 
-Four runnable demos live in `examples/` in the repository. They are not in the npm package. Build once with `npm ci && npm run build`, then run one from the repository root. Each needs Chrome or Chromium (`CHROME_PATH` names it) except where it says otherwise.
+Two runnable demos live in `examples/` in the repository. They are not in the npm package. Build once with `npm ci && npm run build`, then run one from the repository root. Each needs Chrome or Chromium (`CHROME_PATH` names it) except where it says otherwise.
 
 | Demo | Run | What it shows |
 |---|---|---|
-| [`examples/one-script-three-providers.mjs`](examples/one-script-three-providers.mjs) | `node packages/pi-browser/examples/one-script-three-providers.mjs https://example.com` | The same script on a local Chrome, Browserbase or Kernel. `PI_BROWSER_PROVIDER=browserbase` needs `BROWSERBASE_API_KEY` and the Browserbase SDK; `kernel` needs `KERNEL_API_KEY`. The tests run the local Chrome path only. |
 | [`examples/hold-an-irreversible-action.mjs`](examples/hold-an-irreversible-action.mjs) | `node packages/pi-browser/examples/hold-an-irreversible-action.mjs` | Under the `ask` policy a form post is held until a person approves it. The demo refuses, and the local server it posts to counts zero requests. |
 | [`examples/crash-and-resume.mjs`](examples/crash-and-resume.mjs) | `node packages/pi-browser/examples/crash-and-resume.mjs`, twice | The first run sets a page title and kills itself with SIGKILL between two tool calls. The second recovers the same Chrome from the run's own store and reads the title back. A scripted model stands in for a real one. It uses the pi-durable packages the repository already installs. Delete `$TMPDIR/pi-browser-crash-demo` to start over. |
-| [`examples/read-a-pdf.mjs`](examples/read-a-pdf.mjs) | `node packages/pi-browser/examples/read-a-pdf.mjs` | `web_fetch` on a PDF the fetch service cannot convert. It fetches the file raw and hands the bytes to your extractor, here poppler's `pdftotext` (needs poppler installed). The fetch service is a stand-in that answers HTTP 400 for a PDF, as Browserbase does. It does not need Chrome. |
 
 ## Providers
 
-The same tools run on three kinds of browser. You pick one when you set up the package.
+The same tools run on any browser a `BrowserProvider` gives. The package carries the local one; a hosted browser is the
+host's, through a provider of its own (agentrun-serve drives Browserbase and Kernel through its computer providers, so the
+package names no vendor).
 
 | Provider | What it is | What it needs |
 |---|---|---|
 | Local Chrome (`/providers/cdp`) | A Chrome the package starts and stops by exact pid, with its own profile directory and a free debugging port. It can also attach to a Chrome you already run, at a CDP endpoint. | Chrome or Chromium 137 or later. No key. |
-| Browserbase (`/providers/browserbase`) | A Browserbase session, through its SDK. | `BROWSERBASE_API_KEY` and the `@browserbasehq/sdk` peer. |
-| Kernel (`/providers/kernel`) | A Kernel browser, through its REST API. | `KERNEL_API_KEY`. No SDK. |
+| A host's own (`BrowserProvider`, `core/host.ts`) | Any browser that answers CDP: the host makes, finds and releases its sessions and hands over a CDP URL. | Whatever the host's vendor needs. |
 
 The local Chrome's options, in `cdpProvider({ chrome: { ... } })`:
 
@@ -104,7 +103,7 @@ The local Chrome's options, in `cdpProvider({ chrome: { ... } })`:
 | `args` | Extra Chrome flags, added after the package's own. |
 | `sandbox` | Chrome's own sandbox, on unless `false`. When absent, `PI_BROWSER_NO_SANDBOX=1` turns it off. Turn it off only where Chrome cannot start its sandbox (root, a container, restricted user namespaces), and only for pages you trust. A Chrome that exits before it opens its debugging port fails the create with its last lines of stderr, and with this hint when it aborted or named the sandbox. |
 
-A host passes the provider it wants; see [For hosts](#for-hosts). `examples/one-script-three-providers.mjs` runs one script on all three.
+A host passes the provider it wants; see [For hosts](#for-hosts).
 
 ## Take over and hand back
 
@@ -188,12 +187,11 @@ This section says where a profile's state lives. A host can ask for a browser pr
 Where the profile lives:
 
 - **Local Chrome:** a directory `.profiles/<name>` under the profile root you give the provider. A session that saves runs on that directory. A session that does not save runs on a copy, and the profile stays as it was.
-- **Browserbase:** a Browserbase context. The provider keeps the map from profile name to context id in a file under the user's config directory, or in the store you pass.
-- **Kernel:** a Kernel profile of that name, created if it is not there.
+- **A host's provider:** wherever its vendor keeps one (agentrun-serve opens a vendor's saved profile by the pointer it holds for the run's sign-in).
 
 It is never your own browser's profile.
 
-One session at a time may save to a profile in one process. A second saver is refused, and the message says why. Across processes, the last session to end wins. A profile name and a raw Browserbase context id cannot be asked for together.
+One session at a time may save to a profile in one process. A second saver is refused, and the message says why. Across processes, the last session to end wins.
 
 
 ## The tools
@@ -206,22 +204,9 @@ One session at a time may save to a profile in one process. A second saver is re
 | `run` | Act: code, or a batch of ref actions (`goto` takes a URL instead of an id). An AgentRun browser computer (raw CDP) takes actions only. | Never reruns. The model is told the call may have taken effect and where the page was, and the identical code is refused once (`effect_unknown`). |
 | `browser_release`, `browser_relaunch` | End the session; end it and open another. | Idempotent. A create carries a tag, so a rerun finds its session. |
 | `browser_request_handoff` | Hand the session to a person for a step only a human can do, and wait for the host's handoff port to say how it ended. While the person has it, every other call answers `waiting_for_human`. Listed only when the host gives a `handoff` port. | Reruns and waits on the same request; a request asked again carries the same `request_id`, which the port treats as one. |
-| `web_fetch`, `web_search` | Fetch a page or search, through the provider's services. | Reruns. |
 | `browser_upload` | Choose one workspace file in a file input on the page, as a person picking it would. Nothing is submitted; `run` submits the form afterwards. The durable adapter lists it only when the host supplies `files` or `workspace`. | Never reruns. An upload the page does not answer fails at 60 s as possibly applied, and the identical retry is refused until the agent has looked at the page. |
-| `use_website` | Hand a task to another agent that works one website the host granted, in its own browser, and get its report. Listed only when the host passes `sites`. | A `request_id` that already finished answers its result without running again. A task that failed runs again. |
 
-`web_search` hits carry a `snippet` when the search has one: an excerpt of the page with its markdown links reduced to
-their text, whitespace collapsed and clipped to `WEB_SEARCH_SNIPPET_MAX` (500) characters, redacted with the rest of the
-answer. A host's `searchSources` (`createWebExtension`) are tried in order before the provider's own search; one that
-throws hands the call to the next, a cancelled call is never handed on, and the answer names the source in `via`. A
-source's optional `available()` is asked at each call; one that answers false is skipped without counting as a failure.
-`fetchSources` (`FetchSource`) are readers tried the same way before the provider's own fetch, for a markdown read: a
-page one answers is filed exactly as the provider's is, under `via: <name>_fetch`, and a reader's failure never becomes
-the call's own while the provider can still be tried.
-
-`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices; a search
-source's answer at the usage it reports, else the list search price). Session
-minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
+Session minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
 time since the last charge, and each released session's record carries its total. A host that books session time as spend
 passes `onCharge` (below), which hears each charge in the commit that bills it.
 
@@ -273,7 +258,6 @@ Stagehand, undici, zod and the two HTML packages are dependencies. Three optiona
 | Peer | Needed for |
 |---|---|
 | `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
-| `@browserbasehq/sdk` | the Browserbase provider. Kernel needs no SDK. |
 
 The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly. CI tests pi 1.5.0.
 
@@ -291,15 +275,16 @@ The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly. CI te
   its frame scan reads the page's first 2,000,000 characters in steps that yield the loop. Outside Node's builtins and
   undici it loads only node-html-parser and node-html-markdown, on demand and in that worker thread.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
-  committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
-  `web_fetch` and `web_search`.
+  committed before the provider is called, release is a durable task, reconcile runs at run open).
 - `/driver/stagehand`: `stagehandDriver()`, Stagehand v4 over upstream's facade, vendored unedited in
   `src/vendor/stagehand-facade/`. `UPSTREAM.json` names the commit and each file's blob id and SHA-256;
   `node scripts/vendor-facade.mjs --check` verifies them and `--commit SHA --release NAME` re-vendors. Stagehand is created
   sealed: no inference, no cache, and no trace endpoint, so no trace is exported. Stagehand attaches one client to a browser
   at a time: closing a driver disconnects it, so the next attach is allowed.
 - `/driver/cdp`: `cdpDriver()`, the driver of every AgentRun browser computer (Browserbase's, Kernel's, or the computer
-  package's `local` provider's Chrome on this machine), over its CDP URL. It is raw CDP: no Stagehand, and nothing loaded into the browser. `snapshot` is Chrome's
+  package's `local-chrome` provider's Chrome on this machine), over its CDP URL. Browserbase and Kernel browsers now
+  refuse run code and file uploads (`browser_upload`), and their snapshot is the raw-CDP list; every browser computer
+  uses one driver, this one, which runs no code and sets no file input. It is raw CDP: no Stagehand, and nothing loaded into the browser. `snapshot` is Chrome's
   accessibility tree with the same "frame-node" ids (`[0-42]`: the frame's place, then Chrome's backend node id). `run`
   takes actions only. Each action is scrolled into view, hit-tested at its centre, and pressed and released there, or
   typed with inserted text and a real last key. Each answers one line: `[ok] click [0-42] button "Add" -> page changed`
@@ -307,9 +292,8 @@ The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.0` exactly. CI te
   `{"op":"goto","url":"https://..."}`. A frame another site runs in its own process (a cross-origin iframe) is not read:
   the snapshot names each one it left out. Adapted from Browser Use Pi's `ax.ts`, `cdp.ts` and `page.ts` under its MIT
   license, in `src/vendor/browser-use-pi/` (see NOTICE and that folder's `UPSTREAM.json`).
-- `/providers/browserbase`, `/providers/kernel`, `/providers/cdp`: where browsers come from. Browserbase through its SDK,
-  with the credential-proxy dial and the connect-URL rewrite. Kernel through its REST API on the package's own HTTP agent.
-  Any CDP endpoint, or a local Chrome the provider starts and kills by exact pid.
+- `/providers/cdp`: where the package's own browsers come from: any CDP endpoint, or a local Chrome the provider starts and
+  kills by exact pid. A hosted browser is the host's provider (agentrun-serve's, over its computer providers).
 - `/providers/chrome-args`: `chromeArgs()`, the arguments the cdp provider starts a local Chrome with, and `extensionOrigin()`,
   the one Origin its DevTools socket allows (Stagehand's extension). A host that starts its own Chrome for Stagehand takes them
   from here rather than copying Stagehand's `--remote-allow-origins=*`. `findChrome()` finds the Chrome to start: the one
@@ -349,8 +333,8 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
 `createBrowserExtension` takes no key and sends nothing anywhere but the provider you give it. The options:
 
 - `driver`: `stagehandDriver()`, or your own `DriverFactory`.
-- `provider`: for example Browserbase from the run's env (`BROWSERBASE_API_KEY` or `BB_API_KEY`, the proxy URLs and the
-  project id), with your own metadata stamped on every session.
+- `provider`: the local Chrome (`cdpProvider`), or your own `BrowserProvider` over a hosted vendor, with your own metadata
+  stamped on every session.
 - `evidence`: a sink that files each read where your receipts already are.
 - `onSession`: the host channel. It receives each session's row and, only there, the live-view URLs. Nothing in the run log, a
   result or a log line carries them.
@@ -402,13 +386,8 @@ and `search`.
 
 Two things to know before you give a model a browser:
 
-- **What a model may reach is your decision.** `web_fetch` takes only absolute `http(s)` URLs with no credentials, and
-  `publicFetch` refuses private addresses, but a provider's fetch service and a driven browser go wherever
-  their network goes. A host that must not let a model reach internal addresses restricts that network or the URLs it passes.
-- **The Browserbase provider changes the process.** Its first call that needs the Browserbase client adds Browserbase's hosts to `NO_PROXY` and `no_proxy`, and
-  the first attach replaces `globalThis.WebSocket` with a wrapper that dials a bound credential proxy instead of the raw
-  connect URL. Both are process-wide. The wrapper passes every other URL through unchanged. Importing the package does
-  neither.
+- **What a model may reach is your decision.** `publicFetch` refuses private addresses, but a driven browser goes
+  wherever its network goes. A host that must not let a model reach internal addresses restricts that network or the URLs it passes.
 
 ## Development
 
@@ -422,7 +401,7 @@ The real-Chrome suites (`stagehand_real_chrome`, `cdp_local_chrome`, `effects-ch
 `readme_example`) skip with a typed reason where no Chrome can load Stagehand's extension, and fail instead under
 `AGENTRUN_REQUIRE_LOCAL_CHROME=1`, which CI sets. The crash matrix (`test/custody.test.mjs`) SIGKILLs a child process at each
 cut point of a session's life against the shared fake and reopens the run's SQLite file. The wire checks (`test/wire/`) plant
-sentinel credentials in a fake provider and scan every byte a run produced. The suites run on Node 22 and 24.
+sentinel credentials in a fake provider and scan every byte a run produced. The suites run on Node 24.22.3, the minimum the package supports.
 
 Apache-2.0. Copyright 2026 Parcha Labs, Inc. `NOTICE` records the Stagehand (MIT) code this package copies: the Chrome launch
 flags and the vendored facade.

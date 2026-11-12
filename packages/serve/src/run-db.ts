@@ -1,5 +1,5 @@
 // How the server opens a run's database, run.sqlite, which the run's own process writes: in WAL, under an exclusive lock,
-// with no automatic checkpoint, and ended by process.exit with no close (pi-durable-disk's exclusive profile, keepWal),
+// with no automatic checkpoint, and ended by process.exit with no close,
 // so its WAL stays until whoever takes the run back checkpoints it. The server never opens it read-write while a
 // process holds the run: every read is a fresh read-only open with no locking (`vfs=unix-none`) and an exclusive
 // locking mode (the WAL index in heap, no -shm), kept for that read alone, since a connection kept open falls behind
@@ -7,7 +7,7 @@
 // guard). The one read-write open is the checkpoint when the server takes the run back (runs.ts), with no process left.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { walHasCommit } from "@parcha/agentrun-pi/durable";
+import { walHasCommit } from "./workflow/wal.js";
 
 /** One open of a run's database, as observeRunDbOpens reports it: `held`, whether a process held the run at the open. */
 /** `dropped`: a read of the file alone whose file changed during it, made again (readRunDbSync). */
@@ -68,7 +68,7 @@ const READ_TRIES = 3;
 export function readRunDbSync<T>(file: string, held: boolean, read: (db: DatabaseSync) => T): T {
   for (let attempt = 1; ; attempt++) {
     for (const observer of observers) observer({ file, mode: "read", held });
-    // A WAL is opened only once it holds a commit SQLite's recovery takes (agentrun-pi walHasCommit).
+    // A WAL is opened only once it holds a commit SQLite's recovery takes (workflow/wal.ts walHasCommit).
     const immutable = !walHasCommit(`${file}-wal`);
     const before = immutable ? fileMark(file) : undefined;
     runDbTestHooks.afterPlan?.(file);

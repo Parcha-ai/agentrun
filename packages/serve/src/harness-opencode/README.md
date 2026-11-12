@@ -11,7 +11,7 @@ import { openCodeAdapter } from "./harness-opencode/index.js";
 
 const runNode = createHarnessRunner(
   openCodeAdapter({
-    model: "gpt-5.4-mini",
+    model: "gpt-6-luna",
     provider: { origin: "https://api.openai.com", credential: () => process.env.OPENAI_API_KEY! },
     sessionsDir: "/var/lib/my-host/opencode-sessions",
   }),

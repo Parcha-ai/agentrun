@@ -1,8 +1,9 @@
-// The store's one schema, version 5 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 6 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
-// version 5 maps an externally owned agent (agents.external_ref, revisions.external_version).
+// version 5 maps an externally owned agent (agents.external_ref, revisions.external_version); version 6 tells a person's
+// stop from a cancel (runs.outcome 'stopped' or 'cancelled').
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -14,14 +15,15 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
  *  (runs-over-store.ts approve). In STORE_DDL, and added at a server open to a store an earlier build of this version made. */
 /** One unrefused answer per approval of a run: an answer the runner refused (its run could not resume) holds no place, so
  *  the person can answer again. */
-export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS commands_one_answer ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
+export const ONE_ANSWER_INDEX = "commands_one_answer";
+export const COMMANDS_ONE_ANSWER = `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_ANSWER_INDEX} ON commands (run_id, json_extract(body, '$.approval')) WHERE kind IN ('approve', 'deny') AND refused IS NULL`;
 
 const json = (column: string, nullable = false) => `${column} TEXT${nullable ? "" : " NOT NULL"} CHECK (${column} IS NULL OR json_valid(${column}))`;
 
@@ -86,10 +88,11 @@ export const STORE_DDL: readonly string[] = [
     cost_usd REAL,
     ${json("metrics", true)},
     summary TEXT,
-    -- How an ended run (state 'ended') ended apart from being done: 'escalated' (it finished its work and waits for a
-    -- person, which v2 reads as completed with a review) or 'completed'; null is a plain completion. A failed or stopped
-    -- run says so in its state and needs none. Written in the run's end commit (RunPatch.outcome).
-    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'escalated')),
+    -- How the run ended beside its state (RunOutcome). An ended run: 'escalated' (it finished its work and waits for a
+    -- person, which v2 reads as completed with a review) or 'completed'; null is a plain completion. A stopped run:
+    -- 'stopped' when a person stopped it (its turn is over, not the run: a message reopens it) or 'cancelled' (over for
+    -- good). A failed run says so in its state and needs none. Written in the run's end commit (RunPatch.outcome).
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'escalated', 'stopped', 'cancelled')),
     -- When the run itself was archived (its agent's archive is the agent row's): hidden from the default lists, kept.
     archived_at INTEGER,
     -- The session an imported run came from ({source, session}), written by Store.importRun; null for a run started here.

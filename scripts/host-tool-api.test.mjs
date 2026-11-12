@@ -20,7 +20,6 @@ const BROWSER_TOOLS = [join(repo, "packages/pi-browser/src/durable.ts")];
 /** Members a tool reads that a host tool's hand-built api does not give, each with why. */
 const UNREACHABLE = {
   memo: "a pi tool task's own durable memo: a host tool runs in no pi tool task, so the browser gets it by running as one (the task route), never from a faked memo",
-  taskId: "a pi tool task's own id: a host tool runs in no pi tool task, so a child conversation the browser owns by it comes by the task route, never by an id pi's records do not hold",
 };
 
 /** The members host-tools.ts gives, read from its HOST_API_MEMBERS literal. */
@@ -46,7 +45,7 @@ test("every api member pi's tools and serve's host tools read is one a host tool
 
 test("the scan reads the browser's task reads, and a member listed unreachable is one the api does not give", () => {
   const browser = new Set(BROWSER_TOOLS.flatMap(reads).map((each) => each.member));
-  for (const member of ["snapshot", "conversation", "waitForTask", "memo", "taskId"]) assert.ok(browser.has(member), `the browser reads api.${member}`);
+  for (const member of ["snapshot", "waitForTask", "memo"]) assert.ok(browser.has(member), `the browser reads api.${member}`);
   const members = given();
   assert.deepEqual(Object.keys(UNREACHABLE).filter((member) => members.has(member)), [], "an unreachable member the api now gives is listed no longer");
 });

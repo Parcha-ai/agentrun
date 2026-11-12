@@ -9,7 +9,8 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { spentIn, useSpend } from "../dist/cap.js";
+import { useSpend } from "../dist/cap.js";
+import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import * as kernel from "@parcha/agentrun-kernel";
@@ -22,22 +23,16 @@ import { runModels } from "../dist/model.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
-import { FAUX, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { FAUX, follow, journalOf, paidCallsOf, runDir, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 /** The cap's refusal of a paid call to Parallel, as cap.ts' paidCall words it: what it could cost, what the run has spent
  *  of its cap (in cents; nothing held for steps still running, here), and the cap that would run it. */
 const capRefusal = (what, price, basis, spent, cap, raise) => `spend_cap_reached: Not sent: this run has spent ${spent} of its ${cap} cap, and the next step, ${what}, could cost up to ${price} (${basis}). Raise the cap to at least ${raise} to continue.`;
-/** A run's paid tool records, from its store: each mark and charge with its tool, call and figure. */
-function paidRecords(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-  try {
-    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => ({ kind: entry.kind, ...entry.data }));
-  } finally {
-    db.close();
-  }
-}
+/** A run's paid tool records, as its runner books them on the run's one ledger (support.mjs paidCallsOf): each mark and
+ *  charge with its tool, call and figure. */
+const paidRecords = paidCallsOf;
 /** What the model and the timeline read when Exa's free limit holds after the one retry: our words, never Exa's. */
 const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
 /** Exa's own fix, in any of its words: an API key put in its MCP URL, which means nothing to a person here. */
@@ -148,7 +143,8 @@ test("under a spend cap, a search through Parallel is a paid call: sent only whe
   capped(0.0015, 0.0005);
   assert.equal((await webSearch({ query: "widgets", n: 2 }, client)).provider, "parallel", "spent and held $0.0005, plus $0.001, is the cap: sent");
   capped(0.0015, 0.00051);
-  assert.deepEqual(await webSearch({ query: "widgets", n: 2 }, client), { error: capRefusal("Parallel's search", "$0.001", "Parallel's list price for a fast search", "$0", "$0.0015", "$0.01") });
+  // It has spent $0.00051: under a cent, never "$0".
+  assert.deepEqual(await webSearch({ query: "widgets", n: 2 }, client), { error: capRefusal("Parallel's search", "$0.001", "Parallel's list price for a fast search", "less than a cent", "$0.0015", "$0.01") });
   capped(0.0155, 0);
   assert.deepEqual(await webSearch({ query: "widgets", n: 25 }, client), { error: capRefusal("Parallel's search", "$0.016", "Parallel's list price for a fast search of 25 results", "$0", "$0.0155", "$0.02") }, "25 results: $0.001 and 15 more at $0.001");
   capped(0.016, 0);
@@ -172,7 +168,7 @@ test("under a spend cap, a page read through Parallel's extract is a paid call: 
   useSpend({ cap: 0.001, spent: () => 0.0005, add: (usd) => added.push(usd) });
   const web = network();
   const direct = await webFetch("http://public.example/", { ...web, parallel: client });
-  assert.deepEqual([direct.via, direct.title, direct.parallel], ["direct", "Public page", capRefusal("Parallel's extract", "$0.001", "Parallel's list price for one URL", "$0", "$0.001", "$0.01")]);
+  assert.deepEqual([direct.via, direct.title, direct.parallel], ["direct", "Public page", capRefusal("Parallel's extract", "$0.001", "Parallel's list price for one URL", "less than a cent", "$0.001", "$0.01")]);
   assert.deepEqual([sent.length, added, web.dialled], [1, [0.001], ["http://public.example/"]], "Parallel was not asked; the host was");
 }));
 
@@ -203,14 +199,33 @@ test("a request to Parallel with no call to book it under is never sent, nor one
   assert.deepEqual(sent, [], "nothing reached Parallel");
 });
 
-// SKIP (follow-up #2078): a pi run's Parallel search and page read are not booked as its tool costs as before
-test.skip("a pi run's search and page read through Parallel are booked as its tool costs: each marked at its price before it is sent and settled after, a line of its own on the timeline, in the run's cost and under /usage's tools meter", { timeout: 60_000 }, async (t) => {
+// The API docs promise a row's tool_name is the tool its call ran: a paid call's cost row names that tool, never the
+// fee's own name ("Parallel's search").
+test("a pi run's cost rows for its search and page read through Parallel name the tool each call ran, web_search and web_fetch, and its call", { timeout: 60_000 }, async (t) => {
+  await calls(t, true);
+  withEnv(t, {}, [EXTRACT_MODE]);
+  const { api } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
+  const parallel = { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } };
+  assert.equal((await api("POST", "/agents", { definition: { id: "named", name: "named", instructions: "Research.", tools: ["web_search", "web_fetch", "write"], tool_settings: parallel } })).status, 201);
+  const started = await api("POST", "/agents/named/runs", { input: { content: "Research widgets on the web and write report.md." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  const ids = Object.fromEntries(rows.filter((row) => row.kind === "tool_use").map((row) => [row.tool_name, row.tool_use_id]));
+  assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.summary.startsWith("Tool cost")).map((row) => [row.summary, row.tool_name, row.tool_use_id]), [
+    ["Tool cost: parallel charged $0.0010 for web_search", "web_search", ids.web_search],
+    ["Tool cost: parallel charged $0.0010 for web_fetch", "web_fetch", ids.web_fetch],
+  ]);
+});
+
+// Each case below is capped ($1): a paid call's mark holds its price under a cap, the figure the cap keeps; an uncapped
+// run's mark holds none, as it keeps no cap (run-cap.ts paidCalls).
+test("a capped pi run's search and page read through Parallel are booked as its tool costs: each marked at its price before it is sent and settled after, a line of its own on the timeline, in the run's cost and under /usage's tools meter", { timeout: 60_000 }, async (t) => {
   const seen = await calls(t, true);
   withEnv(t, {}, [EXTRACT_MODE]);
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
   const parallel = { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } };
   assert.equal((await api("POST", "/agents", { definition: { id: "booked", name: "booked", instructions: "Research.", tools: ["web_search", "web_fetch", "write"], tool_settings: parallel } })).status, 201);
-  const started = await api("POST", "/agents/booked/runs", { input: { content: "Research widgets on the web and write report.md." } });
+  const started = await api("POST", "/agents/booked/runs", { input: { content: "Research widgets on the web and write report.md." }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   const { rows } = await follow(api, runId, ["completed"]);
@@ -223,19 +238,19 @@ test.skip("a pi run's search and page read through Parallel are booked as its to
   // Each mark holds its call at its price (heldUsd), the figure a cap, and a run's cost bound, read for a call a crash cut.
   assert.deepEqual([PARALLEL_SEARCH_USD, PARALLEL_EXTRACT_USD], [0.001, 0.001], "Parallel's published prices");
   assert.deepEqual(paidRecords(data, runId), [
-    { kind: "agentrun.tool_started", tool: "web_search", charged_by: "parallel", call: ids.web_search, heldUsd: PARALLEL_SEARCH_USD },
-    { kind: "agentrun.tool_cost", tool: "web_search", charged_by: "parallel", call: ids.web_search, usd: PARALLEL_SEARCH_USD },
-    { kind: "agentrun.tool_started", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, heldUsd: PARALLEL_EXTRACT_USD },
-    { kind: "agentrun.tool_cost", tool: "web_fetch", charged_by: "parallel", call: ids.web_fetch, usd: PARALLEL_EXTRACT_USD },
+    { kind: "agentrun.tool_started", tool: "Parallel's search", charged_by: "parallel", call: ids.web_search, heldUsd: PARALLEL_SEARCH_USD },
+    { kind: "agentrun.tool_cost", tool: "Parallel's search", charged_by: "parallel", call: ids.web_search, usd: PARALLEL_SEARCH_USD },
+    { kind: "agentrun.tool_started", tool: "Parallel's extract", charged_by: "parallel", call: ids.web_fetch, heldUsd: PARALLEL_EXTRACT_USD },
+    { kind: "agentrun.tool_cost", tool: "Parallel's extract", charged_by: "parallel", call: ids.web_fetch, usd: PARALLEL_EXTRACT_USD },
   ]);
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002, "the faux model is $0: the run's cost is Parallel's two fees");
-  assert.equal(spentIn(join(runDir(data, runId), "store", "run.sqlite")), 0.002, "and what a restarted process reads as spent, against its cap");
+  // What the cap reads from the run's booking (runner/metrics.ts bookedCapSpend), as the next claim reads it.
+  assert.equal(bookedCapSpend(journalOf(data, runId)), 0.002, "and what a restarted claim reads as spent, against its cap");
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
   assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
 });
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a workflow's call nodes are booked as an agent's calls are: its search and its page read through Parallel are marked and settled in its store, part of its cost, of /usage's tools meter and of what a restarted process reads as spent", { timeout: 60_000 }, async (t) => {
+test("a capped workflow's call nodes are booked as an agent's calls are: its search and its page read through Parallel are marked and settled in its store, part of its cost, of /usage's tools meter and of what a restarted process reads as spent", { timeout: 60_000 }, async (t) => {
   const seen = await calls(t, true);
   withEnv(t, {}, [EXTRACT_MODE]);
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
@@ -247,24 +262,23 @@ test.skip("a workflow's call nodes are booked as an agent's calls are: its searc
   ] } };
   const parallel = { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } };
   assert.equal((await api("POST", "/agents", { definition: { id: "booked-flow", name: "booked-flow", workflow: flow, tools: ["web_search", "web_fetch"], tool_settings: parallel } })).status, 201);
-  const run = await api("POST", "/agents/booked-flow/runs", { input: { q: "acme registry" } });
+  const run = await api("POST", "/agents/booked-flow/runs", { input: { q: "acme registry" }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
   assert.deepEqual((await seen()).map((call) => [call.path, call.authorized]), [["/v1/search", true], ["/v1/extract", true]]);
   const paid = paidRecords(data, run.body.run_id);
   assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.charged_by, entry.heldUsd ?? entry.usd]), [
-    ["agentrun.tool_started", "web_search", "parallel", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", "web_search", "parallel", PARALLEL_SEARCH_USD],
-    ["agentrun.tool_started", "web_fetch", "parallel", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", "web_fetch", "parallel", PARALLEL_EXTRACT_USD],
+    ["agentrun.tool_started", "Parallel's search", "parallel", PARALLEL_SEARCH_USD], ["agentrun.tool_cost", "Parallel's search", "parallel", PARALLEL_SEARCH_USD],
+    ["agentrun.tool_started", "Parallel's extract", "parallel", PARALLEL_EXTRACT_USD], ["agentrun.tool_cost", "Parallel's extract", "parallel", PARALLEL_EXTRACT_USD],
   ]);
   assert.ok(paid[0].call && paid[0].call === paid[1].call && paid[2].call === paid[3].call && paid[0].call !== paid[2].call, `each call node's mark and charge name it: ${paid.map((entry) => entry.call)}`);
   assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, 0.002, "the run's cost is Parallel's two fees");
-  assert.equal(spentIn(join(runDir(data, run.body.run_id), "store", "run.sqlite")), 0.002);
+  assert.equal(bookedCapSpend(journalOf(data, run.body.run_id)), 0.002, "what a restarted claim reads as spent, against its cap");
   const meters = (await api("GET", "/usage?group_by=meter")).body.lines.map((line) => [line.meter, line.usd, line.unpriced_runs]);
   assert.deepEqual(meters.find(([meter]) => meter === "tools"), ["tools", 0.002, 0]);
 });
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a capped pi run's search through Parallel that its cap cannot hold is refused before it is sent, in the cap's words: nothing reaches Parallel and nothing is booked", { timeout: 60_000 }, async (t) => {
+test("a capped pi run's search through Parallel that its cap cannot hold is refused before it is sent, in the cap's words: nothing reaches Parallel and nothing is booked", { timeout: 60_000 }, async (t) => {
   const seen = await calls(t, true);
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
   assert.equal((await api("POST", "/agents", { definition: { id: "capped", name: "capped", instructions: "Search.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } } })).status, 201);
@@ -481,14 +495,14 @@ test("pi's hosted search: Anthropic's pause_turn answers the results it has and 
   assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1, "one request, the paused one, not resubmitted");
 });
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a run cancelled while its search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known", { timeout: 90_000 }, async (t) => {
+// Capped ($1), as the booked cases above are: the call's mark holds its price under a cap.
+test("a capped run cancelled while its search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known", { timeout: 90_000 }, async (t) => {
   const seen = await calls(t, true);
   // The faux Parallel answers the search after 2 s, so the cancel lands while the call is under way.
   withEnv(t, { [MODE]: "slow:2000" }, [MODE, EXTRACT_MODE]);
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
   assert.equal((await api("POST", "/agents", { definition: { id: "stopped", name: "stopped", instructions: "Research.", tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } } })).status, 201);
-  const started = await api("POST", "/agents/stopped/runs", { input: { content: "Search the web for widgets" } });
+  const started = await api("POST", "/agents/stopped/runs", { input: { content: "Search the web for widgets" }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   for (const end = Date.now() + 30_000; !(await seen()).some((call) => call.path === "/v1/search"); ) {
@@ -503,8 +517,8 @@ test.skip("a run cancelled while its search through Parallel is under way still 
     if (paid.some((entry) => entry.kind === "agentrun.tool_cost")) break;
   }
   assert.deepEqual(paid.map((entry) => [entry.kind, entry.tool, entry.heldUsd ?? entry.usd]), [
-    ["agentrun.tool_started", "web_search", PARALLEL_SEARCH_USD],
-    ["agentrun.tool_cost", "web_search", PARALLEL_SEARCH_USD],
+    ["agentrun.tool_started", "Parallel's search", PARALLEL_SEARCH_USD],
+    ["agentrun.tool_cost", "Parallel's search", PARALLEL_SEARCH_USD],
   ], "the call was marked, and settled though its turn was stopped");
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, PARALLEL_SEARCH_USD, "the run's cost is the search's fee, never unknown");
 });

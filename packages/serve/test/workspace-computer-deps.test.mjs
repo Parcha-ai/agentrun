@@ -14,7 +14,8 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, LocalBrowserProvider, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
+import { DAYTONA_DEFAULT_SNAPSHOT, DEFAULT_DOCKER_IMAGE, PROVIDERS, providerFor } from "@parcha/agentrun-computer";
+import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { FAUX_VIEW_PATH, fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
@@ -73,6 +74,8 @@ function fakeDesktop(root, record) {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
     check: () => [],
+    // Docker's descriptor says it prepares its image: the stand-in's is ready at once, under its own tag.
+    prepareImage: async () => ({ ok: true, value: PREPARED }),
     list: async () => ({ ok: true, value: [] }),
     async create(spec) {
       record.created.push(structuredClone(spec));
@@ -91,9 +94,12 @@ async function desktopOn(provider) {
   const sealKey = randomBytes(32);
   await putSealedKey(store, sealKey, "E2B_API_KEY", PLANTED.storeKey);
   await putSealedKey(store, sealKey, "ORGO_API_KEY", PLANTED.orgoKey);
+  await putSealedKey(store, sealKey, "ORGO_WORKSPACE_ID", "ws-orgo-1");
   const record = { created: [], released: [], loaded: [] };
   // The provider builder's load (providerFor in production): what the server-side provider call is given.
-  const load = async (id, options) => (record.loaded.push([id, structuredClone(options)]), fakeDesktop(root, record));
+  // A provider whose descriptor declares a ledger (Orgo's, its agents' computers) is given the store's: functions, left
+  // out of the copy kept here.
+  const load = async (id, { ledger, ...options }) => (record.loaded.push([id, structuredClone(options), typeof ledger?.put]), fakeDesktop(root, record));
   // On the computer package's own registry (the composer's default), whose entries carry each provider's default image.
   const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, load });
   // As the spec builders call it: the composer's deps, then the claim's own.
@@ -122,7 +128,7 @@ test("a key named in the server's environment wins over its saved one, and goes 
 test("a key only saved in the store is opened with the server's seal key for the provider call alone: the computer's spec carries none of it", async () => {
   const { answer, record } = await desktopOn("orgo");
   assert.equal(answer.computer?.kind, "desktop");
-  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.apiKey]), [["orgo", PLANTED.orgoKey]], "the saved key, opened for the provider");
+  assert.deepEqual(record.loaded.map(([id, options]) => [id, options.apiKey, options.workspaceId]), [["orgo", PLANTED.orgoKey, "ws-orgo-1"]], "the saved key and the workspace, opened for the provider");
   const [spec] = record.created;
   assert.deepEqual(plantsIn(spec), [], `no planted value in the computer's spec: ${JSON.stringify(spec)}`);
   assert.deepEqual(spec.labels, { "agentrun.run": "run-1", "agentrun.epoch": "3" });
@@ -133,7 +139,7 @@ test("a key only saved in the store is opened with the server's seal key for the
 /** A store with saved computer keys (Settings → Computers'), as a server that has some keeps them. */
 async function savedKeysStore(sealKey) {
   const store = memoryStore();
-  for (const [name, value] of Object.entries({ E2B_API_KEY: PLANTED.storeKey, ORGO_API_KEY: PLANTED.orgoKey, FAUX_SANDBOX_KEY: mark("faux-key") })) await putSealedKey(store, sealKey, name, value);
+  for (const [name, value] of Object.entries({ E2B_API_KEY: PLANTED.storeKey, ORGO_API_KEY: PLANTED.orgoKey, ORGO_WORKSPACE_ID: "ws-orgo-1", FAUX_SANDBOX_KEY: mark("faux-key") })) await putSealedKey(store, sealKey, name, value);
   return store;
 }
 
@@ -175,6 +181,9 @@ test("the composer builds a working claim on the faux box: a faux desktop is a k
   assert.equal(faux.viewPage(page), undefined, "its release ended it");
 });
 
+/** The tag a stand-in's prepareImage() answers. */
+const PREPARED = "agentrun-computer:prepared";
+
 /** A sandbox provider stand-in: create records its spec; its computer binds the run's folder (the read-back it gives).
  *  `declared`: more of its capabilities (the networks it makes, its longest lifetime). */
 function fakeSandbox(root, record, declared = {}) {
@@ -184,6 +193,8 @@ function fakeSandbox(root, record, declared = {}) {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000, ...declared }),
     check: () => [],
+    // Docker's descriptor says it prepares its image: the stand-in's is ready at once, under its own tag.
+    prepareImage: async () => ({ ok: true, value: PREPARED }),
     list: async () => ({ ok: true, value: [] }),
     async create(spec) {
       record.created.push(structuredClone(spec));
@@ -300,6 +311,15 @@ test("a cloud phone under a list, the server's default or the operator's, or wit
   assert.deepEqual(provider.check({ ...spec(entryOf("phone-harness"), "phone", { networks, maxLifetimeMs }), network: { allow: [...DEFAULT_BOX_ALLOW] } }).map((one) => one.field), ["network"], "the list the spec asked before is refused");
 });
 
+test("the spec starts from the image the setting's configuration names, else the kind's default; one named skips a kind with no default", () => {
+  const spec = computerSpecOf({});
+  assert.equal(spec(entryOf("orgo"), "desktop", {}, "windows").image, "windows");
+  assert.equal(spec(entryOf("orgo"), "desktop", {}).image, entryOf("orgo").defaultImage.desktop);
+  const bare = { ...entryOf("orgo"), defaultImage: undefined };
+  assert.throws(() => spec(bare, "desktop", {}), /has no image for a desktop computer here/);
+  assert.equal(spec(bare, "desktop", {}, "windows").image, "windows");
+});
+
 test("a cloud phone is refused in words at the claim where the run's box_allow is none, or it names none and the server's AGENTRUN_BOX_ALLOW is none", async () => {
   const provider = await providerFor("phone-harness", { apiKey: "fake-test-key" });
   const { network: networks, maxLifetimeMs } = provider.capabilities();
@@ -322,8 +342,8 @@ test("a cloud phone is refused in words at the claim where the run's box_allow i
 // Local Chrome makes "open" and "allow" behind its own egress proxy: an operator's list holds it to those hosts, the
 // default list (a sandbox's package-install list, no browsing policy) leaves it open, and none refuses it.
 test("Local Chrome at the claim: an operator's list is its allowlist, the default list leaves it open, none refuses it", async () => {
-  const local = entryOf("local");
-  assert.deepEqual(local.network, ["open", "allow"], "the registry's entry declares what its module's NETWORK does");
+  const local = entryOf("local-chrome");
+  assert.deepEqual(local.network, ["open", "allow"], "its descriptor declares the network forms its provider makes");
   const asked = { networks: local.network, maxLifetimeMs: 60_000 };
   const words = NO_NETWORK_PHONE.replace("Phone harness phone", "Local Chrome browser");
   // None, stamped on the launch or this server's now: refused before anything is made.
@@ -410,9 +430,9 @@ test("the local browser's provider is built with the server's Chrome lookup (CHR
   const built = [];
   const env = { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin", ANTHROPIC_API_KEY: mark("model-key") };
   const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
-  await computerDeps.providers.local({}, { ledger: {} });
-  await factories.local({});
-  assert.deepEqual(built.map(([id]) => id), ["local", "local"], "the claim's and Settings → Computers' alike");
+  await computerDeps.providers["local-chrome"]({}, { ledger: {} });
+  await factories["local-chrome"]({});
+  assert.deepEqual(built.map(([id]) => id), ["local-chrome", "local-chrome"], "the claim's and Settings → Computers' alike");
   for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin" });
 });
 
@@ -539,8 +559,9 @@ test("on compose, the default allow-list's Docker computer is made with every mo
       const made = fakeDocker({ daemonCache: options.daemonCache, volume: options.volume, volumeRoots: { [VOLUME]: root }, egressOptions: { ...(options.egress ?? {}), hostRoot } });
       calls = made.calls;
       // The computer's image is the one the owner named (AGENTRUN_DOCKER_IMAGE), on the fake's host: its readiness (the
-      // provider's image(), which builds a recipe) is not this test's, so the claim is shown none and takes the name.
-      return new Proxy(made.provider, { get: (target, key) => (key === "image" ? undefined : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+      // provider's prepareImage(), a pull) is not this test's, so it answers the name, as a pull that found it does.
+      const prepareImage = async () => ({ ok: true, value: "debian:bookworm-slim" });
+      return new Proxy(made.provider, { get: (target, key) => (key === "prepareImage" ? prepareImage : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
     };
     const sealKey = randomBytes(32);
     const store = await savedKeysStore(sealKey);

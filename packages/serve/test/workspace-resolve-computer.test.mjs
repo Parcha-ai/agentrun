@@ -16,7 +16,7 @@ import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
-import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS } from "./workspace-kinds-fixture.mjs";
+import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
 /** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
 const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
@@ -31,7 +31,7 @@ function scratch() {
   return root;
 }
 
-const SAVED = { daytona: { DAYTONA_API_KEY: "dk", UNRELATED: "x" }, e2b: { E2B_API_KEY: "ek" }, orgo: { ORGO_API_KEY: "ok" }, "phone-harness": { PHONE_HARNESS_API_KEY: "pk" }, browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } };
+const SAVED = { daytona: { DAYTONA_API_KEY: "dk", UNRELATED: "x" }, e2b: { E2B_API_KEY: "ek" }, orgo: { ORGO_API_KEY: "ok", ORGO_WORKSPACE_ID: "ws-1" }, "phone-harness": { PHONE_HARNESS_API_KEY: "pk" }, browserbase: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } };
 /** The claim's side: the saved keys by provider, and a launch that makes a loopback fake of the kind asked. */
 function claim(root, saved = SAVED) {
   const launched = [];
@@ -42,8 +42,10 @@ function claim(root, saved = SAVED) {
       launched.push([entry.id, spec]);
       if (spec.kind === "browser") return { id: "browserbase", groups: ["cdp"], browser: { provider: "browserbase", maxLifetimeS: 600, open: async () => "b1", find: async () => [], url: async () => "wss://connect.browserbase.test/b1?signingKey=SECRET", close: async () => {} }, release: async () => void launched.push(["released", "b1"]) };
       const computer = fakeComputer(root);
-      const groups = entry.capabilities.find((one) => (spec.kind === "phone" ? one.kind === "android" : spec.kind === "desktop" ? one.kind === "desktop" : one.kind === "linux")).groups;
-      return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, release: async () => void launched.push(["released", computer.id]) };
+      const kind = spec.kind === "phone" ? "android" : spec.kind === "desktop" ? "desktop" : "linux";
+      const groups = entry.capabilities.find((one) => one.kind === kind).groups;
+      const hello = { protocol: "0.2", version: "0", os: kind === "android" ? "android" : "linux", kind, arch: "amd64", groups };
+      return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, hello, release: async () => void launched.push(["released", computer.id]) };
     },
   };
 }
@@ -116,7 +118,8 @@ test("start: a mounted desktop launches with the run's folder as its mount and o
   const side = claim(root);
   const resolved = await resolveComputer({ kind: "desktop", provider: "docker" }, 1, KIND_REGISTRY, side);
   const started = await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
-  assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, mount: { kind: "bind", path: root } }]]);
+  const desktopOf = (id) => KIND_REGISTRY.PROVIDERS.find((one) => one.id === id).capabilities.find((one) => one.kind === "desktop");
+  assert.deepEqual(side.launched, [["docker", { kind: "desktop", keys: {}, configuration: desktopOf("docker"), mount: { kind: "bind", path: root } }]]);
   const run = await runTools(localWorkspace(root), started.computer, { mode: 1, context: ctx });
   assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", ...kindTools("desktop")]);
   await started.release();
@@ -132,13 +135,15 @@ test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's fol
   assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
     refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100. ${pick}`,
   });
-  // daytona-gpu takes no mount, and Mode 2's folder is an Archil mount: refused in words, as Modal's is.
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
-  });
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Modal sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
-  });
+  // No GPU computer mounts Mode 2's Archil folder yet (no FUSE): refused in words that say why and what to use instead.
+  // Each provider's own reason, from its descriptor.
+  const noFolder = (label) =>
+    ({
+      Daytona: "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.",
+      Modal: "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.",
+    })[label];
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Daytona") });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Modal") });
   assert.match((await resolve({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }, 1, scratch(), SAVED, KINDS)).refused, /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
   const root = scratch();
   const side = claim(root);
@@ -169,13 +174,24 @@ test("start: an unmounted desktop, a phone and a browser launch with no mount; t
   assert.equal(browser.computer.kind, "browser");
   assert.equal(browser.computer.browser.provider, "browserbase", "the run's browser tool opens its sessions through the claim's provider");
   assert.equal(await browser.computer.browser.url("b1"), "wss://connect.browserbase.test/b1?signingKey=SECRET");
-  assert.deepEqual(side.launched[0], ["browserbase", { kind: "browser", keys: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" } }]);
+  const browserbase = KIND_REGISTRY.PROVIDERS.find((one) => one.id === "browserbase").capabilities[0];
+  assert.deepEqual(side.launched[0], ["browserbase", { kind: "browser", keys: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" }, configuration: browserbase }]);
 });
 
 test("start: a computer that cannot be had fails as computer_unavailable, in the provider's words", async () => {
   const side = { keysOf: async () => SAVED.e2b, launch: async () => { throw new Error("E2B answered 503: no capacity"); } };
   const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
   await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B answered 503: no capacity");
+});
+
+test("start: a desktop launched with no hello is refused and released: its ports are filled from what it said at connect", async () => {
+  const root = scratch();
+  const computer = fakeComputer(root);
+  const released = [];
+  const side = { keysOf: async () => SAVED.e2b, launch: async () => ({ id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups: ["screen"], release: async () => void released.push(computer.id) }) };
+  const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
+  await assert.rejects(resolved.start({ workspace: localWorkspace(root), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: it gave no hello");
+  assert.deepEqual(released, [computer.id]);
 });
 
 test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
@@ -219,4 +235,53 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     assert.ok("refused" in (await resolve(setting, mode)), `${setting.kind} in Mode ${mode} is refused`);
     assert.equal(runShellOf(setting, mode, KIND_REGISTRY), "none", `a refused setting runs nothing: ${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`);
   }
+});
+
+/** A provider no serve file names, with two desktop images: Linux (the default, computerd's groups) and Windows, built by
+ *  create()'s os option. */
+const LINUX_GROUPS = PROVIDERS.find((one) => one.id === "e2b").capabilities.find((one) => one.kind === "desktop").groups;
+const ACME = { id: "acme-desk", label: "Acme Desk", kinds: ["desktop"], keys: [], mounts: [], metered: true, defaultImage: { desktop: "linux" }, capabilities: [
+  { kind: "desktop", groups: LINUX_GROUPS, image: "linux", options: {} },
+  { kind: "desktop", groups: ["exec", "files", "screen", "input.pointer", "input.keys"], image: "windows", options: { os: "windows" } },
+] };
+const IMAGED = { ...KINDS, PROVIDERS: [...KINDS.PROVIDERS, ACME] };
+
+test("a setting's image selects the provider's configuration of that image, whose options go to the launch; none named, the kind's default", async () => {
+  const root = scratch();
+  for (const [image, expected] of [["windows", ACME.capabilities[1]], [undefined, ACME.capabilities[0]], ["linux", ACME.capabilities[0]]]) {
+    const side = claim(root);
+    const resolved = await resolveComputer({ kind: "desktop", provider: "acme-desk", ...(image ? { image } : {}) }, 1, IMAGED, side);
+    assert.equal(resolved.kind, "desktop", JSON.stringify(resolved));
+    await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
+    assert.deepEqual(side.launched[0], ["acme-desk", { kind: "desktop", keys: {}, configuration: expected }], String(image));
+  }
+  // A provider whose configurations name no image launches the one that serves the kind.
+  const e2b = claim(root);
+  await (await resolveComputer({ kind: "desktop", provider: "e2b" }, 1, IMAGED, e2b)).start({ workspace: localWorkspace(root), check: { readBackOf } });
+  assert.deepEqual(e2b.launched[0][1].configuration, PROVIDERS.find((one) => one.id === "e2b").capabilities.find((one) => one.kind === "desktop"));
+});
+
+test("Orgo's own descriptor: linux, named or not, launches the Linux desktop; windows and macos are refused as parked, and another image as none of Orgo's, each naming linux", async () => {
+  const root = scratch();
+  for (const image of ["linux", undefined]) {
+    const side = claim(root);
+    const resolved = await resolveComputer({ kind: "desktop", provider: "orgo", ...(image ? { image } : {}) }, 1, KINDS, side);
+    await resolved.start({ workspace: localWorkspace(root), check: { readBackOf } });
+    const { configuration } = side.launched[0][1];
+    assert.deepEqual([configuration.image, configuration.options.os], ["linux", undefined], String(image));
+  }
+  const side = claim(root);
+  for (const image of ["windows", "macos"]) {
+    assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image }, 1, KINDS, side)).refused, new RegExp(`^Orgo's [A-Za-z]+ desktops are parked for now: .*, so this agent's "${image}" desktop is parked\\. It offers the desktop image linux: pick one`));
+  }
+  assert.match((await resolveComputer({ kind: "desktop", provider: "orgo", image: "beos" }, 1, KINDS, side)).refused, /^Orgo has no desktop image "beos"\. It offers the desktop image linux: pick one/);
+  assert.deepEqual(side.launched, [], "nothing was launched");
+});
+
+test("an image the provider does not offer for the kind is refused before anything starts, in words naming the ones it offers", async () => {
+  const side = claim(scratch());
+  assert.deepEqual(await resolveComputer({ kind: "desktop", provider: "acme-desk", image: "beos" }, 1, IMAGED, side), { refused: 'Acme Desk has no desktop image "beos". It offers the desktop images linux, windows: pick one for this agent\'s computer in Settings → Computers.' });
+  assert.deepEqual(await resolveComputer({ kind: "desktop", provider: "e2b", image: "windows" }, 1, IMAGED, side), { refused: 'E2B has no desktop image "windows". It offers no desktop image to choose: remove the image for this agent\'s computer in Settings → Computers.' });
+  assert.deepEqual(side.launched, [], "nothing was launched");
+  assert.equal(runShellOf({ kind: "desktop", provider: "acme-desk", image: "beos" }, 2, IMAGED), "none", "a refused setting runs nothing");
 });

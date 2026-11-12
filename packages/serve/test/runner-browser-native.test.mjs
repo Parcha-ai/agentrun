@@ -163,7 +163,7 @@ test("end to end on the runner: a run handed its agent's saved sign-in opens its
   assert.equal(r.row.state, "ended", JSON.stringify(r.row));
   const ops = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(ops.filter((op) => op.op === "sign-in").map(({ ref, save, ref_in_env }) => ({ ref, save, ref_in_env })), [{ ref: pointer, save: true, ref_in_env: false }], "handed the saved sign-in, to save");
-  assert.deepEqual(ops.filter((op) => op.op === "profile").map(({ name, save }) => ({ name, save })), [{ name: "default", save: true }], "its session opened on the profile, saving");
+  assert.deepEqual(ops.filter((op) => op.op === "profile").map(({ pointer: opened, save }) => ({ opened, save })), [{ opened: pointer, save: true }], "its session opened on the saved sign-in, saving");
   assert.equal(r.seen, true, "its viewer was handed over through the store while it ran");
   assert.deepEqual(await r.opened.server.liveViewers.of(RUN), [], "and gone with the run");
   assert.ok((await signInViews(r.opened.server, SEAL_KEY, "agent-1"))[0]?.verified_at, "its release saved: the sign-in verified");

@@ -7,11 +7,15 @@
 // a userMetadata key with a "." is refused with 400, as Browserbase answered live on 11-08;
 // GET /v1/sessions?status=&q= lists by status, q being user_metadata['key']:'value'; POST /v1/sessions/{id} with
 // status REQUEST_RELEASE ends one (COMPLETED, still readable); GET /v1/sessions/{id}/debug gives the live view's URLs.
+// POST /v1/contexts makes a context and DELETE /v1/contexts/{id} deletes one (404: unknown); GET /v1/downloads?sessionId=&limit=&offset= pages a session's
+// downloads (knobs.downloads, by session id) with their total, and GET /v1/downloads/{id} is one's bytes.
 // The key is the X-BB-API-Key header.
 //
-// Kernel (api.kernel.test), as pi-browser's Kernel provider calls it today: POST /browsers makes a browser with a CDP and
+// Kernel (api.kernel.test), as the Kernel provider calls it: POST /browsers makes a browser with a CDP and
 // a live-view URL and keeps its tags; GET /browsers/{id} reads one (404 once deleted); GET /browsers?status=active&
 // tags[key]=value&limit&offset pages by X-Has-More and X-Next-Offset; DELETE /browsers/{id} ends one (404: unknown).
+// GET /profiles/{name} reads a profile (404: unknown),
+// POST /profiles { name } makes one (409: it exists), DELETE /profiles/{name} deletes one (404: unknown).
 // The key is a bearer token.
 //
 // Every URL a fake hands out carries a SECRET- token, so a test can show none of them reaches a ref, a list, an error or
@@ -161,6 +165,9 @@ export function fakeBrowserbase(knobs = {}) {
 	const known = browsers();
 	const cdp = cdpDialer(known, knobs);
 	const sessions = new Map();
+	/** id → the context. */
+	const contexts = new Map();
+	let contextSeq = 0;
 	let seq = 0;
 	const view = (s) => ({
 		id: s.id,
@@ -213,6 +220,27 @@ export function fakeBrowserbase(knobs = {}) {
 				.filter((s) => q === null || s.userMetadata[q[1]] === q[2]);
 			return json(200, rows.map(view));
 		}
+		const section = call.path.split("/")[2];
+		if (call.method === "POST" && call.path === "/v1/contexts") {
+			const cid = `ctx_${++contextSeq}`;
+			contexts.set(cid, { projectId: call.body?.projectId ?? null });
+			return json(201, { id: cid, uploadUrl: `https://upload.browserbase.test/${cid}?token=SECRET-upload` });
+		}
+		if (call.method === "DELETE" && section === "contexts") {
+			if (!contexts.delete(id)) return json(404, { error: `Context not found ${ECHO}` });
+			return new Response(null, { status: 204 });
+		}
+		if (call.method === "GET" && call.path === "/v1/downloads") {
+			const rows = (knobs.downloads?.[call.query.sessionId] ?? []).map(({ bytes, ...row }) => row);
+			const offset = Number(call.query.offset ?? 0);
+			const limit = Number(call.query.limit ?? 100);
+			return json(200, { downloads: rows.slice(offset, offset + limit), total: rows.length });
+		}
+		if (call.method === "GET" && section === "downloads") {
+			const row = Object.values(knobs.downloads ?? {}).flat().find((one) => one.id === id);
+			if (!row) return json(404, { error: `Download not found ${ECHO}` });
+			return new Response(row.bytes, { status: 200, headers: { "content-type": "application/octet-stream" } });
+		}
 		const s = sessions.get(id);
 		if (s === undefined) return json(404, { error: `Session not found ${ECHO}` });
 		if (call.method === "GET" && sub === undefined) return json(200, lagging(s));
@@ -231,7 +259,7 @@ export function fakeBrowserbase(knobs = {}) {
 		}
 		return json(404, { error: "no such route" });
 	};
-	return { fetch, cdp: cdp.dial, dialed: cdp.dialed, sessions, calls: rec.calls, only: rec.only };
+	return { fetch, cdp: cdp.dial, dialed: cdp.dialed, sessions, contexts, calls: rec.calls, only: rec.only };
 }
 
 /**
@@ -243,6 +271,8 @@ export function fakeKernel(knobs = {}) {
 	const known = browsers();
 	const cdp = cdpDialer(known, knobs);
 	const browsersById = new Map();
+	/** The profiles' names. */
+	const profiles = new Set();
 	let seq = 0;
 	const view = (b) => ({
 		session_id: b.id,
@@ -294,6 +324,18 @@ export function fakeKernel(knobs = {}) {
 			const more = offset + size < rows.length;
 			return json(200, page.map(view), more ? { "x-has-more": "true", "x-next-offset": String(offset + size) } : { "x-has-more": "false" });
 		}
+		const section = call.path.split("/")[1];
+		if (section === "profiles") {
+			const name = id === undefined ? undefined : decodeURIComponent(id);
+			if (call.method === "POST" && name === undefined) {
+				const asked = call.body?.name;
+				if (profiles.has(asked)) return json(409, { code: "conflict", message: `the profile exists ${ECHO}` });
+				profiles.add(asked);
+				return json(200, { id: `kp_${profiles.size}`, name: asked });
+			}
+			if (call.method === "GET") return profiles.has(name) ? json(200, { name }) : json(404, { code: "not_found", message: `no profile ${ECHO}` });
+			if (call.method === "DELETE") return profiles.delete(name) ? new Response(null, { status: 204 }) : json(404, { code: "not_found", message: `no profile ${ECHO}` });
+		}
 		const b = browsersById.get(id);
 		if (b === undefined || b.deletedAt !== undefined) return json(404, { code: "not_found", message: `no browser ${ECHO}` });
 		if (call.method === "GET") return json(200, view(b));
@@ -303,5 +345,5 @@ export function fakeKernel(knobs = {}) {
 		}
 		return json(404, { code: "not_found" });
 	};
-	return { fetch, cdp: cdp.dial, dialed: cdp.dialed, browsers: browsersById, calls: rec.calls, only: rec.only };
+	return { fetch, cdp: cdp.dial, dialed: cdp.dialed, browsers: browsersById, profiles, calls: rec.calls, only: rec.only };
 }

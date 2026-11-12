@@ -48,7 +48,7 @@ export function waitingAsk(data: unknown): PendingAsk | undefined {
   return ok ? { id: v.id!, tag, instruction: v.instruction!, completion_condition: v.completion_condition!, asked_at: v.asked_at!, expires_at: v.expires_at! } : undefined;
 }
 
-/** A valid `at` (ms): a finite epoch millisecond, as a Timeline phase row's time (pi-durable-agent's bound). */
+/** A valid `at` (ms): a finite epoch millisecond, as a Timeline phase row's time. */
 const atOf = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 8.64e15 ? value : undefined);
 
 /** How an ask was answered, as the journal or a command holds it: how it ended, and when (`at`, ms, the person's own answer

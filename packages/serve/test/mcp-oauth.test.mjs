@@ -17,7 +17,7 @@ import { mcpClaim } from "../dist/runner/mcp-claim.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
-import { agent, clientOwnerSession, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
+import { agent, clientOwnerSession, follow, retried, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 import { storeOn as newStore } from "./store-helpers.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
@@ -94,8 +94,8 @@ function runnerStoreOf(t, data) {
  *  launch claims on (the server's own store by default); `when` waits on what its MCP calls leave (watchOf). */
 async function launchOn(t, { api, data }, key, { server = "docs", now, bounds, signal, store: on } = {}) {
   const agentId = `launch-${randomBytes(4).toString("hex")}`;
-  assert.equal((await api("POST", "/agents", agent(agentId, { tools: [`mcp:${server}/add`] }))).status, 201);
-  const made = await api("POST", `/agents/${agentId}/runs`, { input: { content: "go" } });
+  assert.equal((await retried(api)("POST", "/agents",agent(agentId, { tools: [`mcp:${server}/add`] }))).status, 201);
+  const made = await retried(api)("POST", `/agents/${agentId}/runs`,{ input: { content: "go" } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   const store = on ?? (await runnerStoreOf(t, data));
   const claim = await store.claim(made.body.run_id, "launch-test", { leaseMs: 60_000 });
@@ -410,11 +410,11 @@ test("a run (server constructor): its launch refreshes an expired token and the 
   const { as, mcp } = await fakes(t, { expiresIn: 0 });
   const started = await api("POST", `/settings/mcp-servers/${name}/oauth/start`, { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
-  assert.equal((await api("POST", "/agents", agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("adder", { tools: [`mcp:${name}/add`] }))).status, 201);
   // Its calls allowed, so they run with no one asked (the gate's own cases are in mcp-gate-wired.test.mjs and below).
   assert.equal((await api("PUT", "/settings/tools", { [`mcp:${name}/*`]: { permission: "allow" } })).status, 200);
   const run = async () => {
-    const made = await api("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
+    const made = await retried(api)("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
     assert.equal(made.status, 202, JSON.stringify(made.body));
     await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
     return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer;
@@ -684,10 +684,10 @@ async function refusedAtLaunch(t, harness) {
   const { as, mcp } = await fakes(t, { expiresIn: 0 });
   const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
   assert.equal((await approve(started)).status, 302);
-  assert.equal((await api("POST", "/agents", agent(`expired-${harness}`, { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } }, ...extra }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent(`expired-${harness}`, { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } }, ...extra }))).status, 201);
   as.revoke();
   const before = mcp.log.length;
-  const made = await api("POST", `/agents/expired-${harness}/runs`, { input: { content } });
+  const made = await retried(api)("POST", `/agents/expired-${harness}/runs`,{ input: { content } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   const { last } = await follow(api, made.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 180_000 });
   const view = (await api("GET", `/runs/${made.body.run_id}`)).body;
@@ -719,11 +719,9 @@ for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent
   });
 }
 
-// The same runs' view: a CLI run's final answer is its record's last model message. Skipped (E2v3: CLI run view over the
-// store) while the switch's run view renders only pi's entries (store-reads/journal.ts runTimeline: timelineOf, not the
-// loop's CLI record); they flip by name when it lands.
+// The same runs' view: a CLI run's final answer is its record's last model message.
 for (const harness of [...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"]) {
-  test(`${harness}: a sign-in whose refresh is refused at launch: the run view's final answer says to sign in again`, { timeout: 240_000, skip: "E2v3: CLI run view over the store" }, async (t) => {
+  test(`${harness}: a sign-in whose refresh is refused at launch: the run view's final answer says to sign in again`, { timeout: 240_000 }, async (t) => {
     const { last, view } = await refusedAtLaunch(t, harness);
     assert.equal(last.status, "completed", JSON.stringify(view.error ?? view.result));
     assert.ok((view.result?.final_answer ?? "").includes(SIGN_IN_AGAIN_WORDS), JSON.stringify(view.result));
@@ -808,11 +806,11 @@ for (const down of ["503", "timeout"]) {
     const { as, mcp } = await fakes(t, { expiresIn: 0 });
     const started = await api("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
     assert.equal((await approve(started)).status, 302);
-    assert.equal((await api("POST", "/agents", agent("adder", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
+    assert.equal((await retried(api)("POST", "/agents",agent("adder", { tools: ["mcp:docs/add"], tool_settings: { "mcp:docs/*": { permission: "allow" } } }))).status, 201);
     if (down === "503") as.fail(503);
     else as.hang();
     const run = async () => {
-      const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+      const made = await retried(api)("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
       assert.equal(made.status, 202, JSON.stringify(made.body));
       await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 150_000 });
       return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer ?? "";

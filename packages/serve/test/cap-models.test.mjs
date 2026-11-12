@@ -111,7 +111,7 @@ test("a paid call that fails counts at what it was held at, as a model request t
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\./);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\./);
 });
 
 test("a paid call the cap refuses while a model request is in flight names what is held for it apart from what the run has spent, in one format, with the cap that would run the call", async (t) => {
@@ -192,7 +192,7 @@ test("a paid call the run's stop cuts short, or one that times out, counts at wh
   // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0045 cap, /, "refused for room, never for a spend unknown");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0045 cap, /, "refused for room, never for a spend unknown");
   assert.ok(Math.abs(seen.last()?.spentUsd - 0.003) < 1e-12, `the three calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 
@@ -223,7 +223,7 @@ test("a paid call monid answers FAILED with no cost, or whose answer is lost, co
   await settled();
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0035 cap, /, "refused for room, never for a spend unknown");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0035 cap, /, "refused for room, never for a spend unknown");
   assert.ok(Math.abs(seen.last()?.spentUsd - 0.002) < 1e-12, `the two calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 
@@ -294,10 +294,10 @@ test("pi under a cap: a model serve has no price for is refused, a model the cat
 });
 
 // The provider overhead table's figures, pinned here so a change to the table is a change to this test: Anthropic's tool-use
-// prompt with a forced tool (pi's context does not say how a tool is chosen, so the dearer is taken) and its per-image
-// maximum, Chat Completions' tool figure, and the assumed allowance for every kind without a documented one.
+// prompt with a forced tool (pi's context does not say how a tool is chosen, so the dearer is taken), the largest per-image
+// maximum (OpenAI's, for an image of unread size on a model of no known provider), Chat Completions' tool figure, and the assumed allowance for every kind without a documented one.
 const ANTHROPIC_TOOLS = 804;
-const ANTHROPIC_IMAGE = 4_784;
+const OPENAI_IMAGE = 73_800;
 const COMPLETIONS_TOOLS = 804;
 const ASSUMED_TOOLS = 2_048;
 const tool = { name: "lookup", description: "Look a thing up.", parameters: { type: "object", properties: {} } };
@@ -316,7 +316,9 @@ async function sentUnder(api, ctx, tokens) {
 
 test("pi's input adds what its provider adds server-side, from the model proxy's own table: an Anthropic model with tools and an image is held at the same figure", async () => {
   const ctx = { tools: [tool], messages: [{ role: "user", content: [{ type: "text", text: "What is this?" }, image], timestamp: 0 }] };
-  const tokens = bound(ctx) + ANTHROPIC_TOOLS + ANTHROPIC_IMAGE;
+  // The image (a size its header does not give) at the largest per-image maximum, its model ("m") being of no provider
+  // whose rule is known, in place of its base64's bytes.
+  const tokens = bound(ctx) + ANTHROPIC_TOOLS + OPENAI_IMAGE - image.data.length;
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 1.001), true, "sent within its bound plus the overhead");
   assert.equal(await sentUnder("anthropic-messages", ctx, tokens * 0.999), false, "refused past it: the overhead is counted");
 });
