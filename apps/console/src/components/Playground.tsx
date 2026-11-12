@@ -93,7 +93,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
-  const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim());
+  const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim() || !!effort || attachments.fileIds.length > 0 || attachments.busy);
   const send = async () => {
     if (nativeBlocked || !built.ok || !onSend || attachments.busy) return;
     setSending(true);
@@ -125,16 +125,16 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-            {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable.</p>{nativeBlocked && <p className="text-warning-text">{cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : "Verify a connected native launch before sending a run."}</p>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={`#/agents/${encodeURIComponent(agentId)}`} className="underline underline-offset-2">Open native connection</a></div>}
+            {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable. Use files already in the source project; uploaded attachments and effort overrides are unsupported.</p>{nativeBlocked && <p className="text-warning-text">{cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : effort || attachments.fileIds.length ? "This request has managed effort or attachments. Native execution uses its source configuration and project files." : "Verify a connected native launch before sending a run."}</p>}{!!effort && <Button size="sm" onClick={() => setEffort("")}>Use native configured effort</Button>}{attachments.fileIds.length > 0 && <Button size="sm" onClick={() => attachments.clear()}>Remove uploaded attachments</Button>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={`#/agents/${encodeURIComponent(agentId)}`} className="underline underline-offset-2">Open native connection</a></div>}
 
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
               <>
                 <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
                 {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
-                <Label name="file_ids" note="Empty names none.">
+                {!native && <Label name="file_ids" note="Empty names none.">
                   <FilePicker attachments={attachments} limits={limits} />
-                </Label>
+                </Label>}
               </>
             ) : (
               <>
@@ -147,17 +147,17 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     </p>
                   )}
                 </Label>
-                <Label name="file_ids" note="Empty names none.">
+                {!native && <Label name="file_ids" note="Empty names none.">
                   <FilePicker attachments={attachments} limits={limits} />
-                </Label>
+                </Label>}
                 <Label name="revision" note="Empty runs the current revision.">
                   <Picker label="Revision" value={revision} onChange={setRevision} className="w-full"
                     options={[{ value: "", label: "The current revision" }, ...revisions.map((r) => ({ value: r.revision, label: `rev ${r.version}${r.current ? " (current)" : ""}${r.note ? `: ${r.note}` : ""}` }))]} />
                 </Label>
-                <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
+                {!native && <Label name="effort" note="How hard the model thinks. Empty uses the agent's own.">
                   <Picker label="Effort" value={effort} onChange={setEffort} className="w-full"
                     options={["", ...efforts].map((value) => ({ value, label: value || "Agent default" }))} />
-                </Label>
+                </Label>}
                 {kind === "agentic" && !native && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
                     <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />

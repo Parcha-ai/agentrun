@@ -56,3 +56,32 @@ it("keeps verification and learning ahead of counted closed skill/MCP/configurat
   expandedText.querySelectorAll("details").forEach((element) => element.remove());
   expect(expandedText.textContent).not.toContain("global-skill-0");
 });
+
+
+it("serializes verification and self-improvement changes and reads the fresh ETag after verification", async () => {
+  let current = agent;
+  let release: (() => void) | undefined;
+  let verified = 0;
+  let savedEtag: string | null = null;
+  const v2 = {
+    verifyNative: async () => { await new Promise<void>((resolve) => { release = resolve; }); verified++; current = { ...current, revision: `r${verified + 1}`, revisions: verified + 1, definition: { ...current.definition, native } }; return { native }; },
+    getAgent: async () => ({ agent: current, etag: current.revision }),
+    updateDefinition: async (_id: string, body: { definition: Agent["definition"] }, etag: string | null) => { savedEtag = etag; current = { ...current, definition: body.definition }; return { agent: current }; },
+  };
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  const render = () => root.render(createElement(NativeAgent, { agent: current, v2: v2 as never, learning: "on", onAgent: (saved) => { current = saved; render(); }, onChanged: async () => {} }));
+  await act(async () => render());
+  const button = (label: string) => [...host.querySelectorAll("button")].find((control) => control.textContent === label)!;
+  act(() => button("Verify connection").click());
+  expect(host.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
+  await act(async () => release!());
+  expect(host.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(false);
+  act(() => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+  act(() => [...document.querySelectorAll("button")].find((control) => control.textContent === "Enable self-improvement")!.click());
+  expect(button("Verify connection").disabled).toBe(true);
+  expect(button("Disconnect").disabled).toBe(true);
+  await act(async () => release!());
+  expect(savedEtag).toBe("r3");
+  expect(current.definition.learning).toBe("notes");
+  expect(host.textContent).toContain("Self-improving: On");
+});

@@ -29,5 +29,7 @@ it("runs a verified native connection without requesting a managed model key or 
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   expect(host.textContent).not.toContain("No model yet");
   expect(host.textContent).toContain("Native spend caps are unavailable");
+  expect(host.querySelector('[aria-label="Effort"]')).toBeNull();
+  expect(host.textContent).not.toContain("Attach files");
   expect(host.querySelector('input[placeholder="e.g. 0.50"]')).toBeNull();
 });

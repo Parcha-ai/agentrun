@@ -132,6 +132,15 @@ describe("MissionControl's analytics", () => {
     expect(html).not.toContain("Imported from");
   });
 
+  it("keeps unknown native token totals and chart days unknown without inventing cache ratios", () => {
+    const a = analytics({ totals: { ...analytics().totals, tokens: null, input: null, output: null, cache_read: 100, cache_write: null }, by_harness_effort: [{ ...analytics().by_harness_effort[0], tokens: null }], by_day: [{ ...analytics().by_day[0], tokens: null }, analytics().by_day[1]] });
+    const html = render(withA(a), scope);
+    expect(html).toContain("Unknown");
+    expect(html).toContain("2026-10-30: Unknown tokens");
+    expect(html).not.toContain("of input cached");
+    expect(html).not.toMatch(/NaN|Infinity/);
+  });
+
   it("makes native model request counts explicitly unknown when telemetry cannot report them", () => {
     const a = analytics({ totals: { ...analytics().totals, requests: null, unmetered: null } });
     const html = render(withA(a), scope);

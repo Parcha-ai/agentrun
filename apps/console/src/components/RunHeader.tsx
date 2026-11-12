@@ -81,7 +81,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
               </Button>
             )}
             {view.canStop && (
-              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title="End this turn. The run stays open and waits for your next message.">
+              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title={run.native ? "Stop this native turn. Start a new run for another task." : "End this turn. The run stays open and waits for your next message."}>
                 <Square aria-hidden /> {actions.busy === "stop" ? "Stopping" : "Stop"}
               </Button>
             )}

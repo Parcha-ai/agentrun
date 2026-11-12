@@ -8,3 +8,23 @@ it("keeps native task usage separate from reflection, unknown prices unknown, an
   expect(html).not.toContain("$0.00");
   expect(html).toContain("Grading usage");
 });
+
+import { RunDetail } from "./RunDetail";
+import { NeedsYouStrip } from "./NeedsYouStrip";
+import { messageFeatures, runFixture } from "@/fixtures";
+import type { Run } from "@/lib/v2";
+const nativeMetadata: NonNullable<Run["native"]> = { runtime: "codex", project: "/fixture/project", selector: { kind: "project" }, machine_id: "source", fingerprint: "config", session_id: "session", model: null, learning_revision: null, usage: { task: null, reflection: [] }, model_requests: null };
+it("keeps native stop/cancel controls while offering no in-session composer or Mission Control steering", () => {
+  const source = runFixture("run.completed.idle.1").run;
+  for (const status of ["working", "completed", "input_required"] as const) {
+    const run: Run = { ...source, kind: "agentic", native: nativeMetadata, status, state: status === "working" ? "working" : "idle" };
+    const html = renderToStaticMarkup(createElement(RunDetail, { run, agentName: "Native", messages: messageFeatures, harnessSteers: true, rows: [], files: [], onMessage: () => {}, actions: { onStop: () => {}, onCancel: () => {} } }));
+    expect(html).not.toContain("<textarea");
+    expect(html).toContain("Start a new native run");
+    if (status === "working") { expect(html).toContain("Cancel run"); expect([...new DOMParser().parseFromString(html, "text/html").querySelectorAll("button")].map((button) => button.textContent?.trim())).toContain("Stop"); }
+  }
+  const live: Run = { ...source, kind: "agentic", native: nativeMetadata, status: "working", state: "working" };
+  const html = renderToStaticMarkup(createElement(NeedsYouStrip, { asking: [], failed: [], live: [live], agentName: () => "Native", onAnswer: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null }));
+  expect(html).not.toContain(">Steer</a>");
+  expect([...new DOMParser().parseFromString(html, "text/html").querySelectorAll("button")].map((button) => button.textContent?.trim())).toContain("Stop");
+});

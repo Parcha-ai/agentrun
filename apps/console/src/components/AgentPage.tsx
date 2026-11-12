@@ -10,7 +10,7 @@ import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { editAgentPrompt, queryRunsPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { NativeAgent } from "@/components/NativeAgent";
+import { NativeAgent, NativeMutationProvider } from "@/components/NativeAgent";
 import { nativeStateLabel } from "@/lib/native";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
@@ -141,7 +141,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
   const liveCount = agent.runs?.live ?? (history.runs ? `${live.length}${history.cursor ? "+" : ""}` : "—");
   const overviewFacts: [string, string, string?][] = [["Status", agent.archived_at ? "Archived" : native ? nativeStateLabel(native) : "Active"], ["Live jobs", String(liveCount)], ...facts];
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
+    <NativeMutationProvider><section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-5 py-2 lg:flex-nowrap lg:py-0" aria-label="Agent toolbar">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")}><ArrowLeft aria-hidden /></Button>
         <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -194,7 +194,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
           </div>
         </section>
       </main>
-    </section>
+    </section></NativeMutationProvider>
   );
 }
 
