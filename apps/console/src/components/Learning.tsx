@@ -1,9 +1,11 @@
 import { BookOpen, ChevronDown, Hourglass, Layers, Pencil, Plus, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { LearningSwitch } from "@/components/LearningSwitch";
+import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
 import { Input, Textarea } from "@/components/ui/field";
 import { type Agent, editBody, noteSaveError, runsWhere } from "@/lib/agentForm";
@@ -11,10 +13,12 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, bodyOf, type LearningChange, change, costsShown, dropKind, dropWords, fileFor, impactWords, learningCost, type LearningNote, money, type NoteParts, noteParts,
-  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, RESTORES, type Retired, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
-  counted, type LearnedItem, statusFile, supersedesOf,
+  APPROVE_SIGN_IN, type Approval, approval, CHANGED, changeWords, HOST_RUNS, type LastChange, RESTORE_SIGN_IN, restores, type Retired, UNREADABLE_RETIRED, isPending, NO_VERSION, type NoteProblem, WAITS_WHY, notes, noteText, NOTE_TYPES, provenance, runsWord, shownImpact, took, TYPE_HINT, typeLabel,
+  counted, type LearnedItem, PROMOTE_SIGN_IN, PROMOTES, statusFile, supersedesOf,
 } from "@/lib/learning";
+import { keeper } from "@/lib/idempotency";
 import type { Places } from "@/lib/place";
+import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
@@ -86,16 +90,17 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   // The skills and the workflows it learned.
   const skills = view?.skills ?? [];
   const workflows = view?.workflows ?? [];
-  // Whether this caller approves from the console, read once a note, a skill or a workflow waits: until the server
-  // says so, no Approve.
+  // Whether this caller is the owner signed in to the console, read once a note, a skill or a workflow waits, or a
+  // workflow could be made an agent: until the server says so, no Approve and no "Make this an agent".
   const [approves, setApproves] = useState<Approval | undefined>(undefined);
   const anyWaiting = waiting.length > 0 || [...skills, ...workflows].some((x) => x.status === "pending");
+  const ownerAsked = anyWaiting || workflows.some((x) => x.status === "active");
   useEffect(() => {
-    if (!anyWaiting || approves !== undefined) return;
+    if (!ownerAsked || approves !== undefined) return;
     let live = true;
     Promise.resolve().then(() => v2.capabilities()).then((c) => { if (live) setApproves(approval(c)); }, () => { if (live) setApproves("password"); });
     return () => { live = false; };
-  }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ownerAsked]); // eslint-disable-line react-hooks/exhaustive-deps
   const earlier = all.filter((x) => x.status === "superseded" || x.status === "retired");
   // The notes each one replaces: the ones its own `supersedes` names (whole on its card, whatever page the old ones are on)
   // and the ones the server marks `superseded_by` it, less one loaded that no longer is (restored). One not loaded yet is
@@ -174,7 +179,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
           <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
             <div className="min-w-0 flex-1">
               <h2 className="text-lg font-semibold">What it has learned</h2>
-              <p className="mt-0.5 text-body text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads ${active.length === 1 ? "it" : "them"} before it starts.` : "No note is in use: the next run starts with nothing learned."}</p>
+              <p className="mt-0.5 text-body text-muted-foreground">{active.length ? `${notes(active.length)} in use. Every later run reads ${active.length === 1 ? "it" : "them"} before it starts.` : [...skills, ...workflows].some((x) => x.status === "active") ? "No note is in use." : "No note is in use: the next run starts with nothing learned."}</p>
             </div>
             {!readOnly && !adding && <Button size="sm" onClick={() => setAdding(true)}><Plus aria-hidden /> Add a note</Button>}
           </div>
@@ -238,8 +243,9 @@ function RefreshFailed({ error, onRetry }: { error: unknown; onRetry: () => void
   );
 }
 
-/** Said where the before and after goes until the server has one (it needs two runs on each side of the first note). */
-const IMPACT_LATER = "After two runs on each side of its first note, this shows what learning changed.";
+/** Said where the before and after goes until the server has one (it needs two runs on each side of the first thing the
+ *  agent learned: a note, a skill or a workflow). */
+const IMPACT_LATER = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
 
 /** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
 function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {
@@ -268,8 +274,9 @@ function Skeleton() {
   );
 }
 
-/** Before and after the agent first learned, as a flat panel like the others: the median time to its answer and the
- *  median cost of a run, each side's, how many runs the after side counts, and what learning itself costs a run when
+/** Before and after the agent first learned (a note, a skill or a workflow: the server counts a run that started from any
+ *  of them on the after side), as a flat panel like the others: the median time to its answer and the median cost of a
+ *  run, each side's, how many runs the after side counts, and what learning itself costs a run when
  *  the server says. Said as the numbers are, a slower or costlier after included: a change down is in the primary colour,
  *  one up in the warning colour, and neither is ever left out. Shown only when the server has two runs on each side. */
 function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }) {
@@ -279,7 +286,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
     ...(costsShown(impact) ? [{ label: "A run costs", now: money(a.median_cost_usd!), was: money(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
   ];
   const learning = learningCost(impact);
-  const basis = [`Medians of ${runsWord(b.runs)} before its first note and ${runsWord(a.runs)} that started from its notes.`,
+  const basis = [`Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a note, a skill or a workflow).`,
     `Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`].join(" ");
   return (
     <section className="border" aria-label={impactWords(impact)}>
@@ -465,8 +472,15 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
   const [readError, setReadError] = useState<unknown>(null);
   const [approving, setApproving] = useState(false);
   const [retiring, setRetiring] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+  // One Idempotency-Key per promotion of this workflow, kept past a Cancel until it is answered: a retry after a lost
+  // answer, from this confirm or a new one, is the same request, so it never makes a second agent.
+  const promoteKeys = useRef(keeper()).current;
+  const [made, setMade] = useState<Agent | null>(null);
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
+  // Only an active workflow, and only for the owner signed in: a pending one waits for their OK first.
+  const promotes = kind === "workflow" && item.status === "active" && approves === "yes";
   const load = async () => {
     setReadError(null);
     setText(null);
@@ -513,25 +527,51 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
           {waits && approves === "password" && <p className="mt-2 font-mono text-label text-muted-foreground">{APPROVE_SIGN_IN}</p>}
         </div>
         <div className="-ml-3 flex shrink-0 items-center gap-1 sm:ml-0">
-          {!readOnly && !retiring && <>
+          {!readOnly && !retiring && !promoting && <>
             {waits && approves === "yes" && <Button size="sm" variant="solid" onClick={() => void approve()} disabled={approving} aria-label={`Approve ${item.name}`}>{approving ? "Approving" : "Approve"}</Button>}
+            {promotes && <Button size="sm" onClick={() => { setMade(null); setPromoting(true); }} aria-label={`Make ${item.name} an agent`}>Make this an agent</Button>}
             <Button size="sm" variant="destructive" onClick={() => setRetiring(true)} aria-label={`Retire ${item.name}`}>Retire</Button>
           </>}
           <Button size="sm" variant="ghost" onClick={() => void show()} aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} ${label}`}><ChevronDown className={cn("transition-transform", open && "rotate-180")} aria-hidden />{open ? "Hide" : "Show"}</Button>
         </div>
       </header>
       {said && <div className="px-5 pt-3">{said}</div>}
+      {made && <p className="px-5 pt-3 text-body" role="status">Made the agent <a href={`#/agents/${encodeURIComponent(made.agent_id)}`} className="font-mono underline underline-offset-2">{made.definition.name}</a>. Open it to run it.</p>}
       {open && (readError !== null ? <div className="px-5 pt-3"><ProblemCard problem={problem(readError, label)} onRetry={() => void load()} className="" /></div>
         : text === null ? <div className="px-5 pt-3" role="status" aria-label={`Loading ${label}`}><div aria-hidden className="h-16 bg-muted motion-safe:animate-pulse" /></div>
         : kind === "skill" ? <Body text={bodyOf(text)} />
-        : <pre className="mx-5 mt-3 max-h-80 overflow-auto border bg-background p-3 font-mono text-small">{text}</pre>)}
+        : <LearnedWorkflow name={item.name} text={text} />)}
       <footer className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t px-5 py-2.5 font-mono text-label text-muted-foreground">
         {item.run && <LearnedIn run={item.run} runs={runs} />}
         {lastChangeLine(item.last_change) && <span className="flex items-center gap-1.5"><User className="size-3" aria-hidden />{lastChangeLine(item.last_change)}</span>}
         <span>{item.bytes < 1024 ? `${item.bytes} B` : `${(item.bytes / 1024).toFixed(1)} KB`}</span>
       </footer>
       {retiring && <RetireConfirm name={item.name} kind={kind} retire={() => v2.retireNote(agentId, statusFile(item), version)} onDone={async (ok) => { if (ok) await onChanged(); setRetiring(false); }} />}
+      {promoting && <PromoteConfirm name={item.name} keys={promoteKeys} promote={(key) => v2.promoteWorkflow(agentId, item.name, key)} onDone={(agent) => { setPromoting(false); if (agent) setMade(agent); }} />}
     </article>
+  );
+}
+
+/** A learned workflow opened: drawn with the workflow graph a workflow agent's tab draws, from its workflow.json, with its
+ *  JSON a click away under it. A text that is not JSON, or names no root node to draw, shows as its text, as it is. */
+function LearnedWorkflow({ name, text }: { name: string; text: string }) {
+  const { doc, graph } = useMemo(() => {
+    try { const doc: unknown = JSON.parse(text); return { doc, graph: workflowGraph(doc) }; } catch { return { doc: null, graph: null }; }
+  }, [text]);
+  const marks = useMemo(() => (graph ? { meta: metaOf(doc, graph) } : undefined), [doc, graph]);
+  const json = <pre className="max-h-80 overflow-auto border bg-background p-3 font-mono text-small">{text}</pre>;
+  if (!graph?.nodes.length) return <div className="mx-5 mt-3">{json}</div>;
+  return (
+    <div className="mx-5 mt-3 space-y-2">
+      <div className="overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] px-4 py-4">
+        <WorkflowGraph graph={graph} marks={marks} label={`The workflow ${name}, as a graph`} minScale={0.55} maxScale={1} />
+      </div>
+      <GraphLegend />
+      <details>
+        <summary className="caps cursor-pointer text-label text-muted-foreground hover:text-foreground">workflow.json</summary>
+        <div className="mt-2">{json}</div>
+      </details>
+    </div>
   );
 }
 
@@ -541,8 +581,10 @@ function lastChangeLine(last: LastChange | undefined): string | null {
   return last && last.kind !== "learned" ? `${changeWords(last.kind, last.by)} · ${when(last.at)}` : null;
 }
 
-/** Who retired one and when, as the server names it (`retired`), else just "Retired". */
+/** Who retired one and when, as the server names it (`retired`), else just "Retired"; one whose file can't be read says
+ *  so and how to fix it, never who retired it (UNREADABLE_RETIRED). */
 function retiredLine(retired: Retired | undefined): string {
+  if (retired?.by === "host") return UNREADABLE_RETIRED;
   return retired ? `${changeWords("retired", retired.by)} · ${when(retired.at)}` : "Retired";
 }
 
@@ -612,11 +654,48 @@ function RetireConfirm({ name, kind, retire, onDone }: { name: string; kind: "no
   );
 }
 
+/** "Make this an agent", after a confirm in place as a retire's: it says what it makes, "Yes, make the agent" takes the
+ *  focus, and Esc or Cancel keeps things as they are, except while the agent is being made. Each Yes goes under the
+ *  card's Idempotency-Key (`keys`), kept until an answer comes, so a retry after a lost answer is the same request. A token is told it takes the password sign-in; a refusal (no longer
+ *  active, the checks, what this host can't run) shows the server's words, and nothing was made. */
+function PromoteConfirm({ name, keys, promote, onDone }: { name: string; keys: ReturnType<typeof keeper>; promote: (idempotencyKey: string) => Promise<Agent>; onDone: (made: Agent | null) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<ReactNode>(null);
+  const yes = useRef<HTMLButtonElement>(null);
+  useEffect(() => { yes.current?.focus(); }, []);
+  const go = async () => {
+    setBusy(true); setSaid(null);
+    let made: Agent;
+    try { made = await promote(keys.keyFor("promote", name)); }
+    catch (e) {
+      setBusy(false);
+      // A refusal is an answer: the next Yes is a new request. Only an answer lost (or the server's own failure) keeps the key.
+      if (e instanceof ClientError && e.status < 500) keys.done();
+      if (e instanceof ClientError && e.status === 403) return void setSaid(<p className="text-small text-destructive-text" role="alert">{PROMOTE_SIGN_IN}</p>);
+      if (e instanceof ClientError && e.problems?.length) {
+        return void setSaid(<div className="text-small text-destructive-text" role="alert"><p>No agent was made: {e.message}</p><ul className="mt-1 list-disc space-y-0.5 pl-5">{e.problems.map((p, i) => <li key={i}>{p.detail}</li>)}</ul></div>);
+      }
+      return void setSaid(<ProblemCard problem={failed(e, "the agent", "No agent was made.")} className="" />);
+    }
+    keys.done();
+    onDone(made);
+  };
+  return (
+    <div role="alertdialog" aria-label={`Make ${name} an agent?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); if (!busy) onDone(null); } }}
+      className="flex flex-wrap items-center gap-3 border-t px-5 py-3">
+      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Make it an agent?</span> {PROMOTES(name)}</p>
+      {said && <div className="w-full">{said}</div>}
+      <Button ref={yes} size="sm" variant="solid" onClick={() => void go()} disabled={busy}>{busy ? "Making the agent" : "Yes, make the agent"}</Button>
+      <Button size="sm" variant="ghost" onClick={() => onDone(null)} disabled={busy}>Cancel</Button>
+    </div>
+  );
+}
+
 /** Restore a retired one, after a confirm: `restore` is made on the version its row shows (If-Match), and the tab is read
  *  again (`onChanged`). A version changed since says so and reads it again; one no longer retired (restored elsewhere)
  *  reads it again; a token is told restoring takes the password sign-in; a refusal by the checks a new one passes shows
  *  the server's words, and it stays retired. */
-function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
+function RestoreConfirm({ name, kind, from, restore, onChanged, onDone }: { name: string; kind: "note" | "skill" | "workflow"; from: Retired["from"] | undefined; restore: () => Promise<unknown>; onChanged: () => void | Promise<void>; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<ReactNode>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -643,7 +722,7 @@ function RestoreConfirm({ name, kind, restore, onChanged, onDone }: { name: stri
   return (
     <div role="alertdialog" aria-label={`Restore ${name}?`} onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onDone(); } }}
       className="flex flex-wrap items-center gap-3 border-t bg-card px-5 py-3">
-      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Restore it?</span> {RESTORES}</p>
+      <p className="min-w-0 flex-1 text-body"><span className="font-semibold">Restore it?</span> {restores(from)}</p>
       {said && <div className="w-full">{said}</div>}
       <Button ref={yes} size="sm" variant="solid" onClick={() => void go()} disabled={busy}>{busy ? "Restoring" : "Yes, restore"}</Button>
       <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>Keep</Button>
@@ -782,7 +861,7 @@ function Earlier({ notes: list, all, from, focus, runs, v2, agentId, readOnly, o
             <p className="mt-1 font-mono text-label text-muted-foreground">
               {x.status === "superseded" && x.superseded_by ? <>Replaced by <button type="button" onClick={() => toNote(x.superseded_by!)} className="text-foreground/80 underline-offset-2 hover:text-foreground hover:underline">{nameOf(x.superseded_by)}</button></> : retired ? retiredLine(x.retired) : null}
             </p>
-            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind="note" from={x.retired?.from} restore={() => v2.restoreNote(agentId, x.file, x.etag!)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {opened && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <p className="mt-2 px-5 text-body text-muted-foreground">{x.description}</p>
@@ -833,7 +912,7 @@ function EarlierLearned({ kind, items, v2, agentId, runs, readOnly, onChanged }:
             {x.description && <p className="mt-1 text-small text-muted-foreground">{x.description}</p>}
             <p className="mt-1 font-mono text-label text-muted-foreground">{retiredLine(x.retired)}</p>
             {/* Restored by the file that says whether it is in use (a skill's SKILL.md, a draft's README), on the listed version. */}
-            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
+            {restoring === x.file && <div className="-mx-4 mt-2"><RestoreConfirm name={x.name} kind={kind} from={x.retired?.from} restore={() => v2.restoreNote(agentId, statusFile(x), x.etag)} onChanged={onChanged} onDone={() => setRestoring(null)} /></div>}
             {shown.has(x.file) && (
               <div className="-mx-4 mt-2 border-t pt-1">
                 <FileText v2={v2} agentId={agentId} file={x.file} etag={x.etag} kind={kind} label={`the ${kind} ${x.name}`} />

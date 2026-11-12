@@ -71,6 +71,13 @@ export function endedBy(cancel: boolean | undefined): string {
   return cancel ? "cancelled" : "stopped by a person";
 }
 
+/** The run's end on a person's stop or a cancel, as every loop and the runner write it: state 'stopped', words that say
+ *  which (endedBy), and the outcome the store tells them apart by: 'stopped' (the turn is over, never the run, as main's
+ *  stop leaves a run: a message reopens it) or 'cancelled' (over for good). */
+export function stopEnd(cancel: boolean | undefined): { readonly state: "stopped"; readonly summary: string; readonly outcome: "stopped" | "cancelled" } {
+  return { state: "stopped", summary: endedBy(cancel), outcome: cancel ? "cancelled" : "stopped" };
+}
+
 /** The refusal a denied call's model reads: serve's own words for a call a person denied (refusal-words.ts refusedText,
  *  one copy with the tool gate's), the person's note with it. Asked before its intent, the call never ran. */
 export function deniedText(tool: string, note?: string): string {
@@ -113,6 +120,10 @@ export interface LoopDeps {
    *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
    *  approve already on its way is never raced. Never rejects. */
   delivered?: Promise<void>;
+  /** Hands the run's command rows the runner has not handed on yet to command() now, not at its next poll (up to its
+   *  command poll away), and resolves once each call returned: a turn that ends asks it before the run may end, so a
+   *  message sent while the turn worked is answered, never refused by the run's end. Absent: nothing to hand on. */
+  deliverNow?: () => Promise<void>;
   /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
    *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
    *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.

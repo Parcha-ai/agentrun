@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, runDir, serve } from "./support.mjs";
+import { agent, follow, runDir, scratchDir, serve, serverLog } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -95,8 +95,7 @@ async function filesUnder(dir, at = "") {
   return out;
 }
 
-// SKIP (follow-up #2080): the claude-agent CLI on the runner does not run under setpriv --no-new-privs as pi's commands do.
-test.skip("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
@@ -113,7 +112,7 @@ test.skip("a run on claude-agent: through the adapter's proxy with the native mo
   assert.equal(field(status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
   const cwd = await readlink(`/proc/${cli}/cwd`);
-  assert.equal(cwd, realpathSync(join(runDir(data, runId), "work")), "the CLI works in the run's workspace, where its file tools write");
+  assert.equal(cwd, realpathSync(scratchDir(data, runId)), "the CLI works in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0").filter(Boolean);
   assert.ok(!environ.some((line) => line.includes(KEY)), "the key never reaches the CLI");
   assert.deepEqual(environ.filter((line) => /^(ANTHROPIC_API_KEY|AGENTRUN_[A-Z_]*)=/.test(line)).map((line) => line.split("=")[0]), [], "nor the server's variables");
@@ -269,8 +268,7 @@ const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-7b21e4`;
 
-// SKIP (follow-up #2078): a dotted OpenRouter model name is not priced at Anthropic's id on the runner
-test.skip("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   // OpenRouter's name for claude-haiku-4-5: dotted, as the gateway names it, never the catalog's dashed id.
@@ -304,8 +302,8 @@ test("a capped run on a model named as OpenRouter names it (dotted) is held to i
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
@@ -322,12 +320,12 @@ test.skip("a claude-agent run's model proxy reports a refusal in the run's log: 
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-  const log = await readFile(join(runDir(data, runId), "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
 });
 
 test("a refused key ends a claude-agent run at the provider's first 401: one request, no retries, and the run's error in plain words", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {

@@ -5,6 +5,7 @@
 // rolls back. Errors come back typed: Fenced, RunFinal, StoreBusy, StoreConstraint, StoreClosed, StoreOwned.
 import { realpathSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { runnableDeadline } from "../deadline.js";
 import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
@@ -14,40 +15,25 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
-/** How often an open transaction's deadline looks at the process's event loop, and how far past its look a look may
- *  come before the gap counts as the process held up (runnableDeadline). */
-const TICK_MS = 50;
-const STALL_MS = 50;
+/** The interactive transactions open in this process, on any of its connections: each with where it was opened and when
+ *  it began. A transaction's StoreDeadline, and a begin's StoreBusy, name them in their stack (never their message, which
+ *  an answer may carry), so a log says who held the store: the deadline's own transaction, or another of this process's
+ *  (an in-process runner's) holding the lock a begin waited on. */
+const OPEN = new Set<{ readonly opened: Error; readonly began: number }>();
 
-/** Calls `expire` once `ms` of the time this process could run have passed, counted from now on the monotonic clock
- *  (performance.now: the host's clock set forward or back is never counted). A look every TICK_MS measures the event
- *  loop: a gap more than STALL_MS past its look was the process held up by other work (a harness binary hashed, a
- *  command run synchronously, the machine holding the process), wherever in the transaction it fell, before its
- *  deadline or across it, and is not counted. A wait of the transaction's own (a call awaited inside it) leaves the
- *  loop free, so it counts in full and is refused on time. Answers its clear. */
-function runnableDeadline(ms: number, expire: () => void): () => void {
-  const start = performance.now();
-  let last = start;
-  let held = 0;
-  const look = () => {
-    const now = performance.now();
-    const gap = now - last - TICK_MS;
-    if (gap > STALL_MS) held += gap;
-    last = now;
-    return now;
-  };
-  const ticks = setInterval(look, TICK_MS);
-  let timer: NodeJS.Timeout | undefined;
-  const check = () => {
-    const left = ms - (look() - start - held);
-    if (left <= 0) return expire();
-    timer = setTimeout(check, Math.ceil(left));
-  };
-  timer = setTimeout(check, ms);
-  return () => {
-    clearInterval(ticks);
-    clearTimeout(timer);
-  };
+/** `opened`'s frames: where a transaction was asked for, without the Error line itself. */
+const framesOf = (opened: Error): string => (opened.stack ?? "").split("\n").slice(1).join("\n");
+
+/** `error` with its stack naming who held the store: `opened` (its own transaction's opener, when it has one), and every
+ *  other transaction open in this process with its age. */
+export function holderNamed<E extends Error>(error: E, { opened }: { opened?: Error } = {}): E {
+  const lines: string[] = [];
+  if (opened) lines.push(`  the transaction was opened at:\n${framesOf(opened)}`);
+  const now = Date.now();
+  const others = [...OPEN].filter((open) => open.opened !== opened);
+  if (others.length) lines.push(`  other transactions open in this process:\n${others.map((open) => `  open ${now - open.began} ms, opened at:\n${framesOf(open.opened)}`).join("\n")}`);
+  if (lines.length) error.stack = `${error.stack ?? `${error.name}: ${error.message}`}\n${lines.join("\n")}`;
+  return error;
 }
 
 /** A value SQLite takes or gives back (Chord's SqliteValue). */
@@ -315,63 +301,72 @@ export class Connection implements SqliteDatabase, StoreConnection {
   transaction<T>(callback: (transaction: Tx) => Promise<T>, { full = false, read = false, deadlineMs = DEFAULT_TRANSACTION_DEADLINE_MS, fromCall = false }: TransactionOptions = {}): Promise<T> {
     // `fromCall`: the deadline's end, counted from now (the queue's wait inside it); else counted from the begin.
     const until = fromCall ? Date.now() + deadlineMs : undefined;
+    // Where it was asked for: a deadline or a busy begin names it (holderNamed).
+    const opened = new Error("a store transaction");
     // Set when its deadline ran out while it still waited in the queue: its turn then begins nothing.
     let gaveUp = false;
     let started = false;
     // `read`: one snapshot in a deferred transaction, taking no writer lock (its statements only read).
     const run = this.#queued(async () => {
       started = true;
-      if (gaveUp || (until !== undefined && Date.now() >= until)) throw new StoreDeadline(deadlineMs);
+      if (gaveUp || (until !== undefined && Date.now() >= until)) throw holderNamed(new StoreDeadline(deadlineMs), { opened });
       // Its wait for the database's lock (another process's write) bounded by what the deadline leaves: a lock still held
       // when that runs out is the deadline's end, not the connection's own busy wait.
       const busyMs = until !== undefined ? Math.max(0, until - Date.now()) : undefined;
       try {
         await this.#send({ op: "begin", full, ...(read ? { read } : {}), ...(busyMs !== undefined ? { busyMs } : {}) });
       } catch (error) {
-        if (error instanceof StoreBusy && busyMs !== undefined && busyMs < this.#busyTimeoutMs) throw new StoreDeadline(deadlineMs);
-        throw error;
+        if (error instanceof StoreBusy && busyMs !== undefined && busyMs < this.#busyTimeoutMs) throw holderNamed(new StoreDeadline(deadlineMs), { opened });
+        throw error instanceof StoreBusy ? holderNamed(error, { opened }) : error;
       }
-      let live = true;
-      let clear = () => {};
-      const deadline = new Promise<never>((_, reject) => {
-        const expire = () => reject(new StoreDeadline(deadlineMs));
-        // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
-        // it. Counted from its begin, it is the time this process could run (runnableDeadline): while other work held
-        // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
-        if (until !== undefined) {
-          const timer = setTimeout(expire, Math.max(0, until - Date.now()));
-          clear = () => clearTimeout(timer);
-        } else clear = runnableDeadline(deadlineMs, expire);
-      });
-      let value: T;
+      const open = { opened, began: Date.now() };
+      OPEN.add(open);
       try {
-        // The worker answers in order: a statement already sent finishes before the rollback a deadline sends after it.
-        const running = callback(this.#executor(() => live));
-        // Past the deadline the callback's own end is nobody's: its refused next statement must not surface as an
-        // unhandled rejection.
-        running.catch(() => undefined);
-        value = await Promise.race([running, deadline]);
-      } catch (error) {
+        let live = true;
+        let clear = () => {};
+        const deadline = new Promise<never>((_, reject) => {
+          const expire = () => reject(holderNamed(new StoreDeadline(deadlineMs), { opened }));
+          // Counted from its call (a lease's), the deadline stays the wall clock's: MCP_REFRESH_LEASE_MS is reckoned from
+          // it. Counted from its begin, it is the time this process could run (store/deadline.ts runnableDeadline): while other work held
+          // the event loop, a statement answered meanwhile waited behind it, and that time was no statement's.
+          if (until !== undefined) {
+            const timer = setTimeout(expire, Math.max(0, until - Date.now()));
+            clear = () => clearTimeout(timer);
+          } else clear = runnableDeadline(deadlineMs, expire).clear;
+        });
+        let value: T;
+        try {
+          // The worker answers in order: a statement already sent finishes before the rollback a deadline sends after it.
+          const running = callback(this.#executor(() => live));
+          // Past the deadline the callback's own end is nobody's: its refused next statement must not surface as an
+          // unhandled rejection.
+          running.catch(() => undefined);
+          value = await Promise.race([running, deadline]);
+        } catch (error) {
+          live = false;
+          clear();
+          try {
+            await this.#send({ op: "rollback" });
+          } catch (rollback) {
+            // A worker lost mid-transaction failed both: its loss is the one error, as every later call's.
+            if (this.#lost) throw this.#lost;
+            throw new AggregateError([error, rollback], "the store's transaction failed, and so did its rollback");
+          }
+          throw error;
+        }
         live = false;
         clear();
-        try {
+        // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
+        if (until !== undefined && Date.now() >= until) {
           await this.#send({ op: "rollback" });
-        } catch (rollback) {
-          // A worker lost mid-transaction failed both: its loss is the one error, as every later call's.
-          if (this.#lost) throw this.#lost;
-          throw new AggregateError([error, rollback], "the store's transaction failed, and so did its rollback");
+          throw holderNamed(new StoreDeadline(deadlineMs), { opened });
         }
-        throw error;
+        await this.#send({ op: "commit" });
+        return value;
+      } finally {
+        // Kept until the worker has answered the commit or rollback: until then this transaction still holds the lock.
+        OPEN.delete(open);
       }
-      live = false;
-      clear();
-      // Counted from its call, a deadline reached by now is never committed past: rolled back, nothing written.
-      if (until !== undefined && Date.now() >= until) {
-        await this.#send({ op: "rollback" });
-        throw new StoreDeadline(deadlineMs);
-      }
-      await this.#send({ op: "commit" });
-      return value;
     });
     if (until === undefined) return run;
     // Counted from its call, its wait behind the queue is inside the deadline too: still queued at its end, it rejects then,
@@ -381,7 +376,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
       waitTimer = setTimeout(() => {
         if (started) return;
         gaveUp = true;
-        reject(new StoreDeadline(deadlineMs));
+        reject(holderNamed(new StoreDeadline(deadlineMs), { opened }));
       }, deadlineMs);
     });
     return Promise.race([run, queuedPast]).finally(() => clearTimeout(waitTimer));

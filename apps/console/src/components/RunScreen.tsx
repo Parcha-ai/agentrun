@@ -1,4 +1,4 @@
-import { Globe, Monitor, Smartphone, Terminal } from "lucide-react";
+import { Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ClientError } from "@/lib/client";
@@ -62,7 +62,8 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
 }
 
 const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off" }>): boolean =>
-  !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer));
+  !!prev && prev.state !== "signed_out" && prev.state === next.state && prev.kind === next.kind && prev.hold === next.hold && (prev.state !== "live" || (next.state === "live" && prev.viewer === next.viewer))
+  && (prev.state !== "none" || (next.state === "none" && prev.ended?.at === next.ended?.at));
 
 /** A screen that closed with its run: `none`, of the same kind, the agent's. */
 const closed = (from: ScreenView | RunComputer): ScreenView | null => (from.state === "off" ? null : from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent" });
@@ -113,6 +114,63 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
     try { setSaid(await go()); } finally { setBusy(false); }
   };
   const controls = live && src && kind !== "browser" ? live : null;
+  // Fill the window: the live view grows to the whole window, and the viewer inside draws the page as large as it fits at
+  // the page's own shape (letterboxed), mapping each click through the canvas it drew, so input stays exact at any size.
+  // Esc, or the same button, puts it back. The iframe stays the same element (only its frame's classes change), so the
+  // viewer keeps its connection.
+  const [full, setFull] = useState(false);
+  const frame = useRef<HTMLIFrameElement | null>(null);
+  const box = useRef<HTMLDivElement | null>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const wasFull = useRef(false);
+  const showing = Boolean(live && src);
+  useEffect(() => { if (!showing) setFull(false); }, [showing]);
+  // While it fills the window it is a modal dialog: focus moves into its bar, Tab stays among its bar and the viewer, and
+  // closing puts the focus back on the button that opened it (when the screen is still up).
+  useEffect(() => {
+    if (full) { wasFull.current = true; box.current?.querySelector<HTMLElement>("button")?.focus(); return; }
+    if (wasFull.current) { wasFull.current = false; opener.current?.focus(); }
+  }, [full]);
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setFull(false); return; }
+      if (e.key !== "Tab" || !box.current) return;
+      const stops = [...box.current.querySelectorAll<HTMLElement>("button:not([disabled]), iframe")];
+      if (!stops.length) return;
+      const first = stops[0]!, last = stops[stops.length - 1]!;
+      const at = document.activeElement;
+      if (!box.current.contains(at)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && at === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+    };
+    const onInnerKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFull(false); };
+    document.addEventListener("keydown", onKey);
+    // Keys typed in the viewer go to its own document (same origin): Esc there puts the view back too. The listener goes
+    // on each page the iframe loads (a new session is a new iframe, and a reload a new document), never only the first.
+    const el = frame.current;
+    let inner: Window | null = null;
+    const attach = () => {
+      try { inner?.removeEventListener("keydown", onInnerKey, true); } catch { /* that page went away */ }
+      try { inner = el?.contentWindow ?? null; inner?.addEventListener("keydown", onInnerKey, true); } catch { inner = null; }
+    };
+    attach();
+    el?.addEventListener("load", attach);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      el?.removeEventListener("load", attach);
+      try { inner?.removeEventListener("keydown", onInnerKey, true); } catch { /* the viewer's page went away */ }
+    };
+  }, [full, session.current.n]);
+  const who = live ? (kind === "browser" ? "browser · take over in the view below" : `${DRIVES[live.hold]} · ${kind}`) : "";
+  const hands = controls && (controls.hold === "person"
+    ? <Button size="sm" variant="solid" disabled={busy} onClick={() => void act(onHand)}>Hand back</Button>
+    : <Button size="sm" variant="solid" disabled={busy || controls.hold === "pending"} onClick={() => void act(onTake)}>{controls.hold === "pending" ? "Taking over" : "Take over"}</Button>);
+  const fill = showing && (
+    <Button ref={full ? undefined : opener} size="sm" variant="ghost" onClick={() => setFull((f) => !f)} aria-label={full ? "Exit full window (Esc)" : "Fill the window"} title={full ? "Exit full window (Esc)" : "Fill the window"} aria-pressed={full}>
+      {full ? <Minimize2 className="size-4" aria-hidden /> : <Maximize2 className="size-4" aria-hidden />}
+    </Button>
+  );
   return (
     <section aria-label="Screen" className="border">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-2.5">
@@ -120,18 +178,28 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
         <span className="caps text-small font-semibold">{live ? "Live" : NAMES[kind]}</span>
         {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
-        <span className="flex-1 font-mono text-small text-muted-foreground">{live ? (kind === "browser" ? "browser · take over in the view below" : `${DRIVES[live.hold]} · ${kind}`) : ""}</span>
-        {controls && (controls.hold === "person"
-          ? <Button size="sm" variant="solid" disabled={busy} onClick={() => void act(onHand)}>Hand back</Button>
-          : <Button size="sm" variant="solid" disabled={busy || controls.hold === "pending"} onClick={() => void act(onTake)}>{controls.hold === "pending" ? "Taking over" : "Take over"}</Button>)}
+        <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
+        {!full && hands}
+        {!full && fill}
       </header>
       {metered && kind !== "browser" && <p className="border-b px-4 py-2 text-small text-muted-foreground">{METERED}</p>}
-      {said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
+      {!full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
       {live && src
         // The viewer's page needs its own scripts, and its own origin: its WebSocket goes to this server, which checks the
         // session cookie and the Origin, and it clears the fragment from its own history. A browser's address bar is a form
         // (its own script reads it). Nothing else: no popups, no navigating the console.
-        ? <iframe key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={kind === "phone" ? "mx-auto block aspect-[9/19] h-[70vh] max-w-full bg-background" : "block aspect-[16/10] w-full bg-background"} />
+        ? <div ref={box} data-testid="screen-frame" className={full ? "fixed inset-0 z-dialog flex flex-col bg-background" : undefined} role={full ? "dialog" : undefined} aria-modal={full ? true : undefined} aria-label={full ? "The run's screen, filling the window" : undefined}>
+            {full && (
+              <div className="flex items-center gap-3 border-b bg-background px-4 py-2 text-foreground">
+                <span className="flex-1 font-mono text-small">{who}</span>
+                {hands}
+                {fill}
+              </div>
+            )}
+            {/* A refused Take over or Hand back, said where the person is looking. */}
+            {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
+            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? "mx-auto block aspect-[9/19] h-[70vh] max-w-full bg-background" : "block aspect-[16/10] w-full bg-background"} />
+          </div>
         : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp)}</p>}
     </section>
   );
@@ -144,8 +212,17 @@ function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | unde
   if (screen?.state === "signed_out") return "Signed out: sign in to watch.";
   if (kind === "sandbox") return "A sandbox has no screen. What the agent runs in it is on the timeline.";
   if (machine?.state === "failed") return `The ${kind} didn't start.${machine.why ? ` ${machine.why}` : ""}`;
+  // Let go while the run waited for its person: said, with when, and that a new one opens when the run goes on. Never
+  // "waiting for the browser" here: nothing is opening one until the person answers.
+  if (opens && screen?.state === "none" && screen.ended) return `${screen.ended.why} (${clock(screen.ended.at)}). A new browser opens when the run goes on.`;
   if (opens) return kind === "browser" ? "Waiting for the browser. The agent's page shows here once it opens one." : `Waiting for the ${kind}. Its screen shows here once it is up.`;
   return `The ${kind} closed when the run ended.${followUp ? " A follow-up opens a new one if the agent needs it." : ""}`;
+}
+
+/** An ISO time as the page's local clock, `HH:MM`, or the text itself when it doesn't parse. */
+function clock(at: string): string {
+  const when = new Date(at);
+  return Number.isNaN(when.getTime()) ? at : `at ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 /** The served viewer as the iframe's src: resolved against this page's origin (it is a same-origin path, its token in the

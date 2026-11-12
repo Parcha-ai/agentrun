@@ -58,15 +58,14 @@ test("a host tool's answer keeps the tail of a long output within pi's limits, t
   }
 });
 
-test("a host tool reads snapshot, conversation and waitForTask from its own run's Harness, never another run's; memo and taskId stay refused by name", async () => {
-  // Two runs, each with a Harness whose three members answer with that run's own value and say what they were asked.
+test("a host tool reads snapshot and waitForTask from its own run's Harness, never another run's; memo and taskId stay refused by name", async () => {
+  // Two runs, each with a Harness whose two members answer with that run's own value and say what they were asked.
   const harnessOf = (name) => {
     const asked = [];
     return {
       asked,
       harness: {
         snapshot(...args) { asked.push(["snapshot", args.slice(0, -1)]); return Promise.resolve({ doc: name }); },
-        conversation(id) { asked.push(["conversation", [id]]); return Promise.resolve({ id, of: name }); },
         waitForTask(id) { asked.push(["waitForTask", [id]]); return Promise.resolve({ state: { status: "terminal" }, of: name }); },
       },
     };
@@ -78,7 +77,6 @@ test("a host tool reads snapshot, conversation and waitForTask from its own run'
     async execute(_args, api) {
       const said = {
         snapshot: await api.snapshot("Doc", api.conversationId, ctx),
-        conversation: await api.conversation(7, ctx),
         waitForTask: await api.waitForTask("task-1", ctx),
       };
       for (const member of ["memo", "taskId"]) {
@@ -96,8 +94,8 @@ test("a host tool reads snapshot, conversation and waitForTask from its own run'
   const [tool] = hostToolsOf({ env: async () => ({}), harness: a.harness }, ["bash"], ctx, new Map(), [read]);
   hostToolsOf({ env: async () => ({}), harness: b.harness }, ["bash"], ctx, new Map(), [read]);
   const said = JSON.parse((await tool.call({}, { callId: "c", signal: new AbortController().signal })).text);
-  assert.deepEqual([said.snapshot, said.conversation, said.waitForTask], [{ doc: "run-a" }, { id: 7, of: "run-a" }, { state: { status: "terminal" }, of: "run-a" }], "each member answers with its own run's value");
-  assert.deepEqual(a.asked, [["snapshot", ["Doc", 1]], ["conversation", [7]], ["waitForTask", ["task-1"]]], "asked of its own run's Harness, as the tool asked");
+  assert.deepEqual([said.snapshot, said.waitForTask], [{ doc: "run-a" }, { state: { status: "terminal" }, of: "run-a" }], "each member answers with its own run's value");
+  assert.deepEqual(a.asked, [["snapshot", ["Doc", 1]], ["waitForTask", ["task-1"]]], "asked of its own run's Harness, as the tool asked");
   assert.deepEqual(b.asked, [], "never of another run's");
   for (const member of ["memo", "taskId"]) assert.match(said[member], new RegExp(`a host tool's api has no ${member}`), `${member} is refused by name`);
 });

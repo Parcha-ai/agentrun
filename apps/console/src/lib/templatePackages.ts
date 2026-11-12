@@ -23,7 +23,8 @@ export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [
   if (secrets && t.secrets.length) out.push(["Keys", t.secrets.join(", ")]);
   if (mcp && t.mcp.length) out.push(["MCP", t.mcp.map((m) => `${m.server}${m.required ? "" : " (optional)"}`).join(", ")]);
   if (t.triggers.length) out.push(["Triggers", count(t.triggers.length, "trigger")]);
-  if (t.budget) out.push(["Budget", `${dollars(t.budget.per_run_usd)} a run`]);
+  if (t.budget?.per_run_usd) out.push(["Budget", `${dollars(t.budget.per_run_usd)} a run`]);
+  if (t.budget?.tool_calls) out.push(["Tool calls", `${count(t.budget.tool_calls, "call")} a conversation`]);
   if (t.harness?.length) out.push(["Harness", t.harness.join(", ")]);
   if (t.model) out.push(["Model", `${t.model.tier}${t.model.prefer ? `, ${t.model.prefer} first` : ""}`]);
   return out;
@@ -82,14 +83,42 @@ export const grantsOf = (t: TemplateView, ticked: ReadonlySet<string>) => t.mcp.
 export const issuesAt = (issues: readonly FieldIssue[], field: string) => issues.filter((i) => i.field === field);
 
 type Parameter = TemplateView["parameters"][string];
-/** A parameter's label, as the Apply form shows it: the template serves no display label, so its key. */
-export const paramLabel = (key: string): string => key;
+/** A parameter's label, as the Apply form shows it: the template serves no display label, so its key, except for a format
+ *  the form picks in words: a cron line is "Schedule" and a zone "Time zone", never CRON or TIMEZONE. */
+export const paramLabel = (key: string, p?: Parameter): string =>
+  p?.type === "string" && p.format === "cron" ? "Schedule" : p?.type === "string" && p.format === "timezone" ? "Time zone" : key;
+
+/** The help under a parameter's label: its own words. A cron line's and a zone's description opens by saying the format
+ *  ("when the digest runs, as a cron line (minute hour …): …", "the IANA time zone … (Europe/Madrid, …): …"), which their
+ *  pickers say in words, so only what follows that opening's colon is kept ("Monday 08:00 unless you set it; set
+ *  lookback_days to its gap"), and nothing when it has none. Any other parameter's description is kept whole. */
+export function paramHelp(p: Parameter): string | undefined {
+  if (p.type !== "string" || (p.format !== "cron" && p.format !== "timezone") || !p.description) return p.description;
+  // A time zone needs no help: the picker names the zone, and the form always sends one (the browser's to start), so a
+  // template's "UTC unless you set it" never applies here.
+  if (p.format === "timezone") return undefined;
+  const colon = p.description.indexOf(": ");
+  return colon < 0 ? undefined : p.description.slice(colon + 2).trim() || undefined;
+}
+
+/** A parameter's choices as the Apply form's picker lists them, each value once. Its empty option is left out of the
+ *  apply, so the server applies the default: an optional parameter's default is that option, marked on its own entry in
+ *  the list's order ("none (default)"), never a second "none". A required parameter opens with "Choose one"; an optional
+ *  one whose default is not among its choices (or that has none) opens with its default's words or "None chosen". */
+export function choiceOptions(p: Parameter): { value: string; label: string }[] | null {
+  const choices = choicesOf(p);
+  if (!choices) return null;
+  const fallback = p.default === undefined ? undefined : String(p.default);
+  const own = !p.required && fallback !== undefined && choices.includes(fallback);
+  const head = own ? [] : [{ value: "", label: p.required ? "Choose one" : fallback !== undefined ? `${fallback} (default)` : "None chosen" }];
+  return [...head, ...choices.map((c) => (own && c === fallback ? { value: "", label: `${c} (default)` } : { value: c, label: c }))];
+}
 
 /** What the Apply form says of a refused parameter: from the served issue's `reason` and the field's label, never the
  *  server's words, which name the raw path ("parameters.risk_appetite is required: …"). A reason with no words here (or
  *  a parameter the template doesn't have) keeps the server's. */
 export function paramIssueWords(issue: FieldIssue, key: string, p: Parameter | undefined): string {
-  const label = paramLabel(key);
+  const label = paramLabel(key, p);
   if (!p) return issue.message;
   switch (issue.reason) {
     case "missing": return `${label} is required.`;

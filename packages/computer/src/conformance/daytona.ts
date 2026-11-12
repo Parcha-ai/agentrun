@@ -4,7 +4,8 @@
 // read only when createProvider() runs. Every sandbox of a run has a bounded life besides its TTL: Daytona stops one
 // after 30 minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider
 // declares it (stopDeletes; see conformanceNotes).
-import { create, DAYTONA_DEFAULT_SNAPSHOT, type DaytonaCreateOptions, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import { create, type DaytonaCreateOptions, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
+import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
@@ -45,6 +46,8 @@ export const DAYTONA_ENV = {
 	user: "COMPUTER_DAYTONA_USER",
 	/** The snapshot every computer of the run starts from; default "default", Daytona's default snapshot. */
 	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
+	/** gpuSnapshot: the GPU snapshot of box/Dockerfile GPU computers are made from (box/build-daytona.py --gpu); default daytona-gpu. */
+	gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -64,6 +67,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const arch = named(DAYTONA_ENV.arch);
 	const sandboxClass = named(DAYTONA_ENV.sandboxClass);
 	const user = named(DAYTONA_ENV.user);
+	const gpuSnapshot = named(DAYTONA_ENV.gpuSnapshot);
 	return {
 		apiKey,
 		...(url ? { apiUrl: url.value } : {}),
@@ -73,6 +77,8 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		// create() refuses any other class in words.
 		...(sandboxClass ? { sandboxClass: sandboxClass.value as "container" | "linux-vm" } : {}),
 		...(user ? { daemonUser: user.value } : {}),
+		// create() refuses a name that is not one of ours in words.
+		...(gpuSnapshot ? { gpuSnapshot: gpuSnapshot.value } : {}),
 	};
 }
 

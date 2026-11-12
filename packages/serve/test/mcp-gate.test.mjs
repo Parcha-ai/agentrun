@@ -18,7 +18,7 @@ import { notedRequests, REQUESTS_ENV, rolesOf } from "./fixtures/faux-requests.m
 import { noApproverText } from "../dist/tool-gate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, runRecordOf, scratch, serve as serveOf, startInProcessRunner, whenFree, withEnv } from "./support.mjs";
 import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
@@ -44,9 +44,9 @@ async function addFake(t, api, prices) {
 
 /** Agent `id` granted `tools` (and `extra`), and one run of it asking `content` (with `run`'s fields). */
 async function started(api, id, tools, content, { extra = {}, run = {} } = {}) {
-  const made = await api("POST", "/agents", agent(id, { tools, ...extra }));
+  const made = await whenFree(() => api("POST", "/agents", agent(id, { tools, ...extra })));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const started = await api("POST", `/agents/${id}/runs`, { input: { content }, ...run });
+  const started = await whenFree(() => api("POST", `/agents/${id}/runs`, { input: { content }, ...run }));
   assert.equal(started.status, 202, JSON.stringify(started.body));
   return started.body.run_id;
 }
@@ -601,7 +601,7 @@ test("a person's cancel of a run parked on an MCP call reads its call withdrawn 
   assert.deepEqual(await answer.refused(runId, pending.id, { decision: "allow" }), [409, `The tool call ${pending.id} was already canceled with its run.`]);
 });
 
-test("a person's stop of a run parked on an MCP call leaves it input_required and idle with nothing pending, its end's outcome stopped (main's stop)", { timeout: 120_000, skip: "route-1: reopen-stopped (base round 116)" }, async (t) => {
+test("a person's stop of a run parked on an MCP call leaves it input_required and idle with nothing pending, its end's outcome stopped (main's stop)", { timeout: 120_000 }, async (t) => {
   const { server, answer, fake, extra, content } = await parkingServer(t, "pi");
   const { api } = server;
   const runId = await started(api, "stopped-literal-pi", ["mcp:fake/add"], content, { extra });

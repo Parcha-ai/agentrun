@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // This repository's installed tree (`npm ls undici --all --json`) holds no undici below its major's floor: 6.29.1, 7.30.1
-// or 8.12.2, nothing before 6, and any 9 or later. The disk SDK and @earendil-works/pi-coding-agent pin undici 8.10.2
-// exactly; the root package.json's overrides move only those two packages' copies, so a lock refresh, or either package
-// arriving under another parent, could bring 8.10.2 back unseen (verify-packages audits a clean consumer, not this
-// install). Exits 1 naming each such copy by its path. On a Node too old to tell it is the command, it refuses (is-main.mjs).
+// or 8.12.2, nothing before 6, and any 9 or later. The disk SDK before 1.12.0 and @earendil-works/pi-coding-agent before
+// 1.5.0 pinned undici 8.10.2 exactly; neither does now, but a lock refresh or a package arriving under another parent
+// could bring a pinned copy back unseen (verify-packages audits a clean consumer, not this install). Exits 1 naming each such copy by its path. On a Node too old to tell it is the command, it refuses (is-main.mjs).
 import { spawnSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
