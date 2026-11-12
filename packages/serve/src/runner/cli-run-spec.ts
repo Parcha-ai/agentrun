@@ -59,7 +59,7 @@ import { TOOL_PLANE_ENV } from "../tool-plane.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliRunMetrics } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -569,14 +569,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
       const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
-      const model = booked.usd;
+      // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
+      // what no booking read: unknown, never the $0 an empty booking sums to.
+      const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;
       const decisions = bookedSpend(all, "decisions").usd;
       const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
       // session, are the run's cost too, as the pi spec's.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
       const total = costUsd === null || paid === null ? null : costUsd + paid;
-      return { ...(total !== null ? { costUsd: total } : {}), metrics };
+      // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
+      return { costUsd: total, metrics };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),

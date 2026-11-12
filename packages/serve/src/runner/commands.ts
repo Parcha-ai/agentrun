@@ -23,6 +23,16 @@ export interface CommandSink {
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
+/** Whether `value` is the JSON text of an object (not an array, not null). */
+const objectText = (value: unknown): boolean => {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+};
 
 /** Why a command's body is wrong for its kind, or undefined when it is right. */
 function bodyProblem(kind: string, body: Record<string, unknown>): string | undefined {
@@ -57,7 +67,8 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       if (!text(body.method)) return "a computer call names its protocol method";
       // A call answers no park (answers: false), so a row written as its run parks never wakes it.
       if (body.answers !== false) return "a computer call answers no park (answers: false)";
-      return body.params === undefined || (typeof body.params === "object" && body.params !== null && !Array.isArray(body.params)) ? undefined : "a computer call's params are an object";
+      // Its params as one JSON text (computer-channel.ts callComputer), so a settle's jsonb never decodes what was typed.
+      return body.params === undefined || objectText(body.params) ? undefined : "a computer call's params are a JSON object's text";
     case "computer_start":
     case "computer_release":
     case "pause":

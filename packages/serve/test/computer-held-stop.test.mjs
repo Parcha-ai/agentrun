@@ -47,8 +47,8 @@ const until = async (done, what, ms = 60_000) => {
   }
 };
 
-/** A held opencode run on the faux desktop, started by its owner, its agent working (the model's first request held). */
-async function heldAndWorking(t) {
+/** A held opencode run on the faux desktop, its runner started. `launchDesktop` stands in for the faux desktop's launch. */
+async function heldRun(t, launchDesktop = FAUX.launch) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-held-stop-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -82,7 +82,7 @@ async function heldAndWorking(t) {
   await new Promise((resolve) => gw.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => gw.close(resolve)));
   const env = { AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gw.address().port}`, AGENT_MODEL_API_KEY: "not-a-secret", [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), PATH: process.env.PATH };
-  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: FAUX_DEPS };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: { ...FAUX_DEPS, launch: launchDesktop } };
   const runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
     createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "opencode" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
@@ -91,6 +91,12 @@ async function heldAndWorking(t) {
 
   const held = async () => (await heldField(server, RUN, FAST))?.state;
   const route = (name, body = {}) => heldRoute(name, RUN, body, server, FAST);
+  return { server, held, route, asked };
+}
+
+/** A held opencode run on the faux desktop, started by its owner, its agent working (the model's first request held). */
+async function heldAndWorking(t) {
+  const { server, held, route, asked } = await heldRun(t);
   await until(async () => (await held()) === "waiting", "the desktop is up and held");
   assert.deepEqual(await route("startRun"), { held: { state: "started" } });
   await asked;
@@ -115,6 +121,32 @@ test("a CLI harness: a person's stop of a held run ends its agent and keeps the 
 
   assert.deepEqual(await route("releaseRunComputer"), { held: { state: "released" } });
   const row = await finalRow(server);
+  assert.deepEqual([row.state, row.outcome], ["stopped", "stopped"], JSON.stringify(row));
+  const stop = (await server.commands(RUN, 0)).find((one) => one.kind === "stop");
+  assert.ok(stop.takenAt !== null && stop.refused === null, `the stop's row is taken by the end: ${JSON.stringify(stop)}`);
+});
+
+test("a CLI harness: a stop that comes while a held run's computer is still coming up ends the run stopped and lets the computer go, never waiting for a release", { timeout: 120_000 }, async (t) => {
+  let launching;
+  const entered = new Promise((resolve) => (launching = resolve));
+  let up;
+  const comeUp = new Promise((resolve) => (up = resolve));
+  const { server } = await heldRun(t, async (entry, spec) => {
+    launching();
+    await comeUp;
+    return FAUX.launch(entry, spec);
+  });
+  t.after(() => up());
+  await entered;
+  await sendCommand(server, RUN, { kind: "stop" });
+  // The runner hands the stop on before the computer is up: its hold has not started, so the stop keeps nothing.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  up();
+  // Well inside the hold's minute: a stop that kept the computer would wait for a release no row could bring.
+  const row = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run ends at once", 20_000);
   assert.deepEqual([row.state, row.outcome], ["stopped", "stopped"], JSON.stringify(row));
   const stop = (await server.commands(RUN, 0)).find((one) => one.kind === "stop");
   assert.ok(stop.takenAt !== null && stop.refused === null, `the stop's row is taken by the end: ${JSON.stringify(stop)}`);

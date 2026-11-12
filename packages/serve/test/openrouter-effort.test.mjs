@@ -2,7 +2,7 @@
 // as each harness's route sends it to OpenRouter. Each request is sent to https://openrouter.ai as serve builds the
 // route, through a fetch that records it and hands it to a loopback gateway (fixtures/faux-gateway.mjs) to answer: no
 // real key, no network.
-//   - pi, on pi-ai's openrouter provider for its default (openrouter/openai/gpt-6-sol): POST /api/v1/chat/completions
+//   - pi, on pi-ai's openrouter provider for its default (openrouter/openai/gpt-6.1-sol): POST /api/v1/chat/completions
 //     with OpenRouter's `reasoning: { effort }`;
 //   - claude-agent, on the pinned Agent SDK and CLI: POST /api/v1/messages with adaptive thinking and
 //     `output_config.effort`;
@@ -57,7 +57,7 @@ async function turn(t, adapter, level) {
 
 test("pi on OpenRouter alone: its default's request carries OpenRouter's reasoning effort at each level, to /api/v1/chat/completions with the key as a bearer token", { timeout: 60_000 }, async (t) => {
   const { models, model } = await runModels(ONLY, undefined);
-  assert.equal(`${model.provider}/${model.modelId}`, "openrouter/openai/gpt-6-sol");
+  assert.equal(`${model.provider}/${model.modelId}`, "openrouter/openai/gpt-6.1-sol");
   const full = models.getModel(model.provider, model.modelId);
   const provider = models.getProvider(model.provider);
   for (const level of LEVELS) {
@@ -104,7 +104,7 @@ test("codex on OpenRouter alone: each level reaches /api/v1/responses as reasoni
   const real = await import("@parcha/agentrun-harness-codex");
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const chosen = await (await modelOn("openai-responses", ONLY, undefined, "codex"));
-  assert.deepEqual(chosen, { model: { provider: "openai", modelId: "gpt-6-sol" } });
+  assert.deepEqual(chosen, { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   for (const level of LEVELS) {
     const { sent, fetch } = await openrouter(t, () => new Response(said(sent.length), { status: 200, headers: { "content-type": "text/event-stream" } }));
     const dir = await scratch(t);
@@ -115,7 +115,7 @@ test("codex on OpenRouter alone: each level reaches /api/v1/responses as reasoni
     assert.equal(end.status, "completed", `${level}: ${JSON.stringify(end)}`);
     assert.ok(sent.length >= 1, `${level}: a request`);
     for (const request of sent) {
-      assert.deepEqual([request.url, request.authorization, request.body.model], ["https://openrouter.ai/api/v1/responses", `Bearer ${KEY}`, "openai/gpt-6-sol"], level);
+      assert.deepEqual([request.url, request.authorization, request.body.model], ["https://openrouter.ai/api/v1/responses", `Bearer ${KEY}`, "openai/gpt-6.1-sol"], level);
       assert.equal(request.body.reasoning?.effort, level, `${level}: ${JSON.stringify(request.body.reasoning)}`);
     }
   }

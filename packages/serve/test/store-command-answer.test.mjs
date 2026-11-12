@@ -52,9 +52,11 @@ test("a take with no answer, and a refused row, answer nothing", async (t) => {
 test("a computer_call row's params go when it settles, taken with an answer, taken bare or refused; another kind keeps its body", async (t) => {
   const { store } = await storeOn(t);
   await queued(store, "run-1");
-  const call = (text) => store.command("run-1", { kind: "computer_call", body: { method: "keyboard.type", params: { text }, answers: false } });
-  const answered = await call("secret-1");
-  const bare = await call("secret-2");
+  // The params as the channel writes them, one JSON text (computer-channel.ts callComputer).
+  const call = (text) => store.command("run-1", { kind: "computer_call", body: { method: "keyboard.type", params: JSON.stringify({ text }), answers: false } });
+  // Text Postgres's jsonb refuses as a string (an escaped NUL, a lone surrogate) settles too: in the params' text it is escaped.
+  const answered = await call("secret-1\u0000");
+  const bare = await call("secret-2\ud800");
   const refused = await call("secret-3");
   const steer = await store.command("run-1", { kind: "steer", body: { content: "kept" } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
@@ -65,6 +67,17 @@ test("a computer_call row's params go when it settles, taken with an answer, tak
   const rows = new Map((await store.commands("run-1", 0)).map((one) => [one.id, one]));
   for (const row of [answered, bare, refused]) assert.deepEqual(rows.get(row.id).body, { method: "keyboard.type", answers: false }, JSON.stringify(rows.get(row.id)));
   assert.deepEqual(rows.get(steer.id).body, { content: "kept" });
+});
+
+test("the run's end refuses a leftover computer_call whose typed text jsonb would refuse as a string, and drops its params", async (t) => {
+  const { store } = await storeOn(t);
+  await queued(store, "run-1");
+  const left = await store.command("run-1", { kind: "computer_call", body: { method: "keyboard.type", params: JSON.stringify({ text: "a\u0000b\udc00" }), answers: false } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
+  await store.runs.update(claim, { state: "stopped", summary: "stopped by a person" });
+  const row = (await store.commands("run-1", 0)).find((one) => one.id === left.id);
+  assert.ok(row.refused !== null, JSON.stringify(row));
+  assert.deepEqual(row.body, { method: "keyboard.type", answers: false });
 });
 
 test("watchCommands across two handles on one data directory: command() wakes written, a take wakes answered, unsubscribe stops it", async (t) => {

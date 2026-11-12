@@ -63,7 +63,7 @@ export const MODEL_KEYS: readonly { id: string; label: string; field: string; mo
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6-sol" } },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
 /** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
