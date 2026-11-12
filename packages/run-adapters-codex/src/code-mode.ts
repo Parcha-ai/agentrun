@@ -41,8 +41,8 @@ export interface CodeModeDeps {
   logged: Set<string>;
   /** Drain the rollout's tail into the log. */
   synced(): Promise<void>;
-  /** The tool bridge; `takeImages` gives a call's images once (host/process.ts), for the answer to Codex. */
-  bridge: { get(name: string): { name: string; replay: string } | undefined; takeImages?(callId: string): readonly { mimeType: string; data: string }[] | undefined };
+  /** The tool bridge; `take` gives a call's images and value once (host/process.ts), for the answer to Codex. */
+  bridge: { get(name: string): { name: string; replay: string } | undefined; take?(callId: string): { images?: readonly { mimeType: string; data: string }[]; structured?: unknown } | undefined };
   log(message: string, fields?: Record<string, unknown>): void;
   /** The rollout lines restored from the log. */
   lines: readonly string[];
@@ -109,14 +109,30 @@ export function imagesNoted(output: unknown): string | undefined {
   return `${outputTextOf(output)}\n\nIt also returned ${count} image${count === 1 ? "" : "s"} (not shown again after the interruption).`;
 }
 
-/** A code-mode script's nested call's answer: its items, then a line saying how many images the tool returned, which are
- *  not sent (Codex gives a script an image as its data: URL in the result's text); an answer of any other shape, or no
- *  images, as it is. */
-export function withImagesHeld(answer: unknown, images: readonly unknown[] | undefined): unknown {
-  const items = (answer as { contentItems?: unknown } | null)?.contentItems;
-  if (!images?.length || !Array.isArray(items)) return answer;
-  const count = images.length;
-  return { ...(answer as object), contentItems: [...items, { type: "inputText", text: `${count} image${count === 1 ? "" : "s"} it returned ${count === 1 ? "was" : "were"} not sent: in code mode a tool's image reaches the script only as text.` }] };
+type Image = { mimeType: string; data: string };
+
+/** `value` with `images`' data put back, in order, into its image objects (`{ type: "image", mimeType }` with no data,
+ *  as a computer tool's value leaves them): the value whole, as serve's own script isolate gives a script. */
+export function withImageData(value: unknown, images: readonly Image[]): unknown {
+  let next = 0;
+  const fill = (part: unknown): unknown => {
+    if (Array.isArray(part)) return part.map(fill);
+    if (part === null || typeof part !== "object") return part;
+    const record = part as Record<string, unknown>;
+    if (record.type === "image" && record.data === undefined && next < images.length) return { ...record, data: images[next++]!.data };
+    return Object.fromEntries(Object.entries(record).map(([key, entry]) => [key, fill(entry)]));
+  };
+  return fill(value);
+}
+
+/** A code-mode script's nested call's answer. A tool with a value (a computer tool's) answers the value as JSON text,
+ *  its images' data back in it, so the script reads it with JSON.parse and holds each image whole; any other tool
+ *  answers its items with its images after them (`withImages`), which Codex gives the script as data: URLs. A failed
+ *  call's answer, or one of any other shape, as it is. */
+export function scriptAnswer(answer: unknown, extras: { images?: readonly Image[]; structured?: unknown } | undefined): unknown {
+  const shaped = answer as { contentItems?: unknown; success?: unknown } | null;
+  if (extras?.structured === undefined || !Array.isArray(shaped?.contentItems) || shaped.success === false) return withImages(answer, extras?.images);
+  return { ...shaped, contentItems: [{ type: "inputText", text: JSON.stringify(withImageData(extras.structured, extras.images ?? [])) }] };
 }
 
 /** A dynamic tool call's answer with `images` after its items, each `{ type: "inputImage", imageUrl }` with a data: URL
@@ -252,18 +268,18 @@ export function codeMode(deps: CodeModeDeps) {
           }
           // The harness answers with the result's text; its images follow as `inputImage` items, which Codex 0.164's
           // dynamic tool output takes (DynamicToolCallResponse.contentItems, its app-server schema), each a data: URL.
-          // The call runs first (`next`): its images are kept by the bridge as it answers, and taken after, whether or not
-          // the answer was built, so a call whose answer throws leaves none in the bridge for the session's life.
-          let images: readonly { mimeType: string; data: string }[] | undefined;
+          // The call runs first (`next`): its images and value are kept by the bridge as it answers, and taken after,
+          // whether or not the answer was built, so a call whose answer throws leaves none in the bridge for the session's life.
+          let extras: { images?: readonly Image[]; structured?: unknown } | undefined;
           let answer: unknown;
           try {
             answer = await next(req);
           } finally {
-            images = deps.bridge.takeImages?.(callId);
+            extras = deps.bridge.take?.(callId);
           }
-          // A script's nested call: Codex hands the script an inputImage as its data: URL inside the result's text, so a
-          // script that prints the result would send the model the base64 as words. No image goes to code mode; a line says so.
-          return NESTED_CALL.test(callId) ? withImagesHeld(answer, images) : withImages(answer, images);
+          // A script's nested call gets the tool's value, images and all, to compute on (scriptAnswer); the model's own
+          // call gets the words and the images to look at.
+          return NESTED_CALL.test(callId) ? scriptAnswer(answer, extras) : withImages(answer, extras?.images);
         }
         return next(req);
       };

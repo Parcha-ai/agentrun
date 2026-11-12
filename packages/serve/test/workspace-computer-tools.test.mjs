@@ -14,7 +14,8 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { COMPUTER_TOOLS, NO_SHELL } from "@parcha/agentrun-kernel/kernel";
-import { localWorkspace, runTools } from "../dist/workspace/index.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { computerMcp, localWorkspace, runTools } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
 const dirs = [];
@@ -217,4 +218,33 @@ test("computer_script: the script's value is the per-step tool's value; text() a
   assert.equal(thrown.isError, true);
   assert.match(thrown.text, /no Save button here/);
   assert.equal((await call(tools, "computer_script", { code: "" })).isError, true);
+});
+
+test("the claim's MCP server: an MCP client lists the run's computer tools and its calls answer what the per-step tools and the script answer, with structuredContent and image blocks", async () => {
+  const root = scratch();
+  const phone = fakeScreen(root, { ui: true });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, groups: [...PHONE_GROUPS, "ui"] }, { mode: 2, context: ctx });
+  const tools = run.hostTools(run.kindTools);
+  const mcp = computerMcp(tools);
+  const client = new Client({ name: "computer-mcp-test", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
+  await client.connect(new StreamableHTTPClientTransport(new URL("http://claim.test/mcp"), { fetch: (url, init) => mcp.fetch(new Request(url, init)) }));
+  try {
+    const listed = await client.listTools();
+    assert.deepEqual(listed.tools.map((tool) => tool.name), run.kindTools);
+    const byTool = await call(tools, "computer_observe", {});
+    const observed = await client.callTool({ name: "computer_observe", arguments: {} });
+    assert.equal(observed.isError ?? false, false);
+    assert.deepEqual(observed.content, [{ type: "text", text: byTool.text }], "the same words");
+    assert.equal(JSON.stringify(observed.structuredContent), JSON.stringify(byTool.structured), "byte-identical values");
+    const scripted = await client.callTool({ name: "computer_script", arguments: { code: "return await computer.app().observe();" } });
+    assert.equal(JSON.stringify(scripted.structuredContent), JSON.stringify(byTool.structured), "the script's value is the tool's");
+    const shot = await client.callTool({ name: "computer_screenshot", arguments: {} });
+    assert.deepEqual(shot.content.filter((block) => block.type === "image"), [{ type: "image", data: PNG.toString("base64"), mimeType: "image/png" }], "the screenshot as an image block, whole");
+    const failed = await client.callTool({ name: "computer_script", arguments: { code: "throw new Error('no Save button here');" } });
+    assert.equal(failed.isError, true);
+    assert.equal(failed.structuredContent, undefined, "a failure carries no value");
+    assert.match(failed.content[0].text, /no Save button here/);
+  } finally {
+    await client.close();
+  }
 });

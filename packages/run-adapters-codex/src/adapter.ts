@@ -105,12 +105,14 @@ export function kernelTool(tool: HostTool): KernelTool {
       // A call the host parked for a person's approval did not run: recorded so before its answer, the waiting text.
       if (result.parked) await markParked(io.ctx, callId);
       if (result.isError) throw new Error(result.text);
-      if (!result.images?.length) return result.text;
+      // A computer tool's value, recorded with the outcome: a script's nested call is answered it (code-mode.ts scriptAnswer).
+      const structured = result.structured !== undefined ? { structured: result.structured } : {};
+      if (!result.images?.length) return result.structured === undefined ? result.text : { text: result.text, ...structured };
       // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
       const wrong = toolImageProblems(tool.name, result.images);
       if (wrong) throw new Error(wrong);
       // With its images, recorded with the outcome: the answer to Codex carries them after the text (code-mode.ts withImages).
-      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
+      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })), ...structured };
     },
   };
 }

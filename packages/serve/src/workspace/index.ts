@@ -29,6 +29,7 @@ export { ARCHIL_MAX_EXEC_S, handsOf, MAX_EXEC_S, processesOf, shellEnv } from ".
 export { type RunComputer, type RunHold, runTools, type RunTools, withKindTools } from "./run-tools.js";
 export { helloOf, portOf, surfaceOf } from "./computer-ports.js";
 export { computerScriptExecutor, SCRIPT_DEFAULT_MS, SCRIPT_MAX_MS } from "./computer-script.js";
+export { COMPUTER_MCP_NAME, computerMcp, type ComputerMcpAnswer, mcpAnswerOf } from "./computer-mcp.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
   type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
