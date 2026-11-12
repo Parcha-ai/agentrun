@@ -11,7 +11,7 @@
 // per-run process's pause gate is gone: a cap hold parks the run through the loop (workflow-loop.ts), not a file gate.
 import type { Context } from "@earendil-works/chord";
 import type { Extension } from "@earendil-works/pi-durable";
-import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task.js";
+import { type WorkflowTaskHost } from "../workflow/task.js";
 import { decisionRecovery } from "../workflow/decision-recovery.js";
 import { nodeRunner } from "../workflow/node-runner.js";
 import { taskScope } from "../workflow/node.js";

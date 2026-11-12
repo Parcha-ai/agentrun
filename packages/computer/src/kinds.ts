@@ -121,6 +121,8 @@ export interface ProviderEntry {
 	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
 	/** Its built providers make or pull their image before the first create (prepareImage()). */
 	readonly prepareImage?: boolean;
+	/** The server's environment variable whose value, when set, is the image of every computer of it (descriptor.ts). */
+	readonly imageEnv?: string;
 	/** Its computers run on this machine's container engine. */
 	readonly local?: boolean;
 	/** create() takes a ledger the server keeps for it, as this option. */

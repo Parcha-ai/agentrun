@@ -1,5 +1,4 @@
-// The agents this server holds, over the one store (store.agents); pi-durable-agent's agent-store.ts bodyOf and revisionOf
-// are folded into store/agent-body.ts. An agent is a
+// The agents this server holds, over the one store (store.agents); the body check is store/agent-body.ts. An agent is a
 // row with revisions written once; a definition is one revision; an edit commits the next and makes it current. A
 // revision's body is checked by store/agent-body.ts before anything is written; its skill texts ride on the revision's row.
 // The one server per store (the owner lock) is the sole writer of agents and revisions, so a read-then-write here is not
@@ -130,7 +129,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
-  const learning = typeof definition.learning === "boolean" ? { learning: definition.learning } : {};
+  const learning = typeof definition.learning === "boolean" || definition.learning === "notes" ? { learning: definition.learning as boolean | "notes" } : {};
   return {
     kind: "agentic",
     instructions: definition.instructions as string,

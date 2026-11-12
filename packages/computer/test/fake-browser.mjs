@@ -11,7 +11,7 @@
 // downloads (knobs.downloads, by session id) with their total, and GET /v1/downloads/{id} is one's bytes.
 // The key is the X-BB-API-Key header.
 //
-// Kernel (api.kernel.test), as pi-browser's Kernel provider calls it today: POST /browsers makes a browser with a CDP and
+// Kernel (api.kernel.test), as the Kernel provider calls it: POST /browsers makes a browser with a CDP and
 // a live-view URL and keeps its tags; GET /browsers/{id} reads one (404 once deleted); GET /browsers?status=active&
 // tags[key]=value&limit&offset pages by X-Has-More and X-Next-Offset; DELETE /browsers/{id} ends one (404: unknown).
 // GET /profiles/{name} reads a profile (404: unknown),

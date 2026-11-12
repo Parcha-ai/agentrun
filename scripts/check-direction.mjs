@@ -41,7 +41,6 @@ export const MAY = {
 };
 
 const KERNEL_DSL = ['the kernel takes the workflow types and parameter check from the DSL', 'run workflows as a harness on the kernel, so the kernel names no workflow type'];
-const DECLARED_DSL = ['a declared dependency on the DSL that no source file imports', 'delete it from the manifest'];
 const PROVIDER_DSL = ['the DecisionProvider interface and its helpers live in the DSL', 'move the interface into a protocol package'];
 const CONSOLE_SOURCE = ['the console compiles library source through a path alias (tsconfig paths and the Vite alias)', 'fold the library into the server and serve what the console needs through the API'];
 const LAUNCHER_SERVER = ['the launcher installs the server at its own version and runs its start script', 'the server package carries its own start command'];
@@ -53,8 +52,6 @@ export const EXCEPTIONS = [
   ['packages/run-adapters/package.json', 'packages/dsl', 1, ...KERNEL_DSL],
   ['packages/run-adapters/src/runner.ts', 'packages/dsl', 1, ...KERNEL_DSL],
   ['packages/run-adapters/src/types.ts', 'packages/dsl', 1, ...KERNEL_DSL],
-  ['packages/run-adapters-claude-agent/package.json', 'packages/dsl', 1, ...DECLARED_DSL],
-  ['packages/run-adapters-codex/package.json', 'packages/dsl', 1, ...DECLARED_DSL],
   ['packages/decisions/package.json', 'packages/dsl', 1, ...PROVIDER_DSL],
   ['packages/decisions/src/evidence.ts', 'packages/dsl', 1, ...PROVIDER_DSL],
   ['packages/decisions/src/openrouter.ts', 'packages/dsl', 2, ...PROVIDER_DSL],

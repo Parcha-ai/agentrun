@@ -1,4 +1,4 @@
-// The Daytona provisioner, over Daytona's v0 REST API with fetch (no SDK), as pi-transport's Daytona box does. The daemon
+// The Daytona provisioner, over Daytona's v0 REST API with fetch (no SDK). The daemon
 // goes in through the toolbox's file upload and starts as a session command, dropped to a user with no capabilities;
 // connect() carries stdio over a session command's input calls and its log stream. Every Daytona fact used here is cited
 // in the README's Daytona section.
@@ -14,7 +14,7 @@ import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAP
 import { COMPUTER_LABEL, DEADLINE_LABEL, helloDrift, WORK } from "./drift.js";
 import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
-import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
+import { epochOf, RUN_LABEL } from "./labels.js";
 import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
 import {
 	ARCHIL_MOUNT_LABEL,
@@ -44,7 +44,6 @@ import {
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
-	type GpuCapability,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -736,7 +735,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, labels } = given;
+		const { image, network, labels } = given;
 		if (typeof image !== "string" || image.trim() === "") refuse("image", `an image is required: the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot`);
 		else if (/[\0-\x1f]/.test(image)) refuse("image", "a snapshot name has no control characters");
 		refusals.push(...checkTenure(given, this.capabilities(), "Daytona"));
@@ -1004,7 +1003,7 @@ export class DaytonaProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Daytona's label listing trails a create (pi-transport measured 0.7 to 1.6 s, with flaps), and list() must show a
+	 * Daytona's label listing trails a create (measured 0.7 to 1.6 s, with flaps), and list() must show a
 	 * computer once create returns: create waits until the listing has shown it, without a miss, for listedStableMs.
 	 */
 	async #waitListed(id: string, signal?: AbortSignal): Promise<Result<void>> {
@@ -1278,7 +1277,7 @@ export class DaytonaProvider implements ComputerProvider {
 		});
 	}
 
-	/** Every sandbox with this provider's label, all pages: one label query, the way pi-transport asks. */
+	/** Every sandbox with this provider's label, all pages: one label query. */
 	async #listOwn(signal?: AbortSignal): Promise<Result<Sandbox[]>> {
 		const found: Sandbox[] = [];
 		const seen = new Set<string>();
@@ -1564,7 +1563,7 @@ export class DaytonaProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Deletes a sandbox and makes sure it is going, as pi-transport does: a DELETE that fails counts as done only when the
+	 * Deletes a sandbox and makes sure it is going: a DELETE that fails counts as done only when the
 	 * sandbox is gone or being destroyed; a forced stop comes before the last attempt. Never signalled: a delete that
 	 * cleans up after an abort must outlive it.
 	 */

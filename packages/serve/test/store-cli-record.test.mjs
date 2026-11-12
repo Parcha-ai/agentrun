@@ -281,7 +281,7 @@ async function chargeRowsFor(t, usd, turn = {}, tool) {
   return rows.filter((x) => x.kind === "phase" && /^(Tool cost|Not metered):/.test(x.summary ?? "")).map((x) => x.summary);
 }
 
-// A paid record's outcomes, each as main's timeline renders it (pi-durable-agent timeline.ts, the TOOL_COST row).
+// A paid record's outcomes, each as main's timeline renders it (the TOOL_COST row).
 test("a paid charge whose request names a tool of its own keeps it: the call's tool names only a charge that names none", async (t) => {
   assert.deepEqual(await chargeRowsFor(t, 0.005, {}, "web_fetch"), ["Tool cost: parallel charged $0.0050 for web_fetch"]);
 });

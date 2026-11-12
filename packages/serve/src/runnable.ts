@@ -165,6 +165,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     return undefined;
   };
   if (revision.kind === "agentic") {
+    const browserComputer = revision.computer?.kind === "browser";
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (tool.startsWith("mcp:")) {
@@ -183,7 +184,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       else if (onAdapter(env, harness) && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
-        unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
+        // The browser of an agent whose computer is a browser is that computer (tools.ts browserComputer), on the keys
+        // saved for it in Settings → Computers and checked as its readiness above: the tool plane's vendor is not asked.
+        if (!(tool === "browser" && browserComputer)) unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
       }
     });
     // The tool-call budget is counted from pi's own journal (tool-budget.ts): on another harness it would hold nothing, so

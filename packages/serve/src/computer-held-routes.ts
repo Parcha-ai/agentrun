@@ -48,8 +48,9 @@ export async function heldField(store: HeldStore, runId: string, options: HeldOp
 }
 
 /** The run read's `computer` field (`{ computer }`, or nothing for a run with none): its revision's computer setting, else
- *  the one its place says; taken_over while the owner holds it (computerHoldOf, read from the run's journal only while its
- *  computer is up); with `held` for a run that holds its computer for its owner. `view` is the run read so far. */
+ *  the one its place says; taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
+ *  journal only while that computer is up); with `held` for a run that holds its computer for its owner. The journal is
+ *  read at most once, and not at all for a run that neither can be taken over nor holds. `view` is the run read so far. */
 export async function runComputerRead(store: HeldStore & Pick<Store, "agents">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
   const run = await store.runs.get(runId);
   const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
@@ -57,10 +58,16 @@ export async function runComputerRead(store: HeldStore & Pick<Store, "agents">, 
   if (!setting) return {};
   const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
   const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) };
-  const hold = runComputerField(setting, read)?.state === "ready" ? await computerHoldOf(store, runId, options) : "agent";
+  // The run's journal, read at most once for the whole field (the hold and `held` both read it), and only when one needs
+  // it: a long run's every poll would pay for a read that grows with it.
+  let journal: Promise<Awaited<ReturnType<typeof entriesOf>>> | undefined;
+  const once: HeldOptions = { ...options, entries: () => (journal ??= entriesOf(store, runId, options)) };
+  // Who drives: only a desktop or a phone is taken over (a sandbox or a browser never is here), and only while it is up.
+  const takeable = setting.kind === "desktop" || setting.kind === "phone";
+  const hold = takeable && runComputerField(setting, read)?.state === "ready" ? await computerHoldOf(store, runId, once) : "agent";
   const field = runComputerField(setting, read, (_, state) => (hold === "person" ? "taken_over" : state));
   if (!field) return {};
-  const held = await heldField(store, runId, options);
+  const held = await heldField(store, runId, once);
   return { computer: { ...field, ...(held ? { held } : {}) } };
 }
 
