@@ -6,7 +6,6 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
-import { kernelProvider } from "@parcha/pi-browser/providers/kernel";
 import { remoteDriver, remoteProvider } from "@parcha/pi-browser/testing";
 
 const env = process.env;
@@ -27,9 +26,7 @@ const crossing = (point) => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 };
 
-const inner = env.KERNEL_URL
-  ? kernelProvider({ env: { KERNEL_API_KEY: env.KERNEL_KEY, KERNEL_BASE_URL: env.KERNEL_URL }, confirm: { polls: 40, intervalMs: 25 } })
-  : remoteProvider(env.FAKE);
+const inner = remoteProvider(env.FAKE);
 const provider = {
   ...inner,
   // THROWING_DIAL: dial headers that throw, when the effect observer reads them, an error naming a connect URL with a

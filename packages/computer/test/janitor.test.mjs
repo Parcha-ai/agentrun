@@ -137,7 +137,7 @@ test("sweep() keeps a computer its provider lists as owned, with no owner label 
 	assert.deepEqual(await sweep(provider, { now: NOW }), { ok: true, value: { deleted: ["run-none"], kept: 2 } });
 	assert.deepEqual(calls.filter(([what]) => what === "release"), [["release", "run-none", "delete"]]);
 	// An owned info whose owner the listing knows still goes by its owner's rules: gone, it is deleted.
-	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: (id) => id === "gone" }), { ok: true, value: { deleted: ["owned-known", "run-none"], kept: 1 } });
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: ({ agent }) => agent === "gone" }), { ok: true, value: { deleted: ["owned-known", "run-none"], kept: 1 } });
 });
 
 test("sweep() deletes an agent's computer whose owner is gone, by the caller's answer, and keeps one whose owner is there", async () => {
@@ -149,9 +149,22 @@ test("sweep() deletes an agent's computer whose owner is gone, by the caller's a
 		{ persistence: PERSISTS },
 	);
 	const asked = [];
-	const ownerGone = async (id) => (asked.push(id), id === "gone");
+	const ownerGone = async (owner) => (asked.push(owner), owner.agent === "gone");
 	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone }), { ok: true, value: { deleted: ["gone-owner"], kept: 1 } });
-	assert.deepEqual(asked, ["gone", "here"]);
+	assert.deepEqual(asked, [{ agent: "gone" }, { agent: "here" }]);
+});
+
+test("sweep() asks ownerGone with the whole owner, its server too: one server's agent of an id is not another's", async () => {
+	const { provider } = fakeProvider(
+		[
+			{ name: "mine-gone", deadline: undefined, labels: { "agentrun.owner": "agent:a1", "agentrun.owner-server": "s-mine" } },
+			{ name: "theirs", deadline: undefined, labels: { "agentrun.owner": "agent:a1", "agentrun.owner-server": "s-theirs" } },
+		],
+		{ persistence: PERSISTS },
+	);
+	// This server's answer: its own agent a1 is gone; another server's owner is never gone to it.
+	const ownerGone = ({ agent, server }) => server === "s-mine" && agent === "a1";
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone }), { ok: true, value: { deleted: ["mine-gone"], kept: 1 } });
 });
 
 test("sweep() deletes an agent's computer detached for longer than its owner's idle TTL; one attached, or detached for less, or with no TTL, is kept", async () => {
@@ -187,7 +200,7 @@ test("sweep() of a provider that declares persistence under lifetime vendor swee
 		],
 		{ lifetime: "vendor", persistence: PERSISTS },
 	);
-	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: (id) => id === "gone" }), { ok: true, value: { deleted: ["gone-owner"], kept: 1 } });
+	assert.deepEqual(await sweep(provider, { now: NOW, ownerGone: ({ agent }) => agent === "gone" }), { ok: true, value: { deleted: ["gone-owner"], kept: 1 } });
 });
 
 test("sweep() returns list's error as it is", async () => {

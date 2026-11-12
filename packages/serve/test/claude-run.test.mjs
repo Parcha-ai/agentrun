@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -133,8 +133,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 
-// SKIP (follow-up #2080): a claude-agent run on the runner works in a scratch folder, not the run folder this test reads from.
-test.skip("a claude-agent run writes where its CLI works: a relative path, the CLI's own absolute one and a learning note all land in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run writes where its CLI works: a relative path, the CLI's own absolute one and a learning note all land in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   // The model as sonnet answers (QA run 3, F20): a relative path, then the file at its working directory's absolute
   // path, then a learning note as M2's end-of-run turn writes one; then a path out of the workspace and a file that is not
   // there, then its answer.
@@ -164,7 +163,10 @@ test.skip("a claude-agent run writes where its CLI works: a relative path, the C
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 150_000 });
   const work = join(runDir(data, runId), "work");
   assert.ok(cwd, "the CLI told its model its working directory");
-  assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
+  // On the runner the CLI works in the run's scratch folder, off the run's disk: an alias of its workspace for the run's
+  // file tools (cli-run-spec.ts), so what it writes there lands in the workspace. It is swept at the claim's release, so
+  // its path is compared, under the data root as given or as resolved.
+  assert.ok([data, realpathSync(data)].some((root) => cwd === scratchDir(root, runId)), `the CLI's working directory is the run's scratch folder: ${cwd}`);
   const calls = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);
   assert.deepEqual(calls, [["write", "success"], ["read", "success"], ["write", "success"], ["write", "success"], ["write", "failed"], ["read", "failed"]], JSON.stringify(rows.filter((r) => r.kind === "tool_result").map((r) => r.tool_result_preview)));
   // What the model was told of each call: the CLI sends each tool's result back in the next request.
@@ -173,7 +175,10 @@ test.skip("a claude-agent run writes where its CLI works: a relative path, the C
   assert.ok(told.some((text) => text.includes("relative")), `the relative write landed where the read looks: ${told.join(" | ")}`);
   assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the absolute write landed on the same file, in the workspace");
   assert.equal(await readFile(join(work, ".learning", "note.md"), "utf8"), "noted\n", "the learning note is in the workspace");
-  assert.deepEqual((await filesUnder(work)).sort(), [".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
+  // The host's own folder stays, empty: the run's shell scratch (its TMPDIR, run-tools.ts TMP_DIR) swept at the end. The
+  // sweep runs as the session closes, after the end commit the follow saw: the list is read once it is done (bounded).
+  for (let i = 0; i < 100 && (await filesUnder(work)).some((path) => path.startsWith(`.agentrun${sep}`)); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual((await filesUnder(work)).sort(), [".agentrun", ".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
   assert.ok(!existsSync(join(runDir(data, runId), "escape.md")), "the path out was not written");
   assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);

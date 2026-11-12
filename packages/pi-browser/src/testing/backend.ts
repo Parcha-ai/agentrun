@@ -64,7 +64,7 @@ export function fakeImage(type: "png" | "jpeg", width: number, height: number): 
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IEND", Buffer.alloc(0))]);
 }
 
-const DEFAULT_CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: 3600, survivesDisconnect: false, releaseIsAsync: false, profiles: false, extension: "loaded-locally" };
+const DEFAULT_CAPS: ProviderCaps = { profiles: false };
 
 type Session = { id: string; tag: string; metadata: Record<string, string>; state: "running" | "stopped"; url: string; broker: boolean; plane: string };
 
