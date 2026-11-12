@@ -101,7 +101,7 @@ async function launchOn(t, { api, data }, key, { server = "docs", now, bounds, s
   const claim = await store.claim(made.body.run_id, "launch-test", { leaseMs: 60_000 });
   assert.ok(claim, "the run is claimed");
   const { store: watched, when } = watchOf(store);
-  const step = await mcpClaim({ store: watched, claim, grants: [`mcp:${server}/add`], sealKey: key ? Buffer.from(key, "base64") : undefined, signal: signal ?? new AbortController().signal, ...(now ? { now } : {}), ...(bounds ? { bounds } : {}) });
+  const step = await mcpClaim({ loopback: true, store: watched, claim, grants: [`mcp:${server}/add`], sealKey: key ? Buffer.from(key, "base64") : undefined, signal: signal ?? new AbortController().signal, ...(now ? { now } : {}), ...(bounds ? { bounds } : {}) });
   t.after(() => step.release());
   return { step, entry: step.credentials[server], store, when };
 }

@@ -62,7 +62,7 @@ async function setUp(t, leftMs) {
 
 /** The claim step with its own clock at `skewMs` from the store's. */
 const stepOf = (store, claim, skewMs, extra = {}) =>
-  mcpClaim({ store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 200, tries: 1 }, now: () => T0 + skewMs, ...extra });
+  mcpClaim({ loopback: true, store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 200, tries: 1 }, now: () => T0 + skewMs, ...extra });
 const bearer = (step) => step.credentials.fake?.headers?.authorization;
 const unopened = (step) => step.credentials.fake?.unopened;
 
@@ -166,7 +166,7 @@ test("a row another claim's refresh left, its new token near its end but valid o
   let armedOnce;
   const armed = new Promise((resolve) => (armedOnce = resolve));
   const timer = (fire, ms) => (armedOnce(), { clear: () => {} });
-  const b = mcpClaim({ store, claim: two, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 200, tries: 1 }, now: () => Date.now() + 60 * MINUTE, network: net, timer });
+  const b = mcpClaim({ loopback: true, store, claim: two, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 200, tries: 1 }, now: () => Date.now() + 60 * MINUTE, network: net, timer });
   await armed;
   answer();
   const [stepA, stepB] = await Promise.all([a, b]);
