@@ -1084,27 +1084,6 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     pinJson(): string { return JSON.stringify(snapshot.pin); },
     /** How many effects the driver admitted. */
     effectCalls(): number { return journal.effects().length; },
-    /** What the continuation inherited, against the escalation that admitted it: the level, the sizes of what it
-     *  read and its identity. */
-    async annotateHandoff(detail: { escalation_revision: number; tail: string; inherit: string; block_chars: number; digest_chars: number }): Promise<void> {
-      await persist(() => journal.note("inherited", detail));
-    },
-    /** The run's spend at the moment its continuation is admitted. Spend may land under this run after
-     *  the escalation commit, so the row the continuation reads the spend from is brought current here,
-     *  by one `handoff` commit that names the escalation. The escalation's revision, what the
-     *  continuation binds on, does not change. */
-    async handoff(spend: Pick<EscalationRow, "cost_usd" | "turns" | "effect_calls">): Promise<EscalationRow> {
-      guard();
-      const row = snapshot.escalation;
-      if (!row) throw failure("FROZEN_CHECKPOINT_INVALID", "A handoff follows an escalation; none is recorded");
-      if (row.cost_usd === spend.cost_usd && row.turns === spend.turns && row.effect_calls === spend.effect_calls) return row;
-      const detail = { escalation_revision: row.revision, previous_cost_usd: row.cost_usd,
-        cost_usd: spend.cost_usd, turns: spend.turns, effect_calls: spend.effect_calls };
-      Object.assign(row, spend);
-      const write = writeOf();
-      await persist(() => journal.save(write.state, { kind: "handoff", detail }, write.parts));
-      return row;
-    },
     /** The state the document's committed top-level prefix left behind, plus what a failed map's finished
      *  items produced under the map's key: what an escalation on a failure carries. */
     lastState(): Record<string, unknown> {
