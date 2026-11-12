@@ -29,7 +29,7 @@ function scratch() {
 }
 
 const PERSISTENT = { kind: "desktop", provider: "orgo", persistent: true };
-const KEYS = { ORGO_API_KEY: "sk_fake_orgo", ORGO_WORKSPACE_ID: "ws-fake" };
+const KEYS = { ORGO_API_KEY: "fake-test-key", ORGO_WORKSPACE_ID: "ws-fake" };
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
 
 /** The store parts the claim, the reconcile and the janitor read, in memory: one agent whose current revision has
@@ -53,6 +53,9 @@ function memoryStore(setting = PERSISTENT) {
       get: async (key) => rows.get(key),
       put: async (key, value) => void rows.set(key, structuredClone(value)),
       putIfAbsent: async (key, value) => (rows.has(key) ? rows.get(key) : (rows.set(key, structuredClone(value)), value)),
+      // A compare-and-set on the JSON text, as the store's: the row as read gives the same text back.
+      replaceIf: async (key, was, value) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && (rows.set(key, structuredClone(value)), true),
+      removeIf: async (key, was) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && rows.delete(key),
       remove: async (key) => void rows.delete(key),
     },
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
@@ -219,6 +222,104 @@ test("a launch that fails lets go of the hold, so the agent's next run is not re
   await (await claim("run-2")).release();
 });
 
+test("a contender that read an ended holder never replaces the hold a later run took since: it reads again and is refused naming that run", async () => {
+  const { store, calls, claim } = await setup();
+  await claim("run-0");
+  store.runs.set("run-0", "failed");
+  store.runs.set("run-2", "running");
+  store.runs.set("run-3", "running");
+  // run-2 reads run-0's ended hold; before it replaces it, run-0 lets go and run-3 takes the hold.
+  const putIfAbsent = store.settings.putIfAbsent;
+  let stale = true;
+  store.settings.putIfAbsent = async (key, value) => {
+    const read = await putIfAbsent(key, value);
+    if (stale && key === "agent_computer_hold:agent-1") {
+      stale = false;
+      store.rows.set(key, { v: 1, run: "run-3", at: new Date().toISOString() });
+    }
+    return read;
+  };
+  await assert.rejects(claim("run-2"), (error) => error.code === "computer_unavailable" && /held by run run-3, which is still going/.test(error.message));
+  assert.equal(store.rows.get("agent_computer_hold:agent-1").run, "run-3", "run-3's hold stands");
+  assert.equal(calls.filter(([verb]) => verb === "attach").length, 0, "run-2 attached nothing");
+});
+
+test("an ended run whose end comes after another run took its hold over leaves the computer to that run: it detaches nothing", async () => {
+  const { store, computers, calls, claim } = await setup();
+  const first = await claim("run-1");
+  store.runs.set("run-1", "failed");
+  store.runs.set("run-2", "running");
+  const second = await claim("run-2");
+  await first.release();
+  assert.equal(calls.filter(([verb, , how]) => verb === "release" && how === "detach").length, 0, "run-1's end detaches nothing");
+  assert.equal(computers.get("c-1").state, "running");
+  assert.equal(store.rows.get("agent_computer_hold:agent-1").run, "run-2");
+  const record = await agentComputerOf(store, "agent-1");
+  assert.deepEqual([record.state, record.run], ["held", "run-2"]);
+  await second.release();
+  assert.equal(computers.get("c-1").state, "stopped", "run-2's end detaches it");
+});
+
+test("while an ended run detaches the computer, a new run is refused in words; once it lets go, the new run attaches it", async () => {
+  const { store, calls, provider, claim } = await setup();
+  const first = await claim("run-1");
+  store.runs.set("run-1", "failed");
+  store.runs.set("run-2", "running");
+  const release = provider.release;
+  let detached;
+  const detaching = new Promise((resolve) => (detached = resolve));
+  let started;
+  const inDetach = new Promise((resolve) => (started = resolve));
+  provider.release = async (ref, how) => {
+    if (how === "detach") {
+      started();
+      await detaching;
+    }
+    return release(ref, how);
+  };
+  const ending = first.release();
+  await inDetach;
+  await assert.rejects(claim("run-2"), (error) => error.code === "computer_unavailable" && /being detached by run run-1, which ended/.test(error.message));
+  detached();
+  await ending;
+  await (await claim("run-2")).release();
+  assert.deepEqual(calls.filter(([verb]) => verb === "attach").map(([, id, claimed]) => [id, claimed.run]), [["c-1", "run-2"]]);
+});
+
+test("an archive or an edit while a run holds the computer deletes nothing then, nor does the janitor; the run's end detaches it, then deletes it", async () => {
+  const { store, computers, calls, provider, claim } = await setup();
+  const run = await claim("run-1");
+  store.runs.set("run-1", "running");
+  store.agents.archive("agent-1");
+  assert.equal(await reconcileAgentComputer(store, "agent-1", async () => provider), undefined, "a run still going holds it");
+  assert.equal(computers.get("c-1").state, "running");
+  assert.equal(calls.some(([verb, , how]) => verb === "release" && how === "delete"), false);
+  const server = await serverIdOf(store);
+  assert.equal(await ownerGoneOf(store, server, "orgo")({ agent: "agent-1", server }), false, "the janitor leaves it to the run too");
+  await run.release();
+  assert.deepEqual(calls.slice(-2), [["release", "c-1", "detach"], ["release", "c-1", "delete"]]);
+  assert.equal(await agentComputerOf(store, "agent-1"), undefined);
+  assert.equal(store.rows.has("agent_computer_hold:agent-1"), false);
+});
+
+test("a record written while a delete was under way (a replacement) is never erased or overwritten by that delete", async () => {
+  for (const outcome of ["deleted", "failed"]) {
+    const { store, claim } = await setup();
+    await (await claim("run-1")).release();
+    store.agents.archive("agent-1");
+    const replacement = { v: 1, provider: "orgo", image: "linux", id: "c-9", name: "computer-c-9", state: "detached", at: new Date().toISOString() };
+    const slow = {
+      release: async () => {
+        store.rows.set("agent_computer:agent-1", replacement);
+        return outcome === "deleted" ? { ok: true, value: undefined } : { ok: false, error: { code: "vendor", message: "Orgo answered 503" } };
+      },
+    };
+    const done = await reconcileAgentComputer(store, "agent-1", async () => slow);
+    assert.deepEqual(done, outcome === "deleted" ? { deleted: "computer-c-1" } : { failed: "Orgo answered 503" }, outcome);
+    assert.deepEqual(store.rows.get("agent_computer:agent-1"), replacement, outcome);
+  }
+});
+
 test("a persistent run needs its agent: without one it is refused in words, with nothing made", async () => {
   const { store, calls } = await setup();
   const root = scratch();
@@ -292,6 +393,20 @@ test("the server's janitor sweeps an agent's own computer by its owner: kept whi
   store.agents.archive("agent-1");
   assert.deepEqual((await janitor(Date.now())).find((one) => one.provider === "orgo").swept, { ok: true, value: { deleted: ["computer-c-1"], kept: 0 } });
   assert.deepEqual([...computers.keys()], ["c-other"], "another server's agent's computer is left");
+});
+
+test("a janitor sweep that deletes an agent's computer an earlier delete failed on clears the agent's record of it", async () => {
+  const { store, computers, provider, claim } = await setup();
+  await (await claim("run-1")).release();
+  store.agents.archive("agent-1");
+  const refusing = { release: async () => ({ ok: false, error: { code: "vendor", message: "Orgo answered 503" } }) };
+  await reconcileAgentComputer(store, "agent-1", async () => refusing);
+  assert.equal((await agentComputerOf(store, "agent-1")).state, "deleting");
+  const swept = await sweepServerComputers({ store: { ...store, runs: { ...store.runs, list: async () => [], heldAt: async () => undefined }, computerLedger: store.computerLedger }, computers: { kinds: KINDS, providers: { orgo: () => provider }, keyOf: async (name) => KEYS[name] }, now: () => Date.now() });
+  assert.deepEqual(swept.find((one) => one.provider === "orgo").swept, { ok: true, value: { deleted: ["computer-c-1"], kept: 0 } });
+  assert.equal(computers.size, 0);
+  assert.equal(await agentComputerOf(store, "agent-1"), undefined, "the view shows no computer");
+  assert.equal(store.rows.has("agent_computer_hold:agent-1"), false, "the janitor's hold is let go");
 });
 
 test("computer.persistent: a boolean, refused (422 not_allowed) where the selected configuration keeps no computer", () => {

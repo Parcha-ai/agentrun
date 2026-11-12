@@ -1541,7 +1541,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       signIns: await signIns.view(entry.agent.id),
       ...(learning ? { learning } : {}),
       runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
-      // The agent's own computer (a persistent setting), as this server records it: Settings shows it.
+      // The agent's own computer (a persistent setting), as this server records it: the view's own_computer.
       ownComputer: agentComputerView(await agentComputerOf(store, entry.agent.id)),
     };
   };

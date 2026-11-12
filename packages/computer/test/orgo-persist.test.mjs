@@ -27,8 +27,11 @@ const DAEMON_PATH = join(dir, "computerd");
 writeFileSync(DAEMON_PATH, "a stand-in for computerd, linux/amd64\n");
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
-/** A ledger as serve's store backs it: async, a fresh copy on every read. */
-function storeLedger() {
+/**
+ * A ledger as serve's store backs it: async, a fresh copy on every read, and swap a compare-and-set on the row's JSON.
+ * gate(was, entry) may return a promise a swap waits for before it compares: a test makes one attach's swap land last.
+ */
+function storeLedger({ gate } = {}) {
 	const rows = new Map();
 	return {
 		rows,
@@ -36,6 +39,12 @@ function storeLedger() {
 		get: async (id) => structuredClone(rows.get(id)),
 		list: async () => [...rows.values()].map((entry) => structuredClone(entry)),
 		remove: async (id) => void rows.delete(id),
+		swap: async (was, entry) => {
+			await gate?.(was, entry);
+			if (!rows.has(entry.id) || JSON.stringify(rows.get(entry.id)) !== JSON.stringify(was)) return false;
+			rows.set(entry.id, structuredClone(entry));
+			return true;
+		},
 	};
 }
 function desktop(os = "windows", { fake = fakeOrgoDesktop({ os }), ledger = storeLedger() } = {}) {
@@ -353,6 +362,141 @@ test("Orgo Linux: a run's computer is never detached, never taken under a claim,
 	api.computers.get(created.id).status = "suspended";
 	assert.equal((await provider.attach({ id: created.id })).error.code, "refused");
 	assert.deepEqual([calls(api, "resume").length, calls(api, "start").length], [0, 0]);
+});
+
+/** A gate that holds the first swap `when` picks until open() is called; reached resolves once that swap is held. */
+function holdOnce(when) {
+	let reached;
+	let open;
+	const held = { reached: new Promise((done) => (reached = done)), opened: new Promise((done) => (open = done)), open: () => open(), taken: false };
+	held.gate = (was, entry) => {
+		if (held.taken || !when(was, entry)) return undefined;
+		held.taken = true;
+		reached();
+		return held.opened;
+	};
+	return held;
+}
+
+const OWNED_MAX = "9999-12-31T23:59:59.000Z";
+const epochOf = (entry) => entry.labels["agentrun.epoch"];
+
+test("Orgo: two attaches of one agent's computer under one run's claims at epochs 1 and 2 race; whichever ledger write of the epoch-1 attach lands last, the ledger ends at epoch 2 and the epoch-1 attach is refused (Linux and Windows)", async () => {
+	const kinds = [
+		["linux", (ledger) => { const made = linux({ ledger }); return { provider: made.provider, api: made.api, spec: linuxSpec(), wake: "resume" }; }],
+		["windows", (ledger) => { const made = desktop("windows", { ledger }); return { provider: made.provider, api: made.fake.api, spec: windowsSpec(), wake: "start" }; }],
+	];
+	// The epoch-1 attach's take (run-1's entry to run-2's at epoch 1), or its mark as held (after its take and checks).
+	const holds = [
+		["its take", (was, entry) => epochOf(entry) === "1" && was.labels["agentrun.run"] === "run-1"],
+		["its mark as held", (was, entry) => epochOf(entry) === "1" && was.labels["agentrun.run"] === "run-2" && was.detachedAt !== undefined && entry.detachedAt === undefined],
+	];
+	for (const [os, make] of kinds) {
+		for (const [what, when] of holds) {
+			const held = holdOnce(when);
+			const ledger = storeLedger({ gate: held.gate });
+			const { provider, api, spec, wake } = make(ledger);
+			const ref = (await provider.create(spec)).value;
+			assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+			const lower = provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+			await held.reached;
+			const higher = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+			assert.equal(higher.ok, true, `${os}, ${what}: ${JSON.stringify(higher)}`);
+			held.open();
+			const lost = await lower;
+			assert.equal(lost.ok, false, `${os}, ${what}`);
+			assert.equal(lost.error.code, "refused");
+			assert.match(lost.error.message, /fenced/, `${os}, ${what}`);
+			const row = ledger.rows.get(ref.id);
+			assert.deepEqual([row.labels["agentrun.run"], epochOf(row), row.detachedAt], ["run-2", "2", undefined], `${os}, ${what}: the higher epoch stays`);
+			assert.equal(api.computers.get(ref.id).status, "running", `${os}, ${what}: the epoch-2 attach's computer runs on`);
+			assert.equal(calls(api, wake).length, 1, `${os}, ${what}: woken once`);
+			assert.equal(calls(api, wake === "resume" ? "suspend" : "stop").length, 1, `${os}, ${what}: the lost attach put nothing back`);
+		}
+	}
+});
+
+test("Orgo Linux: an agent's computer's init starts with a most that is none in practice, and each attach moves its deadline maxLifetimeMs out", async () => {
+	const { channel, provider } = linux();
+	const ref = (await provider.create(linuxSpec())).value;
+	const box = channel.boxOf(ref.id);
+	assert.equal(box.init.max, OWNED_MAX);
+	const first = Date.parse(box.init.deadline);
+	assert.ok(first > Date.now() + 719 * HOUR && first <= Date.now() + 720 * HOUR, box.init.deadline);
+	assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+	// Suspend keeps init and the deadline it had; an hour left of it, as after a long first run and detach.
+	box.init.deadline = new Date(Date.now() + HOUR).toISOString();
+	const before = Date.now();
+	const attached = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.equal(box.extended.length, 1, "deadline.extend, once");
+	assert.ok(Date.parse(box.init.deadline) >= before + 720 * HOUR, `moved maxLifetimeMs out: ${box.init.deadline}`);
+	assert.equal(box.stopped, undefined, "the daemon answered at this version: it was kept");
+});
+
+test("Orgo Linux: an attach that finds an agent's computer's daemon of another version, or none answering, stops the old init, installs this provider's daemon again and attaches, the computer kept; a run's computer is refused instead", async () => {
+	const { api, channel, provider } = linux();
+	const ref = (await provider.create(linuxSpec())).value;
+	const box = channel.boxOf(ref.id);
+	const uploads = () => channel.calls.filter(({ op, computer }) => op === "upload" && computer === ref.id).length;
+	assert.equal(uploads(), 1);
+	assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+	box.init.version = "0.0.1";
+	const upgraded = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+	assert.equal(upgraded.ok, true, JSON.stringify(upgraded));
+	assert.equal(box.stopped, 1, "the old init stopped");
+	assert.equal(uploads(), 2, "the daemon uploaded again");
+	assert.deepEqual([box.init.version, box.init.max], [undefined, OWNED_MAX], "a new init, this version, no most in practice");
+	assert.match(upgraded.value.notes[0], /daemon in .* was replaced .* its disk kept, since its daemon was version 0\.0\.1/);
+	assert.deepEqual([upgraded.value.id, api.computers.get(ref.id).status, JSON.parse(box.labels).labels["agentrun.epoch"]], [ref.id, "running", "1"], "the same computer, its labels file carrying the claim");
+
+	assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+	box.init = undefined; // init ended at its deadline while the desktop was detached
+	const revived = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+	assert.equal(revived.ok, true, JSON.stringify(revived));
+	assert.equal(box.stopped, 2);
+	assert.match(revived.value.notes[0], /did not answer/);
+	assert.equal(api.requests.filter(({ method, path }) => method === "POST" && path === "/computers").length, 1, "never a new computer");
+
+	const run = (await provider.create({ image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: LABELS })).value;
+	channel.boxOf(run.id).init.version = "0.0.1";
+	const refused = await provider.attach({ id: run.id });
+	assert.equal(refused.error?.code, "refused");
+	assert.match(refused.error.message, /version "?0\.0\.1/);
+	assert.equal(channel.boxOf(run.id).stopped, undefined, "a run's daemon is never replaced");
+});
+
+test("Orgo: an attach that wakes an agent's computer and then fails a check suspends (Linux) or stops (Windows) it again, as it was found; one refused before the wake wakes nothing", async () => {
+	const other = "computer-0123456789ab-oaaaaaaaaaaaaaaaa";
+	const kinds = [
+		["linux", () => {
+			const made = linux();
+			return { ...made, spec: linuxSpec(), wake: "resume", sleep: "suspend", asleep: "suspended", tamper: (id) => { const box = made.channel.boxOf(id); const file = box.labels; box.labels = JSON.stringify({ ...JSON.parse(file), name: other }); return () => void (box.labels = file); } };
+		}],
+		["windows", () => {
+			const made = desktop("windows");
+			return { ...made, api: made.fake.api, spec: windowsSpec(), wake: "start", sleep: "stop", asleep: "frozen", tamper: (id) => { const files = made.fake.boxOf(id).files; const file = files.get(WINDOWS_LABELS); files.set(WINDOWS_LABELS, Buffer.from(JSON.stringify({ ...JSON.parse(file.toString("utf8")), name: other }))); return () => void files.set(WINDOWS_LABELS, file); } };
+		}],
+	];
+	for (const [os, make] of kinds) {
+		const { api, provider, ledger, spec, wake, sleep, asleep, tamper } = make();
+		const ref = (await provider.create(spec)).value;
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+		const detachedAt = ledger.rows.get(ref.id).detachedAt;
+		const restore = tamper(ref.id);
+		const failed = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+		assert.equal(failed.error?.code, "refused", os);
+		assert.match(failed.error.message, /does not match this provider.*again, as it was found/, os);
+		assert.deepEqual([calls(api, wake).length, calls(api, sleep).length, api.computers.get(ref.id).status], [1, 2, asleep], `${os}: woken, then put back`);
+		assert.equal(ledger.rows.get(ref.id).detachedAt, detachedAt, `${os}: still detached since then`);
+
+		restore();
+		assert.equal((await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 3 } })).ok, true, os);
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+		const fenced = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+		assert.match(fenced.error?.message ?? "", /fenced/, os);
+		assert.deepEqual([calls(api, wake).length, calls(api, sleep).length, api.computers.get(ref.id).status], [2, 3, asleep], `${os}: a fenced claim woke nothing and put nothing back`);
+	}
 });
 
 // provider.persistence (Full) runs in the computer (env, files, a process): the Linux fake has no daemon to run it, and

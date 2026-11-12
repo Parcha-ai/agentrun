@@ -2093,7 +2093,9 @@ none.
   file, so the provider keeps an agent's computer's labels (the owner's, the claim's run and epoch) and when it was
   detached in a ledger: the `ledger` option, which Orgo's descriptor declares, so serve passes its computer ledger and
   they outlive a restart. Without one it is kept in memory. `list` reads them with nothing run inside, and gives
-  `owned`, `owner`, `detachedAt`, and `deadline` undefined.
+  `owned`, `owner`, `detachedAt`, and `deadline` undefined. A ledger has `put`, `get`, `list`, `remove` and `swap`:
+  `swap(was, entry)` writes entry only while the kept entry is still `was` as read (a compare-and-set; serve's is one
+  SQL statement), and says whether it did.
 - **No entry, no labels.** An agent's computer with no ledger entry is listed `owned` with no labels and no owner, to
   an unfiltered list alone. The janitor can't read its owner, so it keeps it. Attach and detach refuse it in words,
   and nothing reads its labels file instead: release it with delete.
@@ -2105,9 +2107,16 @@ none.
 - **`attach({ id }, { claim })`** from a later run starts or resumes it first: attaching an agent's computer is asking
   for it. A run's computer that isn't running is still never woken, and is never taken under a claim. Under a claim
   the computer carries the claim's run and epoch, in the ledger and its labels file. A claim of the same run below
-  the epoch it carries is refused as fenced, and nothing changes. Its read-back spec carries `owner`.
-- **Init on Linux.** An owned computer's init takes the most this provider gives (`maxLifetimeMs`), since init ends its
-  programs at its deadline. `extend` refuses an owned computer: it has no deadline to move.
+  the epoch it carries is refused as fenced, and nothing changes. The ledger entry is taken with `swap` before
+  anything is done to the computer, and marked held with `swap` last, so of two attaches of one run racing, the lower
+  epoch is refused however they interleave, and the ledger never moves back to it. An attach that started or resumed
+  the computer and then fails a check stops or suspends it again, as it was found. Its read-back spec carries `owner`.
+- **Init on Linux.** An owned computer's init ends its programs at its deadline, `maxLifetimeMs` out, and has no
+  most in practice: each attach moves the deadline `maxLifetimeMs` out again (`deadline.extend`). A desktop left
+  detached past that, or whose daemon is another version (the package was upgraded meanwhile), gets its daemon
+  installed again at its next attach: the old init is stopped by its process, then every step create takes, the disk
+  kept, and the attach notes say the daemon was replaced and why. A run's computer is refused instead. `extend`
+  refuses an owned computer: it has no janitor's deadline to move.
 
 ## Browsers: Browserbase and Kernel
 

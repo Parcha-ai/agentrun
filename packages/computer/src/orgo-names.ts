@@ -4,7 +4,10 @@
 // keeps in the computer, the truth attach reads.
 import { COMPUTER_LABEL } from "./drift.js";
 import { EPOCH_LABEL, IDLE_TTL_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerLabels, ownerOf, RUN_LABEL, runHash } from "./labels.js";
-import type { ComputerOwner, ComputerRef } from "./provider.js";
+import type { ComputerClaim, ComputerOwner, ComputerRef } from "./provider.js";
+import { failFor, ok, type Result, vendorFail } from "./result.js";
+
+const fail = failFor("orgo");
 
 /** The longest name Orgo holds. */
 export const NAME_MAX = 80;
@@ -50,6 +53,92 @@ export interface OrgoLedger {
 	get(id: string): OrgoLedgerEntry | undefined | Promise<OrgoLedgerEntry | undefined>;
 	list(): OrgoLedgerEntry[] | Promise<OrgoLedgerEntry[]>;
 	remove(id: string): void | Promise<void>;
+	/**
+	 * entry put in place of `was` only while the kept entry is still `was` as it was read, in one step no other writer
+	 * splits: true when it was put; false, with nothing written, when the entry changed since or is gone. Attach takes an
+	 * agent's computer under a claim with it (takeEntry), so two claims that read one entry never both write it.
+	 */
+	swap(was: OrgoLedgerEntry, entry: OrgoLedgerEntry): boolean | Promise<boolean>;
+}
+
+/** An entry as one string, its keys and its labels' keys sorted, so two entries compare by what they hold alone. */
+const canonical = (entry: OrgoLedgerEntry) =>
+	JSON.stringify(entry, (_key, value: unknown) => (value !== null && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : value));
+
+/** Whether two ledger entries hold the same: the same id, labels and fields, in any order. */
+export const sameEntry = (a: OrgoLedgerEntry, b: OrgoLedgerEntry) => canonical(a) === canonical(b);
+
+/** How often an attach reads an agent's computer's ledger entry again when another writer changed it under its swap. */
+const SWAP_TRIES = 5;
+
+/** A ledger call's value, or the ledger's failure in words: a provider's calls answer, never throw. */
+async function ledgerCall<T>(what: "read" | "written", call: () => T | Promise<T>): Promise<Result<T>> {
+	try {
+		return ok(await call());
+	} catch (error) {
+		return vendorFail("orgo", `the ledger of agents' computers could not be ${what}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+/** The run and epoch these labels say, in words, for a claim that lost its computer to another. */
+const holder = (labels: Record<string, string>) => `run ${JSON.stringify(labels[RUN_LABEL] ?? "")} at epoch ${labels[EPOCH_LABEL] ?? "none"}`;
+
+/**
+ * An agent's computer's ledger entry taken for an attach, before anything is done to the computer: read, held to the
+ * claim (claimProblem), then swapped to carry the claim's run and epoch only while it is still the entry read. Two
+ * claims of one run that read the same entry never both write it: the one whose swap finds it changed reads it again
+ * and is held to the claim again, so a lower epoch never writes over a higher one and is refused (fenced). When it was
+ * detached is kept until the attach is done (settleEntry), so an attach that fails leaves it detached. The value is the
+ * entry as taken; with no claim, the entry as read.
+ */
+export async function takeEntry(ledger: OrgoLedger, ref: ComputerRef, ownerHash: string, claim?: ComputerClaim): Promise<Result<OrgoLedgerEntry>> {
+	for (let tries = 1; ; tries++) {
+		const read = await ledgerCall("read", () => ledger.get(ref.id));
+		if (!read.ok) return read;
+		const entry = read.value;
+		if (entry === undefined) return fail("refused", lostEntry(ref.name));
+		if (claim === undefined) return ok(entry);
+		const fenced = claimProblem(ref.name, ownerHash, entry, claim);
+		if (fenced !== undefined) return fail("refused", fenced);
+		const taken = { ...entry, labels: { ...entry.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) } };
+		if (sameEntry(taken, entry)) return ok(taken);
+		const swapped = await ledgerCall("written", () => ledger.swap(entry, taken));
+		if (!swapped.ok) return swapped;
+		if (swapped.value) return ok(taken);
+		if (tries >= SWAP_TRIES) return fail("refused", `${ref.name}'s ledger entry changed under each of ${SWAP_TRIES} tries to take it for this claim; nothing changed`);
+	}
+}
+
+/**
+ * An attached agent's computer marked held (no longer detached) in the ledger, only while its entry still carries the
+ * labels takeEntry gave it: read again, and swapped while it is still that read. One another claim took while this
+ * attach ran is refused (fenced), so attach answers ok only while the ledger names its own claim.
+ */
+export async function settleEntry(ledger: OrgoLedger, ref: ComputerRef, taken: OrgoLedgerEntry): Promise<Result<void>> {
+	for (let tries = 1; ; tries++) {
+		const read = await ledgerCall("read", () => ledger.get(ref.id));
+		if (!read.ok) return read;
+		const entry = read.value;
+		if (entry === undefined) return fail("refused", lostEntry(ref.name));
+		if (!sameEntry({ id: entry.id, labels: entry.labels }, { id: taken.id, labels: taken.labels })) {
+			return fail("refused", `fenced: ${ref.name} was taken by ${holder(entry.labels)} while this attach (${holder(taken.labels)}) ran; it is that claim's now, left as it is`);
+		}
+		if (entry.detachedAt === undefined) return ok(undefined);
+		const { detachedAt: _detachedAt, ...held } = entry;
+		const swapped = await ledgerCall("written", () => ledger.swap(entry, held));
+		if (!swapped.ok) return swapped;
+		if (swapped.value) return ok(undefined);
+		if (tries >= SWAP_TRIES) return fail("refused", `${ref.name}'s ledger entry changed under each of ${SWAP_TRIES} tries to mark it held; it was not marked`);
+	}
+}
+
+/**
+ * Whether the ledger entry of an agent's computer still carries the labels an attach gave it (takeEntry): a failed attach
+ * puts back only a computer no other claim has taken since. A ledger that cannot be read says no: nothing is touched.
+ */
+export async function stillTaken(ledger: OrgoLedger, ref: ComputerRef, taken: OrgoLedgerEntry): Promise<boolean> {
+	const read = await ledgerCall("read", () => ledger.get(ref.id));
+	return read.ok && read.value !== undefined && sameEntry({ id: read.value.id, labels: read.value.labels }, { id: taken.id, labels: taken.labels });
 }
 
 /**
@@ -98,6 +187,12 @@ export function orgoMemoryLedger(): OrgoLedger {
 		get: (id) => structuredClone(entries.get(id)),
 		list: () => [...entries.values()].map((entry) => structuredClone(entry)),
 		remove: (id) => void entries.delete(id),
+		swap: (was, entry) => {
+			const kept = entries.get(entry.id);
+			if (kept === undefined || was.id !== entry.id || !sameEntry(kept, was)) return false;
+			entries.set(entry.id, structuredClone(entry));
+			return true;
+		},
 	};
 }
 /** An Orgo computer's id. */

@@ -26,7 +26,7 @@ import { type ComputerInfo, type ComputerProvider, epochOf, ok, ownerOf, RUN_HAS
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { FAUX_ENV } from "../model.js";
 import type { Store } from "../store/index.js";
-import { ownerGoneOf, serverIdOf } from "./agent-computer.js";
+import { deleteUnderHold, ownerGoneOf, serverIdOf } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
@@ -95,6 +95,10 @@ async function sweepable(store: JanitorDeps["store"], info: ComputerInfo, byHash
 /** `provider` as the sweep sees it: its list cut to this server's computers that no claim holds, and no leftovers pass.
  *  Each call goes to the provider itself, so its own state is used as it is. */
 function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], byHash: RunsByHash, serverId: string | undefined): ComputerProvider {
+  // The agents' own computers the list kept, by id: their delete goes under the agent's hold (deleteUnderHold), which
+  // also clears the agent's record of it, so its view no longer shows it deleting.
+  const ownedBy = new Map<string, string>();
+  const { settings } = store;
   return {
     id: provider.id,
     version: provider.version,
@@ -104,12 +108,22 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     attach: (target, context) => provider.attach(target, context),
     network: (ref, policy, context) => provider.network(ref, policy, context),
     connect: (ref) => provider.connect(ref),
-    release: (ref, how) => provider.release(ref, how),
+    release(ref, how) {
+      const agent = ownedBy.get(ref.id);
+      if (how !== "delete" || agent === undefined || settings === undefined) return provider.release(ref, how);
+      return deleteUnderHold({ settings, runs: store.runs }, agent, ref.id, () => provider.release(ref, how));
+    },
     async list(labels, context) {
       const listed = await provider.list(labels, context);
       if (!listed.ok) return listed;
       const kept: ComputerInfo[] = [];
-      for (const info of listed.value) if (await sweepable(store, info, byHash, serverId)) kept.push(info);
+      for (const info of listed.value) {
+        if (!(await sweepable(store, info, byHash, serverId))) continue;
+        const label = ownerOf(info.labels);
+        const owner = info.owner ?? (label.ok ? label.value : undefined);
+        if (owner !== undefined) ownedBy.set(info.ref.id, owner.agent);
+        kept.push(info);
+      }
       return ok(kept);
     },
   };
@@ -156,7 +170,7 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
       const provider = await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
       // A vendor that ends its own computers needs no janitor.
       if (provider.capabilities().lifetime !== "janitor") continue;
-      const ownerGone = serverId !== undefined && agents ? ownerGoneOf({ agents }, serverId, entry.id) : undefined;
+      const ownerGone = serverId !== undefined && settings && agents ? ownerGoneOf({ agents, settings, runs: store.runs }, serverId, entry.id) : undefined;
       out.push({ provider: entry.id, swept: await bounded(deps.providerMs ?? JANITOR_PROVIDER_MS, signal, (cut) => sweep(thisServers(provider, store, byHash, serverId), { now: new Date(at), signal: cut, ...(ownerGone ? { ownerGone } : {}) })) });
     } catch (error) {
       out.push({ provider: entry.id, swept: { ok: false, error: { code: "refused", message: error instanceof Error ? error.message : String(error) } } });

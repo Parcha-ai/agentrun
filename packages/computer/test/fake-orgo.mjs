@@ -190,7 +190,8 @@ export function markOf(argv) {
  *  - sockets: the path sockets of Orgo's desktop the lockdown script makes root's alone, as it prints them (default
  *    root's D-Bus buses, as live run 4 found them);
  *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock).
- * The status script answers what the computer holds: init running or not, its socket, its log's tail. The daemon holds
+ * The status script answers what the computer holds: init running or not, its socket, its log's tail. The stop-init
+ * script ends init (box.stopped counts them). A test sets box.init.version for a daemon of another version. The daemon holds
  * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
  * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
  * probes' targets in box.probes.
@@ -234,6 +235,13 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
 			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
 			if (mark?.kind === "orgo-lockdown") return lockdown ? done(lockdown.exitCode, lockdown.output) : done(0, sockets.map((path) => `locked ${path}\n`).join(""));
+			if (mark?.kind === "orgo-stop-init") {
+				// Init stopped by its process, its programs with it; the daemon's binary stays installed.
+				const up = box.init !== undefined;
+				box.init = undefined;
+				box.stopped = (box.stopped ?? 0) + 1;
+				return done(0, up ? "stopped 4242\n" : "no init running\n");
+			}
 			if (mark?.kind === "orgo-status") {
 				const up = box.init !== undefined;
 				return done(0, [`init ${up ? "running" : "not running"}`, `socket ${up ? "present" : "absent"}`, `log ${box.log ?? (up ? "computerd: init: listening" : "")}`].join("\n"));
@@ -299,7 +307,7 @@ function answer(box, { method, params }, patch) {
 		const text = netDevText(interfaces);
 		return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 	}
-	if (method === "hello") return result({ protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), fence: "netns", ...patch.hello });
+	if (method === "hello") return result({ protocol: PROTOCOL_VERSION, version: box.init.version ?? VERSION, os: "linux", arch: "amd64", kind: reaches ? "desktop" : "linux", groups: reaches ? [...DESKTOP_GROUPS] : DESKTOP_GROUPS.slice(0, 3), fence: "netns", ...patch.hello });
 	if (method === "ping") return result({});
 	if (method === "files.read" && params.path === "/proc/self/status") {
 		const fields = { Uid: `${uid}\t${uid}\t${uid}\t${uid}`, Gid: `${gid}\t${gid}\t${gid}\t${gid}`, Groups: "", NoNewPrivs: "1", CapInh: NO_CAPS, CapPrm: NO_CAPS, CapEff: NO_CAPS, CapBnd: NO_CAPS, CapAmb: NO_CAPS, Seccomp: "2", ...patch.status };

@@ -20,7 +20,7 @@ import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceVi
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
-import { agentComputerOf, holdAgentComputer, keepAgentComputer, letGoAgentComputer, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
+import { type AgentComputerHold, agentComputerOf, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
 import { computerHold, heldHands } from "./computer-hold.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
@@ -325,14 +325,12 @@ async function ownedLaunch(
   const { store, agentId } = context;
   // One run at a time, taken in the store before anything is listed or made (agent-computer.ts holdAgentComputer): two
   // runs of the agent that claim at once never both make a computer. With no run rows to read, a holder is still going.
-  const isLive = async (run: string): Promise<boolean> => !store.runs || LIVE_RUN.has((await store.runs.get(run))?.state ?? "");
-  await holdAgentComputer(store, agentId, claim.runId, isLive);
-  const letGo = () => letGoAgentComputer(store, agentId, claim.runId);
+  const hold = await holdAgentComputer(store, agentId, claim.runId, liveHolderOf(store));
   let launched: Awaited<ReturnType<typeof ownedStart>>;
   try {
-    launched = await ownedStart(provider, claim, spec, context, signal);
+    launched = await ownedStart(provider, claim, spec, context, hold, signal);
   } catch (error) {
-    await letGo().catch(() => undefined);
+    await hold.letGo().catch(() => undefined);
     throw error;
   }
   return {
@@ -341,7 +339,7 @@ async function ownedLaunch(
       try {
         await launched.release();
       } finally {
-        await letGo();
+        await hold.letGo();
       }
     },
   };
@@ -353,6 +351,7 @@ async function ownedStart(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   context: OwnedContext,
+  hold: AgentComputerHold,
   signal: AbortSignal | undefined,
 ): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
   const call = signal ? { signal } : {};
@@ -387,11 +386,14 @@ async function ownedStart(
   }
   const computer = { provider: context.provider, image: context.image, ...ref };
   await keepAgentComputer(store, agentId, computer, "held", { run: claim.runId });
+  // The hold is marked letting go first, so no run takes it over while the computer is detached. A run that took it over
+  // since (this run's row ended before its end got here) has the computer now: it is left as it is.
   const detach = async () => {
+    if (!(await hold.releasing())) return;
     const released = await provider.release(ref, "detach");
     if (!released.ok) throw new Error(released.error.message);
     await keepAgentComputer(store, agentId, computer, "detached");
-    await reconcileAgentComputer(store, agentId, async () => provider);
+    await reconcileAgentComputer(store, agentId, async () => provider, hold);
   };
   const connected = await provider.connect(ref);
   if (!connected.ok) {
