@@ -66,14 +66,34 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 		} catch {
 			throw RPCError.invalid("\(id) did not open: \(error.localizedDescription)")
 		}
-		guard background, let front, front.processIdentifier != launched.processIdentifier else { return }
-		// An app that activates itself on open takes the front within a moment, sometimes twice (once launched, again
-		// when its document's window opens): for 2 s, give it back each time. (On macos-26, TextEdit came forward after
-		// the first 500 ms.)
-		for _ in 0..<40 {
+		// It returns once the app shows a window, at most 3 s on, so a ui.observe right after finds it (on macos-26 the ui
+		// fixture was in front before its window was listed); an app that opens none, a menu bar app, costs the 3 s.
+		// Opened in the background, an app that activates itself takes the front within a moment, sometimes twice (once
+		// launched, again when its document's window opens): for at least 2 s, it is given back each time. (On macos-26,
+		// TextEdit came forward after the first 500 ms.)
+		let pid = launched.processIdentifier
+		let guarded = background && front != nil && front!.processIdentifier != pid
+		let start = Date()
+		var shown = false
+		while true {
+			if guarded, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { front!.activate() }
+			shown = shown || Self.hasWindow(pid)
+			let waited = Date().timeIntervalSince(start)
+			if waited >= 3 || (shown && (!guarded || waited >= 2)) { return }
 			try? await Task.sleep(nanoseconds: 50_000_000)
-			if NSWorkspace.shared.frontmostApplication?.processIdentifier == launched.processIdentifier { front.activate() }
 		}
+	}
+
+	/// The app shows a window: the window server lists one at the normal level, and so does the accessibility tree
+	/// when Computerd may read it.
+	static func hasWindow(_ pid: pid_t) -> Bool {
+		let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+		let shown = list.contains { ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }
+		guard shown else { return false }
+		guard AXIsProcessTrusted() else { return true }
+		var windows: CFTypeRef?
+		guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &windows) == .success else { return false }
+		return ((windows as? [AXUIElement]) ?? []).isEmpty == false
 	}
 
 	/// Quits the app and returns once it is gone, so a launch right after starts it afresh. An app not running is
