@@ -17,13 +17,11 @@ async function sessionDocValue(reads: JournalReads, kind: string, key: string | 
   return stored ? (stored.value as Record<string, unknown>) : undefined;
 }
 
-/** A run's decision receipts, as the old durableDecisions answered them: the single `agentrun.decisions` document's
- *  `receipts`, or the keyed `.count` and family rows in order. The same shape, read through the one store's journal. */
+/** A run's decision receipts, as durableDecisions answers them: the keyed `.count` and family rows in order, read through
+ *  the one store's journal. */
 export async function decisionsOverStore(store: Store, runId: string, context: Context): Promise<Array<Record<string, unknown>>> {
   const reads = store.readJournal(runId);
   try {
-    const single = (await sessionDocValue(reads, "agentrun.decisions", undefined, context)) as { receipts?: unknown } | undefined;
-    if (single) return Array.isArray(single.receipts) ? (single.receipts as Array<Record<string, unknown>>) : [];
     const count = ((await sessionDocValue(reads, "agentrun.decisions.count", undefined, context)) as { count?: unknown } | undefined)?.count;
     const rows: Array<Record<string, unknown>> = [];
     if (typeof count === "number") for (let place = 0; place < count; place += 1) {

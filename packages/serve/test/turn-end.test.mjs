@@ -1,18 +1,11 @@
 // The turn-end marker a claude-agent or codex run's root gets (turn-end.ts) is inert everywhere but decide(): the same
 // entries with it and without it give the same timeline rows, the same metrics and the same spend the cap reads.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 import { REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { spentIn } from "../dist/cap.js";
+import { spentFrom } from "../dist/cap.js";
 import { ADAPTER_API, MESSAGE, MESSAGE_END, TURN_END } from "../dist/turn-end.js";
 import { Turns } from "../dist/turns.js";
-
-const ROOT = mkdtempSync(join(tmpdir(), "agentrun-turn-end-"));
-after(() => rmSync(ROOT, { recursive: true, force: true }));
 
 const key = "run:r1";
 const usage = (usd) => ({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usd } });
@@ -36,16 +29,9 @@ function entries(withMarkers) {
   ];
 }
 
-/** A run store holding `list` as its entries, as spentIn reads one. */
-function storeOf(name, list) {
-  const file = join(ROOT, `${name}.sqlite`);
-  const db = new DatabaseSync(file);
-  db.exec("CREATE TABLE entries (record TEXT NOT NULL)");
-  const insert = db.prepare("INSERT INTO entries (record) VALUES (?)");
-  for (const entry of list) insert.run(JSON.stringify(entry));
-  db.close();
-  return file;
-}
+/** `list` as the one store's journal hands a run's records to the cap's reading (store-reads/cap.ts spentOverStore runs
+ *  cap.ts spentFrom over them): each a stored record. */
+const rowsOf = (list) => list.map((entry) => JSON.parse(JSON.stringify(entry)));
 
 test("a store with the turn-end markers reads the same rows, the same metrics and the same spend as one without", () => {
   const [plain, marked] = [entries(false), entries(true)];
@@ -53,8 +39,8 @@ test("a store with the turn-end markers reads the same rows, the same metrics an
   assert.deepEqual(rows(marked), rows(plain), "no row for a marker, and every other row the same");
   assert.ok(rows(plain).some(([, kind]) => kind === "usage"), "the timeline has its usage row");
   assert.deepEqual(runMetricsOf(marked), runMetricsOf(plain), "the metrics");
-  assert.equal(spentIn(storeOf("marked", marked)), spentIn(storeOf("plain", plain)), "the spend the cap reads");
-  assert.ok(Math.abs(spentIn(storeOf("marked-2", marked)) - 0.0035) < 1e-12, "and the spend is the requests' own");
+  assert.equal(spentFrom(rowsOf(marked)), spentFrom(rowsOf(plain)), "the spend the cap reads");
+  assert.ok(Math.abs(spentFrom(rowsOf(marked)) - 0.0035) < 1e-12, "and the spend is the requests' own");
 });
 
 // ---- How a run's messages and their turns' ends are read (turns.ts) ------------------------------------------------------
