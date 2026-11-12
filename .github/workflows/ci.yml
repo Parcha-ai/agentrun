@@ -59,6 +59,9 @@ jobs:
           go-version-file: packages/computer/daemon/go.mod
           cache: false
       - run: npm run build:daemon -w @parcha/agentrun-computer
+      # And phoned, the phone's driver, dist/phoned.jar: javac and d8 on the image's JDK 17 and Android SDK (android-35,
+      # build-tools 35.0.0, packages/computer/scripts/android-sdk.mjs). A runner without them fails here in one sentence.
+      - run: npm run build:phoned -w @parcha/agentrun-computer
       - name: Pack what the build wrote
         run: node scripts/ci-build-output.mjs pack "$RUNNER_TEMP/build"
       - uses: actions/upload-artifact@v4
@@ -388,6 +391,29 @@ jobs:
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
       - run: npm run test:chrome -w @parcha/pi-browser
+
+  phoned:
+    # phoned, the phone's driver (packages/computer/daemon-android): its JVM tests, then the phone harness and the
+    # conformance suite's phone kind against its real core over a scripted phone (npm run test:phoned), on the image's
+    # JDK 17. Not part of the verify gate.
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
+      - run: node scripts/npm-ci-retry.mjs --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-24.22.3
+          path: ${{ runner.temp }}/build
+      - name: The build job's output, for this tree and this Node
+        run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
+      - run: npm run test:phoned -w @parcha/agentrun-computer
 
   console-e2e:
     # The console's flows in a real browser against the built server (apps/console/e2e): the page loads with the server's own

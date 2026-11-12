@@ -24,7 +24,7 @@ try {
 
 	const dex = join(work, "dex");
 	mkdirSync(dex);
-	run(sdk.tool("d8"), ["--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", dex, ...files(classes, ".class")], { env: sdk.env });
+	run(sdk.java, [...sdk.d8(), "--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", dex, ...files(classes, ".class")]);
 
 	const linked = join(work, "linked.apk");
 	run(sdk.tool("aapt2"), [
@@ -50,7 +50,7 @@ try {
 	mkdirSync(dist, { recursive: true });
 	const out = join(dist, "ui-fixture.apk");
 	rmSync(out, { force: true });
-	run(sdk.tool("apksigner"), ["sign", "--ks", keystore, "--ks-pass", "pass:android", "--key-pass", "pass:android", "--ks-key-alias", "fixture", "--out", out, aligned], { env: sdk.env });
+	run(sdk.java, [...sdk.apksigner(), "sign", "--ks", keystore, "--ks-pass", "pass:android", "--key-pass", "pass:android", "--ks-key-alias", "fixture", "--out", out, aligned]);
 	rmSync(`${out}.idsig`, { force: true });
 	console.log(`${SCRIPT}: ${out} (${statSync(out).size} bytes, ${version})`);
 } finally {

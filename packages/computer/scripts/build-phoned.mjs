@@ -59,7 +59,6 @@ if (process.argv.includes("--fake")) {
 
 for (const name of ["java.base", "jbmod", "classes"]) rmSync(join(build, name), { recursive: true, force: true });
 const sdk = androidSdk(SCRIPT);
-const d8 = sdk.tool("d8");
 
 // Android's java.base as a module, so javac checks every java.* call against what a phone has (no ProcessHandle, no
 // java.net.http) instead of against the host JDK.
@@ -81,7 +80,7 @@ const dist = join(root, "dist");
 mkdirSync(dist, { recursive: true });
 const out = join(dist, "phoned.jar");
 rmSync(out, { force: true });
-run(d8, ["--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", out, ...files(classes, ".class")], { env: sdk.env });
+run(sdk.java, [...sdk.d8(), "--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", out, ...files(classes, ".class")]);
 // build/ is git-ignored, so CI's build output would carry its megabytes of Android's java.base to every test job.
 rmSync(build, { recursive: true, force: true });
 console.log(`${SCRIPT}: ${out} (${statSync(out).size} bytes, ${version})`);

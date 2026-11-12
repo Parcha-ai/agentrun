@@ -2,7 +2,7 @@
 // for both, and one sentence when something is missing, naming it and where it was looked for. Never a silent skip.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { delimiter, dirname, join, sep } from "node:path";
+import { delimiter, join, sep } from "node:path";
 
 /**
  * The Android SDK both build with: the platform they compile against and the build tools whose d8 makes their dex
@@ -63,13 +63,13 @@ export function run(script, tool, args, options = {}) {
 }
 
 /**
- * The pinned SDK's files: the platform's android.jar and core-for-system-modules.jar, a build tool by name (d8, aapt,
- * aapt2, zipalign, apksigner), each checked before it is given, and env, the environment to run the build tools in:
- * d8 and apksigner are scripts that run `java` from PATH, so the JDK found above comes first there.
+ * The pinned SDK's files, each checked before it is given: the platform's android.jar and core-for-system-modules.jar,
+ * a native build tool by name (aapt, aapt2, zipalign), and the Java ones as argv: d8 and apksigner are jars in the build
+ * tools' lib/, run on the JDK found above (`java -cp lib/d8.jar com.android.tools.r8.D8`), never through the shell
+ * wrappers beside them, which run whatever `java` PATH holds. Pure Java, so they run on any host the JDK runs on.
  */
 export function androidSdk(script) {
-	const javaBin = dirname(jdk(script, "java"));
-	const env = { ...process.env, PATH: [javaBin, process.env.PATH].filter(Boolean).join(delimiter) };
+	const java = jdk(script, "java");
 	const needs = `platforms;android-${ANDROID.platform} and build-tools;${ANDROID.buildTools}`;
 	const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 	if (!sdk) fail(script, `it needs an Android SDK with ${needs}, and neither $ANDROID_HOME nor $ANDROID_SDK_ROOT is set.`);
@@ -79,12 +79,16 @@ export function androidSdk(script) {
 	};
 	const platform = join(sdk, "platforms", `android-${ANDROID.platform}`);
 	const platformPkg = `platforms;android-${ANDROID.platform}`;
-	const windows = process.platform === "win32";
-	const scripts = new Set(["d8", "apksigner"]);
+	const buildTools = join(sdk, "build-tools", ANDROID.buildTools);
+	const buildToolsPkg = `build-tools;${ANDROID.buildTools}`;
 	return {
-		env,
+		java,
 		androidJar: need(join(platform, "android.jar"), platformPkg),
 		systemModules: need(join(platform, "core-for-system-modules.jar"), platformPkg),
-		tool: (name) => need(join(sdk, "build-tools", ANDROID.buildTools, windows ? (scripts.has(name) ? `${name}.bat` : `${name}.exe`) : name), `build-tools;${ANDROID.buildTools}`),
+		tool: (name) => need(join(buildTools, process.platform === "win32" ? `${name}.exe` : name), buildToolsPkg),
+		/** d8's argv after java: its jar and main class. */
+		d8: () => ["-cp", need(join(buildTools, "lib", "d8.jar"), buildToolsPkg), "com.android.tools.r8.D8"],
+		/** apksigner's argv after java. */
+		apksigner: () => ["-jar", need(join(buildTools, "lib", "apksigner.jar"), buildToolsPkg)],
 	};
 }
