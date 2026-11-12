@@ -294,7 +294,8 @@ describe("Settings → Computers", () => {
 
   it("says a paired computer offline and how to bring it back, the run that holds one and the deadline its hold ends by, and removes one after asking", async () => {
     const held = { ...DESK, held_by_run: "0190f0aa-0000-7000-8000-00000000beef", held_until: "2026-11-12T11:00:00.000Z" };
-    const away: PairedComputer = { ...DESK, id: "cmp-old", name: "old-desk", online: false, seen_at: null };
+    // A feature value of a shape the page does not know (an older server, a driver's malformed hello) is skipped, never a crash.
+    const away: PairedComputer = { ...DESK, id: "cmp-old", name: "old-desk", online: false, seen_at: null, features: { ...DESK.features, broken: null } as unknown as PairedComputer["features"] };
     const { v2, calls } = server([{ ...view(), paired: [held, away] }, { ...view(), paired: [held] }], () => new Response(null, { status: 204 }));
     const { section, click } = await open(v2);
     const mine = section("Your computers");
@@ -302,6 +303,7 @@ describe("Settings → Computers", () => {
     expect(row("cmp-abc")!.textContent).toContain("In use by run 0000beef");
     expect(row("cmp-abc")!.querySelector("[data-held-until]")?.textContent).toMatch(/^The run's hold ends by .+, released or not\.$/);
     expect(row("cmp-old")!.textContent).toContain("Offline");
+    expect(row("cmp-old")!.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
     expect(row("cmp-old")!.textContent).toContain("Open its driver on that computer: it dials this server.");
     await click(row("cmp-old")!, /^Remove$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);

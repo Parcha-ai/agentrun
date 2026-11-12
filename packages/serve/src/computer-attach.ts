@@ -165,6 +165,13 @@ export type PairedView = {
   seen_at: string | null;
 };
 
+/** A hello's features as the list shows them: each that is on (true) or off with why ({off: words}); anything else a
+ *  driver sent is left out, so a malformed hello never reaches the console as a shape it does not know. */
+function featuresOf(features: unknown): Record<string, true | { off: string }> {
+  if (!isObject(features)) return {};
+  return Object.fromEntries(Object.entries(features).flatMap(([name, value]): [string, true | { off: string }][] => (value === true ? [[name, true]] : isObject(value) && typeof value.off === "string" ? [[name, { off: value.off }]] : [])));
+}
+
 export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "hello" | "claimed" | "deadline">, serves: readonly string[]): PairedView {
   const paired = row.hello as Partial<HelloResult>;
   // Kind and os stay what it paired as (another is refused at hello); the rest follows its driver's live hello.
@@ -180,9 +187,9 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     os_version: typeof hello.osVersion === "string" ? hello.osVersion : null,
     device: hello.device && typeof hello.device.maker === "string" && typeof hello.device.model === "string" ? { maker: hello.device.maker, model: hello.device.model } : null,
     arch: String(hello.arch ?? paired.arch ?? ""),
-    screen: hello.screen && typeof hello.screen.width === "number" ? { width: hello.screen.width, height: hello.screen.height, scale: hello.screen.scale } : null,
+    screen: hello.screen && [hello.screen.width, hello.screen.height, hello.screen.scale].every((n) => typeof n === "number") ? { width: hello.screen.width, height: hello.screen.height, scale: hello.screen.scale } : null,
     groups: Array.isArray(hello.groups) ? hello.groups.map(String) : [],
-    features: hello.features && typeof hello.features === "object" ? { ...hello.features } : {},
+    features: featuresOf(hello.features),
     driver: hub.hello(row.id)?.version ?? row.driver,
     online: hub.online(row.id),
     held_by_run: holder,

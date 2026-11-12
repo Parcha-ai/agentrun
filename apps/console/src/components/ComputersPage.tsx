@@ -142,7 +142,8 @@ function machineOf(computer: PairedComputer): string {
 
 /** What its driver offers: its groups, then each feature that is off, with why. */
 function offersOf(computer: PairedComputer): string {
-  const off = Object.entries(computer.features).flatMap(([name, value]) => (value === true ? [] : [`${name} off: ${value.off}`]));
+  // The server lists only true or {off}; anything else is skipped, so a driver's malformed hello never breaks the page.
+  const off = Object.entries(computer.features ?? {}).flatMap(([name, value]) => (value !== true && typeof value?.off === "string" ? [`${name} off: ${value.off}`] : []));
   return [`Offers ${computer.groups.join(", ")}`, ...off].join(" · ");
 }
 

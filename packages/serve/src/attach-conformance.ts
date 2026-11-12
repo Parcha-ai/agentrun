@@ -6,7 +6,7 @@
 // second socket with the same token, a revoke) and checks what the driver does. Nothing here knows an OS: a driver passes
 // by what it does on the wire. The next OS's driver passes these cases; the server is not tested again for it.
 //
-//   node dist/attach-conformance.js [--port N] [--listen ADDR]
+//   node dist/attach-conformance-cli.js [--port N] [--listen ADDR]
 //
 // prints the server address and a code to type into the driver, runs the cases once the driver has paired, prints a
 // PASS or FAIL line for each, and exits 0 when every case passed. It takes about five minutes with a real driver (a
@@ -17,8 +17,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_REDIAL_MAX_MS, ATTACH_SUBPROTOCOL, AttachHub, type HelloResult, MAX_LINE_BYTES, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
 import { createAttachRoutes } from "./computer-attach.js";
@@ -149,7 +147,9 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
   });
   await new Promise<void>((done) => server.listen(options.port ?? 0, options.host ?? "127.0.0.1", done));
   const { port } = server.address() as AddressInfo;
-  const address = `http://${options.host ?? "127.0.0.1"}:${port}`;
+  const host = options.host ?? "127.0.0.1";
+  // An IPv6 address goes in brackets in a URL ("http://[::1]:7392").
+  const address = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
 
   /** Resolves once `ready` answers something, or fails after `within` ms saying `what`. */
   const until = <T>(ready: () => T | undefined | false, within: number, what: string): Promise<T> =>
@@ -320,7 +320,9 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
       await until(() => dial.closed, ms(5_000) + 2_000, "its socket was not closed when it was removed");
       if (dial.closed!.code !== ATTACH_CLOSE.unauthorized) fail(`its socket closed with ${dial.closed!.code}, not ${ATTACH_CLOSE.unauthorized}`);
       const before = attempts;
-      const quiet = Math.max(ms(10_000), 2_000);
+      // As long as a redial may wait: a driver that wrongly dials after 4401 does so within it, however far the cases
+      // before this one drove its delay.
+      const quiet = redialWithin;
       await never(() => attempts > before, quiet, () => "it dialed again after 4401, which needs the person to pair it again");
       return `removed, its socket closes with 4401 and it does not dial again in ${seconds(quiet)} s`;
     });
@@ -334,17 +336,3 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
   return results;
 }
 
-async function main(): Promise<void> {
-  const { values } = parseArgs({ options: { port: { type: "string", default: "7392" }, listen: { type: "string", default: "127.0.0.1" } } });
-  const results = await runAttachConformance({
-    port: Number(values.port),
-    host: values.listen,
-    pair: () => console.log("Waiting for the driver to pair..."),
-    say: (line) => console.log(line),
-  });
-  const failed = results.filter((result) => !result.ok).length;
-  console.log(failed === 0 ? `All ${results.length} cases passed.` : `${failed} of ${results.length} cases failed.`);
-  process.exitCode = failed === 0 ? 0 : 1;
-}
-
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

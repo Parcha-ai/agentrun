@@ -90,7 +90,9 @@ test("a paired computer is one more provider of the registry: its id, its name, 
 
 test("a paired computer is listed as its hello says, the live one's while attached, with the run that holds it and the deadline its hold ends by", () => {
   const row = { id: "cmp-abc", name: "desk", hello: { ...HELLO, os: "windows", osVersion: "11" }, driver: "0.2.0", labels: {}, createdAt: 0, seenAt: 1000, revokedAt: null };
-  const live = { ...row.hello, version: "0.2.1", osVersion: "11 24H2", device: { maker: "Acme", model: "Book" }, screen: { width: 1920, height: 1080, scale: 1 }, features: { "ui.tree": { off: "no grant" } } };
+  const features = { "ui.tree": { off: "no grant" }, "ui.image": true };
+  // A driver's malformed features are left out of the list: only true or {off: words} reach the console.
+  const live = { ...row.hello, version: "0.2.1", osVersion: "11 24H2", device: { maker: "Acme", model: "Book" }, screen: { width: 1920, height: 1080, scale: 1 }, features: { ...features, "apps.launch": null, "ui.act": { off: 3 }, "ui.wait": "yes" } };
   const deadline = new Date(5000);
   const hub = (attached, holder) => ({ online: () => attached, hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
@@ -98,6 +100,6 @@ test("a paired computer is listed as its hello says, the live one's while attach
     driver: "0.2.0", online: false, held_by_run: null, held_until: null, created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
-  assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features: live.features, driver: "0.2.1", online: true });
+  assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features, driver: "0.2.1", online: true });
   assert.deepEqual({ held_by_run: held.held_by_run, held_until: held.held_until }, { held_by_run: "run-1", held_until: deadline.toISOString() });
 });

@@ -712,7 +712,7 @@ passes the binding's conformance cases (below) needs no change here.
   run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
   (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
   so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
-- **Conformance.** `node dist/attach-conformance.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
+- **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
   1 MiB (1009), a second socket with the same token (4409 to the older), and revoke (4401, no redial). It runs a store

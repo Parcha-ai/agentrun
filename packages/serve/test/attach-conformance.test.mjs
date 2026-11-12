@@ -2,7 +2,7 @@
 // on a fiftieth of the protocol's clock: the driver passes every case. And they fail when they should: a driver that keeps
 // a socket a binary frame came on fails that case, and one that dials again after it was removed fails revoke, each by
 // name, the other cases passing. The same cases run against a real driver on a person's computer from the CLI form,
-// `node dist/attach-conformance.js`.
+// `node dist/attach-conformance-cli.js`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { attachDriver, pairDriver } from "./fixtures/attach-driver.mjs";
