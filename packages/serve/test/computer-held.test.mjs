@@ -29,6 +29,7 @@ const { CALL_KIND, PROTOCOL_METHODS } = await import("../dist/computer-channel.j
 const { callRecordOf, MAX_RECORDED_CALLS, recordedClient, recordingCalls, unrecorded } = await import("../dist/computer-calls.js");
 const { entriesOf } = await import("../dist/computer-commands.js");
 const { journalHeld } = await import("../dist/runner/held-run.js");
+const { runChannelCall } = await import("../dist/runner/computer-channel.js");
 const { computerHold } = await import("../dist/workspace/computer-hold.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
@@ -149,6 +150,9 @@ test("a held run: the owner's calls set the computer up before the start, the ag
   for (const one of records) {
     assert.deepEqual(Object.keys(one).sort(), ["at", "by", "method", "ms", "ok", ...(one.ok ? [] : ["code"])].sort(), JSON.stringify(one));
   }
+  // A settled call's row keeps its method and no params: what an owner typed or wrote never stays in the store.
+  const rows = (await world.server.commands("run-1", 0)).filter((one) => one.kind === "computer_call");
+  assert.deepEqual(rows.map((one) => one.body), [{ method: "hello", answers: false }, { method: "exec.run", answers: false }, { method: "files.read", answers: false }, { method: "screen.shot", answers: false }]);
 
   const twice = await world.route("releaseRunComputer");
   assert.deepEqual([twice.status, twice.code], [404, "not_found"], "a second release finds nothing to let go");
@@ -265,6 +269,26 @@ test("a call's record: ui.act steps by kind, an error by its code, the most a to
   await recordingCalls(async () => "no calls", async () => void none.push(1));
   assert.deepEqual(none, [], "a tool call that made no call keeps nothing");
   await client.call("ping", {});
+
+  // Calls made together read in the order they were made, whichever ends first.
+  const slow = recordedClient({ call: async (method) => (await new Promise((resolve) => setTimeout(resolve, method === "screen.shot" ? 40 : 1)), { ok: true, value: {} }), close() {} });
+  const order = [];
+  await recordingCalls(() => Promise.all([slow.call("screen.shot", {}), slow.call("ping", {})]), async (calls) => void order.push(...calls.map((one) => one.method)));
+  assert.deepEqual(order, ["screen.shot", "ping"]);
+});
+
+test("a channel call the deadline cuts answers timeout, whether it waited for a person or ran on the computer", async () => {
+  // The daemon client answers its signal's abort with an error answer of its own, never a throw.
+  const client = { call: (_method, _params, { signal }) => new Promise((resolve) => signal.addEventListener("abort", () => resolve({ ok: false, error: { code: "aborted", message: "aborted" } }), { once: true })), close() {} };
+  const ran = await runChannelCall({ kind: "desktop", client }, { method: "screen.shot", params: {} }, AbortSignal.timeout(30));
+  assert.equal(ran.answer.error.code, "timeout", JSON.stringify(ran.answer));
+  assert.deepEqual([ran.record.method, ran.record.ok, ran.record.code], ["screen.shot", false, "timeout"]);
+  const hold = computerHold();
+  assert.equal(hold.take(), true);
+  const waited = await runChannelCall({ kind: "desktop", client, hold }, { method: "screen.shot", params: {} }, AbortSignal.timeout(30));
+  assert.equal(waited.answer.error.code, "timeout");
+  assert.match(waited.answer.error.message, /a person held the run's computer/);
+  hold.close();
 });
 
 test("the routes refuse in words: start and release of a run that holds no computer, a call of no run, a method the protocol lacks, a body field they keep none of", async (t) => {

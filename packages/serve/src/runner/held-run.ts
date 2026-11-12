@@ -95,13 +95,16 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
     lapse: (): HeldRead["why"] => read?.why,
     /** Before the agent's first input: waits for the owner's start, a release, the hold's lapse, or `cut`. */
     untilStarted: (cut: Promise<unknown>): Promise<HeldWait> => waitWhile(["waiting"], cut),
-    /** The agent's end: the run keeps its computer (the hold ended, the Timeline saying so) until the owner releases it,
-     *  the hold lapses, or `cut` settles first (a stop, a lost claim). A hold already released waits for nothing. */
-    async heldAtEnd(cut: Promise<unknown>): Promise<HeldWait> {
+    /** The agent's end (or a person's stop of it): the run keeps its computer (the hold ended, the Timeline saying so in
+     *  `words`) until the owner releases it, the hold lapses, or `cut` settles first (a lost claim, a cancel). A hold
+     *  already released waits for nothing. */
+    async heldAtEnd(cut: Promise<unknown>, words: string = heldWords.ended(spec.minutes)): Promise<HeldWait> {
       if (read?.state === "released") return "moved";
-      if (read?.state !== "ended") await move("ended", {}, heldWords.ended(spec.minutes)).catch(() => undefined);
+      if (read?.state !== "ended") await move("ended", {}, words).catch(() => undefined);
       return waitWhile(["ended"], cut);
     },
+    /** The hold's minutes. */
+    minutes: spec.minutes,
     /** Why an owner's call is refused now: the hold is over (released, lapsed or lost). Undefined while the computer is
      *  held: waiting, started or ended. */
     refusesCall(): string | undefined {

@@ -21,7 +21,7 @@ import {
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow,
 } from "../store.js";
-import type { Dialect } from "../dialect.js";
+import { type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
@@ -872,7 +872,7 @@ class SqliteStore implements Store {
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at, d, storeNow(d, () => at));
           for (const commandId of take) {
-            if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
+            if ((await tx.runCounted(`UPDATE commands SET taken_at = ?, ${settledBody(d)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, at, commandId, claim.runId)) === 0) {
               throw new CommandTaken(claim.runId, commandId);
             }
           }
@@ -1572,7 +1572,7 @@ class SqliteStore implements Store {
     // The clock is read inside the transaction, so the lease check and the write are one.
     await this.#db.transaction(async (tx) => {
       const now = await underClaim(tx, claim, this.#now);
-      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
+      await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(this.#db.dialect)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
     });
     wakeCommands(this.where, { runId: claim.runId, what: "answered" });
   }

@@ -104,6 +104,10 @@ export interface Loop {
   command(command: Command): Promise<CommandOutcome>;
   /** Aborts the in-flight turn; resolves once the loop will write nothing more. */
   stop(reason: StopReason): Promise<void>;
+  /** Whether a person's stop `reason` ends only the agent, the run keeping its computer for its owner (a held computer,
+   *  computer-held.ts): the runner then goes on handing it rows (the owner's calls and release) until it ends. Absent:
+   *  never. */
+  keepsComputer?(reason: StopReason): boolean;
 }
 
 export interface LoopDeps {

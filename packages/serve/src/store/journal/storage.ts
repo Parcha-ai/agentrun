@@ -37,7 +37,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { wakeCommands } from "../command-wake.js";
 import { PI_TABLE as T } from "../schema.js";
-import { type Dialect, SQLITE } from "../dialect.js";
+import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { StoreConnection } from "../sqlite/connection.js";
 import { claimFence, storeNow } from "../fence.js";
 import { applyRunPatch, refuseLeftovers } from "../sqlite/run-patch.js";
@@ -388,7 +388,7 @@ export class RunStorage implements Journal {
           await applyRunPatch(tx, { runId: this.#runId, epoch: this.#epoch }, staged?.run ?? {}, staged?.also ?? [], now, this.#dialect);
         }
         for (const commandId of taking) {
-          if ((await tx.runCounted("UPDATE commands SET taken_at = ?, answer = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, this.#takes.get(commandId)?.answer ?? null, commandId, this.#runId)) === 0) {
+          if ((await tx.runCounted(`UPDATE commands SET taken_at = ?, answer = ?, ${settledBody(this.#dialect)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, now, this.#takes.get(commandId)?.answer ?? null, commandId, this.#runId)) === 0) {
             throw new CommandTaken(this.#runId, commandId);
           }
         }
