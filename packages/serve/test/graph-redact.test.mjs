@@ -132,7 +132,7 @@ function hold(t, data, runId) {
   return release;
 }
 
-test("a map item's label cut at 200 characters inside a held key, and a decision whose state holds one: the graph shows no part of either", { timeout: 60_000, skip: "waits on a judge's decision receipt in the store journal (learning-1's (C) work on decisions): it has none on the switch; the graph's cut itself is proven by graph-custody.test.mjs" }, async (t) => {
+test("a map item's label cut at 200 characters inside a held key, and a decision whose state holds one: the graph shows no part of either", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await judgedRun(t);
   const graph = (await api("GET", `/runs/${runId}/graph`)).body;
   assert.equal(graph.stale, undefined, "no stale view: the store is read lock-free");
@@ -159,7 +159,7 @@ test("a graph read while another connection holds the run's store: read whole an
   noKey(JSON.stringify(held.body), "the graph read while held");
 });
 
-test("a call's error and a decision's state, each long enough to be cut, with the held key across the cut: the graph shows no part of it", { timeout: 60_000, skip: "waits on a workflow call node's error and a judge's decision receipt in the store journal (learning-1's (C) work on call nodes and decisions); the graph's cut itself is proven by graph-custody.test.mjs" }, async (t) => {
+test("a call's error and a decision's state, each long enough to be cut, with the held key across the cut: the graph shows no part of it", { timeout: 60_000 }, async (t) => {
   const calls = join(await scratch(t), "decisions.jsonl");
   withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: CUT_KEY, TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api } = await serve(t, { fauxJev: FAUX_DECISIONS });

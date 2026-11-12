@@ -260,8 +260,7 @@ for (const harness of ["claude-agent", "codex"]) {
     return runId;
   }
 
-  // SKIP (follow-up #2080): on the runner, the usage row never counts the second request as sent, so a cut or cancel cannot be read mid-request.
-  test.skip(`${harness}: a turn stopped mid-request, with nothing after, reads $0.002 so far and 1 charge with no price while its process is alive, as a settled read would`, { timeout: 120_000 }, async (t) => {
+  test(`${harness}: a turn stopped mid-request, with nothing after, reads $0.002 so far and 1 charge with no price while its process is alive, as a settled read would`, { timeout: 120_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const runId = await secondOut(api, `stop-live-${harness}`, join(await scratch(t), "go"));
     assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
@@ -274,8 +273,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: 0.002, unpriced: 1 });
   });
 
-  // SKIP (follow-up #2080): on the runner, the usage row never counts the second request as sent, so a cut or cancel cannot be read mid-request.
-  test.skip(`${harness}: a run cancelled mid-request reads $0.002 so far and 1 charge with no price`, { timeout: 120_000 }, async (t) => {
+  test(`${harness}: a run cancelled mid-request reads $0.002 so far and 1 charge with no price`, { timeout: 120_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
     const runId = await secondOut(api, `cancel-${harness}`, join(await scratch(t), "go"));
     assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);

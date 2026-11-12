@@ -24,7 +24,7 @@ type DriverRecord = { binding: string | null; inputs: Record<string, string> | n
 /** How a reader opens the store file. `immutable` opens it as SQLite's immutable file, for a store no process writes any
  *  more and with no write-ahead log beside it (an ended run's): nothing beside it is read or made. */
 /** `immutable`: a file nothing writes again. `unlocked`: a file a process may hold under an exclusive lock with its WAL
- *  in heap (a run's own, written as pi-durable-disk's exclusive profile writes it): read with no locking (`vfs=unix-none`)
+ *  in heap (a run's own, written under an exclusive lock): read with no locking (`vfs=unix-none`)
  *  and an exclusive locking mode, the WAL read into heap, so the read neither waits on the writer nor makes a -shm. */
 export type DurableReadOptions = { immutable?: boolean; unlocked?: boolean };
 

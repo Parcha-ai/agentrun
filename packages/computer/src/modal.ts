@@ -844,7 +844,7 @@ export class ModalProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
+		const { image, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
 			refuse("image", `an image is required: a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}`);
 		} else if (image.includes("\0")) refuse("image", NUL);

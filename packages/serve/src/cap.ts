@@ -356,7 +356,7 @@ const close = (open: Figure[], figure?: number) => {
 };
 
 /** The figures of the requests of each kind that `entries` leave open, marked as sent with no answer, cost or end, read in
- *  order, as the run's timeline counts them (pi-durable-agent's meter), so the two agree on how many were cut. A start adds
+ *  order, as the run's timeline counts them, so the two agree on how many were cut. A start adds
  *  its figure. An end mark closes its own start: a stopped request's at the figure it names, a withdrawn one's (`unsent`,
  *  which names none) the smallest. An end that names none for a request that left (an older store) closes nothing, so
  *  that request stays cut. An answer, or a summary's cost, closes the smallest figure still open, since when requests

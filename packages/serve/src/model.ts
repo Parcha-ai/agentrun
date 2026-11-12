@@ -30,8 +30,7 @@ export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object
 export const FAUX_UPSTREAM_ENV = "AGENTRUN_SERVE_FAUX_UPSTREAM";
 /** The model the server's keys give a run that names none (hostModel at the run's launch, from every key the server
  *  holds), passed to its child as its effort is: behind a gateway the run holds the gateway's key alone, never the key
- *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment (pi-durable-disk's
- *  secret-name rule): a harness's log keeps it (adapters.ts harnessLog). */
+ *  that names its default (runs.ts). A model id, never a secret, so its name has no secret's segment: a harness's log keeps it (adapters.ts harnessLog). */
 export const DEFAULT_MODEL_ENV = "AGENTRUN_SERVE_DEFAULT_MODEL";
 export const MODEL_PROVIDER = "agent-model";
 export const EFFORTS = ["low", "medium", "high"] as const;

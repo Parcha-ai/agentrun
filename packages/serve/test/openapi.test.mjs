@@ -641,7 +641,7 @@ test("a tool key's save documents every status it answers, 503 unavailable among
   assert.equal(save.responses["503"]?.$ref, "#/components/responses/Unavailable");
 });
 
-test("the served TimelineKind holds every kind pi-durable-agent's timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
+test("the served TimelineKind holds every kind the timeline declares, decision among them as decision-rows/1, and a decision row meets TimelineRow", async (t) => {
   const { doc } = await served(t);
   // The kinds as the timeline's built declaration has them, comments dropped: the rows this server serves are its.
   const declaration = await readFile(new URL("timeline.d.ts", import.meta.resolve("../dist/timeline/index.js")), "utf8");
