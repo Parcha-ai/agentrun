@@ -146,12 +146,17 @@ test("a transaction whose timers are swapped for mocked ones while it is open le
   await db.connection.transaction(async (tx) => { await tx.step({ sql: "SELECT 1" }); });
   const before = timeouts();
   let swapped = () => {};
+  let entered = () => {};
   const open = new Promise((resolve) => (swapped = resolve));
+  // The callback runs only once the transaction has begun, so its deadline's timers are set (real) by then: the mocks go
+  // on after that, never before, whatever the worker's begin takes.
+  const inside = new Promise((resolve) => (entered = resolve));
   const done = db.connection.transaction(async (tx) => {
     await tx.step({ sql: "INSERT INTO settings (key, value, updated_at) VALUES ('swapped', '1', 1)" });
+    entered();
     await open;
   });
-  await sleep(20);
+  await inside;
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   swapped();
   await done;
