@@ -149,9 +149,10 @@ struct BackgroundRoute: InputRoute {
 					sky.set(e, EventField.clickGroup, group)
 					Self.stamp(sky, e, pid: pid, wid: wid)
 					sky.setWindowLocation(e, step.atTarget ? stamped : primer)
-					// Both paths: SkyLight's reaches Catalyst and Chromium, the public one AppKit's own windows.
-					sky.post(e, to: pid)
-					e.postToPid(pid)
+					// One path only: an AppKit window takes both, so posting on both clicked twice (the ui fixture's canvas
+					// counted 2 per click on macos-26). SkyLight's also reaches Chromium; the public one is for a macOS
+					// without it.
+					if !sky.post(e, to: pid) { e.postToPid(pid) }
 					InputQueue.pause(step.pauseMs)
 				}
 			}

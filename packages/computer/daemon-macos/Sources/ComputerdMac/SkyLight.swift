@@ -84,9 +84,13 @@ final class SkyLight: @unchecked Sendable {
 		setWindowLocationFn?(Self.pointer(event), Double(point.x), Double(point.y))
 	}
 
-	/// Posts through SkyLight's path to one process, the one Catalyst and Chromium windows listen on.
-	func post(_ event: CGEvent, to pid: pid_t) {
-		postToPidFn?(pid, Self.pointer(event))
+	/// Posts through SkyLight's path to one process, which reaches AppKit, Catalyst and Chromium windows alike. False
+	/// when this macOS has no SLEventPostToPid.
+	@discardableResult
+	func post(_ event: CGEvent, to pid: pid_t) -> Bool {
+		guard let postToPidFn else { return false }
+		postToPidFn(pid, Self.pointer(event))
+		return true
 	}
 
 	// MARK: synthetic focus

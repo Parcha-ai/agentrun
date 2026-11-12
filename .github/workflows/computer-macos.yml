@@ -10,13 +10,13 @@ on:
   pull_request:
     paths:
       - 'packages/computer/daemon-macos/**'
-      - 'spec/computer/**'
+      - 'spec/computer/schema/**'
       - '.github/workflows/computer-macos.yml'
   push:
     branches: [main]
     paths:
       - 'packages/computer/daemon-macos/**'
-      - 'spec/computer/**'
+      - 'spec/computer/schema/**'
       - '.github/workflows/computer-macos.yml'
   workflow_dispatch:
 
@@ -110,7 +110,7 @@ jobs:
 
   linux:
     name: core on Linux
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     container: swift:6.2-noble
     defaults:

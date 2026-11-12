@@ -67,20 +67,26 @@ final class MacWorkspace: Workspace, @unchecked Sendable {
 			throw RPCError.invalid("\(id) did not open: \(error.localizedDescription)")
 		}
 		guard background, let front, front.processIdentifier != launched.processIdentifier else { return }
-		// An app that activates itself on open takes the front within a moment; give it back.
-		for _ in 0..<10 {
+		// An app that activates itself on open takes the front within a moment, sometimes twice (once launched, again
+		// when its document's window opens): for 2 s, give it back each time. (On macos-26, TextEdit came forward after
+		// the first 500 ms.)
+		for _ in 0..<40 {
 			try? await Task.sleep(nanoseconds: 50_000_000)
-			if NSWorkspace.shared.frontmostApplication?.processIdentifier == launched.processIdentifier {
-				front.activate()
-				return
-			}
+			if NSWorkspace.shared.frontmostApplication?.processIdentifier == launched.processIdentifier { front.activate() }
 		}
 	}
 
+	/// Quits the app and returns once it is gone, so a launch right after starts it afresh. An app not running is
+	/// already where terminate leaves it, as the protocol's fake driver answers. One that has not quit after 3 s is
+	/// forced.
 	func terminate(_ id: String) throws {
 		let apps = NSRunningApplication.runningApplications(withBundleIdentifier: id).filter { !$0.isTerminated }
-		guard !apps.isEmpty else { throw RPCError.notFound("\(id) is not running") }
 		for app in apps { app.terminate() }
+		// By the pid, not isTerminated, which the main run loop updates: this may run on it.
+		let alive = { (app: NSRunningApplication) in kill(app.processIdentifier, 0) == 0 }
+		let deadline = Date().addingTimeInterval(3)
+		while apps.contains(where: alive) && Date() < deadline { usleep(50_000) }
+		for app in apps where alive(app) { app.forceTerminate() }
 	}
 }
 #endif
