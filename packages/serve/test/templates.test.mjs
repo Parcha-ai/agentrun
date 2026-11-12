@@ -750,7 +750,9 @@ test("a package's computer is default or a preference list of shell and none: th
     const problems = await problemsOf(t, change);
     assert.ok(problems.some((p) => pattern.test(p)), `${pattern}: ${JSON.stringify(problems)}`);
   };
-  const computer = (value, tools = "[read]") => ({ edit }) => { edit("learning: false", `learning: false\ncomputer: ${value}`); edit("tools: [read]", `tools: ${tools}`); };
+  // code-review's own manifest with the case's computer and tools (any computer line of its own taken out first), and no
+  // bash policy: a policy without bash is a problem of its own.
+  const computer = (value, tools = "[read]") => ({ edit }) => { edit(/^computer: .*\n/m, ""); edit("learning: false", `learning: false\ncomputer: ${value}`); edit(/^tools: .*$/m, `tools: ${tools}`); edit(/^tool_policy: .*\n/m, ""); };
   for (const value of ["default", "[shell, none]", "[shell]", "[none]"]) assert.deepEqual(await problemsOf(t, computer(value)), [], `computer: ${value} reads`);
   assert.deepEqual(await problemsOf(t, computer("[shell, none]", "[read, bash]")), [], "a shell tool beside a list with shell reads");
   const words = /computer is default \(where this server puts a new agent\), or a preference list of shell, none, each once/;
