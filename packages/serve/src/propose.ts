@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { type Change, checkProposal, type DraftDryRun, draftDryRun, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
 import { baseOf } from "./learn/seed-check.js";
+import { parseNoteFile, ruleOf } from "./learn/notes.js";
 import { writeDurable } from "./files.js";
 import { type Proposal, PROPOSAL, type Turn } from "./learning.js";
 import type { Workspace } from "./workspace/index.js";
@@ -23,12 +24,12 @@ export type Proposed =
   | { state: "dropped"; reason: "checker"; problems: Problem[] };
 
 /** The rules that refuse a proposal whole, whatever item they name: a path outside what a run may write, a deletion,
- *  the folder's index full (the notes' total, which no one item is past), anything that must never be stored (a secret,
- *  a character a reader does not see), which says the run's answer is not to be trusted for any item, and text that is
- *  not UTF-8, which cannot be read for one. Every other problem is its item's alone: a count cap names the items past it
- *  (learn/check.ts), a size cap the item over it, and they are left out and the rest kept; unstorable reads every item's
- *  text whole first. */
-const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["outside", "deleted", "index_full", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
+ *  anything that must never be stored (a secret, a character a reader does not see), which says the run's answer is
+ *  not to be trusted for any item, and text that is not UTF-8, which cannot be read for one. Every other problem is its
+ *  item's alone: a count cap names the items past it (learn/check.ts), a size cap the item over it, the index's lines
+ *  the notes that add lines from the answer's end, and they are left out and the rest kept; unstorable reads every
+ *  item's text whole first. */
+const WHOLE: ReadonlySet<Problem["rule"]> = new Set(["outside", "deleted", "secret_value", "secret_shape", "invisible_unicode", "encoding"]);
 
 /** The item a changed file belongs to: a draft's two files are one item (its folder), every other file is itself. */
 const itemOf = (path: string) => (path.startsWith(`${WORKFLOWS_DIR}/`) ? path.split("/").slice(0, 2).join("/") : path);
@@ -106,12 +107,19 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   }
   const given = [...fileGroups.values()];
   // The seed is read whatever the answer: a seed the folder does not hold fails the check.
+  // The seed's active notes are read too: a new note of the same rule as one (notes.ts ruleOf) is a duplicate.
+  const activeOf = (seedSnapshot: Snapshot) => seedSnapshot.notes.filter((note) => note.status === "active").map((note) => note.file);
   // And the skill of each draft's name, as the folder holds it: what the draft keeps as a workflow, for the grader.
   const skillOf = (draft: string) => `${SKILLS_DIR}/${draft.split("/")[1]}/SKILL.md`;
   const draftSkills = given.flat().filter(({ file }) => file.endsWith("/workflow.json")).map(({ file }) => skillOf(file));
-  const { snapshot, texts } = await seedAt(input.folder, input.seed, () => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file), ...draftSkills] : []));
+  const { snapshot, texts } = await seedAt(input.folder, input.seed, (seedSnapshot) => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file), ...draftSkills, ...activeOf(seedSnapshot)] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
-  const { base, kept } = baseOf(snapshot);
+  const { base: seedBase, kept } = baseOf(snapshot);
+  const rules = new Map(activeOf(snapshot).flatMap((file): [string, string][] => {
+    const note = texts.has(file) ? parseNoteFile(file, texts.get(file)!) : undefined;
+    return note && !Array.isArray(note) ? [[ruleOf(note.body), file]] : [];
+  }));
+  const base = { ...seedBase, rules };
   const held = new Set(base.files);
   const files = given.filter((group) => group.some(({ file, text }) => texts.get(file) !== text)).flat();
   const changeOf = ({ file, text }: { file: string; text: string }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) });

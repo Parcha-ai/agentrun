@@ -14,8 +14,7 @@ import { BROWSER_IMAGE } from "./descriptors/shared.js";
 const MAX_LABEL = 256;
 
 /**
- * Where a provider keeps the URLs it was handed, by session id, in memory only. Default a Map of its own; a host that
- * builds one provider per call passes one store to all of them (pi-browser's process-wide holdings).
+ * Where a provider keeps the URLs it was handed, by session id, in memory only: a Map of its own.
  */
 export interface UrlStore {
 	get(id: string): string | undefined;
