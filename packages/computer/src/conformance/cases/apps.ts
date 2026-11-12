@@ -110,10 +110,12 @@ export const appsCases: Case[] = [
 		group: "apps",
 		needs: ["apps"],
 		async run(t) {
-			// The phone's own Settings app: listed; launched, in front and shown; terminated, and no longer in front.
-			const app = settingsApp(t);
+			// An app the computer has: the ui fixture where it is installed, else the phone's own Settings app. Listed;
+			// launched, in front and shown; terminated, and no longer in front.
 			const listed = await t.call("apps.list", {});
 			t.assert(Array.isArray(listed.apps) && listed.apps.every((one) => typeof one?.id === "string"), `apps.list gives apps with ids: ${JSON.stringify(listed.apps).slice(0, 300)}`);
+			const uiFixture = listed.apps.some((one) => one.id === UI_FIXTURE.id);
+			const app = uiFixture ? UI_FIXTURE.id : settingsApp(t);
 			t.assert(listed.apps.some((one) => one.id === app), `apps.list holds ${app}`);
 			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}`);
 			await t.until(async () => (await foreground(t)) !== app, `${app} not in front after apps.terminate`);
@@ -125,8 +127,9 @@ export const appsCases: Case[] = [
 			if (readsTree(t)) {
 				await t.until(async () => {
 					const seen = await observe(t);
-					return rowsOf(seen).length > 0 && JSON.stringify(namesOf(seen)) !== before;
-				}, `${app} shown after apps.launch: Settings' list in ui.observe, not the screen before it`);
+					const ready = uiFixture ? seen.nodes.some((node) => node.id === "next") : rowsOf(seen).length > 0;
+					return ready && JSON.stringify(namesOf(seen)) !== before;
+				}, `${app} shown after apps.launch: ${uiFixture ? "the ui fixture's Next button" : "Settings' list"} in ui.observe, not the screen before it`);
 			} else {
 				await t.until(async () => (await shown(t)) !== before, `${app} shown after apps.launch: ${declares(t, "screen") ? "a screenshot" : "ui.observe's image"} other than the one before it`);
 			}

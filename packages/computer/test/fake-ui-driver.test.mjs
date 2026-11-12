@@ -136,10 +136,11 @@ test("a press is verified only when its effect is there at once; a double click 
 	await c.close();
 });
 
-test("ui.observe-shape reads the ui fixture on a computer with no exec or files, desktop and phone", { timeout: 60_000 }, async () => {
+test("the Core apps and ui cases read the ui fixture on a computer with no exec or files, desktop and phone", { timeout: 60_000 }, async () => {
+	const core = ["apps.launch-terminate", "ui.observe-shape"];
 	for (const options of [{}, { os: "android", kind: "android" }]) {
-		const report = await run(fakeUiProvider(options), ["ui.observe-shape"]);
-		assert.equal(statuses(report)["ui.observe-shape"], "pass", `${options.kind ?? "desktop"}: ${reasonOf(report, "ui.observe-shape")}`);
+		const report = await run(fakeUiProvider(options), core);
+		for (const id of core) assert.equal(statuses(report)[id], "pass", `${options.kind ?? "desktop"} ${id}: ${reasonOf(report, id)}`);
 	}
 });
 
@@ -157,6 +158,24 @@ test("an expect never matches a secure field's value", async () => {
 	assert.equal(probed.value.expect, "unmet", "the password is not readable through an expect");
 	const named = await c.client.call("ui.act", { steps: [], expect: { text: "Password", timeoutMs: 200 } });
 	assert.equal(named.value.expect, "met", "its name still is");
+	// Nor through whether it changed: setting the same value and another answer alike.
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const pw = seen.nodes[0].ref;
+	assert.equal(seen.nodes[0].value, undefined);
+	const same = await c.client.call("ui.act", { steps: [{ set: pw, value: "hunter2" }] });
+	const other = await c.client.call("ui.act", { steps: [{ set: pw, value: "guess" }] });
+	assert.deepEqual([same.value.changed, other.value.changed], [false, false]);
+	const since = await c.client.call("ui.observe", { since: seen.state });
+	assert.deepEqual(since.value.diff, { added: [], removed: [], changed: [] });
+	const point = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [20, 20] }] });
+	assert.equal(point.value.steps[0].error, undefined, "a point on it is not stale for its value");
+	await c.close();
+});
+
+test("a fake desktop with no app in front shows its desktop", async () => {
+	const c = await fakeUiConnection();
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.deepEqual([seen.app, seen.nodes], [{ id: "home", name: "Desktop" }, []]);
 	await c.close();
 });
 

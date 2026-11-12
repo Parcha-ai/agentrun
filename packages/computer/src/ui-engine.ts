@@ -40,7 +40,10 @@ import { fail, ok, type Result } from "./result.js";
 
 /** One element as a source sees it. Bounds are in window points. */
 export interface UiElement {
-	/** The source's own identity for the element: the same in every look while the element exists, never reused for another. */
+	/**
+	 * The source's own identity for the element in its window: the same in every look while the element exists, never
+	 * reused for another. The engine scopes it to the window, so two windows' elements of one key are two refs.
+	 */
 	key: string;
 	role: UiRole;
 	name?: string;
@@ -288,12 +291,19 @@ const contains = ([x, y, w, h]: Rect, [px, py]: Point) => px >= x && py >= y && 
 const under = (view: UiView, point: Point) => view.elements.findLast((element) => contains(element.bounds, point));
 const sameRect = (a: Rect, b: Rect) => a.every((value, index) => value === b[index]);
 const sameSize = (a: Rect, b: Rect) => a[2] === b[2] && a[3] === b[3];
-const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, element.value, element.desc, element.bounds, element.flags]);
+/**
+ * The value the engine may read: none for a secure field. Every read of a value goes through it (the nodes, the
+ * outline, the diff, the stale checks, the settle, an expect), so no answer is an oracle for a password, not even by
+ * telling whether it changed.
+ */
+const valueOf = (element: UiElement) => (element.flags?.includes("secure") ? undefined : element.value);
+const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, valueOf(element), element.desc, element.bounds, element.flags]);
 /** What a person would see of a view: the window's size, its elements and its frame. */
 const fingerprint = (view: UiView) => JSON.stringify([view.window.id, view.window.bounds, view.elements.map((element) => [element.key, looksOf(element)]), view.frame]);
-/** Whether an element says text, in its name, value or desc. A secure field's value is never read: an expect is no oracle for it. */
-const holdsText = (element: UiElement, text: string) =>
-	[element.name, element.flags?.includes("secure") ? undefined : element.value, element.desc].some((said) => said?.includes(text) ?? false);
+/** Whether an element says text, in its name, value or desc. */
+const holdsText = (element: UiElement, text: string) => [element.name, valueOf(element), element.desc].some((said) => said?.includes(text) ?? false);
+/** An element's key scoped to its window: what a ref stands for. */
+const scopedKey = (view: UiView, key: string) => `${view.window.id}\n${key}`;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
@@ -352,14 +362,22 @@ export class UiEngine {
 		return turn;
 	}
 
-	#ref(key: string): UiRef {
-		let ref = this.#refOf.get(key);
+	/** The ref of a view's element key, given once per window and key. */
+	#ref(view: UiView, key: string): UiRef {
+		const scoped = scopedKey(view, key);
+		let ref = this.#refOf.get(scoped);
 		if (ref === undefined) {
 			ref = `@e${this.#nextRef++}`;
-			this.#refOf.set(key, ref);
-			this.#keyOf.set(ref, key);
+			this.#refOf.set(scoped, ref);
+			this.#keyOf.set(ref, scoped);
 		}
 		return ref;
+	}
+
+	/** The view's element a ref stands for: undefined when it is gone, or of another window. */
+	#elementOf(view: UiView, ref: UiRef): UiElement | undefined {
+		const scoped = this.#keyOf.get(ref);
+		return view.elements.find((one) => scopedKey(view, one.key) === scoped);
 	}
 
 	#remember(view: UiView): string {
@@ -428,7 +446,7 @@ export class UiEngine {
 		const byKey = new Map(view.elements.map((element) => [element.key, element]));
 		const kept = new Set<string>();
 		for (const element of view.elements) {
-			if (!full && element.name === undefined && element.value === undefined && element.desc === undefined && !(element.actions?.length ?? 0) && !ACTIONABLE.has(element.role)) continue;
+			if (!full && element.name === undefined && valueOf(element) === undefined && element.desc === undefined && !(element.actions?.length ?? 0) && !ACTIONABLE.has(element.role)) continue;
 			// The element, and every element above it, so each node's parent is in the list.
 			for (let at: UiElement | undefined = element; at !== undefined && !kept.has(at.key); at = at.parent === undefined ? undefined : byKey.get(at.parent)) kept.add(at.key);
 		}
@@ -443,14 +461,14 @@ export class UiEngine {
 			let parent = element.parent === undefined ? undefined : byKey.get(element.parent);
 			while (parent !== undefined && !kept.has(parent.key)) parent = parent.parent === undefined ? undefined : byKey.get(parent.parent);
 			nodes.push({
-				ref: this.#ref(element.key),
+				ref: this.#ref(view, element.key),
 				role: element.role,
 				...(element.name === undefined ? {} : { name: element.name }),
-				...(element.value === undefined || element.flags?.includes("secure") ? {} : { value: element.value }),
+				...(valueOf(element) === undefined ? {} : { value: valueOf(element) }),
 				...(element.desc === undefined ? {} : { desc: element.desc }),
 				...(element.id === undefined ? {} : { id: element.id }),
 				bounds: element.bounds,
-				...(parent === undefined ? {} : { parent: this.#ref(parent.key) }),
+				...(parent === undefined ? {} : { parent: this.#ref(view, parent.key) }),
 				...(element.flags?.length ? { flags: element.flags } : {}),
 				...(element.actions?.length ? { actions: element.actions } : {}),
 			});
@@ -459,16 +477,19 @@ export class UiEngine {
 	}
 
 	#diff(before: UiView, after: UiView): { added: UiRef[]; removed: UiRef[]; changed: UiRef[] } {
-		const was = new Map(before.elements.map((element) => [element.key, looksOf(element)]));
-		const now = new Set(after.elements.map((element) => element.key));
+		// Keys are each window's own: across two windows every element is added or removed.
+		const was = new Map(before.elements.map((element) => [scopedKey(before, element.key), looksOf(element)]));
+		const now = new Set(after.elements.map((element) => scopedKey(after, element.key)));
 		const added: UiRef[] = [];
 		const changed: UiRef[] = [];
 		for (const element of after.elements) {
-			const looked = was.get(element.key);
-			if (looked === undefined) added.push(this.#ref(element.key));
-			else if (looked !== looksOf(element)) changed.push(this.#ref(element.key));
+			const looked = was.get(scopedKey(after, element.key));
+			if (looked === undefined) added.push(this.#ref(after, element.key));
+			else if (looked !== looksOf(element)) changed.push(this.#ref(after, element.key));
 		}
-		const removed = before.elements.filter((element) => !now.has(element.key) && this.#refOf.has(element.key)).map((element) => this.#ref(element.key));
+		const removed = before.elements
+			.filter((element) => !now.has(scopedKey(before, element.key)) && this.#refOf.has(scopedKey(before, element.key)))
+			.map((element) => this.#ref(before, element.key));
 		return { added, removed, changed };
 	}
 
@@ -503,7 +524,7 @@ export class UiEngine {
 				break;
 			}
 			const ref = stepRef(step);
-			const element = ref === undefined ? undefined : view.elements.find((one) => one.key === this.#keyOf.get(ref));
+			const element = ref === undefined ? undefined : this.#elementOf(view, ref);
 			const ran = await this.#source.run(step, { ...(element === undefined ? {} : { element }), view, foreground }, signal);
 			if (!ran.ok) {
 				if (ran.error.code === "aborted") return ran;
@@ -555,8 +576,7 @@ export class UiEngine {
 		}
 		const ref = stepRef(step);
 		if (ref !== undefined) {
-			const key = this.#keyOf.get(ref);
-			if (!view.elements.some((one) => one.key === key)) return { kind: "stale", message: `${ref} is gone: its element is no longer in the window. Observe again for fresh refs` };
+			if (this.#elementOf(view, ref) === undefined) return { kind: "stale", message: `${ref} is gone: its element is no longer in the window. Observe again for fresh refs` };
 		}
 		const point = stepPoint(step);
 		if (point !== undefined) {
@@ -582,8 +602,7 @@ export class UiEngine {
 	#holds(expect: UiExpect, view: UiView): boolean {
 		let seen: boolean;
 		if (expect.ref !== undefined) {
-			const key = this.#keyOf.get(expect.ref);
-			const element = view.elements.find((one) => one.key === key);
+			const element = this.#elementOf(view, expect.ref);
 			seen = element !== undefined && (expect.text === undefined || holdsText(element, expect.text));
 		} else {
 			const text = expect.text as string;
