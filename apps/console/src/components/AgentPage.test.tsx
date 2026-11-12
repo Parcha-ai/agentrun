@@ -1,6 +1,7 @@
 import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HELD_POLL_MS } from "./SignIns";
 import { AgentPage } from "./AgentPage";
 import { agentFixture, archivedAgents, editorCaps, recorded, runFixture, runNames } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
@@ -40,15 +41,16 @@ type Answer = { run: Run } | { refused: string } | { thrown: { status: number; c
 const recordedPages = new Map(runNames.map((n) => recorded<TimelinePage>(`${n}.timeline`).body).map((p) => [p.run_id, p]));
 /** A final page with no rows, at the run's own status: what a run without a recorded timeline is followed through. */
 const endedPage = (r: Run): TimelinePage => ({ cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: r.run_id, status: r.status, state: r.state, rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 });
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { route_prefix: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown; places?: Places | null };
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; answer?: Answer; stats?: () => Promise<unknown>; models?: { route_prefix: string | null }; harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[]; hold?: Promise<unknown>; strict?: boolean; timeline?: (id: string, o: { after?: number }) => Promise<TimelinePage>; reread?: (id: string) => Promise<Run>; agentError?: unknown; places?: Places | null; reads?: (n: number) => Promise<Agent> };
 /** By default the server's stats carry the sample analytics. `followed` lists the latest run's reads (its
  *  timeline's pages and its record), apart from the page's own reads in `asked`. */
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses = editorCaps.harnesses, hold, strict = false, timeline, reread, agentError, places }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, answer = { run: recorded<Run>("start.run").body }, stats = async () => statsWith(ANALYTICS), models, harnesses = editorCaps.harnesses, hold, strict = false, timeline, reread, agentError, places, reads }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const followed: string[] = [];
   const statsAsked: string[] = [];
   const starts: { id: string; body: Record<string, unknown>; key: string }[] = [];
+  let agentReads = 0;
   const v2 = {
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => { statsAsked.push(`stats ${of}${from ? ` from ${from}` : ""}`); return stats(); },
     startRun: async (id: string, body: Record<string, unknown>, key: string) => {
@@ -59,7 +61,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
       const r = recorded<{ error: { code: string; message: string; fields?: FieldIssue[] } }>(answer.refused);
       throw Object.assign(new ClientError(r.status, r.body.error.code, r.body.error.message), r.body.error.fields ? { fields: r.body.error.fields } : {});
     },
-    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; return { agent, etag: null }; },
+    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; const n = agentReads++; return { agent: reads ? await reads(n) : agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
       return cursor && more ? more() : { runs, next_cursor: next };
@@ -94,6 +96,27 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage", () => {
+  it("a held sign-in's poll never lands over a newer read: a slow answer that began first is dropped", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const base = agentFixture("lead-scorer");
+      const held = { ...base, sign_ins: [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: null, secret: { name: "browserbase sign-in", set: true, source: "sign-in", changed_at: "2026-11-05T08:00:00.000Z" } }] } as Agent;
+      const done = { ...base, revision: "r2", sign_ins: [] } as Agent;
+      let slow!: () => void;
+      // Read 0 is the page's own; read 1 (the first poll) answers late with the held list; read 2 (the second poll) answers at once.
+      const page = await open(held, { reads: (n) => n === 0 ? Promise.resolve(held) : n === 1 ? new Promise<Agent>((r) => { slow = () => r(held); }) : Promise.resolve(done) });
+      const forgetting = () => page.host.querySelector('section[aria-label="Sign-ins"]');
+      expect(forgetting()).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+      expect(forgetting()).toBeNull();
+      await act(async () => { slow(); });
+      for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+      expect(forgetting()).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("shows an ended run's known cost and how many charges have no price, and an unknown cost with nothing known not at all", async () => {
     const runs = runsOf("invoice-checker");
     const unknown = { usd: null, basis: "estimate" as const, charge_state: null, cap_usd: null };

@@ -86,15 +86,17 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   // a retry.
   const rereads = useRef(0);
   const [stale, setStale] = useState(false);
-  const reread = () => {
+  // `quiet`: the held sign-in poll's read, which waits for the next tick on a failure rather than say so.
+  const reread = (quiet = false) => {
     const n = ++rereads.current;
     v2.getAgent(agentId).then(
       (r) => { if (n === rereads.current) { setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } },
-      () => { if (n === rereads.current) setStale(true); },
+      () => { if (n === rereads.current && !quiet) setStale(true); },
     );
   };
   const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); reread(); };
-  const onChanged = reread;
+  const onChanged = () => reread();
+  const poll = () => reread(true);
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
@@ -187,7 +189,7 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
           </p>
         )}
         {offText && <p className="mt-3 font-mono text-small text-warning-text" role="status" aria-label="Harness not available">{offText}</p>}
-        <SignIns agent={agent} v2={v2} onAgent={setAgent} />
+        <SignIns agent={agent} v2={v2} onAgent={setAgent} poll={poll} />
       </header>
       {!agent.archived_at && <RunBar agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} />}
       <Tabs tabs={tabs.map((t) => (t.id === "learning" ? { ...t, label: <>{t.label}<WaitingCount n={itemsWaiting} className="ml-1.5" /></> } : t))} value={at.id} onChange={(id) => go(agentHash(agent.agent_id, id))} />

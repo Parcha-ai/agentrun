@@ -39,7 +39,7 @@ async function show(agent: Agent, forget: (id: string, key: string) => Promise<u
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   // The page holds the agent: a fresh read replaces it, as AgentPage's setAgent does.
-  const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => render(next) }));
+  const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => render(next), poll: () => { void v2.getAgent(agent.agent_id).then((r) => render(r.agent)); } }));
   await act(async () => { render(agent); });
   const section = () => host.querySelector('section[aria-label="Sign-ins"]') as HTMLElement | null;
   const rows = () => [...host.querySelectorAll("[data-sign-in]")] as HTMLElement[];
@@ -155,7 +155,7 @@ describe("the agent page's sign-ins", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     const handed: Agent[] = [];
-    const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => { handed.push(next); render(next); } }));
+    const render = (a: Agent) => root!.render(createElement(SignIns, { agent: a, v2: v2 as never, onAgent: (next: Agent) => { handed.push(next); render(next); }, poll: () => {} }));
     const first = agentWith([bb]);
     await act(async () => { render(first); });
     const forgetButton = [...host.querySelectorAll("button")].find((b) => /^Forget/.test(b.getAttribute("aria-label") ?? ""))!;

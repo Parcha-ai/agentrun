@@ -24,26 +24,26 @@ const names = (list: readonly string[]) => (list.length < 2 ? list.join("") : `$
  *  key's sign-ins is named on its row, and the key's Forget waits for it to end; one that takes it meanwhile is said from
  *  the 409. Each vendor's result is named: a delete it didn't confirm, with its message. With none saved, a line only for an
  *  agent whose browser is a vendor's (its `tools` entry resolves to one). */
-export function SignIns({ agent, v2, onAgent }: { agent: Agent; v2: Pick<Client, "forgetSignIn" | "getAgent">; onAgent: (agent: Agent) => void }) {
+export function SignIns({ agent, v2, onAgent, poll }: { agent: Agent; v2: Pick<Client, "forgetSignIn" | "getAgent">; onAgent: (agent: Agent) => void; poll: () => void }) {
   const [asking, setAsking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ text: string; run?: string; tone: "warn" | "error" } | null>(null);
   // The agent the page holds now: a change saved while a Forget waits (the Learning switch) is the one to keep.
   const latest = useRef(agent);
   latest.current = agent;
+  // The page's read is a new function at each render: the timer keeps its pace by calling the newest one.
+  const pollNow = useRef(poll);
+  pollNow.current = poll;
   // The server always serves the list (GET /v2/agents/{id}); an agent read without one has none saved.
   const list = agent.sign_ins ?? [];
-  // A run holds one: read the agent again every HELD_POLL_MS until none is held, so the key's Forget comes back when the
+  // A run holds one: read the agent again every HELD_POLL_MS until none is held (through the page's own guarded read, so a slow answer never undoes a newer write), so the key's Forget comes back when the
   // run ends (a failed read waits for the next). Not while a Forget is under way: its own read of the agent follows it.
   const held = list.some((s) => s.state === "held");
   useEffect(() => {
     if (!held || busy) return;
-    let gone = false;
-    const timer = setInterval(() => {
-      void v2.getAgent(agent.agent_id).then((read) => { if (!gone) onAgent(read.agent); }, () => {});
-    }, HELD_POLL_MS);
-    return () => { gone = true; clearInterval(timer); };
-  }, [held, busy, agent.agent_id, v2, onAgent]);
+    const timer = setInterval(() => pollNow.current(), HELD_POLL_MS);
+    return () => clearInterval(timer);
+  }, [held, busy]);
   const resolved = agent.tools?.find((t) => t.name === "browser")?.resolved;
   // Hidden with none saved and no vendor browser, unless a forget's result is still to be read.
   if (!list.length && resolved !== "browserbase" && resolved !== "kernel" && !said) return null;
