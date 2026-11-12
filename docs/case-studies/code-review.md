@@ -1,7 +1,13 @@
 # Code review for 18 cents
 
-Code review got expensive with how many PRs we open, so we built our own. It runs on particle-1, a model that costs
-almost nothing, and a review costs us about 18 cents.
+Greptile is an industry-leading code review product, and it charges about a dollar a review. Once our agents started
+opening most of our pull requests, our bill went from $180 a month to $6,451:
+
+<p align="center">
+  <img alt="Our Greptile bill, every month: $180 in December up to $6,451 in October and $7,018 so far in November" src="../assets/case-studies/chart-review-bill.png" width="100%">
+</p>
+
+So we built our own. It runs on particle-1, a model that costs almost nothing, and a review costs us about 18 cents.
 
 <p align="center">
   <img alt="Real bugs caught: Greptile 26%, AgentRun 42%" src="../assets/case-studies/chart-code-review.png" width="100%">
@@ -31,9 +37,10 @@ We tuned on 70 merged PRs and kept the 30 newest aside for the final score. Opus
 reviewer without knowing who wrote it, and every real bug anyone found went into one answer key: 78 bugs, 8 of them
 serious. Cost is what OpenRouter billed.
 
-## Try it
+## Run your own
 
-In the console, **Templates → Apply → code-review**. Add a `docs/CODEREVIEW.md` to your repo with what matters and what
+Start AgentRun with `npx @parcha/agentrun`, or deploy your own server to Render from the button at the top of the
+[README](../../README.md). Then, in the console, **Templates → Apply → code-review**. Add a `docs/CODEREVIEW.md` to your repo with what matters and what
 to never flag, and turn on `"learning": true`.
 
 Want it sharper on your code? [Tune a template on your own code](../tutorials/tune-a-template.md).

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="#case-studies">Our code reviews cost 18 cents now. See how ↓</a>
+  <a href="#case-studies">Our code review bill went up 36x this year. Now a review costs us 18 cents. See how ↓</a>
 </p>
 
 <p align="center">
@@ -48,9 +48,9 @@ tokens with every run.
   <a href="docs/case-studies/merchant-classification.md"><img alt="7x cheaper once it learned the job" src="docs/assets/case-studies/case-merchant-codes.png" width="49%"></a>
 </p>
 
-**Code review.** It got expensive with how many PRs we open, so we built our own reviewer on a cheap model and tuned
-it on our own PRs. It costs 18 cents a review, and on 30 PRs it had never seen it caught 1.6x the real bugs Greptile
-did. [How we built it](docs/case-studies/code-review.md) · [Tune one on your repo](docs/tutorials/tune-a-template.md)
+**Code review.** Our Greptile bill went from $180 a month to $6,451 once our agents started opening most of our PRs.
+So we built our own reviewer on a cheap model and tuned it on our own PRs. It costs 18 cents a review, and on 30 PRs
+it had never seen it caught 1.6x the real bugs Greptile did. [How we built it](docs/case-studies/code-review.md) · [Tune one on your repo](docs/tutorials/tune-a-template.md)
 
 **Merchant codes.** We let Opus figure out how to classify merchants, then handed what it learned to a cheap model.
 Same job, $0.89 down to $0.12 a merchant. [How it works](docs/case-studies/merchant-classification.md) · [Do it with your own job](docs/tutorials/learn-then-hand-off.md)
