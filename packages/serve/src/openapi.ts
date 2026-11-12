@@ -30,7 +30,7 @@ import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT }
 import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { BROWSER_VENDOR_IDS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
@@ -648,6 +648,10 @@ const COMPUTER_PROVIDER = closedWith({
   gpu: { ...COMPUTER_PROVIDER_GPU, description: "A sandbox provider's GPUs, where it declares them: the choices an agent's `computer.gpu` names." },
   network: { type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on an open network is open (\"an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply\"), except where AGENTRUN_BOX_ALLOW is none and the computer needs a network, which this server refuses (\"needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none\"; the provider is then not ready, and its runs are refused). Absent where the allow-list applies (Docker), or where it depends on the image a provider's configurations name." },
   images: { type: "array", items: { type: "string" }, description: "The images the provider offers for the kind, as an agent's `computer.image` names them (Orgo's desktop: `linux`, `windows`); the kind's default first when it is one of them. Absent when it offers none to choose." },
+  persistent: {
+    ...closedWith({}, { images: { type: "array", items: { type: "string" }, description: "Of `images`, the ones whose computer an agent can keep. Absent when the provider offers no images to choose." } }),
+    description: "Present where an agent's computer of this kind can be kept between its runs (`computer.persistent: true`): its provider keeps one for an agent (Orgo's Linux desktop, which its suspend keeps with its memory). Absent where none can.",
+  },
 });
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
@@ -686,13 +690,20 @@ const RUN_COMPUTER = {
 };
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
-  on: { type: "boolean", description: "Whether Mode 2 is on: run folders on this Archil disk. Off, they are on this server's own disk (Mode 1)." },
+  on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
-  diskId: { type: "string" },
-  region: { type: "string" },
-  s3Url: { type: "string", format: "uri" },
+  region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
+  s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
+});
+/** archil/1: GET and DELETE /agents/{agent_id}/archil's answer (archil-routes.ts agentView). */
+const AGENT_ARCHIL_VIEW = closed({
+  on: { type: "boolean", description: "Whether this server is in Archil mode (Mode 2). Off, no agent has a disk here." },
+  archil_disk: {
+    oneOf: [closed({ disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$" } }), { type: "null" }],
+    description: "The agent's own disk, which agentrun made for it (named `agentrun-<server id>-i-<agent id>`): null until its first run that uses it (a run whose launch names no `archil_disk`), when it is made.",
+  },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
@@ -1141,7 +1152,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: ref("schemas/RunCreateInline") } } },
       responses: {
         "202": { description: "The run, accepted, as POST /agents/{agent_id}/runs answers it. Follow it on its timeline.", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Run") } } },
-        ...errors(400, 401, 409, 422, 429, 500),
+        ...errors(400, 401, 409, 422, 429, 500, 503),
       },
       "x-agentrun-serve": "inlineagent/1",
     },
@@ -1328,16 +1339,16 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/workspace/archil": {
     get: {
-      operationId: "getWorkspaceArchil", tags: ["local"], summary: "Whether run folders are on an Archil disk (Mode 2), its settings, and whether its keys are saved",
+      operationId: "getWorkspaceArchil", tags: ["local"], summary: "Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved",
       responses: { "200": json(ARCHIL_VIEW, "The Archil settings, never a key."), ...errors(401, 429, 500) },
       ...ARCHIL_MARK,
     },
     put: {
-      operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
-      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the disk, region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
+      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
-        content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
@@ -1347,16 +1358,36 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 off: run folders on this server's own disk",
-      description: "Removes the Archil settings. Its saved keys are kept, for turning it on again.",
+      description: "Removes the Archil settings. Its saved keys, and each agent's disk, are kept, for turning it on again.",
       responses: { "200": json(ARCHIL_VIEW, "The Archil settings, off."), ...errors(401, 429, 500) },
       ...ARCHIL_MARK,
     },
   },
   "/workspace/archil/test": {
     post: {
-      operationId: "testWorkspaceArchil", tags: ["local"], summary: "Test the Archil disk with its saved account key",
-      description: "One listing of the disk's root through its file API, with the saved account key. ok, or why in plain words: Archil is off, the key is not saved, Archil refused it, no such disk, or Archil was not reached. Never a key.",
+      operationId: "testWorkspaceArchil", tags: ["local"], summary: "Test the Archil account key at its region's control plane",
+      description: "One listing of the account's disks at the region's control plane, with the saved account key. ok, or why in plain words: Archil is off, the key is not saved, Archil refused it, or Archil was not reached. Never a key.",
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+  },
+  "/agents/{agent_id}/archil": {
+    get: {
+      operationId: "getAgentArchil", tags: ["agents"], summary: "The agent's own Archil disk, once its first run made it",
+      description: "In Archil mode each agent has its own disk, made on its first run whose launch names no `archil_disk` (never at the agent's creation), in the account key's region, named `agentrun-<server id>-i-<agent id>`. Null before that, and in Mode 1. A disk a run's launch names is the caller's (a disk per customer) and is never shown here.",
+      parameters: [ref("parameters/AgentId")],
+      responses: { "200": json(AGENT_ARCHIL_VIEW, "The agent's disk, or none yet."), ...errors(401, 404, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+    delete: {
+      operationId: "deleteAgentArchil", tags: ["agents"], summary: "Remove an agent's own Archil disk, and everything on it",
+      description: "For an archived agent, or an agent its source manages (an inline run's agent, which is never archived here), with no live run of any agent on its disk (a run of another agent may name it in `archil_disk`): its own disk is deleted at Archil (DELETE /api/disks/{id}), with its runs' folders, its home and its learning, and forgotten; the agent's next run would make a new, empty one. This frees a disk of the Archil plan's limit. The disk is marked as being removed before its live runs are counted: meanwhile a new run of the agent on it is 409 agent_not_runnable, and a run launched just before is refused at its claim. A disk a run's launch named is never touched. 412 precondition_failed for an agent of this server not archived, or a live run on the disk (the disk is the agent's again); 424 upstream_failed when Archil does not remove it (nothing is forgotten). Answers the agent's disk now (none) and what was removed.",
+      parameters: [ref("parameters/AgentId")],
+      responses: {
+        "200": json({ ...AGENT_ARCHIL_VIEW, required: [...AGENT_ARCHIL_VIEW.required, "removed"], properties: { ...AGENT_ARCHIL_VIEW.properties, removed: { oneOf: [closed({ disk_id: { type: "string" } }), { type: "null" }], description: "The disk deleted at Archil, or null when the agent had none." } } }, "The agent's disk removed, or none to remove."),
+        ...errors(401, 404, 412, 429, 500, 503),
+        "424": { description: "`upstream_failed`: Archil did not remove the agent's disk (refused, or not reached); nothing is forgotten.", content: { "application/json": { schema: ref("schemas/Error") } } },
+      },
       ...ARCHIL_MARK,
     },
   },
@@ -1944,7 +1975,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     ...SO_FAR,
     overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
   },
-  RunCreate: { cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` } },
+  RunCreate: {
+    cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    archil_disk: {
+      type: "object", additionalProperties: false, required: ["disk_id"],
+      properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The disk id Archil returned when the disk was made (`dsk-` and 16 hex digits): Archil's API addresses disks by id, not by owner/name. In this server's Archil region (the account key's)." } },
+      description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. It is read at Archil before the run is made: none of that id, or one in another region than the account key's, is 422 at `archil_disk.disk_id` in words naming the region, and no run is made (503 when Archil can't be asked). The claim reads it again, so a disk removed in between fails the run in the same words. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1, or with no account key saved.",
+      "x-agentrun-serve": "archil/1",
+    },
+  },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
@@ -2068,8 +2107,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         provider: { type: "string", description: "The provider that serves the kind, from GET /computers. Absent for `none`." },
         image: { type: "string", minLength: 1, description: "The image the computer starts from: one the provider offers for the kind (GET /computers lists them as the provider's `images`), such as Orgo's `windows` desktop. Absent, the kind's default. One the provider does not offer saves with a warning naming the ones it does, and its runs are refused at their start in the same words. Absent for `none`." },
         gpu: COMPUTER_GPU,
+        persistent: { type: "boolean", description: "Whether the agent keeps its own computer between runs: true makes one at its first run, detaches it (not deletes it) at each run's end, and attaches it again at the next, with what was on it; false or absent, a fresh computer for each run. Only where the provider keeps one for the kind and image (GET /computers: the provider's `persistent`), else 422 not_allowed; never one that mounts the run's folder. One run at a time: a run that finds the computer held by another run still going is refused at its start, naming that run. Archiving the agent, turning this off, or a setting on another provider or image deletes the computer (GET /agents/{agent_id}'s `own_computer` shows it)." },
       },
-      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, and a sandbox's GPUs. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
+      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, and whether the agent keeps it between runs. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
@@ -2107,6 +2147,26 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         pending: { type: "integer", minimum: 0, description: "How many of its learned items wait for its owner's OK: notes, skills and workflow drafts held with `status: pending` on its learning folder's main (approve them on GET /agents/{agent_id}/learning)." },
       },
       "x-agentrun-serve": "serve/1",
+    },
+    own_computer: {
+      oneOf: [
+        {
+          ...closedWith({
+            provider: { type: "string", description: "The provider it lives on, as `computer.provider` names it." },
+            id: { type: "string", description: "The vendor's id of the computer." },
+            name: { type: "string", description: "Its name at the vendor." },
+            state: { enum: ["held", "detached", "deleting"], description: "`held`: a run has it now (`run_id`); `detached`: kept between runs (an Orgo Linux desktop suspended, its memory and disk kept); `deleting`: the agent no longer has a use for it (archived, `computer.persistent` off, or another provider or image) and it is being deleted, or a delete failed (`why`)." },
+            since: { type: "string", format: "date-time", description: "When it took this state." },
+          }, {
+            image: { type: "string", description: "The image of the provider's configuration it was made from." },
+            run_id: { type: "string", description: "The run that holds it, while held." },
+            why: { type: "string", description: "Why a delete has not happened yet, in the provider's words: the server tries again at the agent's next edit, and the janitor deletes it once its owner is gone." },
+          }),
+        },
+        { type: "null" },
+      ],
+      description: "The agent's own computer, kept between its runs where its `computer.persistent` is true: what this server records of it. Null when it has none (no persistent setting, or no run has made one yet).",
+      "x-agentrun-serve": "computer/1",
     },
     warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as a create (POST /agents) or a commit (PUT .../definition) answers it, the same shape apply's warnings take. Absent from every other answer (GET and list never send it).", "x-agentrun-serve": "warnings/1" },
   },
@@ -2578,14 +2638,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     modelsSource["x-agentrun-serve"] = "models/2";
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
   }
-  // browser/1: the browser tool runs on Browserbase or Kernel, picked per server and per agent (tool-plane.ts), so
-  // capabilities' `features.browser` names Kernel's where the server's settings resolve to it, which the contract's enum
-  // (browserbase, chrome, none) lacks.
+  // browser/1: the browser tool runs on the computer registry's browser providers (Browserbase, Kernel), picked per
+  // server and per agent (tool-plane.ts), so capabilities' `features.browser` names the one the server's settings resolve
+  // to, which the contract's enum (browserbase, chrome, none) may lack.
   const browser = ((schemas.Features as Json).properties as Record<string, Json>).browser as Json & { enum?: string[] };
-  if (Array.isArray(browser.enum) && !browser.enum.includes("kernel")) {
-    browser.enum = [...browser.enum, "kernel"];
+  const lacking = Array.isArray(browser.enum) ? BROWSER_VENDOR_IDS.filter((id) => !browser.enum!.includes(id)) : [];
+  if (lacking.length > 0) {
+    browser.enum = [...browser.enum!, ...lacking];
     browser["x-agentrun-serve"] = "browser/1";
-    fields.push("Features.browser.kernel");
+    fields.push(...lacking.map((id) => `Features.browser.${id}`));
   }
   // signins/1: a saved sign-in whose pointer does not open under this server's seal key (sign-ins-store.ts) reads `unreadable`,
   // which the contract's SignIn.state (ready, held) lacks.

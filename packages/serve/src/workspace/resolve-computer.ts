@@ -19,7 +19,8 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
+import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
@@ -30,8 +31,8 @@ import type { Workspace } from "./workspace.js";
 export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace };
 
 /** An agent's computer setting. `image`: the one of the provider's configurations it selects; absent, the default. A
- *  sandbox's may ask for GPUs. */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec };
+ *  sandbox's may ask for GPUs. `persistent`: the agent keeps its own computer between runs (agent-computer.ts). */
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean };
 
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
@@ -64,14 +65,24 @@ export type ClaimBrowser = {
   readonly provider: string;
   /** The longest a session lives, in seconds. */
   readonly maxLifetimeS: number;
-  /** Makes a session for `tag`, to live at most `lifetimeS`: its computer's id. */
-  open(tag: string, lifetimeS: number, signal?: AbortSignal): Promise<string>;
+  /** What its sessions offer beyond the protocol (the provider's capabilities().browser), which `open` may ask for. */
+  readonly features: BrowserFeatures;
+  /** Makes a session for `tag`, to live at most `lifetimeS`, with its own options (spec.browser): its computer's id. */
+  open(tag: string, lifetimeS: number, browser?: BrowserSpec, signal?: AbortSignal): Promise<string>;
   /** The sessions made for `tag`, by id. */
   find(tag: string, signal?: AbortSignal): Promise<string[]>;
+  /** Whether the session runs: false once it has ended or its provider no longer knows it. */
+  running(id: string, signal?: AbortSignal): Promise<boolean>;
   /** The session's CDP URL now. */
   url(id: string): Promise<string>;
   /** Ends the session; one already gone is ended. */
   close(id: string): Promise<void>;
+  /** The files a session downloaded, kept by the provider: where its features declare downloads. */
+  readonly downloads?: {
+    list(id: string): Promise<BrowserFile[]>;
+    /** The file's bytes, streamed; the stream fails in words once it passes maxBytes. */
+    read(id: string, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>>;
+  };
 };
 
 /** The claim's side: the keys saved for a provider (Settings → Computers; values, never shown), and the launch of one
@@ -84,8 +95,9 @@ export type ClaimSide = {
    *  the one wording a run's start and Settings → Computers say (noDockerWords). Absent: the launch's own words. */
   daemon?(provider: string): Promise<DockerDaemon>;
   /** `configuration`: the provider's configuration the setting selected; its options go to the provider with the keys,
-   *  and its image, when it names one, is the computer's. `gpu`: a sandbox's GPUs, held to that configuration. */
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
+   *  and its image, when it names one, is the computer's. `gpu`: a sandbox's GPUs, held to that configuration.
+   *  `persistent`: the agent's own computer, which that configuration keeps (and which mounts no run's folder). */
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly mount?: MountSpec; readonly gpu?: GpuSpec; readonly persistent?: true; readonly signal?: AbortSignal }): Promise<LaunchedComputer>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -310,6 +322,12 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     if (refused) return { refused: `A ${entry.label} sandbox can't have this agent's GPUs: ${refused.words}. Change the GPUs or the provider for this agent's computer in ${SETTINGS}.` };
   }
 
+  // The agent's own computer, kept between its runs: only where the configuration keeps one, and never one that mounts
+  // the run's folder (a later run would find an earlier run's folder in it).
+  const persistent = setting.persistent === true;
+  if (persistent && configuration.persistence === undefined) return { refused: `A ${entry.label} ${kind} keeps no computer for an agent between runs (it declares no persistence): turn persistent off, or pick a computer that keeps one, for this agent's computer in ${SETTINGS}.` };
+  if (persistent && mounts) return { refused: `A ${entry.label} ${kind} mounts each run's folder, so it can't be kept between runs: turn persistent off for this agent's computer in ${SETTINGS}.` };
+
   // Its keys: every required one saved, before anything starts; only declared names go to the provider.
   const saved = await side.keysOf(entry.id);
   const has = (name: string) => typeof saved[name] === "string" && saved[name] !== "";
@@ -332,7 +350,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       const mount = mounts ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {
-        launched = await side.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(signal ? { signal } : {}) });
+        launched = await side.launch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         // A provider that binds a folder of this machine (Docker) whose daemon does not answer: the one wording.
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;
