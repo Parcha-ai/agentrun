@@ -267,9 +267,9 @@ function alreadyAnswered(id: string, decision: ApprovalDecision, ended = false):
 /** The answer to approval `id` of run `runId` already written as a command, taken by its runner or not: the first approve or
  *  deny naming it that the runner has not refused (the store keeps one, schema.ts COMMANDS_ONE_ANSWER). A refused one (its
  *  run could not resume) answers nothing, so the person may answer again. */
-async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny" } | undefined> {
+async function sentAnswer(store: RunsStore, runId: string, id: string): Promise<{ decision: "allow" | "deny"; at: number } | undefined> {
   const row = (await store.commands(runId, 0)).find((command) => (command.kind === "approve" || command.kind === "deny") && command.refused === null && isObject(command.body) && command.body.approval === id);
-  return row && { decision: row.kind === "approve" ? "allow" : "deny" };
+  return row && { decision: row.kind === "approve" ? "allow" : "deny", at: row.id };
 }
 
 /** How a stop or cancel written to run `runId` before `before` (a command id; absent, any) answers every call still waiting:
@@ -293,8 +293,16 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
     if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
-  const given = moment.answeredApprovals?.[id] ?? (await sentAnswer(store, moment.id, id));
-  if (given) return settle(given);
+  const answered = moment.answeredApprovals?.[id];
+  if (answered) return settle(answered);
+  const given = await sentAnswer(store, moment.id, id);
+  if (given) {
+    // The answer written before (this one's retry, or another) sits behind a stop or cancel the runner has not taken yet:
+    // it never runs, so it is told as any answer behind that stop is, never settled as taken.
+    const behind = await endBefore(store, moment.id, { before: given.at });
+    if (behind) throw alreadyAnswered(id, behind.decision);
+    return settle(given);
+  }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
   const ending = await endBefore(store, moment.id);
   if (ending) throw alreadyAnswered(id, ending.decision);
@@ -317,6 +325,13 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
   // refused at that end, so the person is told now.
   const raced = await endBefore(store, moment.id, { before: sent.id });
   if (raced) throw alreadyAnswered(id, raced.decision);
+  // That stop's end may already be written by this read: its runner took the stop and refused this answer in the same
+  // commit. Read the answer back: refused behind a stop or cancel, it never runs either.
+  const mine = (await store.commands(moment.id, 0)).find((command) => command.id === sent.id);
+  if (mine?.refused != null) {
+    const end = await endBefore(store, moment.id, { before: sent.id, taken: true });
+    if (end) throw alreadyAnswered(id, end.decision);
+  }
 }
 
 // ---- start -----------------------------------------------------------------------------------------------------------
@@ -502,10 +517,17 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const { external, revision } = inline;
   const ref = externalKey(external);
   const mapped = await store.agents.byExternal(ref);
-  const entry: AgentEntry = (mapped && (await getAgent(store, mapped.id))) || {
-    agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
-    revision: null, version: 0, revisions: 0, sizes: new Map(),
-  };
+  const stored = mapped ? await getAgent(store, mapped.id) : null;
+  // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
+  // so its launch is prepared under them: a workflow run's title names the version it runs. A run of a version already
+  // stored keeps the agent's as they are, as a run of any agent's earlier revision does.
+  const firstOfVersion = !stored || !(await store.agents.hasExternalVersion(stored.agent.id, external.version));
+  const entry: AgentEntry = stored
+    ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
+    : {
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        revision: null, version: 0, revisions: 0, sizes: new Map(),
+      };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });

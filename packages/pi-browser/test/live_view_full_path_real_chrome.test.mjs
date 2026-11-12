@@ -3,13 +3,13 @@
 // protocol, so a difference between the two is visible in the test output (nothing printed names a token or a URL of the viewer).
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { createLiveView } from "../dist/live-view/index.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { connect } from "./fixtures/ws-client.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
 
 const settle = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -100,7 +100,7 @@ const short = (m) => m.type === "mouse" ? `mouse ${m.action} ${m.x},${m.y} ${m.b
 
 async function rig(t) {
   const web = await site();
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "lv-full-"));
+  const root = await scratch(t, "lv-full-");
   const target = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "target") } });
   const viewer = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "viewer") } });
   const refs = [];

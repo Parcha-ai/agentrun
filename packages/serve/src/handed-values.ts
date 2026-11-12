@@ -20,7 +20,7 @@ export async function launchOf(store: Pick<Store, "runs">, runId: string): Promi
 }
 
 /** The pointers a run was handed, as its row kept them (never the pointers, their SHA-256), read by the one rule a
- *  serve.json's mark is read by (run-view.ts handedMark): a column that is absent or null is no mark; a non-empty array
+ *  the stored mark is read by (run-view.ts handedMark): a column that is absent or null is no mark; a non-empty array
  *  of SHA-256 hashes is the mark; anything else (`true`, an object, a string, an empty array, which no writer writes, or
  *  an array holding anything but a hash) is MALFORMED, which handedPointers reads as unreadable: fails closed. */
 export const handedOf = (runRow: RunRow): Handed | undefined => (runRow.signInHanded === null || runRow.signInHanded === undefined ? undefined : handedMark(runRow.signInHanded));

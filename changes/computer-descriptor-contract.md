@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-computer, @parcha/agentrun-serve, @parcha/pi-durable-agent
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
 kind: breaking
 ---
 Each computer provider is now declared once, in a descriptor (`defineProvider`: its id, label, keys and the option each fills, settings, mounts, configurations, default images, whether it prepares its image, runs on this host or takes a ledger, and a lazy `load()`), and the registry and the kind registry's `PROVIDERS` are derived from the descriptors. `ProviderId` is any string; the built-in ids are `BuiltinProviderId`. The server reads every provider from its descriptor and names none, and an agent's computer can name an image a provider's configurations offer.

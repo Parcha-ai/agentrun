@@ -78,6 +78,11 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** A workflow run's model node's execution, as the runner kept it before running it (workflow-spec.ts onModelNode):
+   *  `{ path, tier?, model }`, its execution path, the tier it asked for (absent for none) and the model id the run's route
+   *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
+   *  call nor a message. */
+  nodeModel: "agentrun.node.model",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
@@ -156,6 +161,9 @@ export interface BudgetData {
   readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number; readonly bound_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
+  /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
+   *  run's pause. */
+  readonly node?: string | null;
 }
 
 export interface CallStartData {
