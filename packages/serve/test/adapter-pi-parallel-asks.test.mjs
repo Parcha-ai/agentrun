@@ -33,7 +33,7 @@ test("pi through the adapter: two asked calls in one round: each answer reaches 
     return { row, ...(await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT)) };
   };
   const approvals = [];
-  for (let round = 0; round < 6; round++) {
+  for (let round = 0; round < 8; round++) {
     const now = await until(async () => {
       const state = await read();
       return state.row.runner === null && ["parked", "ended"].includes(state.row.state) && state;
@@ -42,10 +42,18 @@ test("pi through the adapter: two asked calls in one round: each answer reaches 
     const answered = new Set(now.entries.filter((entry) => entry.kind === "agentrun.answer").map((entry) => entry.data.callId));
     const pending = now.entries.filter((entry) => entry.kind === "agentrun.ask" && !answered.has(entry.data.callId)).map((entry) => entry.data.callId);
     assert.ok(pending.length > 0, `a parked run waits on an asked call: ${JSON.stringify(now.entries.map((entry) => entry.kind))}`);
-    const callId = pending[0];
+    // Each call is answered once, as a person does: a call this test approved already, whose answer is not in the journal
+    // yet, is never approved again (the store would refuse a second answer, AnswerTaken). The run is then waited on.
+    const callId = pending.find((id) => !approvals.includes(id));
+    if (callId === undefined) {
+      await until(async () => { const later = await read(); return later.row.epoch > now.row.epoch || later.row.state === "ended"; }, "the run moved on from its approved calls", 10_000);
+      continue;
+    }
     approvals.push(callId);
-    await sendCommand(opened.server, "run-1", { kind: "approve", body: { approval: callId } });
-    await until(async () => (await read()).row.epoch > now.row.epoch, "the approve woke the run", 10_000);
+    const sent = await sendCommand(opened.server, "run-1", { kind: "approve", body: { approval: callId } });
+    // Taken by the run's runner: the run acted on this answer before the next round reads it (a claim that came before the
+    // approve was written, and parked again, never counts as its wake).
+    await until(async () => (await opened.server.commands("run-1", 0)).find((command) => command.id === sent.id)?.takenAt != null, "the approve taken by the run", 10_000);
   }
   const { row, entries } = await read();
   assert.deepEqual(unhandled, [], "no expectation failed unhandled when the first ask sealed the journal");

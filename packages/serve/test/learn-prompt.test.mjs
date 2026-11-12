@@ -53,7 +53,7 @@ test("the prompt asks for the notes in the answer, one ```note block each, in th
 test("asked for a skill's job as a workflow draft (draftFor), the prompt gains exactly one line naming the skill; without it, none", () => {
   const plain = reflectPrompt({ dir: DIR, active: 0, tools: ["read"] });
   const asked = reflectPrompt({ dir: DIR, active: 0, tools: ["read"], draftFor: ["weekly-report"] });
-  const line = "Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes, if the job runs end to end as model and tool-call steps.";
+  const line = "Your skill `weekly-report` has now served 3 or more runs: this time, also keep its job as a workflow draft named `weekly-report`, its steps as nodes, if the job runs end to end as model and tool-call steps. Its output is the job's answer in the output format the skill gives: its last node writes it, and `output` names that node's text.";
   const extra = asked.split("\n").filter((one) => !plain.split("\n").includes(one));
   assert.deepEqual(extra, [line], "one extra line, and nothing else changes");
   assert.equal(asked.split("\n").length, plain.split("\n").length + 1);

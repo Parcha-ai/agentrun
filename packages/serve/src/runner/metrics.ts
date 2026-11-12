@@ -92,6 +92,16 @@ export function runEndCost(parts: { readonly model: number | null; readonly paid
   return parts.model === null || parts.paid === null || parts.decisions === null ? null : parts.model + parts.paid + parts.decisions;
 }
 
+/** Whether a CLI harness's record (`entries`, its root's) shows the model at work: a model message, a tool call it made, or
+ *  its end-of-run turn's answer. Each took a model request, so a run that shows one and booked none (its requests went
+ *  past its model proxy) spent what no booking read: its cost is unknown, never $0. */
+export function cliModelWorked(entries: readonly EntryLike[]): boolean {
+  return entries.some((e) => {
+    const role = (e.data as { role?: unknown } | undefined)?.role;
+    return e.kind === KINDS.callStart || ((e.kind === KINDS.message || e.kind === KINDS.endOfRunTurn) && role === "model");
+  });
+}
+
 /** Whether a run's record carries no cost of its own, so its usage row and its live spend are its booking's: a CLI
  *  harness's record (`cli`), or a workflow's (its model nodes' answers carry pi-ai's $0). A pi run's answers carry their
  *  booking (adapters/pi.ts afterResponse). */
