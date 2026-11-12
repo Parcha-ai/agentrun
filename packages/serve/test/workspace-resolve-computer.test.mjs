@@ -133,13 +133,15 @@ test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's fol
   assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
     refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100. ${pick}`,
   });
-  // daytona-gpu takes no mount, and Mode 2's folder is an Archil mount: refused in words, as Modal's is.
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
-  });
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Modal sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
-  });
+  // No GPU computer mounts Mode 2's Archil folder yet (no FUSE): refused in words that say why and what to use instead.
+  // Each provider's own reason, from its descriptor.
+  const noFolder = (label) =>
+    ({
+      Daytona: "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.",
+      Modal: "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.",
+    })[label];
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Daytona") });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Modal") });
   assert.match((await resolve({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }, 1, scratch(), SAVED, KINDS)).refused, /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
   const root = scratch();
   const side = claim(root);

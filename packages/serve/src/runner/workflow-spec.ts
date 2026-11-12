@@ -340,6 +340,12 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
           modelOf,
+          // Each model node's execution, kept on the node log (KINDS.nodeModel) before it runs: its path, the tier it asked
+          // for and the model id that tier's route sends it to, so the run's graph says what each execution ran on, and a
+          // later claim with another model of the tier never rewrites an earlier one's.
+          onModelNode: async ({ executionPath, tier }) => {
+            await nodeLog?.append([{ kind: KINDS.nodeModel, data: { path: executionPath, ...(tier ? { tier } : {}), model: modelOf(tier).modelId } as never }]);
+          },
           steps,
           // The nodes' tools as the registry holds them (their booked registrations, never their bindings' own raw ones, which
           // would book beside the run's ledger), and the run's gate over them by name (main's registry.install).

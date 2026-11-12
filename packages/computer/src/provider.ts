@@ -82,6 +82,11 @@ export interface GpuCapability {
 	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: none yet proven on its GPU computers. */
 	mounts?: MountKind[];
 	/**
+	 * Why a GPU computer takes none of the other mounts, in words naming no field: a fact of the vendor's runtime, or
+	 * (yet) one not proven there. checkGpu's refusal of a mount gives it, and serve's refusal of the run's folder.
+	 */
+	unmounted?: { why: string; yet: boolean };
+	/**
 	 * How init holds a GPU computer's programs off its network, where it is not the plain network namespace: on Modal's
 	 * gVisor, "userns-netns", one made inside a user namespace, as root there may not make one (measured). The fence holds
 	 * either way; each computer's hello reads back the one it got.
@@ -271,7 +276,8 @@ export function checkGpu(gpu: unknown, { gpu: offered }: Pick<ComputerCapabiliti
 	// A mount that is not an object with a kind (null among them) is checkMount's refusal; nothing is read from it here.
 	const kind = typeof mount === "object" && mount !== null ? (mount as { kind?: unknown }).kind : undefined;
 	if (kind !== undefined && offered.mounts !== undefined && !offered.mounts.includes(kind as MountKind)) {
-		return refuse(`a GPU computer here takes no ${String(kind)} mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU`);
+		const why = offered.unmounted?.why ?? "it is not proven on this provider's GPU computers yet";
+		return refuse(`a GPU computer here takes no ${String(kind)} mount: ${why}; ask for a GPU computer without a mount, or a mount without a GPU`);
 	}
 	return [];
 }

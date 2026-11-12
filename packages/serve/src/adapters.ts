@@ -4,7 +4,7 @@
 // Claude Agent SDK and codex's Codex are installed on first use into the data's harnesses directory and loaded from there
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
@@ -178,7 +178,7 @@ function unavailable(facts: AdapterFacts, error: unknown, npx: boolean, env: Nod
 }
 
 type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
-/** A child's command under the run's confinement (pi-durable-disk's confinePrefix): only added in front. */
+/** A child's command under the run's confinement (noNewPrivsPrefix): only added in front. */
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
@@ -190,6 +190,33 @@ export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: strin
 export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
   if (!prefix.length) return undefined;
   return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
+}
+
+/** The util-linux `setpriv` a CLI run's process starts under. */
+const SETPRIV = "/usr/bin/setpriv";
+
+/** The argv a CLI run's process starts under for no_new_privs: `setpriv --no-new-privs --` on Linux, nothing on macOS
+ *  (which has no no_new_privs). Where setpriv is not usable it throws (code `SETPRIV_UNAVAILABLE`), so the run is refused,
+ *  never started unconfined. Copied from pi-durable-disk's noNewPrivsPrefix when that package was retired. */
+export function noNewPrivsPrefix(options: { noNewPrivs?: boolean; setprivPath?: string } = {}): string[] {
+  const noNewPrivs = options.noNewPrivs ?? process.platform !== "darwin";
+  if (!noNewPrivs) return [];
+  const path = options.setprivPath ?? SETPRIV;
+  try {
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    accessSync(path, constants.X_OK);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw Object.assign(
+      new Error(
+        `commands run under no_new_privs (and as runAs) through setpriv (util-linux), which is not usable at ${path}: ${reason}. ` +
+          "Install util-linux, point setprivPath at it, or pass noNewPrivs: false on a host that already confines commands.",
+        { cause },
+      ),
+      { code: "SETPRIV_UNAVAILABLE" as const },
+    );
+  }
+  return [path, "--no-new-privs", "--"];
 }
 
 

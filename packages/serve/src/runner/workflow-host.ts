@@ -65,6 +65,9 @@ export interface WorkflowCap {
 export interface WorkflowHostDeps {
   /** A node's tier's model (byTier): app.ts's nodeAgent model. */
   readonly modelOf: (tier: NodeTier) => { readonly provider: string; readonly modelId: string };
+  /** Told as each model node's execution starts, before it runs: its execution path and the tier it asked for (the graph
+   *  keeps what each execution ran on). Absent: nothing told. */
+  readonly onModelNode?: (node: { readonly executionPath: string; readonly tier?: string }) => Promise<void>;
   /** The thinking level every node agent runs at. */
   readonly thinkingLevel?: unknown;
   /** The extensions every model node's agent shares (the coding extension and the gate), installed in the registry too. */
@@ -93,6 +96,15 @@ export interface WorkflowHostDeps {
 }
 
 const identityCap: WorkflowCap = { node: (fn) => fn, effect: (fn) => fn, judge: (fn) => fn };
+
+/** `runNode` that tells `told` of each model node's execution (its path and tier) before it runs it. */
+function withModelNode<P extends { executionPath?: string; tier?: unknown }, R>(runNode: (params: P) => Promise<R>, told: WorkflowHostDeps["onModelNode"]): (params: P) => Promise<R> {
+  if (!told) return runNode;
+  return async (params) => {
+    if (typeof params.executionPath === "string") await told({ executionPath: params.executionPath, ...(typeof params.tier === "string" ? { tier: params.tier } : {}) });
+    return runNode(params);
+  };
+}
 
 /** The workflow task's host and the extensions to install before the Harness opens, as the per-run process built them.
  *  Pass the result to createWorkflowLoop's spec.build. */
@@ -136,7 +148,7 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
     run: ({ key, runtime, context, driver }: { key: string; runtime: unknown; context: Context; driver: unknown }) => {
       const decisions = decisionRecovery({ key, runtime: runtime as never, context });
       const recovered = withRecovery(driver as never, {
-        runNode: nodes.on(taskScope(runtime as never), context).runNode,
+        runNode: withModelNode(nodes.on(taskScope(runtime as never), context).runNode, deps.onModelNode),
         runEffect: deps.runEffect as never,
         // The judge the driver asks once it has admitted a request: the cap holds, sends and settles it there (admitted).
         ...(deps.decisionProviders ? { runJudge: admitted(judgeFromProviders({ ...deps.decisionProviders, loadImage: deps.loadImage } as never)) as never, decisionProviders: deps.decisionProviders as never } : {}),
