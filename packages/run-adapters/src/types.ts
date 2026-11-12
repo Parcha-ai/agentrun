@@ -135,6 +135,8 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** Its `inputTokensMax` is its provider's count, not its bytes (ProxyRequest.inputTokensCounted). */
+  inputTokensCounted?: true;
   /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
@@ -313,9 +315,8 @@ export interface AdapterSession {
   recover(): Promise<void>;
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
-   *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
-   *  never carried, and the rest is left as it is. */
+   *  when a later process opens it, and the next `send` is a turn of its own. A host that closes a cut turn of its own
+   *  prompt names it (`opening`): that one is withdrawn and never carried, and the rest is left as it is. */
   settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;

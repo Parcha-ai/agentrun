@@ -9,7 +9,7 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 ## Quick start (no key, no network)
 
-Node 24.11 or later. In a checkout of this repository:
+Node 24.22.3 or later. In a checkout of this repository:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -180,9 +180,10 @@ docker compose logs agentrun | grep Open
 The `.env` beside `compose.yaml` keeps the socket's group (`DOCKER_GID`) for every later `docker compose` command, in any
 shell: compose reads it each time, and `compose.yaml` needs it to be read at all.
 
-This `compose.yaml` doesn't pass `AGENTRUN_SEAL_KEY` to the server yet (#2164), so the server keeps its seal key inside
-the container, outside `/data`: recreating the container loses every saved key and sign-in. Until that's fixed, use
-[`deploy/compose.yaml`](../../deploy/README.md), which requires the key, or don't recreate the container.
+This `compose.yaml` passes `AGENTRUN_SEAL_KEY` from the `.env` to the server and refuses to start without it, so the key that
+seals every saved key, MCP credential and sign-in is kept outside the container and the data volume. Keep that `.env`
+line. A store whose secrets were sealed with another key refuses to start, and the server never makes a new key over
+sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
@@ -409,7 +410,7 @@ go through `work/` by path.
     connect, over a minute old); a live run's, of any server of this user's, stays.
   - On a Mac, where Docker runs in a VM, a socket bound in from the Mac does not connect, so the proxy runs inside the
     VM instead: one container per server, `agentrun-egress-<12 hex of the data root>`, labelled `agentrun.egress`. It
-    is `node:22-bookworm-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
+    is `node:22.23.5-trixie-slim` pinned by digest, with the kernel's two proxy files and a short entry bound read-only from
     `<data>/egress/`, the list as its one variable, a read-only root, no capability, the server's uid:gid, 256 MiB and
     256 processes. It listens on a Unix socket in a tmpfs volume of the same name, owned by the server's uid, and the
     box mounts that volume read-only at `/run/agentrun/egress/`. The box keeps `--network none`, its `socat` and its
@@ -933,6 +934,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `monid.run` | Run one monid endpoint, paid per call from the monid wallet: `{provider, endpoint, input}` in, the run's `output`, `price` and `cost` out | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
 | `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`; a tier the state fills in, such as `"{requestedTier}"`, may be any of the three, and a tier with no model fails the call), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
+| `subagent` | pi only: `{prompt, tools?, model?, max_tool_calls?, effort?}` in, the child's last text out, bounded like a host tool's result. Runs a fresh conversation whose whole task is `prompt`, with `tools` a subset of the agent's own (by catalog or session name, MCP tools and `bash` included; absent, none), on the agent's own model or the tier `model` names (`fast` or `strong`: the definition's `model_tiers`, else `AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`, else the agent's own model) ([subagents](#subagents)) | a pi run | no, no |
 
 `bash` and the background tools run only in a box: a runner agent, and a workflow, get no shell on this machine (see [Safety](#safety)). In a
 sandbox place `read`, `write` and `edit` run in the box too.
@@ -974,6 +976,54 @@ the model whole: the Claude Agent CLI would otherwise save a result past 50,000 
 to read it, which a run's confinement refuses, Codex keeps only the ends of a result past 10,000 tokens, and OpenCode
 would cut one past 2,000 lines or 51,200 bytes and save the rest to a file the session has no tool to read. A
 `web_search` answer past 100,000 characters leaves out its least relevant results, `omitted` counting them.
+
+### Subagents
+
+`subagent` is one primitive: a prompt, a fresh context and a subset of the agent's own tools, on the agent's own model
+unless the call names a tier. A child keeps the run's gate, so the agent's permissions and bash policy (`read-only`)
+hold its tool calls too, and every request it makes books on the run's one cap. It goes one level deep (a child is never
+given `subagent` or `ask_person`), and at most 4 children of a run work at once; more wait. The run's timeline nests each
+child under its call, and the run's cost counts every child's requests. How to split work and merge answers is the
+agent's own instructions, never the engine's.
+
+A call may set its child's `max_tool_calls` and `effort`. `max_tool_calls` narrows the agent's own budget (its definition's
+`max_tool_calls`, which holds each conversation) for that child and never widens it; with no budget of the agent's, the
+call's holds. `effort` (`low`, `medium` or `high`) is the child's thinking level; absent, the child thinks as the agent
+does. So one template can run wide reviewers at `medium` with 30 calls and deep ones at `high` with 90.
+
+A child is a conversation in the run's own journal, owned by its call, so it lives and ends with the run:
+
+- **A restart or a moved claim** resumes it. The next claim finds the same child, which answers its call once. A request
+  it had finished is never sent again, and one the stop cut is sent again. A child on a tier whose model changed in the
+  meantime (the server's `AGENT_MODEL_STRONG`, say) resumes on the tier's model now.
+- **A cancel** stops every child with the run: their requests are aborted, and nothing more is asked.
+- **The cap.** When the run's cap refuses a child's request, the child stops and its call fails in the cap's words
+  (`subagent: it stopped before it answered: ... spend_cap_reached`). The run's next request is refused the same way, so
+  the run parks at its cap (`input_required`, a `budget` pending) and sends nothing more. A raise resumes the run, not
+  the child: the agent reads the failed call on its next turn and may call `subagent` again, which starts a fresh child.
+  On a capped run, a call on a tier whose model has no known price is refused before any child starts.
+
+#### Patterns
+
+**Sample K, merge, verify.** One pass misses what a second finds, and states things neither would confirm. A template's
+skill can ask for K passes and check their union, with no engine support beyond the tool:
+
+1. In one turn, make K `subagent` calls with the same prompt and tools (K of 3 or 4 run at once; more wait their turn).
+   Each starts from a fresh context, so the answers vary the way independent samples do.
+2. Merge the K answers: dedupe the items that say the same thing about the same place, and keep how many children found
+   each.
+3. Before acting on a kept item, re-check it with the parent's own tools: open the file, page or record it cites and
+   confirm it says what the item claims. Drop what does not hold. Agreement between children orders the checks; it is
+   never the check.
+
+It fits any agent whose answer is a list:
+
+- Research: children answer with `web_search` and `web_fetch`; the parent re-fetches each cited source before it writes.
+- QA: children run one test plan with `browser`; the parent reproduces each finding before it files it.
+- Extraction: children pull a document's fields with `read`; the parent reads the page again for any value they differ on.
+- Code review: children read a diff with read-only `bash`; the parent re-reads each finding's lines before it posts.
+
+Each child books on the run's cap, so size the cap for K passes, not one.
 
 ### Search and fetch
 
@@ -2359,7 +2409,7 @@ left out: 2 sessions still being written: they come in next time
      A stopped run can be continued: a follow-up starts a fresh turn on the whole history, and the turn the stop cut is
      not replayed. A cancelled run cannot: a message to it is `409 not_continuable`, and its `next_action` is to start a
      new run of the agent.
-   - A workflow revision runs on the workflow loop, which drives the DSL's durable workflow task on the run's journal
+   - A workflow revision runs on the workflow loop, which drives the server's durable workflow task (src/workflow/task.ts) on the run's journal
      (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`, `report`) on the run's model, with the file
      tools each node names, and its typed questions on Jev or Parallel ([decision workflows](#decision-workflows)). A
      workflow that needs code or a tool call this host does not run is not saved here (`422`). The run is `queued`
@@ -2764,6 +2814,19 @@ on claude-agent, codex and opencode the model proxy adds them to the body (after
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
 the model's answer. Once per cap, across restarts; a raise re-arms it.
 
+A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
+steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
+reaches 75% of its cap, the run's tool gate
+refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
+is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
+would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
+working gets the same refusal on its next call and answers, a call a running tool makes is that tool's and runs, and
+model requests are judged by the cap as before, so the run's final answer still lands. The cap stays the last line: a
+request that does not fit what is left is refused as above. The figure is read from the run's booking records at each
+call, never kept in memory, so a restart or a claim moved to another runner holds the same line, and a raise moves it.
+Several requests out at once hold far more than they cost, which is why a fan-out of children used to end a small cap
+with no answer at all; the quarter left above the line is the room for each of them, and the parent, to answer.
+
 Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
 ceiling (its max output tokens, else its context window, clamped to what the window leaves): on pi through the request's
@@ -2773,9 +2836,33 @@ so the cap stays exact. A request is refused only when what is left cannot buy i
 tokens for its answer (what it asks for, when that is fewer), and when it thinks, the provider's least thinking budget
 where thinking takes one (Anthropic's, 1,024, the budget squeezed to it at the least) or else its thinking level's
 budget, since its reasoning then shares the limit (minimal 1,024, low 2,048, medium 8,192, high 16,384). The input bound is one token per UTF-8 byte of what is sent (a byte-level tokenizer never makes
-a token of less than one byte, and an image's base64 is far more bytes than its tokens), plus what the provider adds
-server-side (a tool-use prompt, each image), from the same table the model proxy of claude-agent, codex and opencode uses; there
-the proxy measures each request's body. A request in flight holds what it was admitted at until it answers, so requests
+a token of less than one byte), each image counted at what its model's provider bills it by its size in place of its
+base64's bytes, plus what the provider adds server-side (a tool-use prompt), from the same table the model proxy of
+claude-agent, codex and opencode uses; there the proxy measures each request's body. On a route straight to Anthropic
+(`https://api.anthropic.com`, on pi and claude-agent), each answer request is also counted by Anthropic's own free
+token count (`POST /v1/messages/count_tokens`, with only the credential and version headers, and never through a
+gateway or any other base), and its bound is that count plus the tool-use prompt when that is below its bytes. A count
+that fails or takes over 3 seconds leaves the byte bound; the request is never held up or refused for it.
+
+**The smallest cap that works.** The byte bound reads text as about two to three times the tokens it is billed as, and a
+step is sent only when the run's spend plus that step's least (its input bound, priced by the cap mode, and a 1,024-token
+answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet ($3 / $15,
+cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools, five requests (four
+screenshots, then the answer), spending about $0.04 in all:
+
+| Cap mode | Route | First request needs | Five-step run needs | Each further step |
+| --- | --- | --- | --- | --- |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| `expected` (the default) | Either | as `strict` | as `strict` until #2504 lands | as `strict` until #2504 lands |
+
+In `strict` mode every step's whole input is priced at the cache-write price. The `expected` row is today's: the runner
+does not yet price a step from what the previous request read from the cache, as `expected` is described above, so it
+prices like `strict` until #2504 lands. Once it does, a five-step run in `expected` mode needs about $0.06 by either route,
+and about $0.007 a further step. A claude-agent run's first request is of the same size (the pinned
+CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
+`packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself
 refused once the spend reaches the cap; see [monid](#tools)).

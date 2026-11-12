@@ -6,7 +6,25 @@
 # two runners on one store). Everything they keep is under /data: mount one volume there, the same one in each.
 # The base is pinned by digest (a multi-arch index); the dependencies by the workspace's package-lock.json, dev ones
 # included: the pi packages the server loads are the workspace's development dependencies, peers of its packages.
-FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS build
+# Node is 24.22.3, Node's November 2026 security release, installed from nodejs.org by install-node.sh, which verifies
+# the release's signed checksums: the official node:24.22.3 image was not yet published for amd64 and arm64 when this
+# was pinned. The base is plain Debian trixie, so no other Node is in any layer. Moves back to the official node image
+# next release.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS node
+ARG TARGETARCH
+# The key that signed this release's SHASUMS256.txt, by fingerprint, read from nodejs/release-keys at a pinned commit.
+ARG NODE_VERSION=24.22.3
+ARG NODE_SIGNER=5BE8A3F6C8A5C01D106C0AD820B1A390B168D356
+ARG NODE_RELEASE_KEYS=481637f813e912c4aa3622d7964ab426c97b8e8d
+COPY packages/serve/docker/install-node.sh /usr/local/sbin/install-node.sh
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg xz-utils >/dev/null \
+ && rm -rf /var/lib/apt/lists/* \
+ && sh /usr/local/sbin/install-node.sh "$NODE_VERSION" "$NODE_SIGNER" "$NODE_RELEASE_KEYS" /opt/node
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS build
+COPY --from=node /opt/node/ /usr/local/
+RUN [ "$(node --version)" = v24.22.3 ]
 WORKDIR /src
 COPY . .
 # The console (apps/console, its own lockfile) builds first, so the server's build copies it into its dist; then its
@@ -29,7 +47,28 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
       node_modules/@openai/codex node_modules/@openai/codex-* node_modules/.bin/codex \
  && chmod -R a+rX,go-w /src
 
-FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
+# adb (Android platform-tools), which the phone provider drives its phone with from this machine: r35.0.2, its zip
+# pinned by sha256. Google builds platform-tools for x86-64 Linux alone, so the arm64 image carries no adb, and the
+# server says so in Settings → Computers ("this server's image has no adb for arm64 (…): Phone harness needs an x86-64
+# server"). It needs only the C library.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS adb
+ARG TARGETARCH
+ARG PLATFORM_TOOLS_ZIP=https://dl.google.com/android/repository/platform-tools_r35.0.2-linux.zip
+ARG PLATFORM_TOOLS_SHA256=acfdcccb123a8718c46c46c059b2f621140194e5ec1ac9d81715be3d6ab6cd0a
+RUN install -d /opt/adb \
+ && if [ "$TARGETARCH" = amd64 ]; then \
+      apt-get update -qq \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl unzip >/dev/null \
+      && curl -fsSL -o /tmp/platform-tools.zip "$PLATFORM_TOOLS_ZIP" \
+      && echo "$PLATFORM_TOOLS_SHA256  /tmp/platform-tools.zip" | sha256sum -c - \
+      && unzip -q -j /tmp/platform-tools.zip platform-tools/adb -d /opt/adb \
+      && /opt/adb/adb version | grep -q '^Version 35\.0\.2-'; \
+    fi
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+COPY --from=node /opt/node/ /usr/local/
+# The node user (1000:1000) the official node image has, which the server runs as and /data belongs to.
+RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
 # tini is PID 1, so the run processes the server starts are reaped and get its SIGTERM. git is for an agent's learning
 # folder, which needs 2.32 or newer; this image holds itself to 2.40 by its own choice: trixie's is 2.47. docker-cli (26.1) is the Docker client alone, no daemon:
 # with the host's Docker socket mounted (compose.yaml at the repository's root), a run's Docker box is a container beside this one.
@@ -43,11 +82,18 @@ COPY --from=build --chown=root:root /src /opt/agentrun
 # The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
 # is not the build its adapter is pinned to.
 RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
+# One Node in the image, the verified 24.22.3: the build fails on any other executable named node.
+RUN [ "$(node --version)" = v24.22.3 ] && [ "$(command -v node)" = /usr/local/bin/node ] \
+ && other="$(find / -xdev -type f -name node ! -path /usr/local/bin/node -print)" \
+ && { [ -z "$other" ] || { printf 'another node binary in the image:\n%s\n' "$other" >&2; exit 1; }; }
 # The package's own command on PATH, so the words the console and the CLI give work in the image's shell as written
 # (`agentrun-serve reset-password --data /data`, on Render's Shell too). The launcher finds dist/cli.js beside itself through
 # its real path, so a link to it runs the same server CLI.
 RUN ln -s /opt/agentrun/packages/serve/launcher/agentrun-serve /usr/local/bin/agentrun-serve \
  && [ "$(command -v agentrun-serve)" = /usr/local/bin/agentrun-serve ]
+# The phone provider's adb on PATH, on amd64 (the adb stage); the arm64 image has none.
+COPY --from=adb /opt/adb/ /usr/local/bin/
+RUN [ "$(dpkg --print-architecture)" != amd64 ] || [ "$(command -v adb)" = /usr/local/bin/adb ]
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production

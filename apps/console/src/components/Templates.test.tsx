@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { ClientError } from "@/lib/client";
-import { when } from "@/lib/format";
-import { type Schedule, whenWords } from "@/lib/schedules";
 import type { TemplateView, Trigger } from "@/lib/v2";
 import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
 
@@ -329,6 +327,28 @@ describe("applying a template", () => {
     expect(empty.text).toBe("crm (default)");
   });
 
+  // Manuel #76: inbound-lead's post_to listed "none (default)" first and then "none" again. Each value is listed once, the
+  // default marked on its own entry; that entry leaves the parameter out, so the server applies its default.
+  it("lists an optional enum's values once each, its default marked on its own entry, with no duplicate", async () => {
+    const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
+      post_to: { type: "string", required: false, description: "where each brief goes", enum: ["crm", "slack", "none"], default: "none" },
+    } };
+    const t = await open("inbound-lead", { templates: [LEAD] });
+    const post = firstPicker(t.host.querySelector('[data-field="parameters.post_to"]')!)!;
+    const options = await optionsOf(post);
+    expect(options.map((o) => o.text)).toEqual(["crm", "slack", "none (default)"]);
+    expect(options.filter((o) => o.text.startsWith("none"))).toHaveLength(1);
+    expect(options.map((o) => o.value)).toEqual(["crm", "slack", ""]);
+    // It starts on its default.
+    expect(valueOf(post)).toBe("");
+    expect(post.textContent).toContain("none (default)");
+    // Picked away and back: the default's entry sends nothing, for the server to apply.
+    await pick(post, "slack");
+    await pick(post, "");
+    await t.click(t.button(/^Apply/));
+    expect(t.sent[0].body.parameters).toEqual({});
+  });
+
   it("offers a parameter's enum as a choice of its values, sends an integer one as a number, and shows not_an_option under it", async () => {
     const T: TemplateView = { ...REVIEWER, name: "inbound-lead", parameters: {
       post_to: { type: "string", required: true, description: "where each brief goes", enum: ["crm", "slack", "none"] },
@@ -344,7 +364,8 @@ describe("applying a template", () => {
     expect((await optionsOf(post)).map((o) => o.value).filter(Boolean)).toEqual(["crm", "slack", "none"]);
     const depth = firstPicker(t.host.querySelector('[data-field="parameters.depth"]')!)!;
     const depths = await optionsOf(depth);
-    expect(depths.map((o) => o.value).filter(Boolean)).toEqual(["1", "3", "7"]);
+    // Its default once, marked on its own entry, which leaves it out for the server to apply.
+    expect(depths.map((o) => o.text)).toEqual(["1", "3 (default)", "7"]);
     expect(depths.find((o) => o.value === "")!.text).toBe("3 (default)");
     await pick(post, "slack");
     await pick(depth, "7");
@@ -366,25 +387,56 @@ describe("applying a template", () => {
     const t = await open("market-monitor", { templates: [MONITOR] });
     const when = t.host.querySelector('[data-field="parameters.when"]')!;
     // The package's default, said as its shape: every week, on Monday, at 08:00. No raw cron line to type.
-    expect(valueOf(picker(when, "when")!)).toBe("weekly");
+    expect(valueOf(picker(when, "Schedule")!)).toBe("weekly");
     expect(valueOf(picker(when, "Day of the week")!)).toBe("1");
     expect(when.querySelector<HTMLInputElement>('input[type="time"]')!.value).toBe("08:00");
-    expect(when.querySelector('input[aria-label="Cron line"]')).toBeNull();
+    expect(when.querySelector('input[aria-label="Custom schedule"]')).toBeNull();
     const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
-    expect(valueOf(picker(zone, "zone")!)).toBe("America/New_York");
-    expect((await optionsOf(picker(zone, "zone")!)).map((o) => o.value)).toContain("Europe/Madrid");
+    expect(valueOf(picker(zone, "Time zone")!)).toBe("America/New_York");
+    expect((await optionsOf(picker(zone, "Time zone")!)).map((o) => o.value)).toContain("Europe/Madrid");
     // No format: the text field it always was, whatever its name.
     expect(t.host.querySelector('[data-field="parameters.cron"] input[type="text"]')).toBeTruthy();
-    await pick(picker(when, "when")!, "weekdays");
+    await pick(picker(when, "Schedule")!, "weekdays");
     await t.type(when.querySelector('input[type="time"]'), "07:30");
-    await pick(picker(zone, "zone")!, "Europe/Madrid");
+    await pick(picker(zone, "Time zone")!, "Europe/Madrid");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.parameters).toEqual({ when: "30 7 * * 1-5", zone: "Europe/Madrid" });
   });
 
+  // Manuel #92: market-monitor's schedule read CRON and TIMEZONE with the format's syntax as help ("as a cron line (minute
+  // hour day-of-month month day-of-week)", "the IANA time zone …"). They read "Schedule" and "Time zone", with only the
+  // description's words after its format (its default, a note on another parameter); the pickers say the format.
+  it("labels a cron parameter Schedule and a timezone one Time zone, without the format's raw help", async () => {
+    vi.stubEnv("TZ", "America/New_York");
+    const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", parameters: {
+      cron: { type: "string", required: false, format: "cron", default: "0 8 * * 1", description: "when the digest runs, as a cron line (minute hour day-of-month month day-of-week): Monday 08:00 unless you set it; set lookback_days to its gap" },
+      timezone: { type: "string", required: false, format: "timezone", default: "UTC", description: "the IANA time zone the cron line is read in (Europe/Madrid, America/New_York): UTC unless you set it" },
+      topics: { type: "string", required: false, description: "optional market keywords (\"payments orchestration, KYB\"): news on them is in scope too" },
+    } };
+    const t = await open("market-monitor", { templates: [MONITOR] });
+    const cron = t.host.querySelector('[data-field="parameters.cron"]')!;
+    const zone = t.host.querySelector('[data-field="parameters.timezone"]')!;
+    expect(cron.querySelector("label > span")!.textContent).toBe("Schedule");
+    expect(zone.querySelector("label > span")!.textContent).toBe("Time zone");
+    expect(picker(cron, "Schedule")).not.toBeNull();
+    expect(picker(zone, "Time zone")).not.toBeNull();
+    for (const raw of ["cron line", "minute hour", "day-of-week", "IANA", "Europe/Madrid, America/New_York"]) {
+      expect(cron.textContent).not.toContain(raw);
+      expect(zone.textContent).not.toContain(raw);
+    }
+    expect(cron.textContent).toContain("Monday 08:00 unless you set it; set lookback_days to its gap");
+    // No help under the zone: the form always sends one (the browser's to start), so "UTC unless you set it" never applies.
+    expect(zone.textContent).not.toContain("UTC unless you set it");
+    // Any other parameter keeps its key and its whole description.
+    const topics = t.host.querySelector('[data-field="parameters.topics"]')!;
+    expect(topics.querySelector("label > span")!.textContent).toBe("topics");
+    expect(topics.textContent).toContain("optional market keywords (\"payments orchestration, KYB\"): news on them is in scope too");
+  });
+
   // After an apply that made a schedule, the screen stays to say when it runs and its next run, in the Triggers page's
-  // words ("At 07:30, Monday through Friday · Europe/Madrid · next …"), with a link to it; the agent is one click on.
+  // line (scheduleLine: the viewer's time, the schedule's own in parentheses), with a link to it; the agent is one click on.
   it("after Apply, a schedule it made shows when it runs, in words, and its next run time, as on Triggers", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
     const DIGEST: Trigger = {
       id: "trg_m", name: "weekly-digest", enabled: true, source: { kind: "schedule", cron: "30 7 * * 1-5", timezone: "Europe/Madrid" },
       target: { kind: "start_run", agent_id: "market-monitor-1", input: { content: "Write the digest." }, max_cost_usd: 5 },
@@ -400,8 +452,7 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
     const row = t.host.querySelector('[aria-label="Schedules"] [data-trigger="trg_m"]')!;
     expect(row.querySelector("a")!.getAttribute("href")).toBe("#/triggers/trg_m");
-    expect(row.textContent).toContain(`${whenWords(DIGEST.source as Schedule["source"])} · next ${when(DIGEST.next_at!)}`);
-    expect(row.textContent).toContain("Europe/Madrid");
+    expect(row.querySelector("p")!.textContent).toBe("At 10:30 PM your time the day before (07:30 Europe/Madrid), Monday through Friday · next Wed Nov 11, 10:30 PM PST");
     expect(row.textContent).not.toContain("30 7 * * 1-5");
     const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
     expect(link?.getAttribute("href")).toBe("#/agents/market-monitor-1");
@@ -416,8 +467,8 @@ describe("applying a template", () => {
     } };
     const t = await open("market-monitor", { templates: [LIMITED] });
     const zone = t.host.querySelector('[data-field="parameters.zone"]')!;
-    expect(valueOf(picker(zone, "zone")!)).toBe("");
-    expect((await optionsOf(picker(zone, "zone")!)).map((o) => o.value)).toEqual(["", "UTC", "Europe/Madrid"]);
+    expect(valueOf(picker(zone, "Time zone")!)).toBe("");
+    expect((await optionsOf(picker(zone, "Time zone")!)).map((o) => o.value)).toEqual(["", "UTC", "Europe/Madrid"]);
   });
 
   // The result of an Apply is shown as soon as the server answers: a trigger read-back that never answers neither holds

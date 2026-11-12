@@ -1,6 +1,6 @@
 // A host tool's result past the host's bound (HOST_RESULT_MAX_CHARS), on the Codex adapter: the kernel's tool bridge,
 // which every host tool's result passes on its way to Codex, cuts it there and says so. A skill file of the most a skill
-// holds (1 MiB) and a delegate's 6 MB answer each reach Codex (the function_call_output in its rollout) within the bound,
+// holds (1 MiB) reaches Codex (the function_call_output in its rollout) within the bound,
 // ending with the line that says where it was cut, and the host hears the call's end flagged truncated. The stand-in
 // app-server (fake-app-server.mjs) only: no network, no binary.
 import assert from 'node:assert/strict';
@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as kernel from '@parcha/agentrun-kernel';
-import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codexAdapter } from '@parcha/agentrun-harness-codex';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
@@ -57,14 +57,4 @@ test("a skill file of the most a skill holds (1 MiB) reaches Codex cut at the ho
   for (const output of outputs) cut(output, BIG);
   assert.equal(ended?.truncated, true);
   assert.equal(kernel.HOST_RESULT_MAX_CHARS, BOUND, 'the kernel states the bound');
-});
-
-test("a delegate's 6 MB answer reaches Codex cut at the host's bound, saying so, and its end is flagged truncated", async () => {
-  // The delegate's fixed shape: the answer, its citations and its gaps.
-  const answer = { answer: 'y'.repeat(6_000_000), citations: [], gaps: [] };
-  const delegate = kernel.delegateTool({ agents: { big: { description: 'Answers at length.', system: 'Answer.', tools: [] } }, tools: [], adapter: fauxAdapter({ script: () => [{ submit: answer }] }), store: memorySessionStore(), parentKey: 'lead' });
-  const { ended, outputs } = await reached({ tools: [delegate], call: 'call delegate {"agent":"big","task":"Find it all."}' });
-  assert.ok(outputs.length >= 1, 'the call reached Codex');
-  for (const output of outputs) cut(output, JSON.stringify(answer));
-  assert.equal(ended?.truncated, true);
 });

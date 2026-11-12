@@ -142,18 +142,13 @@ export async function loadResearchAdapters({ config, signal, agents = true } = {
     }
     return { runJudge: supplied.runJudge, ...(agents ? { runNode: supplied.runNode } : {}) };
   }
+  if (agents) throw new ResearchExampleError('configuration', 'Agent steps run on your own agents: pass --config with a trusted module that default-exports { runJudge, runNode }. No fallback was selected.');
   try {
     const { createJevRunner } = await import('@parcha/agentrun-jev');
-    const runJudge = createJevRunner({ signal, maxAttempts: 1 });
-    if (!agents) return { runJudge };
-    const [{ createPiRunner }, { default: pi }] = await Promise.all([
-      import('@parcha/agentrun-pi'), import('./pi-config.mjs'),
-    ]);
-    signal?.throwIfAborted();
-    return { runJudge, runNode: createPiRunner({ ...pi, signal }) };
+    return { runJudge: createJevRunner({ signal, maxAttempts: 1 }) };
   } catch (error) {
     signal?.throwIfAborted();
-    throw new ResearchExampleError('configuration', `Configure TypeSafe access and a saved Pi default (Pi is unnecessary for evaluation), or pass --config with your approved host adapters. No fallback was selected. Error kind: ${safeErrorKind(error)}.`);
+    throw new ResearchExampleError('configuration', `Configure TypeSafe access, or pass --config with your approved host adapters. No fallback was selected. Error kind: ${safeErrorKind(error)}.`);
   }
 }
 

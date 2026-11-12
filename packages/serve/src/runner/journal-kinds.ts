@@ -61,6 +61,10 @@ export const KINDS = {
   /** The resume of a paused workflow run (a `resume` row), taken: the workflow goes on from its journal. Neither a call nor
    *  a message, so the reader passes over it. */
   resume: "agentrun.resume",
+  /** A paid call the cap refused for room, kept at its refusal (the Refusal): its pause lands at the model's next request
+   *  (adapter-loop.ts pauseFor), and a claim lost before that restores it from here (pendingPauseOf). No run patch, and
+   *  neither a call nor a message, so the reader passes over it. */
+  pausePending: "agentrun.pause.pending",
   /** A workflow call node's effect, as it starts and as it ends (pause.ts NodeLine: its path, item, tool, label, input,
    *  then its status and output or error), on the run's node-log session (NODE_LOG_SESSION): the run's graph lists its
    *  effects from these. Written as the effect runs, never for one the driver answers from its receipt. */
@@ -152,6 +156,9 @@ export interface BudgetData {
   readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number; readonly bound_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
+  /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
+   *  run's pause. */
+  readonly node?: string | null;
 }
 
 export interface CallStartData {
@@ -282,8 +289,9 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
 export interface EndData {
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
-  /** How an ended run ended, set only for an escalation (the store's RunOutcome). */
-  readonly outcome?: "completed" | "escalated";
+  /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
+   *  (a person's stop: the turn is over, not the run) or 'cancelled' (stopEnd). */
+  readonly outcome?: "completed" | "escalated" | "stopped" | "cancelled";
   /** What the run cost, as its end knows it. */
   readonly costUsd?: number;
   /** The run's metrics (the old StoredMetrics JSON). */

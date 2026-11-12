@@ -7,7 +7,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as modal from "../dist/modal.js";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 
@@ -1110,7 +1111,7 @@ test("release never terminates a sandbox that is not this provider's", async () 
 test("release: a terminate that fails is an error unless the sandbox has finished", async () => {
 	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", running: false })], terminate: "fail" });
 	const failed = await provider.release(refOf(fake), "delete");
-	assert.equal(failed.error?.code, "modal");
+	assert.deepEqual([failed.error?.code, failed.error?.vendor], ["vendor", "modal"]);
 	assert.match(failed.error.message, /terminate failed/);
 	assert.deepEqual(await provider.release(refOf(fake, "computer-000000000002"), "delete"), { ok: true, value: undefined });
 });

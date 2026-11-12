@@ -7,7 +7,7 @@ import { AgentEditor } from "./AgentEditor";
 // The agent's default spend cap per run (`definition.max_cost_usd`): a run started without a cap of its own, and a
 // trigger with none, is capped at it. Empty means none, and clearing one sends an explicit 0 (the server's "no default"):
 // leaving the field out never removes a spend limit. The server judges the number and its 422 shows under the field.
-const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true }], thinking: ["low"] };
+const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }], thinking: ["low"] };
 const capped = { agent_id: "inv", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Invoices", instructions: "Check.", harness: "pi", skills: [], tools: ["read"], max_cost_usd: 2.5 } };
 const LABEL = "Default spend cap per run, $";
 
@@ -41,6 +41,14 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: none, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value=""');
   });
 
+  it("says under the field the smallest cap a run can work under, linking to where the server's README works it out", () => {
+    const { host } = mount({ agent: capped });
+    const help = host.querySelector("#agent-max-cost")?.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ") ?? "";
+    expect(help).toMatch(/A run on Sonnet needs about \$0\.10 to take a few steps; under that it pauses before its next step/);
+    const link = [...host.querySelectorAll("a")].find((a) => a.textContent === "the smallest cap");
+    expect(link?.getAttribute("href")).toBe("https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md#spend-cap");
+  });
+
   it("is offered on a workflow agent as on an agentic one, and not on a new Decision agent, which starts with none", () => {
     const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');
@@ -60,9 +68,10 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect([sent[0]!.max_cost_usd, sent[0]!.maxCostText, sent[0]!.workflow]).toEqual([4, undefined, { nodes: [] }]);
   });
 
-  it("an untouched save sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {
+  it("a save of another edit sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {
     const sent: Record<string, unknown>[] = [];
-    const { type, save } = mount({ agent: capped, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    const { host, type, save } = mount({ agent: capped, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    act(() => { host.querySelector<HTMLInputElement>('input[name="thinking"]')!.click(); });
     await save();
     type("4");
     await save();
@@ -75,25 +84,28 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
   it("an agent with no cap, saved with the field still empty, sends none: there is nothing to clear", async () => {
     const sent: Record<string, unknown>[] = [];
     const bare = { ...capped, definition: { ...capped.definition, max_cost_usd: undefined } };
-    const { save } = mount({ agent: bare, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    const { host, save } = mount({ agent: bare, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
+    act(() => { host.querySelector<HTMLInputElement>('input[name="thinking"]')!.click(); });
     await save();
     expect(sent[0]?.max_cost_usd).toBeUndefined();
   });
 
-  it("0 typed on an agent with no cap sends none (nothing to clear, so no new revision); 0 on a capped agent clears it", async () => {
+  // 0 on an agent with no cap is no change at all (0 is none): Save stays off and nothing is sent.
+  it("0 typed on an agent with no cap sends nothing (nothing to clear, so no new revision); 0 on a capped agent clears it", async () => {
     const sent: Record<string, unknown>[] = [];
     const bare = { ...capped, definition: { ...capped.definition, max_cost_usd: undefined } };
     const onSave = async (fields: Record<string, unknown>) => { sent.push(fields); return null; };
     const a = mount({ agent: bare, onSave });
-    a.type("0");
-    await a.save();
-    a.type("$0");
-    await a.save();
+    for (const zero of ["0", "$0"]) {
+      a.type(zero);
+      // Nothing to save: the button reads Saved and there is no Save revision to click.
+      expect(a.host.textContent, zero).not.toContain("Save revision");
+    }
     roots.splice(0).forEach((u) => u()); document.body.innerHTML = "";
     const b = mount({ agent: capped, onSave });
     b.type("0");
     await b.save();
-    expect(sent.map((s) => ["max_cost_usd" in s, s.max_cost_usd])).toEqual([[false, undefined], [false, undefined], [true, 0]]);
+    expect(sent.map((s) => ["max_cost_usd" in s, s.max_cost_usd])).toEqual([[true, 0]]);
   });
 
   it("a currency sign with no number is refused under the field, never read as empty: a saved cap is not cleared", async () => {
