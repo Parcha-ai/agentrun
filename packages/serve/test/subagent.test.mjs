@@ -22,8 +22,6 @@ const { runFolder } = await import("../dist/workspace/paths.js");
 const { chosenTools } = await import("../dist/runner/subagent.js");
 
 const FAUX_SUBAGENT = new URL("./fixtures/faux-subagent.mjs", import.meta.url).pathname;
-/** A faux Docker box: the server offers a sandbox place, so an agent may name bash (the runner's computer is the test's). */
-const FAUX_BOX = new URL("./fixtures/faux-box.mjs", import.meta.url).pathname;
 /** What each request costs under the fixture: 1,000 input and 100 output tokens at $1 and $10 a million. */
 const PER_REQUEST = 0.002;
 const ENDED = ["completed", "failed", "cancelled", "input_required"];
@@ -35,7 +33,7 @@ async function setup(t, { mcp = false, sandbox, runner = true, strong = "faux-st
   const release = join(process.env.TMPDIR ?? "/tmp", `faux-subagent-${tag}.release`);
   // The host's strong model, or none (`strong: null`): AGENT_MODEL_STRONG is unset then.
   withEnv(t, { FAUX_SUBAGENT_LOG: log, FAUX_SUBAGENT_RELEASE: release, ...(strong ? { AGENT_MODEL_STRONG: strong } : {}), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENT_MODEL_STRONG", "AGENT_MODEL_FAST"]);
-  const server = await serve(t, { faux: FAUX_SUBAGENT, ...(runner ? {} : { runner: false }), ...(mcp ? { accounts: true, openSetup: true } : {}), ...(sandbox ? { fauxBox: FAUX_BOX, computerForClaim: sandbox } : {}) });
+  const server = await serve(t, { faux: FAUX_SUBAGENT, ...(runner ? {} : { runner: false }), ...(mcp ? { accounts: true, openSetup: true } : {}), ...(sandbox ? { fauxDocker: true, computerForClaim: sandbox } : {}) });
   let fake;
   if (mcp) {
     fake = await startFakeMcp({});

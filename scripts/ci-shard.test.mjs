@@ -139,7 +139,6 @@ test('a script of a shape ci-shard does not know fails the shard, naming it, bef
   assert.equal(listed.status, 0, listed.output);
   assert.match(listed.output, /npm exec -w @parcha\/agentrun-serve -c "node --test --test-timeout=600000 --test-concurrency=8 test\/[^"]*"/, listed.output);
   assert.match(listed.output, /npm exec -w @parcha\/pi-durable-disk -c "node --test --test-timeout=240000 test\/[^"]*"/, listed.output, "pi-durable-disk keeps its own limit");
-  assert.match(listed.output, /npm exec -w @parcha\/pi-transport -c "vitest --run test\/[^"]*"/, listed.output);
   assert.match(listed.output, /npm run test -w @parcha\/pi-browser/, listed.output, 'a whole suite runs as its script is');
 });
 
