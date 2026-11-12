@@ -23,7 +23,7 @@ import { type Place, resolvePlace } from "./place.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -170,7 +170,7 @@ export async function message(
     const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
       () => true,
       (error: unknown) => {
-        if (error instanceof StoreConstraint) return false;
+        if (error instanceof AnswerTaken) return false;
         throw error;
       },
     );
@@ -333,7 +333,8 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
       const end = await endBefore(store, moment.id, { taken: true });
       throw alreadyAnswered(id, end?.decision ?? "withdrawn", end === undefined);
     }
-    const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
+    // Lost to an answer written first (the store's AnswerTaken, from its one-answer index alone): read the winner.
+    const won = error instanceof AnswerTaken ? await sentAnswer(store, moment.id, id) : undefined;
     if (!won) throw error;
     return settle(won);
   }
