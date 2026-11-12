@@ -271,6 +271,15 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			phone.files.set(w[2], sum);
 			return result();
 		}
+		// What the live probe times phoned against: `input` (taps and swipes, which change nothing here) and a dump of the
+		// tree to the terminal, as uiautomator writes it.
+		if (w[0] === "input" && ["tap", "swipe", "keyevent"].includes(w[1])) return result();
+		if (w[0] === "am" && w[1] === "start") return result(`Starting: Intent { ${w.slice(2).join(" ")} }\n`);
+		if (w[0] === "wm" && w[1] === "size") return result("Physical size: 1080x2400\n");
+		if (w[0] === "uiautomator" && w[1] === "dump" && w[2] === "/dev/tty") {
+			return result(`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="Network &amp; internet" package="com.android.settings" clickable="true" bounds="[0,300][1080,420]" /></hierarchy>UI hierchary dumped to: /dev/tty\n`);
+		}
+		if (w[0] === "getprop") return result(`${{ "ro.build.version.release": release, "ro.build.version.sdk": "35", "ro.product.model": "sdk_gphone64_x86_64", "ro.product.manufacturer": "Google" }[w[1]] ?? ""}\n`);
 		return result(`/system/bin/sh: ${w[0]}: inaccessible or not found\n`, 127);
 	}
 

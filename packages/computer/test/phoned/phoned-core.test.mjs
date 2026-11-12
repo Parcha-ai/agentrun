@@ -43,7 +43,10 @@ test("observe names the Settings row from its texts, and a press by ref with exp
 		assert.ok(row, JSON.stringify(seen.value.nodes));
 		assert.match(row.ref, /^@e\d+$/);
 		assert.equal(row.desc, "Mobile, Wi-Fi, hotspot");
-		const acted = await client.call("ui.act", { state: seen.value.state, steps: [{ press: row.ref }], expect: { text: "Wi-Fi" } });
+		// "Internet" is the next page's: no element of Settings holds it (an expect matches names, values and descs, by case),
+		// so a met expect says the press went through.
+		assert.equal(seen.value.nodes.filter((node) => [node.name, node.value, node.desc].some((text) => text?.includes("Internet"))).length, 0);
+		const acted = await client.call("ui.act", { state: seen.value.state, steps: [{ press: row.ref }], expect: { text: "Internet" } });
 		assert.equal(acted.ok, true, JSON.stringify(acted));
 		assert.deepEqual(acted.value.steps[0], { route: "semantic", verified: true });
 		assert.equal(acted.value.expect, "met");

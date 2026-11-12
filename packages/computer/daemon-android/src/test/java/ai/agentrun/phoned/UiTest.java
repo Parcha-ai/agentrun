@@ -101,7 +101,8 @@ final class UiTest {
 		Check.Phone phone = new Check.Phone();
 		Map<String, Object> seen = phone.call("ui.observe", "{}");
 		String ref = (String) phone.node(seen, "Network & internet").get("ref");
-		Map<String, Object> acted = phone.call("ui.act", "{\"state\":\"s1\",\"steps\":[{\"press\":\"" + ref + "\"}],\"expect\":{\"text\":\"Wi-Fi\"}}");
+		// "Internet" is the next page's alone (Settings' row says "Wi-Fi" in its desc), so met says the press went through.
+		Map<String, Object> acted = phone.call("ui.act", "{\"state\":\"s1\",\"steps\":[{\"press\":\"" + ref + "\"}],\"expect\":{\"text\":\"Internet\"}}");
 		eq(Json.obj("route", "semantic", "verified", true), step(acted, 0));
 		eq("met", acted.get("expect"));
 		eq(true, acted.get("changed"));
@@ -114,7 +115,7 @@ final class UiTest {
 		Check.Phone phone = new Check.Phone();
 		Map<String, Object> seen = phone.call("ui.observe", "{}");
 		String network = (String) phone.node(seen, "Network & internet").get("ref");
-		Map<String, Object> acted = phone.call("ui.act", "{\"steps\":[{\"press\":\"" + network + "\"},{\"press\":\"" + network + "\"},{\"nav\":\"back\"}],\"expect\":{\"text\":\"Wi-Fi\"}}");
+		Map<String, Object> acted = phone.call("ui.act", "{\"steps\":[{\"press\":\"" + network + "\"},{\"press\":\"" + network + "\"},{\"nav\":\"back\"}],\"expect\":{\"text\":\"Internet\"}}");
 		List<Object> steps = list(acted, "steps");
 		eq(2, steps.size());
 		eq("stale", map(map(steps.get(1)).get("error")).get("kind"));
