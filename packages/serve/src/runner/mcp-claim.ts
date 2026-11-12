@@ -39,7 +39,7 @@ import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "../github.js";
 import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-github.js";
 import { ClaimRefused } from "./loop-contract.js";
-import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-servers.js";
+import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
 import { tokenLeftOf } from "../mcp-probe.js";
 import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
@@ -96,6 +96,9 @@ export interface McpClaimStep {
   fresh(): Promise<void>;
   /** Drop every credential held: the loop ended, or the claim is lost. */
   release(): void;
+  /** Before each call of `server` (the gateway's beforeCall): a github_app token whose App was disconnected or replaced
+   *  since it was minted is dropped, revoked, and the call refused in words. */
+  beforeCall(server: string, signal: AbortSignal): Promise<void>;
 }
 
 type OAuthCredential = McpCredential & { type: "oauth"; set: TokenSet; expired?: true };
@@ -321,7 +324,11 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   };
 
   await fresh();
-  return { pin, credentials, secrets, fresh, release };
+  const beforeCall = async (server: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    if (!released) await github.check(server);
+  };
+  return { pin, credentials, secrets, fresh, release, beforeCall };
 }
 
 /** The run's pin: read, and checked against the meta tools known now; or made at its first claim and written once. */
@@ -350,7 +357,6 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
         // The registry keeps each tool as its server listed it (input_schema); the pin holds the harnesses' shape.
         return row && { url: row.url, tools: ((row.tools ?? []) as McpTool[]).map(boundTool), ...(row.prices ? { prices: row.prices as Record<string, number> } : {}) };
       },
-      headers: () => undefined,
     });
   } catch (error) {
     throw new McpClaimRefused((error as Error).message);

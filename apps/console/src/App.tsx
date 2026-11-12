@@ -17,7 +17,6 @@ import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { useSecrets } from "@/lib/secrets";
 import { NoModelBanner } from "@/components/NoModelBanner";
-import { BoxImageBanner } from "@/components/BoxImageBanner";
 import { WebhookPage } from "@/components/WebhookPage";
 import { ComputersPage } from "@/components/ComputersPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
@@ -35,17 +34,20 @@ import { Playground, type StartResult, startFailure } from "@/components/Playgro
 import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
-import { SignIn } from "@/components/SignIn";
+import { SessionUnread, SignIn } from "@/components/SignIn";
+import { Banner } from "@/components/ui/banner";
+import { Button } from "@/components/ui/button";
 import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
-import { trackHistory } from "@/lib/back";
+import { stepsBack, trackHistory } from "@/lib/back";
+import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { createConnection } from "@/lib/connection";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
 import { waitingOf } from "@/lib/learning";
 import { asksPerson, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
-import { placesOf, preparingBox } from "@/lib/place";
+import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
 import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
@@ -133,6 +135,10 @@ function setupCodeOnce(): string | null {
   return capturedSetup.code;
 }
 
+/** The wait before the `n`th next read of a session that couldn't be read (0 first): 1 s, doubling to 30 s, and never an
+ *  end: a server that takes minutes to start (a host's first start, a redeploy) is read until it answers. */
+export const sessionRetryMs = (n: number): number => Math.min(1000 * 2 ** n, 30_000);
+
 /** How often the console reads an import under way, and how many failed reads in a row end its watch. */
 export const IMPORT_POLL_MS = 1000;
 const IMPORT_READ_TRIES = 30;
@@ -179,13 +185,17 @@ export function App() {
   }, [auth]);
   // Whether setup takes the server's printed code (its session read says so), so the form asks for it with no link.
   const [codeNeeded, setCodeNeeded] = useState(false);
-  /** The mode the server's session asks for now. */
-  const sessionMode = async () => {
+  /** The mode the server's session asks for now, and whether its setup takes the printed code. */
+  const sessionRead = async () => {
     const r = await v2.session();
-    setCodeNeeded(setupTakesCode(r));
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
     const probe = noAccounts(r) ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
-    return authMode(r, probe);
+    return { mode: authMode(r, probe), codeNeeded: setupTakesCode(r) };
+  };
+  const sessionMode = async () => {
+    const read = await sessionRead();
+    setCodeNeeded(read.codeNeeded);
+    return read.mode;
   };
   const readSession = async () => setAuth(await sessionMode());
   recheck.current = async () => {
@@ -197,7 +207,41 @@ export function App() {
     } catch { /* the session could not be read: the console stays as it is, and the next refusal checks again */ }
     finally { checking.current = false; }
   };
-  useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The first read of the session decides the page. One that fails (the server's answer unreadable, a proxy's page in its
+  // place, the connection cut) is said as it is and tried again, 1 s after the first, doubling to 30 s, with Retry now:
+  // never a sign-in, which would claim the server has a password when the page can't know (#2222).
+  const [sessionUnread, setSessionUnread] = useState<{ problem: string; starting: boolean } | null>(null);
+  const [sessionTry, setSessionTry] = useState(0);
+  // Only the newest read decides, and only while nothing has: an older one (a Retry now before it answered) that lands
+  // after a newer one opened setup or sign-in, or after the owner signed in, changes nothing.
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    sessionRead().then(
+      (read) => {
+        if (!live || authNow.current !== null) return;
+        setCodeNeeded(read.codeNeeded);
+        setAuth(read.mode);
+        setSessionUnread(null);
+      },
+      (e) => {
+        if (!live || authNow.current !== null) return;
+        const ms = sessionRetryMs(sessionTry);
+        // A refusal with no error of the server's own (http_error) is another's page in its place: the status alone. A
+        // gateway's 502, 503 or 504 page is the host's edge while the server starts (on Render, about a minute after a
+        // one-click create; again at a redeploy or a wake): said as starting, and asked again, with no end.
+        const refusal = e instanceof ClientError ? e : null;
+        const foreign = refusal?.code === "http_error";
+        const starting = foreign && [502, 503, 504].includes(refusal!.status);
+        setSessionUnread({
+          problem: refusal === null ? problemOf(e) : starting ? `Its address answered ${refusal.status}, not the server.` : `GET /v2/auth/session answered ${refusal.status}${foreign ? ", not as this server answers" : `: ${refusal.message}`}`,
+          starting,
+        });
+        timer = setTimeout(() => setSessionTry((n) => n + 1), ms);
+      },
+    );
+    return () => { live = false; clearTimeout(timer); };
+  }, [v2, sessionTry]); // eslint-disable-line react-hooks/exhaustive-deps
   // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
   // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown; one that
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
@@ -222,6 +266,7 @@ export function App() {
     })();
     return () => { live = false; };
   }, [v2, auth]);
+  if (auth === null && sessionUnread !== null) return <SessionUnread problem={sessionUnread.problem} starting={sessionUnread.starting} onRetry={() => setSessionTry((n) => n + 1)} />;
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
@@ -292,7 +337,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [error, setError] = useState<Problem | null>(null);
   const [runsTry, setRunsTry] = useState(0);
   const asked = useRef(0);
-  const go = (hash: string) => { location.hash = hash; };
+  // A page with unsaved changes (the agent builder) holds a move away and asks first (lib/useUnsavedChangesGuard).
+  const go = (hash: string) => { if (!holdsMove(hash)) location.hash = hash; };
   // The import asked for at setup (here, or before the server restarted): read until it ends, a failed read tried again.
   // One that ends while this page watches has what the page shows read again (`refreshed`).
   const [imported, setImported] = useState<ImportState | null>(null);
@@ -317,7 +363,18 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     })();
     return () => { live = false; };
   }, [v2]);
-  useEffect(() => { const on = () => setWhere(route()); window.addEventListener("hashchange", on); return () => window.removeEventListener("hashchange", on); }, []);
+  // An address moved under a page with unsaved changes (a link, back or forward, one typed) is taken back, and the page
+  // asks first; Leave makes the same move again, so a Back left by keeps going back. This listener is added before
+  // trackHistory's (below), so it reads the move before that one counts it. history.go(0) would reload: never sent.
+  useEffect(() => {
+    const on = () => {
+      const steps = stepsBack();
+      if (holdsMove(location.hash, () => { if (steps) history.go(-steps); })) { if (steps) history.go(steps); }
+      else setWhere(route());
+    };
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
   // Each history entry the console moves through is numbered, so a page's back arrow knows whether it came from one (lib/back).
   useEffect(() => trackHistory(), []);
   // The capabilities, read at the start and again after a settings save: only the newest read lands, so an answer to an
@@ -366,7 +423,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [] };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
-  // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings. None from an older server.
+  // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings.
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
@@ -536,7 +593,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const boxComing = preparingBox(placesOf(caps));
   const preparing = !!boxComing;
   useEffect(() => {
-    if (modelsReady !== false && !preparing) return;
+    if (modelsReady !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
     // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
     // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
@@ -555,9 +612,12 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     <ScheduleNames.Provider value={scheduleNames}>
     <Shell active={where.section} building={where.section === "agents" && where.agent === null} onBuild={() => go("#/agents/new")} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
-      v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      // A sign-out leaves the page as a move does: a page with unsaved changes asks first, and Leave signs out.
+      const out = () => void v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      if (!holdsMove(null, out)) out();
     }} onSignOutEverywhere={() => {
-      v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      const out = () => void v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+      if (!holdsMove(null, out)) out();
     }} banners={<>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {imported && (
@@ -569,13 +629,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     </>}>
       {where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} onSaved={readCaps} onOpen={readCaps} />
+            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
-              : where.settings === "webhook" ? <WebhookPage v2={v2} atRest={caps?.features?.webhooks?.at_rest} />
-              : <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
+              : where.settings === "webhook" ? <WebhookPage v2={v2} />
+              : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} />

@@ -8,7 +8,7 @@ Every example below runs on scripted models by default, with no key: it exercise
 
 ## Run the support example
 
-The workflow in the animation, from a checkout (Node 24.11 or newer, and npm):
+The workflow in the animation, from a checkout (Node 24.22.3 or newer, and npm):
 
 ```sh
 git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git
@@ -44,7 +44,7 @@ npm run demo
 npm run eval:research
 ```
 
-It plans subquestions, researches them in parallel, screens evidence, and writes a report. The evaluation checks six labeled cases with scripted responses. [Connect real Jev and Pi models](live-research.md).
+It plans subquestions, researches them in parallel, screens evidence, and writes a report. The evaluation checks six labeled cases with scripted responses. [Connect real Jev decisions and your agents](live-research.md).
 
 ## Every example
 

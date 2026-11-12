@@ -222,7 +222,9 @@ export class GitHubConnect {
       setup_on_update: true,
       public: false,
       default_permissions: { ...APP_PERMISSIONS },
-      default_events: ["pull_request", "issue_comment"],
+      // The events the templates' github triggers take: code-review's pull requests and comments, release-notes'
+      // published releases. A trigger takes only what the App is subscribed to.
+      default_events: ["pull_request", "issue_comment", "release"],
     };
     // GitHub reads the state from the form's URL; the form posts only the manifest.
     return { action: `${page}?state=${encodeURIComponent(state)}`, manifest, state };
@@ -516,16 +518,28 @@ export class GitHubConnect {
     if (!installations.length) return { unusable: "The GitHub App is not installed anywhere yet: install it on an account, then save the server." };
     try {
       const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+      // Each installation in turn, until one gives a token: one that refuses, covers no repository or that GitHub did not
+      // answer for leaves the next to try.
       const refusals: { unusable: string }[] = [];
+      // A refused narrowed mint: its installation covers a repository, so its refusal is the answer, never "none covers one".
+      let covered: { unusable: string } | undefined;
+      let unanswered: Unanswered | undefined;
       for (const installation of installations) {
         const refused = { unusable: `GitHub gave no token for the App's installation on ${installation.account}.` };
         const found = await this.firstRepository(installation.id, jwt, refused, signal);
-        // GitHub that does not answer says nothing of the installations: tried again, never read as "no repository".
-        if ("failed" in found) return found;
-        if ("unusable" in found) refusals.push(found);
-        // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
-        else if (found.repo !== undefined) return await this.mint(installation.id, jwt, [found.repo], refused, signal, { metadata: "read" });
+        if ("failed" in found) unanswered = found;
+        else if ("unusable" in found) refusals.push(found);
+        else if (found.repo !== undefined) {
+          // The least a listing needs: metadata read, of one repository; never the App's write permissions, never all of them.
+          const minted = await this.mint(installation.id, jwt, [found.repo], refused, signal, { metadata: "read" });
+          if ("token" in minted) return minted;
+          if ("failed" in minted) unanswered = minted;
+          else covered ??= minted;
+        }
       }
+      // GitHub that did not answer for one says nothing of it: tried again, never read as refused or as "no repository".
+      if (unanswered) return unanswered;
+      if (covered) return covered;
       if (refusals.length === installations.length) return refusals[0]!;
       return installations.length === 1
         ? { unusable: `The GitHub App's installation on ${installations[0]!.account} covers no repository yet: add one to it, then save the server.` }
@@ -566,7 +580,7 @@ export class GitHubConnect {
 }
 
 /** GitHub that did not answer a listing token's call: a 429, a 5xx, a rate limit's 403, or no answer at all. Nothing is
- *  learned from it, so nothing is refused for good: try again (mcp-servers.ts, 502 github_failed). */
+ *  learned from it, so nothing is refused for good: try again (mcp-servers-store.ts, 502 github_failed). */
 type Unanswered = { failed: string };
 const UNANSWERED: Unanswered = { failed: "GitHub didn't answer: try again." };
 const unanswered = (answer: { status: number; json: unknown; headers: Headers }) => answer.status === 429 || answer.status >= 500 || (answer.status === 403 && rateLimited(answer));

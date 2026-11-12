@@ -6,10 +6,9 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { NOTE_SUFFIX, type TimelineEvent, chargedTool, isMessageRow, registerLabel, registerTurnEnding, scrubUrls } from "@parcha/pi-durable-agent/timeline";
-import type { RevisionKind } from "@parcha/pi-durable-agent";
+import { type TimelineEvent, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
+import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
-import { servedOnly } from "./served-only.js";
 import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { APPROVAL_ROW, type PendingApproval, previewOf } from "./tool-gate.js";
@@ -17,14 +16,14 @@ import { ASK_TOOL } from "./tools.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
-import { pointerHash, type SignIns } from "./sign-ins.js";
+import { pointerHash, type signInReads } from "./sign-ins-store.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 
 /** The sign-in read surface a run's served view needs: a run's handed-pointer cut reads only `peek` (the agent's saved
- *  pointer) and `forgotten` (its tombstoned ones). Both the old `new SignIns(...)` and the store-backed bridge
- *  (sign-ins-store.ts signInsOverStore) satisfy it, so a view reads either path with no knowledge of which. */
-export type SignInReader = Pick<SignIns, "peek" | "forgotten">;
+ *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
+export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -106,26 +105,6 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined, boun
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }
 
-/** The row of a refusal for room a run paused at (servedError): the server's `phase` row in these words (origin server,
- *  its id the refusal's with NOTE_SUFFIX, so it is no message: isMessageRow), marked `paused`, never an error row. The
- *  refusal's sentence is the pause's (pending.said), which a client shows once, as its banner. */
-export const BUDGET_PAUSED = "Paused at the run's cap";
-/** The waiting row of a run paused at its cap, after the refusal's row: "Waiting for you to raise the cap", and no
- *  more: the refusal's words are the pause's (pending.said), which a client shows once, as its banner. */
-export const BUDGET_WAITING = "Waiting for you to raise the cap";
-export function withPaused(rows: readonly TimelineEvent[]): TimelineEvent[] {
-  const at = rows.findLastIndex((row) => row.paused === true);
-  if (at < 0) return [...rows];
-  // The refusal's own marker (`paused`, servedError) and the server's origin stay on the refusal's row: the waiting row
-  // is no refusal and no row of the server's, and keeps the id it had, the refusal's own with ":paused".
-  const { paused: _marker, origin: _origin, ...refusal } = rows[at]!;
-  const own = refusal.id.endsWith(NOTE_SUFFIX) ? refusal.id.slice(0, -NOTE_SUFFIX.length) : refusal.id;
-  // Only the served view makes it (servedOnly): once the run is raised, show() stops making it and it goes, even while a
-  // live process feeds the timeline (keepCommitted).
-  const paused: TimelineEvent = servedOnly({ ...refusal, id: `${own}:paused`, kind: "waiting", summary: BUDGET_WAITING, text: BUDGET_WAITING, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
-  return [...rows.slice(0, at + 1), paused, ...rows.slice(at + 1)];
-}
-
 /** A text clipped to `max` characters, with an ellipsis where it is cut (runs.ts' clip). */
 const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const ASKED = "Asked you: ";
@@ -182,9 +161,9 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
-type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
+type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
 /** The least a journal entry a reader here reads is: its kind and its data. */
-type JournalEntry = { kind?: string; data?: unknown };
+type JournalEntry = { id?: unknown; kind?: string; data?: unknown };
 const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
 
 /** The tool calls a run waits (or waited) for a person's approval on, from its journal's `agentrun.ask` entries, by the
@@ -232,7 +211,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
     const decision = d.decision ?? (d.approved === true ? "allow" : d.approved === false ? "deny" : undefined);
     if (decision === undefined) continue;
     const given = out[d.callId];
-    if (given && !(decision === "withdrawn" && d.superseded)) continue;
+    if (given && !((decision === "withdrawn" || decision === "canceled") && d.superseded)) continue;
     const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : {};
     // A deny a person's message gave keeps that it was (`by`): its row reads "Declined by your message".
     out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...(decision === "deny" && d.by === "message" ? { by: "message" as const } : {}), ...superseded };
@@ -255,24 +234,67 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
 
 /** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
  *  as the run row's summary says them. */
-type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string };
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
  *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
 function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
-  let mark: BudgetEntry | undefined;
-  for (const entry of entries) {
-    if (entry.kind === KINDS.budget) mark = dataOf<BudgetEntry>(entry);
-    else if (entry.kind === KINDS.raise) mark = undefined;
-  }
-  return mark;
+  return activePark(entries)?.mark;
 }
 
-/** Whether the run stands parked at its cap now (an active agentrun.budget park, no raise since): the store-backed fact the
- *  status table reads (RunFacts.budgetWaiting), as the file-backed view read a workflow's pause file and an agentic run's
- *  turn refusal. */
-export const budgetWaitingOf = (entries: readonly JournalEntry[]): boolean => activeBudget(entries) !== undefined;
+/** The active cap park and its entry's id: the pause the runner keys a raise's follow-up by (adapter-loop raiseStateOf). */
+function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: string } | undefined {
+  let park: { mark: BudgetEntry; id: string } | undefined;
+  for (const entry of entries) {
+    if (entry.kind === KINDS.budget) park = { mark: dataOf<BudgetEntry>(entry), id: String(entry.id) };
+    else if (entry.kind === KINDS.raise) park = undefined;
+  }
+  return park;
+}
+
+/** The server's row of a run's pause at its cap, and its waiting row while it stands paused: the pause's own words are
+ *  its pending budget's `said`, which a client shows once as its banner, so these rows say no more (#1768). */
+export const BUDGET_PAUSED = "Paused at the run's cap";
+export const BUDGET_WAITING = "Waiting for you to raise the cap";
+
+/** `rows` with each pause at the run's cap shown (its agentrun.budget entry: the cap refused the next step for room, and
+ *  nothing was sent): the server's `phase` row "Paused at the run's cap" (origin server, `paused: true`, its id ending
+ *  NOTE_SUFFIX, so no message any turn took) where the pause came in the journal's order, kept as the run's history once
+ *  a raise clears it; and, after the pause the run stands at now, its `waiting` row "Waiting for you to raise the cap".
+ *  Each new row takes its time from the row before it. `ended`: the run is final (cancelled while paused, say), so it
+ *  waits on nothing and shows no waiting row. */
+export function withBudgetRows(rows: readonly TimelineEvent[], entries: readonly (JournalEntry & { conversationId?: unknown })[], { ended = false }: { ended?: boolean } = {}): TimelineEvent[] {
+  const parks = entries.filter((entry) => entry.kind === KINDS.budget).map((entry) => ({ id: Number(entry.id), conversation: Number(entry.conversationId ?? 1) }));
+  if (parks.length === 0) return [...rows];
+  const active = ended ? undefined : activePauseOf(entries);
+  const entryOf = (row: TimelineEvent): number => Number(row.id.split(":")[1]);
+  const out = [...rows];
+  for (const park of parks) {
+    // Before the first row of a later entry; else before a trailing usage row, the run's last.
+    let at = out.findIndex((row) => entryOf(row) > park.id);
+    if (at < 0) at = out.length > 0 && out[out.length - 1]!.kind === "usage" ? out.length - 1 : out.length;
+    const base = out[at - 1] ?? out[at];
+    const timestamp = base?.timestamp ?? new Date(0).toISOString();
+    const row = (id: string, kind: TimelineEvent["kind"], summary: string, more: Partial<TimelineEvent>): TimelineEvent => ({
+      id, timestamp, created_at: base?.created_at ?? timestamp, kind, summary, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+      tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, conversation_id: park.conversation,
+      ...(base?.seq !== undefined ? { seq: base.seq } : {}), ...more,
+    });
+    const shown = [row(`${park.conversation}:${park.id}${NOTE_SUFFIX}`, "phase", BUDGET_PAUSED, { origin: "server", paused: true })];
+    if (String(park.id) === active) shown.push(row(`${park.conversation}:${park.id}:waiting`, "waiting", BUDGET_WAITING, { text: BUDGET_WAITING }));
+    out.splice(at, 0, ...shown);
+  }
+  return out;
+}
+
+/** The id of the cap park a run stands at now (its agentrun.budget entry's), or undefined when it is not parked: a raise's
+ *  follow-up is sent as `agentrun:raise:<this>` (raiseFollowUpId), so a raise's answer names that message. */
+export const activePauseOf = (entries: readonly JournalEntry[]): string | undefined => activePark(entries)?.id;
+
+/** The id a raised run's follow-up turn is sent under: one per pause, so raises of the same pause (a retry, two at once)
+ *  name the same message, and the runner's re-claim never sends it twice. */
+export const raiseFollowUpId = (pause: string): string => `agentrun:raise:${pause}`;
 
 /** The budget card a run parked at its cap shows (pending, kind budget), from its agentrun.budget entry, the same way the
  *  file-backed view built it from the run's pause mark (runs.ts workflowBudgetPending): its cap (the run's launch cap, else
@@ -287,7 +309,8 @@ export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "m
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
     ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
     : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+  // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
 }
 
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
@@ -328,6 +351,8 @@ export interface RunView {
    *  view, from the cap park entry): the moment reads them when `pausedAt` finds no turn refusal, so a run parked at its cap
    *  reads paused either way. The file-backed view leaves this unset and the moment reads `pausedAt`. */
   pausedWords?: string;
+  /** The cap park the run stands at (activePauseOf), when the store-backed view knows it: the moment's `pause`. */
+  pause?: string;
   meta: RunViewMeta;
 }
 
@@ -338,9 +363,9 @@ export interface RunView {
 export interface RunFacts {
   /** A workflow run paused at its cap, as its process wrote it (budgetWaiting). */
   budgetWaiting(): boolean;
-  /** A workflow run paused in its process (pausedIn(run.dir)). */
+  /** A workflow run paused (the store-backed view reads it from the run's journal). */
   paused(): boolean;
-  /** The ask its agent made for the person in its browser the run waits on (askShown(run.dir, run.rows)). */
+  /** The ask its agent made for the person in its browser the run waits on (browser-commands.ts browserAsk, over its journal). */
   browserAsk(): PendingAsk | undefined;
   /** The ask its agent made for the person on its desktop or phone the run waits on (computer-commands.ts computerAsk). */
   computerAsk?(): ComputerAsk | undefined;
@@ -443,24 +468,6 @@ export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (te
   const waiting = waitingApproval(run);
   return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}) } : undefined;
 };
-/** A run paused at its cap waits on a raise: its cap, what the cap counted as taken and the least the refused request
- *  needs (its refusal's mark; none from a store written before it kept them), the raise it is offered (suggestedCap),
- *  the refusal's words, and when it came (its error row's time). The figures are as the cap counts them, never rounded.
- *  What was taken is the store's spend once its process is gone (`spentNow`), when that is lower: the refusal counted
- *  requests still answering at what it held for them, and they have settled. */
-export const budgetPending = (run: RunView, spentNow?: number): Pending | undefined => {
-  const said = pausedAt(run);
-  const cap = run.meta.max_cost_usd;
-  if (said === undefined || cap === undefined) return undefined;
-  const r = run.capRefusal;
-  const spent = r && spentNow !== undefined ? Math.min(r.spentUsd, spentNow) : r?.spentUsd;
-  // Shown as cost.usd is (to a millionth of a dollar), the suggestion from the figures as the cap counts them. The least cap
-  // that sends the refused request is the one its words name (`said`), carried from the refusal that wrote them, never
-  // worked out again here from figures that may have moved since. With them, the most a cache miss could make the refused
-  // request cost beyond what it needs (cap.ts), 0 for none.
-  const figures = r && spent !== undefined ? { spent_usd: micro(spent), needs_usd: micro(r.needsUsd), least_cap_usd: r.leastCapUsd, suggested_cap_usd: suggestedCap(cap, spent, r.needsUsd), overshoot_bound_usd: microUp(r.boundUsd ?? 0) } : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
-};
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
  *  redacted with the run's redactor (`redact`), as a tool call's arguments are: a held value it echoes never shows. */
@@ -555,7 +562,11 @@ export interface RunMoment {
   readonly pausedWords?: string;
   /** The run is paused at its cap (pausedAt): raising the cap resumes it. */
   readonly paused: boolean;
-  /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next process, not this one. */
+  /** The cap park it stands at (its agentrun.budget entry's id, activePauseOf), when the store knows it: a raise's answer
+   *  names the follow-up message the runner sends for it (raiseFollowUpId). */
+  readonly pause?: string;
+  /** The run has a live process now (a runner holds its claim): a raise's cap holds from its next step, not the one under
+   *  way. */
   readonly live: boolean;
   /** A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else. */
   readonly waitsOnPerson: boolean;
@@ -563,6 +574,9 @@ export interface RunMoment {
   readonly waitingApprovalId?: string;
   /** The tool calls this run has or had waiting for approval, by id (for the not-found refusal). */
   readonly approvalIds?: ReadonlySet<string>;
+  /** What is archived of it, when anything is: its agent, else the run itself. Archiving closes a run: it takes no message
+   *  (runs-over-store.ts message). Absent when neither is. */
+  readonly archived?: "run" | "agent";
   /** The approvals already answered, by call id, as the run view folds them (for the first-wins refusal and its words). */
   readonly answeredApprovals?: Readonly<Record<string, { readonly decision: ApprovalDecision; readonly ended?: true }>>;
 }
@@ -596,6 +610,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     ...(run.meta.max_cost_usd !== undefined ? { maxCostUsd: run.meta.max_cost_usd } : {}),
     ...(pausedWords !== undefined ? { pausedWords } : {}),
     paused: pausedWords !== undefined,
+    ...(pausedWords !== undefined && run.pause !== undefined ? { pause: run.pause } : {}),
     live,
     // Whether it waits on a person (runs.ts waitsOnPerson): a parked approval, a pause at its cap (read through a message
     // counted but not shown), or a question its turn ended on.
@@ -613,6 +628,9 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
 
 /** An ended run's words, withheld while this server can't read the sign-in it was handed (load). */
 export const WITHHELD_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so nothing the run said is shown.";
+/** Why a run is refused at its claim: the browser sign-in it was handed can't be read here (the seal key changed or is
+ *  missing, or the sign-in is damaged). */
+export const UNREADABLE_SIGN_IN = "This server can't read the run's browser sign-in (its seal key changed or is missing, or the sign-in is damaged): the run was stopped, so nothing it says can show it.";
 
 /** A withheld run's title: a short line that fits the title's length and holds nothing the run said, so a title that
  *  repeats the handed sign-in is never served when this server can't cut it. The full sentence stays in the run's error
@@ -625,7 +643,7 @@ export const WITHHELD_TITLE = "Withheld: a sign-in this run used can't be read";
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
 
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+/** A run's `sign_in_handed` as read from its stored row: undefined when absent (never handed one); the hashes it names;
  *  MALFORMED for any other value. */
 export function handedMark(value: unknown): Handed | undefined {
   if (value === undefined) return undefined;
@@ -633,9 +651,6 @@ export function handedMark(value: unknown): Handed | undefined {
   return MALFORMED;
 }
 
-/** Every secret value a run's errors never show, as learning's checker holds them: every one this server never shows
- *  (serverSecrets, read now, so one rotated is cut at once) and what each launch handed the run. */
-export const refusedValuesOf = (serverSecrets: () => string[], handed: ReadonlySet<string> | undefined): string[] => [...serverSecrets(), ...(handed ?? [])];
 /** A run's redactor (decision-rows.ts, tool previews): redacted over its refused values. */
 export const redactorOf = (values: string[]) => (text: string) => redacted(text, values);
 /** What serve shows of a run's error text, for every run kind: no held secret (redacted, key-refusal.ts' one rule) and
@@ -645,9 +660,17 @@ export const shownOf = (values: string[]) => (text: string) => withoutLoopback(r
 export const servedRunErrorWith = <E extends { message: string; details?: unknown }>(shown: (text: string) => string, error: E): E => ({ ...error, message: shown(error.message), ...(error.details !== undefined ? { details: cutStrings(error.details, shown) } : {}) });
 /** A run's review as its view serves it: its reason (an escalation's own words) in `shown`'s terms, or withheld as its
  *  other words are while the run is hidden (`unshown`), as a list row read from disk withholds it. */
-export const servedReviewWith = <R extends { reason: string }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null => (review && { ...review, reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason) });
+export const servedReviewWith = <R extends { reason: string; kind?: string | null; node?: string | null }>(shown: (text: string) => string, unshown: boolean | undefined, review: R | null): R | null =>
+  review && {
+    ...review,
+    // Every word of it is the run's (its escalate node's kind and label, as the workflow wrote them): cut as the reason is,
+    // and withheld with it.
+    ...("kind" in review ? { kind: unshown || review.kind == null ? null : shown(review.kind) } : {}),
+    ...("node" in review ? { node: unshown || review.node == null ? null : shown(review.node) } : {}),
+    reason: unshown ? WITHHELD_SIGN_IN : shown(review.reason),
+  } as R;
 
-/** The pointers a run was handed, read back to cut them (sign-ins.ts peek and forgotten), by its `sign_in_handed`: none
+/** The pointers a run was handed, read back to cut them (sign-ins-store.ts peek and forgotten), by its `sign_in_handed`: none
  *  for a run with no mark (it was never handed one); else, for each hash it names, the live or forgotten pointer whose
  *  SHA-256 it is. `unreadable` when what it was handed can't be read back here: a MALFORMED mark, no vendor browser kept
  *  beside the mark, the sign-ins file can't be read, or any of its hashes matches no pointer that opens (one under another
@@ -665,7 +688,7 @@ export async function handedPointers(signIns: SignInReader | undefined, agentId:
   return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
 }
 
-/** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+/** shown() for a run this server holds no Run for (an ended one a list reads from its row and journal alone): cut of
  *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in
  *  (handedPointers); `withheld` when that can't be read back here, as a load would hide the run. `browser` and `handed`
  *  come from the run's record (its plane's vendor browser and its `sign_in_handed` mark); `damaged` when the record was
@@ -718,7 +741,7 @@ export function outcomeShows(tool: string, answer: { decision: string; by?: stri
 function callSays(answer: ApprovalAnswer | undefined): string {
   if (!answer) return "Not run yet: it waits for your approval";
   if (answer.decision === "canceled") return "Not run: the run was cancelled while it waited";
-  if (answer.decision === "withdrawn") return answer.ended ? "Not run: the run ended while it waited" : "Not run: the run was stopped while it waited";
+  if (answer.decision === "withdrawn") return answer.ended ? ENDED_WHILE_WAITING : STOPPED_WHILE_WAITING;
   return "Allowed: it runs now";
 }
 /** A synthesized row's id: the approval's own, so a pass over rows this function gave drops and remakes it. */
@@ -738,7 +761,12 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
   const owns = (row: TimelineEvent) => (row.kind === "tool_use" || row.kind === "tool_result") && !!row.tool_use_id && byCall.has(row.tool_use_id);
   const lastOf = new Map<string, string>();
   for (const row of given) if (owns(row)) lastOf.set(row.tool_use_id!, row.id);
+  // The result rows of the calls that waited: a Saved row read from such a call's write (pi's `<result>:saved:<n>`) says
+  // a file was written that the park never wrote; an allowed call's file is its outcome row's to say, as on main.
+  const waitedResults = new Set(given.filter((row) => row.kind === "tool_result" && owns(row)).map((row) => row.id));
   return given.flatMap((row) => {
+    const savedBy = row.kind === "phase" ? /^(.*):saved:\d+$/.exec(row.id)?.[1] : undefined;
+    if (savedBy !== undefined && waitedResults.has(savedBy)) return [];
     if (!owns(row)) return [row];
     const approval = byCall.get(row.tool_use_id!)!;
     const answer = answers[approval.id];
@@ -748,12 +776,24 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const own: TimelineEvent = { ...row, summary: outcome ? HELD : callSays(answer), tool_status: null };
     if (lastOf.get(approval.call_id) !== row.id) return [own];
     const args = shownArgs(approval, redact);
+    // A served row keeps the place it was first served at (rows.ts). The call's result comes in after the answer (the park
+    // writes none), so the approval and outcome rows take a new id once it is there: served anew below the result, the
+    // call's own rows, then its approval, then what came of it, as a person reads it.
+    const at = result ? `${approvalRowId(approval.call_id)}:after` : approvalRowId(approval.call_id);
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : "Asked your approval";
-    const asked: TimelineEvent = { ...row, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...row, id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     if (!outcome) return [own, asked];
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";
     // The result's words: a tool_result row keeps them as its preview (the renderer's, redacted and cut), its text empty.
-    const told: TimelineEvent = { ...(result ?? row), id: `${approvalRowId(approval.call_id)}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    const told: TimelineEvent = { ...(result ?? row), id: `${at}:outcome`, kind: "phase", origin: "server", summary: outcomeSays(approval.tool, answer!, failed, redact), text: outcomeShows(approval.tool, answer!, redact(result?.text || result?.tool_result_preview || ""), failed), tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null } as TimelineEvent;
+    // A person's message that declined the call (runs-over-store.ts message: a deny carrying their words) is theirs as any
+    // message is: its own row, between the approval and what came of it, as main's declineBy kept it.
+    if (answer!.decision === "deny" && answer!.by === "message" && answer!.note) {
+      const words = redact(answer!.note);
+      const { origin: _origin, ...base } = result ?? row;
+      const theirs: TimelineEvent = { ...base, id: `${at}:message`, kind: "user_message", summary: clip(`You: ${words.split("\n", 1)[0]}`, 500), text: words, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
+      return [own, asked, theirs, told];
+    }
     return [own, asked, told];
   });
 }

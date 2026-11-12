@@ -11,7 +11,7 @@ import type { Run, TimelinePage } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 
-const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "What is two and two?",
   created_at: "2026-10-30T06:00:00Z", ended_at: status === "working" ? null : "2026-10-30T06:00:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: archived ? "2026-11-01T07:00:00Z" : null,
 });
@@ -143,6 +143,43 @@ describe("LiveRun, a run paused at its spend cap", () => {
     expect(reads).toBeGreaterThan(before);
     expect(host.textContent).not.toContain("Paused at its $0.05 spend cap");
     expect(host.querySelector('input[aria-label="New cap in dollars"]')).toBeNull();
+  });
+});
+
+// A working run's header says its cost of its cap; a raise reads the run again, and the header says the raised cap,
+// though the timeline page followed before the raise still carried the old one.
+describe("LiveRun, a working run's cap in its header", () => {
+  it("reads $0.0059 est. of $1.00, then, after Raise the cap to 2, $0.0059 est. of $2.00", async () => {
+    let cap = 1;
+    const costAt = () => ({ usd: 0.0059, basis: "estimate" as const, charge_state: null, cap_usd: cap });
+    const v2 = {
+      getRun: async () => ({ ...at("working", false), cost: costAt() }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      // Each follow's first page carries the cost (and cap) as it stands when it was read; the next read waits, as a
+      // long poll does.
+      getTimeline: async (_id: string, { signal }: { signal?: AbortSignal } = {}) => {
+        if (signal && read.has(signal)) return new Promise<never>(() => {});
+        if (signal) read.add(signal);
+        return { ...final("working"), status: "working" as const, state: "working", final: false, cost: costAt() };
+      },
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      raiseCap: async (id: string, usd: number) => { cap = usd; return { run_id: id, max_cost_usd: usd, resumed: false, status: "working", state: "working" }; },
+    };
+    // The follows whose first page was read: each follow has its own signal.
+    const read = new WeakSet<AbortSignal>();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Calc" })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    expect(host.querySelector("header")?.textContent).toContain("$0.0059 est. of $1.00");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Raise the cap")!.click(); });
+    const input = host.querySelector('input[aria-label="New cap in dollars"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "2"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { (host.querySelector('form[aria-label="Raise the cap"] button[type="submit"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(host.querySelector("header")?.textContent).toContain("$0.0059 est. of $2.00");
+    expect(host.querySelector("header")?.textContent).not.toContain("of $1.00");
   });
 });
 

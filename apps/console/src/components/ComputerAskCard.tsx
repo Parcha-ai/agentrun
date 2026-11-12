@@ -32,16 +32,16 @@ export function ComputerAskCard({ ask, onAnswer, open, heading, compact = false 
   return (
     <section aria-label="Waiting for you at the computer" className={compact ? "px-4 py-3" : "border border-warning/50 bg-warning/5 p-4"}>
       {heading}
-      <p className={cn("caps flex items-center gap-2 text-[11px] text-warning-text", heading && "mt-1")}><Monitor className="size-3.5" aria-hidden /> Waiting for you · {askedAt(ask)}</p>
+      <p className={cn("caps flex items-center gap-2 text-label text-warning-text", heading && "mt-1")}><Monitor className="size-3.5" aria-hidden /> Waiting for you · {askedAt(ask)}</p>
       {/* The agent's own words, which an agent can shape like a phishing page's: said to be its request, and plain text
           (React text: no Markdown, no link, no HTML), never rendered. */}
       <div data-agent-request className={cn("border-l-2 border-warning/60 pl-3", compact ? "mt-1" : "mt-2")}>
-        <p className={compact ? "text-[15px] leading-snug" : "text-[15px] leading-relaxed"}>The agent asks you to: {ask.instruction}</p>
-        <p className="mt-1 text-[13px] text-muted-foreground">Done when: {ask.completion_condition}</p>
+        <p className={compact ? "text-prose leading-snug" : "text-prose leading-relaxed"}>The agent asks you to: {ask.instruction}</p>
+        <p className="mt-1 text-body text-muted-foreground">Done when: {ask.completion_condition}</p>
       </div>
       {/* The console's own line, never the server's or the agent's. */}
-      <p className="mt-2 text-[12px] font-semibold">You never need to type your AgentRun password for this.</p>
-      <p className="mt-1 font-mono text-[11px] text-muted-foreground">Expires {when(ask.expires_at)} unanswered</p>
+      <p className="mt-2 text-small font-semibold">You never need to type your AgentRun password for this.</p>
+      <p className="mt-1 font-mono text-label text-muted-foreground">Expires {when(ask.expires_at)} unanswered</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {open}
         <span className="flex-1" />
@@ -50,7 +50,7 @@ export function ComputerAskCard({ ask, onAnswer, open, heading, compact = false 
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => void answer("cancelled")}>Cancel</Button>
         </>}
       </div>
-      {said && <p className="mt-2 text-[12px] text-warning-text" role="alert">{said}</p>}
+      {said && <p className="mt-2 text-small text-warning-text" role="alert">{said}</p>}
     </section>
   );
 }

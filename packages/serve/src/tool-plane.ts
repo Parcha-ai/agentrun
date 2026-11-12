@@ -20,20 +20,19 @@
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { blurbOf } from "./tool-blurbs.js";
-import { readFileSync } from "node:fs";
-import { isToolSettingsKey } from "@parcha/pi-durable-agent";
-import { join } from "node:path";
+import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
-import { writeDurableSync } from "./server-fs.js";
 import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
+import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
+import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 
 /**
  * The capabilities a pack or a revision may grant, by name: the tools the kernel gives a run, bound from serve's closed
@@ -42,20 +41,20 @@ import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS
  * never does), and a catalog's tools (`monid.*`, `mcp:<server>/<tool>`: catalog tools, which their catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
-export type Capability = (typeof CAPABILITIES)[number];
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
  *  where there is one (never on claude-agent, where Claude's own search is picked as `native`), else Parallel where the
  *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
  *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
- *  agent naming it is refused until it is turned on again. The browser's: `auto`, Browserbase where the server holds its
- *  keys, else Kernel where it holds Kernel's; `browserbase` or `kernel`, that one alone; `chrome`, a Chrome on the
- *  server's own host, which no server sets up yet (browserBy). */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] } as const);
+ *  agent naming it is refused until it is turned on again. The browser's: `auto`, the computer registry's first browser
+ *  provider whose keys the server holds (Browserbase, else Kernel); a browser provider's id (`browserbase`, `kernel`:
+ *  BROWSER_VENDOR_IDS), that one alone; `chrome`, a Chrome on the server's own host, which no server sets up yet
+ *  (browserBy). */
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"] as const, web_fetch: ["kernel", "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
-export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
+export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "subagent", "pdf_pages", "llm"];
 /** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
  *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
  *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
@@ -77,17 +76,14 @@ export const KIND_KEYS: readonly string[] = ["desktop", "phone"];
 /** A settings key: a tool of the table, one of the run's own tools (SERVE_OWN_TOOLS), a computer kind's (KIND_KEYS), a
  *  catalog tool (`monid.<tool>`, `mcp:<server>/<tool>`), or an MCP server's wildcard (`mcp:<server>/*`), which sets each
  *  of its tools. */
+/** A tool's name in an agent's or the server's tool settings: a plain name, a catalog's tool (`monid.discover`), an MCP
+ *  server's tool (`mcp:<server>/<tool>`) or its wildcard (`mcp:<server>/*`). */
+const TOOL_KEY = /^(?:[a-z][a-z0-9_-]{0,63}(?:\.[A-Za-z0-9_-]{1,64})?|mcp:[A-Za-z0-9_.-]{1,64}\/(?:\*|[A-Za-z0-9_.-]{1,128}))$/;
+const isToolSettingsKey = (name: string): boolean => TOOL_KEY.test(name);
 const isSettingsKey = (name: string): boolean => isToolSettingsKey(name) && (TABLE_TOOLS.includes(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || isCatalogTool(name) || /^mcp:[^/]+\/\*$/.test(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** Read as a stand-in for a value not offered (readToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
-/** Whether an agent's own settings (definition.tool_settings) keep a pin. Not yet: the agent store this server writes
- *  today keeps a setting's values as names only, and refuses a pin; the store of the rewrite (store/, module A) keeps it
- *  as given, and this is true from its cutover on. Until then a pin is set on the server (PUT /v2/settings/tools), which
- *  the gate holds every run to; the gate reads an agent's pin wherever a revision carries one. */
-export const AGENT_LAYER_PINS: boolean = true;
-/** Why an agent's own pin is refused while AGENT_LAYER_PINS is false. */
-export const AGENT_PIN_LATER = "An agent's own pin is kept once this server's agent store takes it (the store cutover). Until then set the pin on this server, PUT /v2/settings/tools (Settings → Tools), which the tool gate holds every run to.";
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -236,36 +232,56 @@ export const isUnavailable = (resolution: Resolution | undefined): resolution is
 /** Why `resolution` is unavailable, in words. A vendor picked whose key this server does not hold (its value, kept in a
  *  run's meta and read back, names the variables) names where to save the key first, then the variable to set. */
 export const whyUnavailable = (resolution: string): string => {
-  if (resolution === NO_BROWSER_KEY) return `it needs ${keyNeeded(BROWSER_KEYS.browserbase)}, or ${keyNeeded(BROWSER_KEYS.kernel)}`;
+  if (resolution === NO_BROWSER_KEY) return `it needs ${BROWSER_VENDORS.map((vendor) => keyNeeded(vendor.keys)).join(", or ")}`;
   const why = resolution.replace(/^unavailable: /, "");
   const picked = /^(\S+) picked, no (.+)$/.exec(why);
   return picked ? `${picked[1]} is picked, and it needs ${keyNeeded(picked[2]!.split(" and "))}` : why;
 };
 
-/** The keys each of the browser's vendors needs, by name: a tool key's fields (tool-keys.ts), set or saved. Its plane
- *  value is the vendor's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch web_fetch calls so. */
-export const BROWSER_KEYS = Object.freeze({ browserbase: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], kernel: ["KERNEL_API_KEY"] } as const);
-type BrowserVendor = keyof typeof BROWSER_KEYS;
-const LABELS: Record<BrowserVendor, string> = { browserbase: "Browserbase", kernel: "Kernel" };
-const isVendor = (name: unknown): name is BrowserVendor => name === "browserbase" || name === "kernel";
-const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => ({ browserbase: BROWSER_KEYS.browserbase.every((name) => Boolean(env[name])), kernel: BROWSER_KEYS.kernel.every((name) => Boolean(env[name])) });
+/** The browser's vendors: the computer registry's providers of a browser (kinds.ts PROVIDERS), in its order, each with
+ *  the keys it needs by name (its required keys: a tool key's fields, tool-keys.ts, set or saved) and its name in words.
+ *  Its plane value is the provider's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch
+ *  web_fetch calls so. A hosted browser provider added to the registry is a vendor here with no edit. A browser
+ *  provider that needs no key (this machine's Chrome) is no hosted vendor: `auto` would always hold its keys, so it is
+ *  left out, and an agent picks it as its computer instead. */
+const BROWSER_VENDORS: readonly { readonly id: string; readonly label: string; readonly keys: readonly string[] }[] = Object.freeze(
+  hostedBrowsers().map((entry) => Object.freeze({ id: entry.id, label: entry.label, keys: Object.freeze(entry.keys.filter((key) => key.required).map((key) => key.name)) })),
+);
+/** The registry's browser providers that need a key, in its order. */
+function hostedBrowsers(): typeof COMPUTER_PROVIDERS {
+  return COMPUTER_PROVIDERS.filter((entry) => entry.kinds.includes("browser") && entry.keys.some((key) => key.required));
+}
+/** The hosted browser providers' ids, in the registry's order (PROVIDERS.browser lists them between `auto` and `chrome`). */
+function browserProviderIds(): string[] {
+  return hostedBrowsers().map((entry) => entry.id);
+}
+export const BROWSER_VENDOR_IDS: readonly string[] = Object.freeze(browserProviderIds());
+export const BROWSER_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.keys])));
+type BrowserVendor = string;
+const LABELS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.label])));
+const isVendor = (name: unknown): name is BrowserVendor => typeof name === "string" && Object.hasOwn(BROWSER_KEYS, name);
+const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.keys.every((name) => Boolean(env[name]))]));
 /** A vendor picked whose keys the server does not hold: unavailable, never the other vendor. */
-const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor].join(" and ")}`;
+const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor]!.join(" and ")}`;
 /** The keys a browser that resolves to `resolution` runs on: its vendor's (BROWSER_KEYS), none for no vendor. */
-export const browserNeeds = (resolution: string | undefined): readonly string[] => (isVendor(resolution) ? BROWSER_KEYS[resolution] : []);
-/** `auto` where the server holds neither vendor's keys. */
-export const NO_BROWSER_KEY: Resolution = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+export const browserNeeds = (resolution: string | undefined): readonly string[] => (isVendor(resolution) ? BROWSER_KEYS[resolution]! : []);
+/** `auto` where the server holds no vendor's keys. */
+export const NO_BROWSER_KEY: Resolution = `unavailable: no browser key: set or save ${BROWSER_VENDORS.map((vendor) => `${vendor.label}'s (${vendor.keys.join(" and ")})`).join(" or ")}`;
 /** `chrome` picked: a Chrome on the server's own host, refused by name until a server can set one up. */
 export const NO_CHROME: Resolution = "unavailable: a local Chrome is not set up on this server";
 
-/** The browser `chosen` (picked as `picked` says) resolves to with the vendors' `keys`: `auto` is Browserbase where its
- *  keys are held, else Kernel where its key is, else unavailable; a vendor picked is that vendor or unavailable; `chrome`
- *  is unavailable by name. */
-function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = { browserbase: false, kernel: false }): { resolves: Resolution; why: string } {
+/** The browser `chosen` (picked as `picked` says) resolves to with the vendors' `keys`: `auto` is the registry's first
+ *  vendor whose keys are held (Browserbase, else Kernel), else unavailable; a vendor picked is that vendor or
+ *  unavailable; `chrome` is unavailable by name. */
+function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = {}): { resolves: Resolution; why: string } {
   if (chosen === "chrome") return { resolves: NO_CHROME, why: whyUnavailable(NO_CHROME) };
-  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and it needs ${keyNeeded(BROWSER_KEYS[chosen])}` };
-  if (keys.browserbase) return { resolves: "browserbase", why: "Browserbase: its key is set or saved" };
-  if (keys.kernel) return { resolves: "kernel", why: "Kernel: its key is set or saved, and Browserbase's is not" };
+  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen as Resolution, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and it needs ${keyNeeded(BROWSER_KEYS[chosen]!)}` };
+  const first = BROWSER_VENDORS.findIndex((vendor) => keys[vendor.id]);
+  if (first >= 0) {
+    const vendor = BROWSER_VENDORS[first]!;
+    const passed = BROWSER_VENDORS.slice(0, first).map((one) => `${one.label}'s`);
+    return { resolves: vendor.id as Resolution, why: `${vendor.label}: its key is set or saved${passed.length ? `, and ${passed.join(" and ")} is not` : ""}` };
+  }
   return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
 }
 
@@ -357,12 +373,13 @@ export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefi
  *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
 export function keptVendor(plane: Plane): Plane {
   const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
-  return vendor ? { ...plane, browser: vendor } : plane;
+  return vendor ? { ...plane, browser: vendor as Resolution } : plane;
 }
 
-/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
- *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
-export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");
+/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: the vendor it
+ *  resolved to, else the one picked, else the registry's first (Browserbase), so a page links a missing key to the row
+ *  it is saved on. */
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
 
 /** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
  *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept
@@ -398,9 +415,14 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
     if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...TABLE_TOOLS, ...SERVE_OWN_TOOLS, ...KIND_KEYS].join(", ")}), catalog tools (monid.<tool>, mcp:<server>/<tool>) and an MCP server's tools (mcp:<server>/*); ${name} is none of them.` }];
-    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}}` }];
+    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpTool(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
+      // bash's policy (bash-read-only.ts): an agent's own, on bash's key only, as what its commands may do is the agent's.
+      if (key === "policy") {
+        if (layer !== "agent" || name !== "bash") return [{ field: field(name, key), reason: "not_allowed", message: `A policy is set on bash in an agent's own tool settings (definition.tool_settings.bash.policy), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
+        return (BASH_POLICIES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${BASH_POLICIES.join(", ")}: read-only refuses, before it runs, any command that could write, run code or read outside the run's folder` }];
+      }
       // The server's own mark of a pin in its file that does not read (withDefaults serves it), which a whole-map save
       // sends back: it keeps the broken pin, and nothing else. Never an agent's.
       if (key === "pin_broken") {
@@ -419,7 +441,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   });
 }
 
-/** `map` as a revision body keeps it: each tool's provider, permission and pin as written (never a stand-in's internal
+/** `map` as a revision body keeps it: each tool's provider, permission, pin and policy as written (never a stand-in's internal
  *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
  *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
  *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
@@ -427,7 +449,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
   const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
   return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
     if (!setting) return [];
-    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
     return Object.keys(kept).length ? [[name, kept]] : [];
   })));
 }
@@ -439,30 +461,13 @@ export const withDefaults = (map: ToolSettingsMap): ToolSettingsMap & Record<Pic
   ...(Object.fromEntries(PICKABLE.map((name) => [name, { provider: map[name]?.provider ?? PROVIDERS[name][0], ...(map[name]?.permission ? { permission: map[name]!.permission } : {}) }])) as Record<Pickable, { provider: string; permission?: Permission }>),
 });
 
-/** The server's tool settings, beside the agent store in its data directory: not a secret, and not in store.sqlite,
- *  which runs hold open. Read once at the start, written whole and durably (0600) at each PUT; a missing file is every
- *  default, and so is one it cannot read, which it says in one line. */
-/** An empty settings map marked as standing for a file that does not read (SETTINGS_UNREAD, tool-gate.ts): every caller of
- *  readToolSettings inherits the mark, a direct read too (learning's draft check, the learned-draft tools), so none lifts an
- *  ask over a file whose deny it cannot see. */
-const unreadMap = (): ToolSettingsMap => Object.assign({}, { [SETTINGS_UNREAD]: true }) as ToolSettingsMap;
+/** The server's tool settings as read (checkToolSettings, loadToolSettings): the map, a line for each problem, and whether
+ *  the stored value as a whole does not read. */
+export type ToolSettingsRead = { settings: ToolSettingsMap; problems: string[]; unreadable?: true };
 
-/** The tool settings in `dir` as the server and the tool gate read them, failing closed: each entry that reads is kept;
- *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered,
- *  reads ask (deny where ask is not offered), never its allow default. `problems`: one line for each entry dropped or
- *  changed, naming the file and the field, never a value. `unreadable`: the file as a whole does not read (none, a
- *  missing file is every default). */
-export function readToolSettings(dir: string): { settings: ToolSettingsMap; problems: string[]; unreadable?: true } {
-  const file = join(dir, ToolSettings.FILE);
-  let read: unknown;
-  try {
-    read = JSON.parse(readFileSync(file, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, problems: [] };
-    return { settings: unreadMap(), problems: [`${file} does not read as JSON`], unreadable: true };
-  }
-  return checkToolSettings(read, file);
-}
+/** An empty settings map marked as standing for settings that do not read (SETTINGS_UNREAD, tool-gate.ts): every reader
+ *  inherits the mark, so none lifts an ask over settings whose deny it cannot see. */
+const unreadMap = (): ToolSettingsMap => Object.assign({}, { [SETTINGS_UNREAD]: true }) as ToolSettingsMap;
 
 /** A parsed tool-settings object (from the file, or the store), checked and failed closed: each entry that reads is kept;
  *  one that does not is dropped, but a known tool keeps what of it reads, and its permission, when not one offered, reads
@@ -507,14 +512,13 @@ export function checkToolSettings(read: unknown, where: string): { settings: Too
 /** The key the server's tool settings live under in the one store (store.settings). */
 export const TOOL_SETTINGS_KEY = "tool-settings";
 
-/** The server's tool settings read from the one store (store.settings), failing closed as readToolSettings does: no row
- *  is every default. The store-backed replacement for `new ToolSettings(dir)` + get(); the cut wires it. */
-export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<{ settings: ToolSettingsMap; problems: string[]; unreadable?: true }> {
+/** The server's tool settings read from the one store (store.settings), failing closed (checkToolSettings): no row is
+ *  every default. */
+export async function loadToolSettings(store: { settings: Pick<Settings, "get"> }): Promise<ToolSettingsRead> {
   const read = await store.settings.get(TOOL_SETTINGS_KEY);
   if (read === undefined) return { settings: {}, problems: [] };
   const checked = checkToolSettings(read, "the stored tool settings");
-  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts), as ToolSettings.get does for the file: wherever
-  // these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
+  // A stored row that does not read carries SETTINGS_UNREAD (tool-gate.ts): wherever these settings go (the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask over a
   // deny the row may hold. A save over it (saveToolSettings) writes a row that reads.
   if (checked.unreadable) (checked.settings as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
   return checked;
@@ -522,7 +526,7 @@ export async function loadToolSettings(store: { settings: Pick<Settings, "get"> 
 
 /** A save of the server's tool settings: `map` (a tool it leaves out takes its defaults) over the settings read before it
  *  (`current`), as kept (the marks within) and as written (the raw values, which a read turns back into those marks).
- *  The one rule both writers keep (ToolSettings.put to the file, saveToolSettings to the store), so they cannot drift:
+ *  The rule saveToolSettings keeps:
  *  - a pin is kept as given, as a pin is a gate fence (tool-gate.ts pinRefusal);
  *  - a broken pin (one that did not read) is kept by every save that keeps the tool's key and sets no pin of its own (a
  *    console's whole map sends the key back, marked pin_broken): only a valid pin, or the key left out, clears it, so an
@@ -542,10 +546,9 @@ export function keptSettings(map: ToolSettingsMap, current: ToolSettingsMap): { 
   return { kept, written };
 }
 
-/** Replaces the server's tool settings in the one store, as ToolSettings.put does to the file, by the same rule
- *  (keptSettings): a tool `map` leaves out takes its defaults, a pin is kept, a broken pin is kept until a valid one or the
- *  key left out clears it, and a stand-in sent back unchanged stays a stand-in. Answers the settings as served (the marks
- *  within). The store-backed replacement for ToolSettings.put; the cut wires it. */
+/** Replaces the server's tool settings in the one store, by keptSettings's rule: a tool `map` leaves out takes its
+ *  defaults, a pin is kept, a broken pin is kept until a valid one or the key left out clears it, and a stand-in sent
+ *  back unchanged stays a stand-in. Answers the settings as served (the marks within). */
 export async function saveToolSettings(store: { settings: Pick<Settings, "get" | "put"> }, map: ToolSettingsMap): Promise<ToolSettingsMap> {
   const { settings: current } = await loadToolSettings(store);
   const { kept, written } = keptSettings(map, current);
@@ -553,45 +556,24 @@ export async function saveToolSettings(store: { settings: Pick<Settings, "get" |
   return structuredClone(kept);
 }
 
-export class ToolSettings {
-  static readonly FILE = "tool-settings.json";
-  private current: ToolSettingsMap;
-  /** The file was present but did not read at the start: every tool takes its defaults until a PUT replaces it. */
-  private unread: boolean;
-  constructor(private readonly dir: string, warn: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)) {
-    const { settings, problems, unreadable } = readToolSettings(dir);
-    for (const line of problems) warn(`agentrun-serve: ${line}; ${unreadable ? "every tool takes its defaults" : "that entry is dropped (a permission that is not offered reads ask)"} until a PUT /v2/settings/tools`);
-    this.current = settings;
-    this.unread = unreadable === true;
-  }
-
-  /** The settings now. While the file does not read, the map carries SETTINGS_UNREAD (tool-gate.ts), so wherever it goes
-   *  (the gate's permission, the plane's providers, an agent's tools, a save's blockers) approvals "never" lifts no ask
-   *  over a deny the file may hold, as the gate itself fails closed. */
-  get(): ToolSettingsMap {
-    const map = structuredClone(this.current);
-    if (this.unread) (map as { [SETTINGS_UNREAD]?: true })[SETTINGS_UNREAD] = true;
-    return map;
-  }
-
-  /** Replaces the settings: a tool `map` leaves out takes its defaults; pins, broken pins and stand-ins by the one rule
-   *  the store's save keeps too (keptSettings). Durable before it returns. */
-  put(map: ToolSettingsMap): ToolSettingsMap {
-    const { kept, written } = keptSettings(map, this.current);
-    writeDurableSync(join(this.dir, ToolSettings.FILE), `${JSON.stringify(written)}\n`);
-    this.current = kept;
-    // The file is the one just written: it reads.
-    this.unread = false;
-    return this.get();
-  }
+/** Why a tool of bash's family (SHELL_FAMILY: bash and the background tools) is not there for a run whose shell is
+ *  `shell` (workspace/resolve-computer.ts runShellOf, the claim's own rule read off the agent's computer setting), in the
+ *  kernel registry's words for a call of it there: with no computer that mounts the run's folder the background tools
+ *  are refused (NEEDS_A_COMPUTER), and bash too where the run has no shell at all (NO_SHELL, Mode 1); in Mode 2 bash runs
+ *  on Archil's exec. Undefined for any other tool, and where it is there. */
+export function shellUnavailable(name: string, shell: ShellPlace): Resolution | undefined {
+  if (!Object.hasOwn(SHELL_FAMILY, name) || shell === "computer") return undefined;
+  if (name === SHELL_FAMILY[name]) return shell === "none" ? `unavailable: ${NO_SHELL}` : undefined;
+  return `unavailable: ${NEEDS_A_COMPUTER}`;
 }
 
 /** GET /v2/agents/{id}'s `tools`: each tool its current revision grants, in `order` (capabilities.tools'), with its
  *  permission in force and where it came from (the agent's own settings, the server's, or the default), the one that
  *  applies when the agent sets none (the server's, else the default) and those it may be set to; and for one with a
  *  provider choice the provider in force and where it came from, the one that applies when the agent sets none, and what
- *  it resolves to on the agent's harness and model. */
-export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[]) {
+ *  it resolves to on the agent's harness and model. `shell`: where a run of the agent has its shell (runShellOf on its
+ *  computer setting); a tool of bash's family that leaves out resolves unavailable, saying why (shellUnavailable). */
+export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[], shell: ShellPlace = "computer") {
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
@@ -600,6 +582,9 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
     // One short line for people (tool-blurbs.ts), as capabilities serves it.
     const blurb = blurbOf(name);
     const shown = { name, ...(blurb ? { blurb } : {}) };
+    // A tool of bash's family the agent's computer gives no shell for: unavailable, in the words its run's call gets.
+    const noShell = shellUnavailable(name, shell);
+    if (noShell) return { ...shown, ...gate, resolved: noShell };
     if (!Object.hasOwn(PROVIDERS, name)) return { ...shown, ...gate };
     const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;

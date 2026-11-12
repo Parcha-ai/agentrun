@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, runDir, runRecordOf, scratch, serve } from "./support.mjs";
+import { agent, follow, scratch, scratchDir, serve, serverLog } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
 /** The gateway's key in these tests: no real one. */
@@ -93,8 +93,7 @@ test("a codex run whose cap can't cover one request's least is refused before an
   assert.equal(ended.cost.usd, 0);
 });
 
-// SKIP (follow-up #2080): the Codex CLI on the runner does not run under setpriv --no-new-privs as pi's commands do.
-test.skip("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a run on codex goes through the adapter's proxy to serve's gateway, priced from serve's catalog, with Codex's own process under the run's confinement, in the run's workspace", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
   // How many fit at once is this host's memory (admission.test.mjs).
@@ -111,7 +110,7 @@ test.skip("a run on codex goes through the adapter's proxy to serve's gateway, p
   assert.ok(child, "Codex's process runs");
   assert.equal(field(child.status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(child.status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
-  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(join(runDir(data, run.body.run_id), "work")), "in the run's workspace, where its file tools write");
+  assert.equal(await readlink(`/proc/${child.pid}/cwd`), realpathSync(scratchDir(data, run.body.run_id)), "in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
@@ -120,8 +119,7 @@ test.skip("a run on codex goes through the adapter's proxy to serve's gateway, p
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million");
 });
 
-// SKIP (follow-up #2080): through a gateway, the runner sends agent-model/<id> instead of the model id the revision names (in-flight fix: PR #2057).
-test.skip("through a gateway, codex sends the model id the revision names whole, as pi does: the gateway's own name, never stripped", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("through a gateway, codex sends the model id the revision names whole, as pi does: the gateway's own name, never stripped", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);
   const { api } = await codexServe(t, gw);
   assert.equal((await api("POST", "/agents", agent("named", { harness: "codex", model: "openai/gpt-4o" }))).status, 201);
@@ -136,8 +134,7 @@ test.skip("through a gateway, codex sends the model id the revision names whole,
   assert.equal(gw.seen[0].body.model, "openai/gpt-4o", "the gateway gets the name it was configured with");
 });
 
-// SKIP (follow-up #2080): behind a gateway, the runner sends agent-model/<id> instead of the gateway's own model id (in-flight fix: PR #2057).
-test.skip("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
+test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
   const { api } = await codexServe(t, gw, "team/model");
   const { max_concurrent_runs, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
@@ -154,21 +151,17 @@ test.skip("behind a gateway, a codex agent naming no model runs on AGENT_MODEL a
   assert.equal(gw.seen[0].body.model, "team/model", "the gateway gets its own id, as configured");
 });
 
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
-
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-0f3c9a`;
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a codex run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a codex run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const gw = await gateway(t);
   const { api, data, standIn } = await codexServe(t, gw);
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const dir = join(runDir(data, run.body.run_id));
   // Codex's own request, not another local process calling the gateway's port.
   for (let i = 0; !gw.seen.some((s) => s.path?.startsWith("/v1/")); i++) {
     assert.ok(i < 300, "the turn's model request reaches the gateway");
@@ -185,10 +178,10 @@ test.skip("a codex run's model proxy reports a refusal in the run's log: one har
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   gw.release();
   await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
-  const log = await readFile(join(dir, "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
 });

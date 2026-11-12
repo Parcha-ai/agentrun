@@ -17,6 +17,9 @@ import type { SessionPort } from "@parcha/agentrun-kernel";
 
 /** The provider id the port's one model is listed under. */
 export const PORT_PROVIDER = "agentrun-session";
+/** The provider id a tier's port model is listed under (tieredModels): the run's model of that tier, on a proxy of its
+ *  own beside the session's (AdapterSession.port's `tier`). */
+export const tierProvider = (tier: string): string => `${PORT_PROVIDER}-${tier}`;
 
 /** Where pi-ai's client of `api` is pointed to reach a session's proxy at `url`: Anthropic's SDK adds /v1/messages to its
  *  base; OpenAI's adds /responses to a base that holds /v1. The one rule for the port's models and pi's own (runner
@@ -73,9 +76,9 @@ export type PortModels = {
 };
 
 /** Models over `port` (the session's, read at each request: undefined until a drive has attached a proxy, and anew for
- *  each drive), one model named by any provider and id: the session's own. `like`: the catalog's entry for the model the
- *  run is priced by, whose reasoning, limits and price the port's model takes. */
-export async function portModels(port: () => SessionPort | undefined, like?: Partial<Model<Api>>): Promise<PortModels> {
+ *  each drive), one model named by any provider and id: the session's own, listed under `provider`. `like`: the
+ *  catalog's entry for the model the run is priced by, whose reasoning, limits and price the port's model takes. */
+export async function portModels(port: () => SessionPort | undefined, like?: Partial<Model<Api>>, provider: string = PORT_PROVIDER): Promise<PortModels> {
   const [{ createModels, createProvider }, { anthropicMessagesApi }, { openAIResponsesApi }] = await Promise.all([
     import("@earendil-works/pi-ai/models"),
     import("@earendil-works/pi-ai/api/anthropic-messages.lazy"),
@@ -92,15 +95,15 @@ export async function portModels(port: () => SessionPort | undefined, like?: Par
     // The side key as the proxy reads a key (a bearer token), and no beta header pi-ai would add of its own: the session's
     // policy admits the betas its harness sends, and these requests need none.
     const headers = { authorization: `Bearer ${now.key}`, ...(now.api === "anthropic-messages" ? { "anthropic-beta": null } : {}) };
-    const model = sessionModel(now.api, now.url, now.model, { provider: PORT_PROVIDER, headers, ...(like ? { like } : {}), reasoning: true });
+    const model = sessionModel(now.api, now.url, now.model, { provider, headers, ...(like ? { like } : {}), reasoning: true });
     const models = createModels({});
     models.setProvider(createProvider({
-      id: PORT_PROVIDER, baseUrl,
+      id: provider, baseUrl,
       auth: { apiKey: { name: "the session's side key", resolve: async () => ({ auth: { apiKey: now.key }, source: "session" }) } },
       models: [model as never],
       api: now.api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi(),
     } as never));
-    built = { at, models, model: models.getModel(PORT_PROVIDER, now.model) as Model<Api> };
+    built = { at, models, model: models.getModel(provider, now.model) as Model<Api> };
     return built;
   };
   const registry = (model: Model<Api>) => {
@@ -116,5 +119,22 @@ export async function portModels(port: () => SessionPort | undefined, like?: Par
     },
     streamSimple: (model, context, options) => registry(model).streamSimple(model as never, context, options) as AssistantMessageEventStream,
     completeSimple: (model, context, options) => registry(model).completeSimple(model as never, context, options) as Promise<AssistantMessage>,
+  };
+}
+
+/** Port models of several ports as one registry (learned-workflow.ts takes one): each listed under its own provider id
+ *  (PORT_PROVIDER for the session's, tierProvider(tier) for a tier's), a model's request sent through the port it came
+ *  from. */
+export function tieredModels(byProvider: ReadonlyMap<string, PortModels>): PortModels {
+  const of = (model: Model<Api>): PortModels => {
+    const port = byProvider.get(model.provider);
+    if (!port) throw new Error(`no port of the run lists the model ${model.provider}/${model.id}`);
+    return port;
+  };
+  return {
+    getModel: (provider, id) => byProvider.get(provider)?.getModel(provider, id),
+    getModels: () => [...byProvider.values()].flatMap((port) => port.getModels()),
+    streamSimple: (model, context, options) => of(model).streamSimple(model, context, options),
+    completeSimple: (model, context, options) => of(model).completeSimple(model, context, options),
   };
 }

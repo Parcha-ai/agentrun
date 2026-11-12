@@ -14,3 +14,31 @@ npx hyperframes@0.8.46 render docs/assets/readme-animation --format gif --fps 15
 HyperFrames is only an asset-authoring tool; it is not a runtime dependency of AgentRun. The composition loads GSAP 3.14.2 from its pinned CDN URL during rendering. Its wipe uses the same clipped-layer pattern as HyperFrames' `before-after-wipe` component.
 
 The original diagram and composition are covered by the repository's Apache-2.0 license. JetBrains Mono is redistributed under the SIL Open Font License; see `readme-animation/assets/FONT-LICENSE.txt`. The static SVG uses the viewer's monospace font.
+
+## README screenshots and wordmark
+
+`readme/` holds the images the root README shows. The console screenshots are the console itself, rendered in its
+Storybook on the recorded fixtures in `apps/console/src/fixtures` (synthetic agents and companies, no live model run),
+captured at 2x and framed on the console's background:
+
+- `learning.png`: an agent's Learning tab on the `learning.*` fixtures. Its "since it learned" numbers are the fixtures'
+  recorded values, not a benchmark.
+- `workflow-run.png`: the `Workflow / Batch mid flight` story.
+- `input-required.png`: the `Run detail / Input required` story.
+- `mission-control.png`: the `Mission Control / With analytics` story.
+- `workflow-decision.png`: the `Workflow / Kyb route` story.
+- `api.png`: the `Start a run / Playground agentic` story.
+
+`wordmark.png` sets `agent.run()` in JetBrains Mono 400, light on its own dark tile so it reads on GitHub's light and dark themes (SIL Open Font License; see
+`readme-animation/assets/FONT-LICENSE.txt`), with `.run()` in #ff8700. The screenshots and wordmark are covered by the
+repository's Apache-2.0 license.
+
+`pill-render.png` and `pill-local.png` are the README's two buttons, set in Inter 600 and JetBrains Mono 500 (both SIL Open
+Font License) on the same palette.
+
+## Case study cards and charts
+
+`case-studies/` holds the cards the README's Case studies section shows and the charts on the pages under
+`docs/case-studies/`. Each is an SVG set in Inter (SIL Open Font License), rendered at 2x. The
+numbers are the ones each case study's page states and explains. They are covered by the repository's Apache-2.0
+license.

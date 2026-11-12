@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { agent, call, cookieOf, follow, scratch, serve } from "./support.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const GATE = { faux: fixture("faux-gate.mjs"), fauxHarness: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
+const GATE = { faux: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const json = { "content-type": "application/json" };
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const NOTE = "not that page twice";
@@ -42,8 +42,7 @@ function readsInOrder(rows, callId, outcome, at) {
   assert.deepEqual(own.map((i) => rows[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held: ${JSON.stringify(shown)}`);
 }
 
-// SKIP (follow-up #2078): with a second call waiting, the approval row does not follow the call's own rows (the run-view rows follow-up)
-test.skip("pi: two calls set to ask in one run, the first allowed, the second denied with a note: after the second answer, and at the run's end, the first still reads held, then its approval, then its outcome, and so does the second", { timeout: 150_000 }, async (t) => {
+test("pi: two calls set to ask in one run, the first allowed, the second denied with a note: after the second answer, and at the run's end, the first still reads held, then its approval, then its outcome, and so does the second", { timeout: 150_000 }, async (t) => {
   const server = await serve(t, GATE);
   const { api } = server;
   const answer = await owner(server);

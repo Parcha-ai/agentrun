@@ -8,8 +8,9 @@
 //                                                for it
 // and on this machine alone:
 //   <data>/scratch/<agent>/<run>                 a run's scratch folder (scratchFolder): never on the disk above, so in
-//                                                no Workspace: a harness's private files and working directory, swept
-//                                                at the run's end
+//                                                no Workspace: a harness's working directory, and its private files
+//                                                in harness/<claim's epoch>, swept at that claim's end
+//                                                (runner/cli-run-spec.ts)
 // <agent> is the id in lower case, a dash, and 16 hex digits of the id's SHA-256, so ids that differ only in case never
 // share a folder on a disk that folds case.
 //

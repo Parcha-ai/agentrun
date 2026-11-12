@@ -19,6 +19,15 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Serv
 import { type McpHandler, mcpRoute } from "./mcp-route.js";
 import { CONTENT_FILTERED, type McpClient, type NoteRequest, type SessionMcp } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
+import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
+
+/** Whether a request's admission refused it for the run's spend cap, read from the error's fields alone: the cap's own
+ *  error (CapRefused, its `code`), or the runner's stop for the cap's verdict (HarnessRunError, its `refusal`: the
+ *  verdict's Refusal.code). Never from its words. */
+const capRefusal = (error: unknown): boolean => {
+  const fields = error as { code?: unknown; refusal?: unknown } | undefined;
+  return fields?.code === SPEND_CAP_REACHED || fields?.refusal === SPEND_CAP_REACHED;
+};
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -85,14 +94,20 @@ export interface ProviderPolicy {
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
-  /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
-   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Undefined: the body has
-   *  no input bound the policy can state (a hosted tool that reads pages into the input), so `inputTokensMax` is
-   *  undefined, never 0 or the body's bytes alone. Absent: none. */
+  /** The input tokens the provider bills for the body `apply` returned beyond its bytes: a prompt it adds itself, such as
+   *  a tool-use system prompt, and each image at what it is billed as in place of the bytes its data takes in the body
+   *  (`providerInputOverhead`), which can make it less than 0. Added to the body's bytes for `inputTokensMax`; the sum
+   *  below 0 is no bound (unmeasured). Undefined: the body has no input bound the policy can state (a hosted tool that
+   *  reads pages into the input), so `inputTokensMax` is undefined, never 0 or the body's bytes alone. Absent: none. */
   serverInputOverhead?(body: Record<string, unknown>): number | undefined;
   /** The output tokens the body `apply` returned asks for at most (its own limit, as `apply` shaped it). Absent or
    *  undefined: the body does not say. */
   outputAsked?(body: Record<string, unknown>): number | undefined;
+  /** The provider's own count of a request's input tokens (Anthropic's free count_tokens), which the proxy asks before
+   *  each of the session's answer requests (`countedInputOf`) when its upstream is exactly `origin`, the provider's own: never
+   *  through a gateway or any other base, so the key and the request go nowhere the request itself would not. Its count,
+   *  plus `margin`, is that request's input bound when it is below the byte bound. Absent: never counted. */
+  countInput?: InputCounter;
   /** The least output the body may be limited to and still answer: 1,024 tokens for the answer, plus the least thinking
    *  its provider takes when it thinks. Absent: 1,024. */
   outputLeast?(body: Record<string, unknown>): number;
@@ -479,6 +494,9 @@ export interface ProxyRequest {
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
+  /** Its `inputTokensMax` is its provider's count (ProviderPolicy.countInput), not its bytes: a host that compares one
+   *  request's bound with another's (how far a conversation grew) pairs a counted bound only with a counted one. */
+  inputTokensCounted?: true;
 }
 
 export interface ModelProxyHooks {
@@ -503,6 +521,10 @@ export interface ModelProxyOptions {
   hooks: ModelProxyHooks;
   /** The session's model, as the runner names it to `beforeRequest`. The policy fixes the body's model. */
   model: string;
+  /** This proxy's route among the session's, told to `beforeRequest` with each request (ModelRequest.route) so the host
+   *  prices it at this proxy's price: a proxy beside the session's for another tier's model names its tier. Absent: the
+   *  session's own. */
+  route?: string;
   /** The provider's base: its origin and, for a gateway that serves the API under a path, that path
    *  (`https://api.example.com`, `https://gateway.example/api`). A route's path is appended to it. A base with userinfo, a
    *  query or a fragment is refused, so the key goes only where the base reads. */
@@ -595,6 +617,9 @@ const FILTERED_DRAIN_MS = 5_000;
  *  and the first fields of its data, which a stop can be read from when the event's line is longer than either window. */
 const LINE_START = 16 * 1024;
 const LINE_STARTS = 4;
+/** The provider's word on asking again that an error answer passes on to the client (pi-ai's provider retry reads them,
+ *  as the OpenAI and Anthropic SDKs do): how long to wait, and whether to retry at all. */
+const RETRY_HEADERS = ["retry-after", "retry-after-ms", "x-should-retry"] as const;
 
 /** A response header that names the request: the provider's `request-id` (`x-request-id`), or a gateway's own call id
  *  (LiteLLM's `x-litellm-call-id`, the id its spend log records; `llm_provider-request-id`, the provider's passed on). */
@@ -734,6 +759,56 @@ function baseOf(base: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
+/** A provider's endpoint that counts a request's input tokens (ProviderPolicy.countInput). */
+export interface InputCounter {
+  /** The provider's own base (`https://api.anthropic.com`): counted only when the session's upstream is exactly it. */
+  readonly origin: string;
+  /** The counting endpoint's path under it (`/v1/messages/count_tokens`). */
+  readonly path: string;
+  /** The body to count, from the request's (the fields the endpoint takes). */
+  body(body: Record<string, unknown>): Record<string, unknown>;
+  /** The headers to send it, from the request's as the proxy sends them (its credential and version headers among them). */
+  headers(sent: Record<string, string>): Record<string, string>;
+  /** The input tokens its answer says, or undefined when it says none. */
+  tokensOf(answer: unknown): number | undefined;
+  /** What the provider bills beside the count, which the count may leave out (a tool-use system prompt): added to it. */
+  margin?(body: Record<string, unknown>): number;
+}
+
+/** How long a count may take before the request goes on its byte bound: a count never holds a request up for long. */
+export const COUNT_TIMEOUT_MS = 3_000;
+
+/**
+ * The exact input tokens of a request with body `body`, by its provider's own count (`policy.countInput`), plus its
+ * margin; undefined (the request keeps its byte bound) when the policy has no counter, the upstream `origin` is not
+ * the counter's own, or the count fails, times out or says no count. Never throws: a count is only ever a tighter bound.
+ */
+export async function countedInputOf(policy: ProviderPolicy, origin: string, body: Record<string, unknown>, headers: Record<string, string>, fetch: typeof globalThis.fetch, say: (message: string, detail?: Record<string, unknown>) => void = () => {}, timeoutMs = COUNT_TIMEOUT_MS, signal?: AbortSignal): Promise<number | undefined> {
+  const counter = policy.countInput;
+  if (!counter) return undefined;
+  try {
+    if (baseOf(counter.origin) !== origin) return undefined;
+    // Cut at its timeout, or when `signal` aborts (its client went).
+    const cut = signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs);
+    const response = await fetch(`${origin}${counter.path}`, { method: "POST", headers: { ...counter.headers(headers), "content-type": "application/json" }, body: JSON.stringify(counter.body(body)), signal: cut });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      say(`model proxy (${policy.id}): the provider's token count answered ${response.status}; the request keeps its byte bound`);
+      return undefined;
+    }
+    const tokens = counter.tokensOf(await response.json());
+    const margin = counter.margin ? counter.margin(body) : 0;
+    if (!Number.isSafeInteger(tokens) || tokens! < 0 || !Number.isSafeInteger(margin) || margin < 0) {
+      say(`model proxy (${policy.id}): the provider's token count said no count; the request keeps its byte bound`);
+      return undefined;
+    }
+    return tokens! + margin;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the provider's token count failed; the request keeps its byte bound`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
+}
+
 /** Start a session's model proxy on the loopback interface, admitting `key`. */
 /**
  * The most input tokens a request with body `sent` (the body `apply` returned, as it is sent) can be billed for: its UTF-8
@@ -749,8 +824,11 @@ export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, un
     // never 0, and no failure to report. Anything else that is not a count (null, a throw) is reported, and unmeasured too.
     const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
     if (overhead === undefined) return undefined;
-    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
-    return Buffer.byteLength(sent, "utf8") + overhead;
+    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead)) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
+    // Below 0 only by images' data the body carries (counted at what they are billed as instead): never past the bytes.
+    const bound = Buffer.byteLength(sent, "utf8") + overhead;
+    if (bound < 0) throw new Error(`the policy counted ${-overhead} more bytes as billed apart than the body's ${Buffer.byteLength(sent, "utf8")}`);
+    return bound;
   } catch (error) {
     say(`model proxy (${policy.id}): the policy could not say what the provider adds to the body's input; its input is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     return undefined;
@@ -788,7 +866,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const say = (message: string, detail?: Record<string, unknown>) => {
     try { options.log?.(message, detail); } catch { /* the host's log failed; the request goes on */ }
   };
-  const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage) => {
+  /** `code`: the refusal's own code, when it has one (the run's spend cap: `spend_cap_reached`), in the body beside the
+   *  message, so a reader tells the proxy's refusal by its fields, never by its words. */
+  const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage, code?: string) => {
     // Every refusal is reported, so a client that calls something the table does not hold is seen, not silently refused.
     // The client's user-agent names who called: the session's own harness, or another local process that found the port.
     const agent = req?.headers["user-agent"];
@@ -797,7 +877,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       ...(typeof agent === "string" && agent ? { userAgent: agent.slice(0, 120) } : {}),
     });
     res.writeHead(status, { "content-type": "application/json", connection: "close" });
-    res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
+    res.end(JSON.stringify({ error: { message, type: "agentrun_proxy", ...(code ? { code } : {}) } }));
   };
 
   // The session's MCP door, mounted once here for whichever harness's client calls it (the call id from its fact).
@@ -971,6 +1051,33 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // The turn's answer stopped and the harness was told: its client asking again is refused (no retry), never sent, never
     // admitted or booked, until the harness opens its next turn.
     if (answering && !route.free && stopTold !== undefined) return refuse(res, refusedStatus, `refused: the turn's answer was ${stopTold}, and the turn ends there`, req);
+    // An answer request on an upstream that is its provider's own (policy.countInput): its input bound is the provider's
+    // exact count when that is below its bytes, so a small cap admits a first turn its bytes would not. Each answer request
+    // is counted, not only the first: the cap prices a step by the last one's tokens plus how far its bound grew, so a
+    // counted bound beside a byte bound would read the bytes as growth. A count that fails or times out leaves the byte
+    // bound, and never holds the request up for long. A noted request is counted with its note, which bounds it without
+    // the note too (the note only adds).
+    // Only a bound that is a number is lowered: an unmeasured one (a fee with no bound, a hosted tool's reads) stays so.
+    let inputTokensCounted = false;
+    if (answering && !route.free && host === undefined && inputTokensMax !== undefined && policy.countInput) {
+      // A client that goes while its request is counted is gone before anything is admitted: the count is cut, and the
+      // request is neither admitted nor sent (nothing is booked, and no paid answer starts for no one).
+      const gone = new AbortController();
+      const onGone = () => gone.abort(new Error("the client went while its request was counted"));
+      res.once("close", onGone);
+      let counted: number | undefined;
+      try {
+        counted = await countedInputOf(policy, origin, body, headers, forward, say, COUNT_TIMEOUT_MS, gone.signal);
+      } finally {
+        res.off("close", onGone);
+      }
+      if (gone.signal.aborted || res.destroyed) return;
+      if (counted !== undefined && inputTokensMax !== undefined && counted < inputTokensMax) {
+        inputTokensMax = counted;
+        inputTokensCounted = true;
+        if (inputTokensMaxWithoutNote !== undefined) inputTokensMaxWithoutNote = Math.min(inputTokensMaxWithoutNote, counted);
+      }
+    }
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
@@ -981,10 +1088,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(outputTokensAsked === undefined ? {} : { outputTokensAsked }),
         ...(outputTokensLeast === undefined ? {} : { outputTokensLeast }),
         ...(host === undefined ? {} : { host }),
+        ...(inputTokensCounted ? { inputTokensCounted: true as const } : {}),
+        ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
-      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
+      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req, capRefusal(error) ? SPEND_CAP_REACHED : undefined);
     }
     /** An admitted request that is not sent after all: refused to its client, and released, booked at nothing, so the
      *  runner's count agrees. */
@@ -1148,7 +1257,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       began = { ok: upstream.ok, status: upstream.status };
       const contentType = upstream.headers.get("content-type") ?? "application/json";
-      res.writeHead(upstream.status, { "content-type": contentType });
+      const sentHeaders: Record<string, string> = { "content-type": contentType };
+      // An error answer keeps the provider's word on asking again (RETRY_HEADERS): the client's own retry of a 429 or a
+      // 5xx waits as long as the provider asked, not its own guess.
+      if (!upstream.ok) {
+        for (const name of RETRY_HEADERS) {
+          const value = upstream.headers.get(name);
+          if (value !== null) sentHeaders[name] = value;
+        }
+      }
+      res.writeHead(upstream.status, sentHeaders);
       const decoder = new TextDecoder();
       // The provider's own words in an error reach the harness with the credential this proxy sent, and the values of the
       // headers it added, cut out, then the host's redactor (errorCut): an error answer, or an error event in a stream. The

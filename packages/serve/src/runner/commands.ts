@@ -1,7 +1,7 @@
 // Commands as rows (design: "Commands from the console are rows, not files or doors"). The server inserts one through
 // sendCommand; a runner reads them with store.commands(run, after) and hands each to the run's loop. A command's
 // taken_at is set once: by the loop's journal commit that applies it, or by the runner's refusal with a reason.
-import { originOf } from "@parcha/pi-durable-agent/timeline";
+import { originOf } from "../timeline/index.js";
 import type { Command } from "./loop-contract.js";
 
 /** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good.
@@ -30,7 +30,7 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       return body.reason === undefined || typeof body.reason === "string" ? undefined : `a ${kind}'s reason is text`;
     case "steer":
       if (!text(body.text)) return "a steer needs its text";
-      // A trigger's message names who wrote it, as the Timeline shows it (pi-durable-agent's originOf): never a person's.
+      // A trigger's message names who wrote it, as the Timeline shows it: never a person's.
       return body.origin === undefined || originOf(body.origin) !== undefined ? undefined : "a steer's origin is a message origin (a trigger's, or the server's)";
     case "approve":
     case "deny":

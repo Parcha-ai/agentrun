@@ -184,7 +184,8 @@ test("a trigger that would start an uncapped run, a workflow's included, or fire
   await refused(schedule("capped", { every_s: 30 }), "source.every_s", "invalid");
   await refused(schedule("capped", { cron: "* * * * * *" }), "source.cron", "invalid");
   await refused(schedule("capped", { cron: "0 9 * * *", timezone: "Mars/Olympus" }), "source.timezone", "invalid");
-  await refused(schedule("capped", { at: "2026-05-31T00:00:00Z" }), "source.at", "invalid");
+  // A one-time schedule at a past time is refused in words a person reads, on its field, never the raw field name (#2248).
+  assert.equal(await refused(schedule("capped", { at: "2026-05-31T00:00:00Z" }), "source.at", "invalid"), "Pick a time in the future: 2026-05-31T00:00:00Z has already passed.");
   await refused(schedule("missing", { every_s: 600 }), "target.agent_id", "not_found");
   assert.deepEqual((await api("GET", "/triggers")).body.triggers, [], "nothing kept");
   assert.equal((await api("DELETE", "/triggers/trg_none")).status, 404);

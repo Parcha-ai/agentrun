@@ -19,13 +19,12 @@
 // The snapshot's shape is SNAPSHOT.md's, v1: what the learning routes and a run's seed read.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   isWorkspaceError, type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace,
   learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
 } from "../workspace/index.js";
 import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
-import { learnedFront, learnedName, learnedPlace, learnedStatus, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
+import { learnedFront, learnedName, learnedStatus, retiredFrom, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
 
 /** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never a note's, never seeded. */
 export const HOST_DIR = ".agentrun";
@@ -62,6 +61,9 @@ export type SnapNote = {
   origin: "you" | "run";
   supersedes: string[];
   superseded_by: string | null;
+  /** Past SNAPSHOT.md v1, additive, on a retired note alone: the status its restore gives back (notes.ts LearnedNote
+   *  retired_from). */
+  retired_from?: "active" | "pending";
   order: number;
   history: SnapHistory;
 };
@@ -69,6 +71,9 @@ export type SnapFile = { path: string; oid: string; bytes: number };
 export type SnapLearned = {
   name: string; file: string; description: string;
   status: "active" | "pending" | "retired";
+  /** Past SNAPSHOT.md v1, additive, on a retired skill or draft alone: the status its restore gives back (skills.ts
+   *  retiredFrom). */
+  retired_from?: "active" | "pending";
   run: string | null;
   files: SnapFile[];
   oid: string; bytes: number;
@@ -111,7 +116,7 @@ function folderOf(path: string): { kind: "skill" | "workflow"; name: string } | 
 }
 const byBytes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** A commit as the snapshot reads it: its time (git's %cI), subject, body and trailers. */
+/** A commit as the snapshot reads it: its time (git's %cI, as commitTime keeps it), subject, body and trailers. */
 type CommitInfo = { at: string; subject: string; body: string; runId: string; changedBy: string; approvedVia: string };
 
 /** What a commit's change was, as the view says it, or undefined for one that is neither: a person's names its kind in
@@ -166,7 +171,7 @@ function noteEntry(file: string, text: string, oid: string, bytes: number, order
   if (!NOTE_FILE.test(file) || bytes > FILE_CAP) return undefined;
   const note = parseNoteFile(file, text);
   if (Array.isArray(note)) return undefined;
-  return { file, oid, bytes, name: note.name, description: note.description, type: note.type, status: note.status, origin: note.origin, supersedes: [...note.supersedes], superseded_by: note.superseded_by, order, history };
+  return { file, oid, bytes, name: note.name, description: note.description, type: note.type, status: note.status, origin: note.origin, supersedes: [...note.supersedes], superseded_by: note.superseded_by, ...(note.retired_from ? { retired_from: note.retired_from } : {}), order, history };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -191,6 +196,14 @@ const recordsOf = (out: string) => out.split("\x1e").slice(1).map((record) => {
 type TreeEntry = { mode: string; type: string; oid: string; bytes: number; path: string };
 
 /** What the script's `read` printed: main, its tree, its log and its blobs. Undefined main for a folder with none. */
+/** A commit's time as git's %cI gives it (its own offset, "+00:00", "+02:00" or "Z", by git's version and the
+ *  committer's zone), in the one form a snapshot keeps: UTC in whole seconds, ending "Z", as nextSnapshot writes it, so
+ *  a snapshot rebuilt from git and one built incrementally agree. Text that is no time is kept as it is. */
+export function commitTime(text: string): string {
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? text : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
 export function parseRead(out: Uint8Array): { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer> } {
   const buf = Buffer.from(out);
   const end = buf.indexOf(10);
@@ -211,7 +224,7 @@ export function parseRead(out: Uint8Array): { main: string | undefined; tree: Tr
   });
   const records = recordsOf(part(logLen).toString("utf8")).map(({ head: line, files }) => {
     const [sha = "", cI = "", subject = "", body = "", runId = "", changedBy = "", approvedVia = ""] = line.split("\x1f");
-    return { sha, files, commit: { at: cI, subject, body, runId, changedBy, approvedVia } };
+    return { sha, files, commit: { at: commitTime(cI), subject, body, runId, changedBy, approvedVia } };
   });
   const blobs = new Map<string, Buffer>();
   const raw = part(blobLen);
@@ -295,7 +308,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
 /** A learned item from its folder's files: listed when its folder is well named, its key file (SKILL.md, a draft's
  *  README.md) is there and reads, and a draft has its workflow.json too, each of those a regular file under FILE_CAP
  *  (only those are given their texts by `text`). */
-function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"] }): SnapLearned | undefined {
+function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[], links: readonly string[], text: (path: string) => string | undefined, at: { order: number; history: SnapHistory; run: string | null }, said?: { description: string; status: SnapLearned["status"]; retired_from?: SnapLearned["retired_from"] }): SnapLearned | undefined {
   if (!learnedName(kind, name)) return undefined;
   const key = files.find(({ path }) => path === keyFile(kind, name));
   const shown = files.find(({ path }) => path === viewFile(kind, name));
@@ -304,9 +317,10 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
   if (!fields) {
     const body = text(key.path);
     if (body === undefined) return undefined;
-    fields = { description: learnedFront(body)?.description ?? "", status: learnedStatus(body) };
+    const status = learnedStatus(body);
+    fields = { description: learnedFront(body)?.description ?? "", status, ...(status === "retired" ? { retired_from: retiredFrom(body) } : {}) };
   }
-  return { name, file: key.path, description: fields.description, status: fields.status, run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history, ...(links.length ? { links: [...links].sort(byBytes) } : {}) };
+  return { name, file: key.path, description: fields.description, status: fields.status, ...(fields.retired_from ? { retired_from: fields.retired_from } : {}), run: at.run, files: [...files].sort((a, b) => byBytes(a.path, b.path)), oid: key.oid, bytes: key.bytes, order: at.order, history: at.history, ...(links.length ? { links: [...links].sort(byBytes) } : {}) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -340,8 +354,8 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
   return { message: `${subject}\n\n${body}`, subject, body, runId: "", changedBy: "user", approvedVia: by.approved ? "console" : "" };
 }
 
-/** Git's %cI of a time in whole seconds, as a commit made at +0000 shows it. */
-const isoSeconds = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "+00:00");
+/** A time in whole seconds as every snapshot says a commit's time: UTC, ending "Z" (commitTime's form). */
+const isoSeconds = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /** Every path `snapshot` names a blob for: the index, each note, each learned folder's files. */
 function oidsOf(snapshot: Snapshot | undefined): Map<string, string> {
@@ -396,7 +410,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
         order: 0,
         history: touched.has(key) ? foldNewer(old?.history, commit, key) : (old?.history ?? { at: commit.at }),
         run: runId && touched.has(viewFile(kind, name)) ? runId : (old?.run ?? null),
-      }, keyText === undefined && old ? { description: old.description, status: old.status } : undefined);
+      }, keyText === undefined && old ? { description: old.description, status: old.status, ...(old.retired_from ? { retired_from: old.retired_from } : {}) } : undefined);
       if (item) out.push(item);
     }
     return out.sort(byName);
@@ -565,7 +579,7 @@ export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff |
 }
 
 /** The notes of a snapshot as the learning modules take them (buildIndex, mergeProblems): their front matter, no body. */
-export const snapshotNotes = (snapshot: Snapshot | undefined): LearnedNote[] => (snapshot?.notes ?? []).map((note) => ({ file: note.file, name: note.name, description: note.description, type: note.type as LearnedNote["type"], status: note.status, origin: note.origin, superseded_by: note.superseded_by, supersedes: [...note.supersedes], keys: [], body: "" }));
+export const snapshotNotes = (snapshot: Snapshot | undefined): LearnedNote[] => (snapshot?.notes ?? []).map((note) => ({ file: note.file, name: note.name, description: note.description, type: note.type as LearnedNote["type"], status: note.status, origin: note.origin, superseded_by: note.superseded_by, supersedes: [...note.supersedes], retired_from: note.status === "retired" ? (note.retired_from ?? "pending") : null, keys: [], body: "" }));
 /** Every name at main's top a snapshot knows: the index, the notes, and the learned folders' tops. */
 export const topOf = (snapshot: Snapshot | undefined): string[] => (snapshot ? [INDEX_FILE, ...snapshot.notes.map((note) => note.file), ...(snapshot.skills.length ? [SKILLS_DIR] : []), ...(snapshot.workflows.length ? [WORKFLOWS_DIR] : [])] : []);
 
@@ -741,6 +755,33 @@ export async function folderAt(ws: Workspace, commit: string): Promise<{ snapsho
   return snapshot ? { snapshot, blobs: parsed.blobs } : undefined;
 }
 
+/** The texts `commit` holds at `paths` (each a plain path, checkPath), each read alone with one read-only exec (the
+ *  script's show: git cat-file over each `<commit>:<path>`), never the whole tree, its blobs or its log, so the read is
+ *  bounded by what is asked, whatever the folder holds. A path the commit holds no file at is not in it. Undefined when
+ *  the folder has no such commit. */
+export async function textsAt(ws: Workspace, commit: string, paths: readonly string[]): Promise<Record<string, string> | undefined> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  if (!paths.length) return {};
+  const result = await runScript(ws, ["show", commit, ...paths.map(checkPath)]);
+  if (result.code === 1) return undefined;
+  if (result.code !== 0) throw failed("show", result);
+  // git cat-file --batch: per path, `<oid> <type> <size>\n<content>\n`, or `<name> missing\n`.
+  const out: Record<string, string> = {};
+  const bytes = result.stdout;
+  let at = 0;
+  for (const path of paths) {
+    const end = bytes.indexOf(10, at);
+    if (end < 0) throw failed("show", { code: result.code, stderr: "its answer ended early" });
+    const header = bytes.subarray(at, end).toString("utf8").split(" ");
+    at = end + 1;
+    if (header.at(-1) === "missing" || header.length !== 3) continue;
+    const size = Number(header[2]);
+    if (header[1] === "blob") out[path] = bytes.subarray(at, at + size).toString("utf8");
+    at += size + 1;
+  }
+  return out;
+}
+
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
   for (let tries = 0; tries < WRITE_TRIES; tries++) {
     const read = await runScript(ws, ["read"]);
@@ -752,15 +793,6 @@ export async function learningRepair(ws: Workspace): Promise<Snapshot | undefine
     if (written.code !== 3) throw failed("snapshot", written);
   }
   throw new Error("the learning folder's main kept moving while its snapshot was rebuilt");
-}
-
-/** Main's text of `path` just before the newest person's retire of it on `main`'s line, or undefined (never retired by
- *  a person). A read through the script: git's history is not in the snapshot. */
-export async function beforeRetire(ws: Workspace, main: string, path: string): Promise<string | undefined> {
-  const result = await runScript(ws, ["before-retire", main, checkPath(path)]);
-  if (result.code === 1) return undefined;
-  if (result.code !== 0) throw failed("before-retire", result);
-  return textOf(result.stdout);
 }
 
 /** Whether `main` holds anything at `path`, as git stores it (any mode, any type): what the snapshot leaves out (a file

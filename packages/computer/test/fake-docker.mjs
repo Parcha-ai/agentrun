@@ -2,16 +2,17 @@
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info, image inspect, pull and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
-import { DockerProvider } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 
 const dirs = [];
 after(() => {
@@ -212,7 +213,14 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	writeFileSync(
 		program,
 		`#!${process.execPath}
-const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+// Each state file is written whole to a file of this process's beside it, then renamed over it: a docker call reading it
+// meanwhile (another of this fake's processes) reads the old file or the new one, never a half-written one.
+const replace = (file, text) => {
+	const next = file + "." + process.pid + ".next";
+	writeFileSync(next, text);
+	renameSync(next, file);
+};
 const { createHash } = require("node:crypto");
 const config = ${config};
 const report = ${report.toString()};
@@ -220,12 +228,12 @@ const proxyReport = ${proxyReport.toString()};
 const args = process.argv.slice(2);
 appendFileSync(config.log, JSON.stringify(args) + "\\n");
 const load = () => JSON.parse(readFileSync(config.state, "utf8"));
-const save = (all) => writeFileSync(config.state, JSON.stringify(all));
+const save = (all) => replace(config.state, JSON.stringify(all));
 const loadVolumes = () => JSON.parse(readFileSync(config.volumeState, "utf8"));
-const saveVolumes = (all) => writeFileSync(config.volumeState, JSON.stringify(all));
+const saveVolumes = (all) => replace(config.volumeState, JSON.stringify(all));
 // The images on the host, or null when every image is.
 const loadImages = () => JSON.parse(readFileSync(config.imageState, "utf8"));
-const saveImages = (all) => writeFileSync(config.imageState, JSON.stringify(all));
+const saveImages = (all) => replace(config.imageState, JSON.stringify(all));
 // A container docker run made: saved and its id printed, or, for config.lateRun's kind, a CLI that never answers while
 // the daemon (a detached process here) still makes the container after the CLI is killed: once the cleanup that follows
 // has gone quiet (no docker call for 150 ms), so it lands after the provider's first removal looked and found nothing.
@@ -242,7 +250,7 @@ const commit = (made, kind) => {
 		"const alive = () => { try { process.kill(parent, 0); return true; } catch { return false; } };" +
 		"let size = -1; let since = Date.now();" +
 		"const wait = setInterval(() => { if (alive()) return; const now = fs.statSync(log).size; if (now !== size) { size = now; since = Date.now(); return; } if (Date.now() - since < 150) return;" +
-		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state, JSON.stringify(all)); fs.writeFileSync(dir + '/late-committed', made.Name); }, 20);";
+		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state + '.' + process.pid + '.next', JSON.stringify(all)); fs.renameSync(state + '.' + process.pid + '.next', state); fs.writeFileSync(dir + '/late-committed', made.Name); }, 20);";
 	require("node:child_process").spawn(process.execPath, ["-e", daemon], { detached: true, stdio: "ignore" }).unref();
 	setInterval(() => {}, 1000);
 };
@@ -261,9 +269,27 @@ const held = (step, then) => {
 		then();
 	}, 20);
 };
-const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => (at == null ? undefined : at[key]), value);
+// As Docker runs a --format template on the JSON as a map: a key the map lacks fails the whole call (missingkey=error),
+// in Docker's words, where (index .Path "Key") reads it as null.
+const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => {
+	if (at == null) return undefined;
+	if (typeof at === "object" && !Array.isArray(at) && !Object.hasOwn(at, key)) throw new Error('template parsing error: template: :1: executing "" at <' + path + '>: map has no entry for key "' + key + '"');
+	return at[key];
+}, value);
 const render = (format, found) =>
-	format.replace(/\\{\\{(json )?([.A-Za-z]+)\\}\\}/g, (_, json, path) => (json ? JSON.stringify(pick(found, path) ?? null) : String(pick(found, path) ?? "")));
+	format.replace(/\\{\\{(json )?(?:\\(index ([.A-Za-z]+) "([A-Za-z]+)"\\)|([.A-Za-z]+))\\}\\}/g, (_, json, base, key, path) => {
+		const value = path === undefined ? pick(found, base)?.[key] : pick(found, path);
+		return json ? JSON.stringify(value ?? null) : String(value ?? "");
+	});
+/** render, or Docker's exit on a template it cannot run on the JSON. */
+const rendered = (format, found) => {
+	try {
+		return render(format, found);
+	} catch (error) {
+		process.stderr.write(error.message + "\\n");
+		process.exit(1);
+	}
+};
 const merge = (base, over) => {
 	for (const [key, value] of Object.entries(over)) {
 		base[key] = value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" ? merge(base[key], value) : value;
@@ -344,7 +370,7 @@ switch (args[0]) {
 		let missing;
 		for (const key of args.slice(5)) {
 			const found = config.vanish.includes(key) ? undefined : find(all, key);
-			if (found) process.stdout.write(render(args[4], found) + "\\n");
+			if (found) process.stdout.write(rendered(args[4], found) + "\\n");
 			else missing = key;
 		}
 		if (missing) noSuch(missing);
@@ -380,7 +406,13 @@ switch (args[0]) {
 		if (present !== null && !present.includes(image)) saveImages([...present, image]);
 		process.stdout.write("Status: Downloaded newer image for " + image + "\\n");
 	}); break;
-	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? render(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? rendered(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	// The server's architecture in Docker's (Go's) words, as dockerArch asks for it.
+	case "version": {
+		const version = { Server: { Arch: { x86_64: "amd64", aarch64: "arm64" }[config.info.Architecture] ?? config.info.Architecture } };
+		process.stdout.write(args[1] === "--format" ? rendered(args[2], version) + "\\n" : JSON.stringify(version) + "\\n");
+		break;
+	}
 	case "context": {
 		if (args[1] !== "inspect") { process.stderr.write("unexpected docker context call\\n"); process.exit(2); }
 		if (config.endpoint === null) { process.stderr.write("context \\"elsewhere\\": context not found\\n"); process.exit(1); }
@@ -462,7 +494,8 @@ switch (args[0]) {
 	const alter = (name, change) => {
 		const all = JSON.parse(readFileSync(state, "utf8"));
 		change(all.find((c) => c.Name === `/${name}`));
-		writeFileSync(state, JSON.stringify(all));
+		writeFileSync(`${state}.next`, JSON.stringify(all));
+		renameSync(`${state}.next`, state);
 	};
 	// The host the provider looks at for a container's signs is a clean fake root, so these tests run the same inside a
 	// container; egressOptions.hostRoot replaces it.

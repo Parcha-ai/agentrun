@@ -114,6 +114,11 @@ async function ranWith(server, agentId, words, { content = `Read the notes. ${wo
   return { id: run.body.run_id, file: "inputs/notes.txt", fileText };
 }
 
+/** How many times the handed mark begins its transaction, each with a busy wait of 15 s: at most 45 s, inside the case's 240 s. */
+const MARK_TRIES = 3;
+/** SQLite's SQLITE_BUSY or SQLITE_LOCKED (its primary code, any extended one): the write lock held by another connection. */
+const isBusy = (error) => typeof error?.errcode === "number" && ((error.errcode & 0xff) === 5 || (error.errcode & 0xff) === 6);
+
 /** Marks run `runId` handed `pointer` as its runner does at a claim (runs.sign_in_handed, its launch plane's browser), with
  *  the agent's sign-in saved under `sealKey`: this server's (it opens, and the run is cut of it) or another (it does not,
  *  and the run is withheld). */
@@ -128,19 +133,32 @@ async function handed(data, runId, agentId, pointer, sealKey) {
   // transaction, as the store's own writer takes every write (store/sqlite/worker.ts): the write lock comes before any
   // read snapshot, so the busy timeout covers an in-flight writer, where a deferred write upgrading a stale snapshot gets
   // SQLITE_BUSY_SNAPSHOT at once. The run's mark and its launch's browser change together, as the runner's bind does.
+  // No store transaction holds the lock that long (each is rolled back 10 s after it begins, and under load 29-35 none
+  // held it 1 s), but on a starved CI runner (eight test files at once) one 15 s busy wait has lost its turn ("database is
+  // locked" at the BEGIN). So the begin is tried again, MARK_TRIES times in all, after a short pause. Only a busy lock is
+  // waited out: any other error fails at once, and a lock still held after the last try fails the case.
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
   try {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
-      const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
-      assert.ok(launch, `run ${runId} has a launch row`);
-      const body = JSON.parse(launch.body);
-      db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+    for (let tries = 1; ; tries++) {
+      try {
+        db.exec("BEGIN IMMEDIATE");
+      } catch (error) {
+        if (!isBusy(error) || tries >= MARK_TRIES) throw new Error(`the handed mark's write lock, after ${tries} busy waits of 15 s: ${error.message}`, { cause: error });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+      try {
+        db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
+        const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
+        assert.ok(launch, `run ${runId} has a launch row`);
+        const body = JSON.parse(launch.body);
+        db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
+        db.exec("COMMIT");
+        return;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     }
   } finally {
     db.close();
@@ -150,7 +168,7 @@ async function handed(data, runId, agentId, pointer, sealKey) {
 test("no planted secret in a run's words shows on any run read route: a run handed a sign-in this server opens is cut of it, and one it can't open is withheld in the view's words", { timeout: 240_000 }, async (t) => {
   const seal = randomBytes(32);
   // The workflow's llm calls route to a model by AGENT_MODEL, with a key that is no plant.
-  withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64"), AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: `not-a-plant-${randomBytes(8).toString("hex")}` }, ["AGENTRUN_SEAL_KEY", "AGENT_MODEL", "OPENAI_API_KEY", "PARALLEL_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64"), AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: `not-a-plant-${randomBytes(8).toString("hex")}` }, ["AGENTRUN_SEAL_KEY", "AGENT_MODEL", "OPENAI_API_KEY", "PARALLEL_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const logs = [];
   const server = await serve(t, { faux: FAUX_READ, log: (line) => logs.push(line) });
   // A stored tool key and a trigger's signing secret, each written the way the owner writes one.

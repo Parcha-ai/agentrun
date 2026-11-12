@@ -9,7 +9,7 @@
 // the token in no file. On fakes: no network, no key.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,7 +22,7 @@ const { readLiveViewers } = await import("../dist/browser-live.js");
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const BROWSE_HANDOFF = new URL("./fixtures/faux-browse-handoff.mjs", import.meta.url).pathname;
 const BROWSE_HOLD = new URL("./fixtures/faux-browse-hold.mjs", import.meta.url).pathname;
-const KEYS = ["FAUX_HOLD_DIR", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE", "FAUX_HELD_API_KEY", "FAUX_ECHO_VALUE", "FAUX_BROWSER_ASK_DIES"];
+const KEYS = ["FAUX_HOLD_DIR", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "FAUX_BROWSER_LOG", "FAUX_BROWSER_PERSON_MS", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_STATE", "FAUX_HELD_API_KEY", "FAUX_ECHO_VALUE"];
 const json = { "content-type": "application/json" };
 /** A test password, no real one. */
 const PASSWORD = ["not-a-secret", "owner"].join("-");
@@ -222,7 +222,7 @@ test("cap: Take over holds the owner's 15 minutes of session time first, and wit
   const { ws } = await tight.viewer();
   ws.sendJson({ type: "take" });
   const refused = await tight.next(ws, "take_refused");
-  assert.match(refused?.message ?? "", /^spend_cap_reached: Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running,)? of its \$0\.03 cap, and the next step, taking over the browser, could cost up to \$0\.03 \(browserbase's session time at \$0\.12 an hour for the 15 minutes it may last\)\. Raise the cap to at least \$0\.04 to continue\.$/);
+  assert.match(refused?.message ?? "", /^spend_cap_reached: Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.03 cap, and the next step, taking over the browser, could cost up to \$0\.03 \(browserbase's session time at \$0\.12 an hour for the 15 minutes it may last\)\. Raise the cap to at least \$0\.04 to continue\.$/);
   ws.sendJson({ type: "text", text: "x" });
   assert.deepEqual(await tight.next(ws, "held"), { type: "held", reason: "not_taken" }, "no hold started");
   assert.ok(!summaries(await tight.rows()).includes("You took over the browser"));
@@ -275,8 +275,8 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   assert.deepEqual(needs?.data.pending, { kind: "browser" }, "run.needs_input says the run waits on the browser");
 
   // The ask's id (a digest of the session's tag and the model's request id, which pi-browser's durable store keeps to
-  // resume its wait) is named by no run read the API serves. The id is the real one: the store at rest holds it. (Its
-  // record file in the run's workspace, which the run's file list serves: ASK_RECORD_IN_WORKSPACE below.)
+  // resume its wait) is named by no run read the API serves. The id is the real one: the store at rest holds it (the ask's
+  // waiting entry in the run's journal, its one record).
   const id = askIdOf(w.handed.tag, ASK.request_id);
   assert.ok(filesUnder(w.server.data).some(([, bytes]) => bytes.includes(id)), "the ask's id, as its session and request id make it, is the run's");
   for (const path of [`/runs/${w.runId}`, `/runs/${w.runId}/timeline`, "/runs"]) assert.ok(!JSON.stringify((await w.server.api("GET", path)).body).includes(id), path);
@@ -350,8 +350,40 @@ test("an ask whose words echo a value the server holds as a key shows it cut, ne
   assert.ok(!got.some((body) => body.includes(held)), "no message holds the held value");
 });
 
-// ASK_RECORD_IN_WORKSPACE: the agent's hand-over ask's record on the runner path.
-test.todo("the agent's hand-over ask's record is in no file the run's agent or its file list reaches: on the runner the ToolHost's root is the run's workspace (adapter-run-spec where: { root, work: root }), so browser-person writes it to work/browser-ask/<id>.json, which GET /runs/{id}/files lists and serves and the agent's own file tools can read, change or plant. The answers are the journal's alone there (no answer file is read), so a hand-back cannot be forged through it; the pending asks are still read from those files (asksIn for the viewer's give, adopt and reshow after a restart). Follow-up (tl-browser, a PR against main after the cutover): pending asks from the journal's waiting entries, with no record file, on the runner path.");
+test("the agent's hand-over ask is in no file the run's agent or its file list reaches: the workspace and the file list hold none, and a record planted or changed there moves neither what the person sees nor what Hand back answers", { timeout: 180_000 }, async (t) => {
+  const w = await watched(t, { faux: BROWSE_HANDOFF });
+  const id = askIdOf(w.handed.tag, ASK.request_id);
+  const work = join(runFolder(w.server.data, w.runId), "work");
+  // The ask waits (its row is in), and nothing of it is in the run's workspace, which the agent's own file tools reach, nor
+  // in the run's file list.
+  assert.ok(await until(async () => (await w.rows()).some((row) => row.kind === "waiting")), "the ask's row is in");
+  assert.deepEqual(filesUnder(work).filter(([, bytes]) => bytes.includes(id) || bytes.includes(ASK.instruction)).map(([path]) => path), [], "no file in the workspace holds the ask");
+  const listed = (await w.server.api("GET", `/runs/${w.runId}/files`)).body.files.map((file) => file.path);
+  assert.deepEqual(listed.filter((path) => path.includes("browser-ask") || path.includes(id)), [], "the file list holds no ask");
+
+  // What the agent could do through its file tools: plant a newer ask on the same session, and change the real one's
+  // record, in the shape a record had when the asks were files.
+  const dir = join(work, "browser-ask");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const now = Date.now();
+  const forged = askIdOf(w.handed.tag, "forged-request");
+  const record = (ask, instruction, at) => ({ id: ask, tag: w.handed.tag, instruction, completion_condition: "never", asked_at: new Date(at).toISOString(), expires_at: new Date(at + 15 * 60_000).toISOString() });
+  writeFileSync(join(dir, `${forged}.json`), `${JSON.stringify(record(forged, "Forged by the agent", now + 1_000))}\n`, { mode: 0o600 });
+  writeFileSync(join(dir, `${id}.json`), `${JSON.stringify(record(id, "Changed by the agent", now - 1_000))}\n`, { mode: 0o600 });
+
+  // The person still sees the agent's own ask, and their Hand back in the viewer answers it: the agent hears done.
+  assert.equal((await w.view()).pending?.instruction, ASK.instruction, "the person sees the real ask");
+  const { ws } = await w.viewer();
+  ws.sendJson({ type: "take" });
+  assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: true });
+  ws.sendJson({ type: "give" });
+  assert.deepEqual(await w.next(ws, "hold"), { type: "hold", held: false, reason: "given" });
+  const question = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 15_000);
+  assert.match(question || "", /"outcome":"done"/, `the agent's own ask was answered done: ${JSON.stringify(summaries(await w.rows()))}`);
+  assert.deepEqual([(await w.handBack("done")).status], [200], "the same answer again is that answer");
+  for (const words of ["Forged by the agent", "Changed by the agent"]) assert.ok(!JSON.stringify(await w.rows()).includes(words), `the timeline never shows "${words}"`);
+  ws.destroy();
+});
 
 test("cap: the agent's ask holds the person's 15 minutes first; with no room no ask is made and the tool's result says why", { timeout: 180_000 }, async (t) => {
   // Paused at its cap, the run's process is let go, its browser's session and its viewer's hand-over with it: the test

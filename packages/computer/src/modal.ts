@@ -1,4 +1,4 @@
-// The Modal provisioner, VM runtime only: every call through the host's own Modal JS SDK client, of which this package
+// The Modal provisioner, on the VM runtime, and on gVisor for a GPU computer (Modal's one GPU runtime): every call through the host's own Modal JS SDK client, of which this package
 // names only the slice it uses (ModalSdk) and imports nothing. Every SDK fact below is cited in the README's Modal
 // section, from modal-client@64880502 (js/src) and Modal's docs.
 import { createHash, randomBytes } from "node:crypto";
@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
+import { MODAL, MODAL_DEFAULT_IMAGE, MODAL_GPU } from "./descriptors/modal.js";
 import {
 	COMPUTER_LABEL,
 	DAEMON_IN_COMPUTER,
@@ -23,7 +24,7 @@ import { OWN_NETWORK_ONLY, probeOwnNetworkDrift, TOOL_USER } from "./isolation.j
 import { releaseOlder } from "./janitor.js";
 import type { KindCapabilities } from "./kinds.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL } from "./labels.js";
-import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mount.js";
+import { checkMount, type MountKind, type MountReadBack } from "./mount.js";
 import {
 	ARCHIL_HELPER,
 	ARCHIL_MOUNT_LABEL,
@@ -51,15 +52,23 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
-	checkLifetime,
+	checkGpu,
+	checkTenure,
+	type GpuCapability,
+	type GpuSpec,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { connectionError } from "./test-connection.js";
 import { waitUntil } from "./wait.js";
+
+/** This module's failures: one with code vendor names Modal. */
+const fail = failFor("modal");
 
 /** The App sandboxes are made in (modal-client@64880502:js/src/app.ts:32-61). */
 export interface ModalApp {
@@ -73,7 +82,10 @@ export interface ModalImage {
 
 /** What sandboxes.create is given: every field is one of the SDK's SandboxCreateParams (js/src/sandbox.ts:356-474). */
 export interface ModalCreateParams {
-	runtime: "vm";
+	/** vm, or gvisor for a GPU computer: Modal offers GPUs on gVisor only. */
+	runtime: ModalRuntime;
+	/** The GPUs, as the SDK takes them ("T4", "A100-80GB:4"): a GPU computer only. */
+	gpu?: string;
 	command: string[];
 	timeoutMs: number;
 	workdir: string;
@@ -146,6 +158,11 @@ export interface ModalTimeouts {
 	releaseMs: number;
 	/** The first pause between two of those polls; the pauses double up to 5 s. */
 	releasePollMs: number;
+	/**
+	 * How long a create whose sandbox Modal says is shutting down on its own (its command, init, exited) waits for poll to
+	 * read it finished, to give the command's exit code and words in its failure.
+	 */
+	endedMs: number;
 	/** Each root step of an Archil mount through exec (the preflight, mount or revoke, serve), and its checkin at release. */
 	mountMs: number;
 }
@@ -183,12 +200,18 @@ export interface ModalProviderOptions {
 }
 
 /** The mount kinds a Modal computer takes, as capabilities().mount declares them: the run's folder on an Archil disk. */
-export const MOUNT: readonly MountKind[] = ["archil"];
+export const MOUNT: readonly MountKind[] = MODAL.mounts;
 
-/** The machine kind and groups of its one configuration: a linux computer. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "linux", groups: ["exec", "files", "processes"] }];
-/** A registry tag for linux/amd64 that Modal can pull: the default when a setting names no image. */
-export const MODAL_DEFAULT_IMAGE = "debian:bookworm-slim";
+/** The runtime a Modal sandbox runs under: vm, or gvisor for a GPU computer (Modal offers GPUs on gVisor only). */
+export type ModalRuntime = "vm" | "gvisor";
+
+/** A copy of its descriptor's MODAL_GPU, so no caller can change the provider's own. */
+const modalGpuCapability = (): GpuCapability => ({ ...MODAL_GPU, types: [...MODAL_GPU.types], mounts: [] });
+/** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
+const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
+
+/** The machine kind, groups and GPUs of its one configuration (its descriptor's): a linux computer, with GPUs when asked. */
+export const CAPABILITIES: readonly KindCapabilities[] = MODAL.capabilities;
 
 /** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
 export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
@@ -327,6 +350,7 @@ const DEFAULT_TIMEOUTS: ModalTimeouts = {
 	uploadMs: 300_000,
 	releaseMs: 120_000,
 	releasePollMs: 500,
+	endedMs: 30_000,
 	mountMs: 120_000,
 };
 /** The user an Archil computer's tools run as: the image's agentrun-tool, with no sudo and no capability. */
@@ -416,7 +440,8 @@ const HOLD_SCRIPT = [
 /**
  * Init's arguments, after the daemon's path: the one place they are built, for the image route's command and the
  * entrypoint alike. Init and every tool run in a network namespace of their own, loopback alone (--own-network), an
- * Archil computer's too: its archil client and serve run through exec as root, outside it.
+ * Archil computer's too: its archil client and serve run through exec as root, outside it. Init makes it itself, or, on
+ * gVisor (a GPU computer's runtime), where root may not, inside a user namespace; hello says which (fence).
  */
 function initArgs({ deadline, user }: { deadline: string; user: string }): string[] {
 	return ["init", "--deadline", deadline, "--user", user, "--own-network"];
@@ -450,25 +475,34 @@ export function modalCommands({
 const DEFAULT_PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 /** How long close waits for the stdio bridge to exit once its stdin has ended. Modal has no kill for an exec. */
 const CLOSE_WAIT_MS = 5_000;
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "pids", "labels", "workdir", "user", "mount", "gpu"]);
 const NUL = "a NUL byte cannot be passed to Modal";
 const FIXED =
 	"a Modal computer's network is fixed at create: Modal cannot update the policy of a sandbox made with blockNetwork, and updates only an allowlist set at create; create a new computer";
 const STOP =
 	"Modal has no stop that keeps a sandbox: terminate is a sandbox's only end, and a sandbox that has finished cannot run again; release it with delete";
 
-/** What create records of a computer in its spec tag, and attach reads back. */
+/**
+ * What create records of a computer in its spec tag, and attach reads back. Only what it can't tell otherwise: Modal
+ * holds a sandbox's tags to MAX_TAG_BYTES in all, so the network (none, the one this provider makes), the runtime (gVisor
+ * exactly for a GPU, runtimeOf), the mount's kind and hold (archil, exclusive) and its folder's run (the run label's,
+ * which check() holds it to) are not in it.
+ */
 interface Recorded {
 	image: string;
 	user: string;
-	network: "none" | "open";
 	cpus: number;
 	memoryMb: number;
 	workdir: string;
-	runtime: "vm";
-	/** An Archil computer's mount as it reads back (readBackOf, under the claim's epoch): never the token. */
-	mount?: MountReadBack;
+	/** An Archil computer's source, its folder's agent (agents/<agent>/runs/<run>/work) and the claim epoch it was
+	 *  mounted under: never the token. */
+	mount?: { disk: string; region: string; agent: string; epoch: number };
+	/** A GPU computer's GPUs, as asked: Modal reads none of them back. */
+	gpu?: GpuSpec;
 }
+
+/** The runtime a computer runs on: gVisor, Modal's one GPU runtime, exactly when it has a GPU; a VM otherwise. */
+const runtimeOf = (recorded: Pick<Recorded, "gpu">): ModalRuntime => (recorded.gpu === undefined ? "vm" : "gvisor");
 
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
@@ -507,8 +541,12 @@ function codeOf(error: unknown): ComputerErrorCode {
 	if (name === "InvalidError" || code === 3) return "invalid";
 	// gRPC's UNAUTHENTICATED and PERMISSION_DENIED: a token Modal refused.
 	if (code === 16 || code === 7) return "denied";
-	return "modal";
+	// gRPC's FAILED_PRECONDITION on an exec: the sandbox is ending on its own ("Modal Sandbox is shutting down", from
+	// TaskExecStart, when its command, init, has exited). Gone, so create waits to read why.
+	if (code === 9) return "gone";
+	return "vendor";
 }
+
 
 /** Settles with the promise's result, or a timeout or abort in words once ms pass or signal aborts. */
 function race<T>(promise: Promise<T>, what: string, ms: number, signal?: AbortSignal): Promise<Result<T>> {
@@ -657,38 +695,51 @@ function recordedOf(tags: Record<string, string>): Recorded | string {
 	return `spec: the tag ${SPEC_TAG} reads ${show(tags[SPEC_TAG])}, not the spec create writes`;
 }
 
-/** The network a computer was created with, as list reports it: a tag only the host's token writes. */
+/** The network a computer was created with, as list reports it: none, the one this provider makes, where the spec tag
+ *  (a tag only the host's token writes) is create's. */
 function recordedNetwork(tags: Record<string, string>): NetworkPolicy {
-	const recorded = recordedOf(tags);
-	if (typeof recorded !== "string" && (recorded.network === "none" || recorded.network === "open")) return recorded.network;
-	return { other: `the tag ${SPEC_TAG} names no network this provider makes` };
+	if (typeof recordedOf(tags) !== "string") return "none";
+	return { other: `the tag ${SPEC_TAG} is not the spec create writes, so the computer's network is not known` };
 }
 
 /**
  * The Archil mount a computer's spec tag records (recordedArchilOf, shared), or undefined when it records none: the
- * tag's mount, under the epoch the tag recorded it at, which must be the label's.
+ * tag's source, its folder the recorded agent's for the run label's run, exclusive, under the epoch the tag recorded it
+ * at, which must be the label's.
  */
 function recordedArchil(tags: Record<string, string>): RecordedArchil | undefined {
 	const recorded = recordedOf(tags);
 	if (typeof recorded === "string" || recorded.mount === undefined) return undefined;
 	const read = epochOf(tags);
-	const { kind, disk, region, folder, epoch: was } = (recorded.mount ?? {}) as Record<string, unknown>;
-	if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof folder !== "string") {
+	const { disk, region, agent, epoch: was } = (recorded.mount ?? {}) as Record<string, unknown>;
+	const run = tags[RUN_LABEL];
+	if (typeof disk !== "string" || typeof region !== "string" || typeof agent !== "string" || run === undefined) {
 		return recordedArchilOf(tags, { other: `the tag ${SPEC_TAG} records a mount this provider never makes` });
 	}
-	const mount = { kind, disk, region, folder } as const;
+	const mount = { kind: "archil", disk, region, folder: `agents/${agent}/runs/${run}/work` } as const;
 	if (read.ok && was !== read.value) {
 		return recordedArchilOf(tags, { mount, other: `the tag ${SPEC_TAG} records the mount under epoch ${show(was)}, yet the label ${EPOCH_LABEL} reads ${read.value}` });
 	}
 	return recordedArchilOf(tags, { mount });
 }
 
+/** Modal holds a sandbox's tags, their names and values together, to 512 bytes: a create past it is refused at Modal
+ *  ("a sandbox's cumulative tags size (533 bytes) cannot exceed 512 bytes", 11-12). */
+const MAX_TAG_BYTES = 512;
+/** The <agent> of an Archil folder agents/<agent>/runs/<run>/work, the shape check() holds it to. */
+const folderAgent = (folder: string): string => folder.split("/")[1] as string;
+/** The bytes Modal counts of `tags`: every name and value, in UTF-8. */
+const tagBytes = (tags: Record<string, string>): number => Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+
 /** Every way the probe's report differs from what the computer should be. */
-function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec }): string[] {
+function probeDrift(probe: ProbeReport, expected: { user?: string; network?: NetworkSpec; runtime: ModalRuntime }): string[] {
 	const found: string[] = [];
 	const user = `${probe.uid}:${probe.gid}`;
 	if (expected.user !== undefined && user !== expected.user) found.push(`user: declared ${expected.user}, read back ${user} (the uid:gid the daemon's programs run as)`);
-	if (/gvisor/i.test(probe.kernel)) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	// The probe's kernel is the only runtime read-back: gVisor exactly for a GPU computer, a VM's kernel for every other.
+	const gvisor = /gvisor/i.test(probe.kernel);
+	if (expected.runtime === "vm" && gvisor) found.push(`runtime: declared vm, read back gVisor (the kernel reports ${JSON.stringify(probe.kernel)})`);
+	if (expected.runtime === "gvisor" && !gvisor) found.push(`runtime: declared gVisor (a GPU computer), read back another kernel (${JSON.stringify(probe.kernel)})`);
 	if (expected.network === "none") found.push(...probeNetworkDrift(probe));
 	// Its own network: the live interfaces lo alone (a kernel's quiet tunnels are none), and none it could bring up.
 	found.push(...probeOwnNetworkDrift(probe));
@@ -704,7 +755,7 @@ function tagDrift(given: Record<string, string>, read: Record<string, string>): 
 }
 
 /**
- * Computers that are Modal sandboxes on the VM runtime. The daemon is uploaded right after create, streamed through an
+ * Computers that are Modal sandboxes on the VM runtime, or on gVisor with a GPU. The daemon is uploaded right after create, streamed through an
  * exec's stdin, while the sandbox's command, a small sh entrypoint, waits for it and then becomes `computerd init`; or,
  * with daemonImage, it comes in as a layer of the computer's image (COPY --from) and is the command itself. A
  * connection is `computerd stdio` through exec, so a computer with network none is still reached, and needs no network
@@ -781,7 +832,7 @@ export class ModalProvider implements ComputerProvider {
 		return {
 			kind: "linux",
 			lifetime: "vendor",
-			network: ["none"],
+			network: [...MODAL.network],
 			networkReadBack: false,
 			isolation: "vm",
 			os: "linux",
@@ -793,24 +844,27 @@ export class ModalProvider implements ComputerProvider {
 			release: ["delete"],
 			mount: [...MOUNT],
 			vendorAgentPorts: [],
+			// A GPU computer runs on gVisor, Modal's one GPU runtime (gpu.isolation): isolation vm is every other computer's.
+			gpu: modalGpuCapability(),
 		};
 	}
 
-	/** What hello must report: this package's version, the kind and groups declared, and Modal's one architecture. */
+	/** What hello must report: this package's version, the kind and groups declared, Modal's one architecture, and the
+	 *  fence init --own-network holds its programs behind (either way: hello says which, and create notes it). */
 	#expected() {
 		const { kind, groups } = this.capabilities();
-		return { version: VERSION, kind, groups, arch: "amd64" };
+		return { version: VERSION, kind, groups, arch: "amd64", fence: true as const };
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
+		const { image, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || /\s/.test(image)) {
 			refuse("image", `an image is required: a registry tag for linux/amd64 that Modal can pull, such as ${MODAL_DEFAULT_IMAGE}`);
 		} else if (image.includes("\0")) refuse("image", NUL);
-		refusals.push(...checkLifetime(lifetimeMs, this.capabilities()));
+		refusals.push(...checkTenure(given, this.capabilities(), "Modal"));
 		if (network === "open" || (typeof network === "object" && network !== null && "allow" in network)) refuse("network", OWN_NETWORK_ONLY);
 		else if (network !== "none") refuse("network", 'network is required: "none"');
 		if (cpus !== undefined && !(isNumber(cpus) && cpus >= CPU_REQUEST * CPUS_PER_CORE)) {
@@ -836,12 +890,41 @@ export class ModalProvider implements ComputerProvider {
 		if (archil && user !== undefined && !isRootUser(user) && userOf(user) !== ARCHIL_USER) {
 			refuse("user", `a computer with an Archil mount runs its tools as agentrun-tool, ${ARCHIL_USER}, the user its image makes with no way to root; leave user unset or ask for ${ARCHIL_USER}`);
 		}
+		// A GPU computer runs on gVisor, Modal's one GPU runtime, where the Archil client's FUSE mount is not yet proven:
+		// its gpu.mounts is empty, so checkGpu refuses a GPU with a mount.
+		refusals.push(...checkGpu(given.gpu, this.capabilities(), mount));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || value === undefined) continue;
-			if (field === "gpu") refuse(field, "this provider makes VM computers, and Modal offers GPUs on the gVisor runtime only");
-			else refuse(field, `a Modal computer does not support ${field}`);
+			refuse(field, `a Modal computer does not support ${field}`);
+		}
+		// What create would tag the sandbox with, its name and deadline as long as create's always are, within Modal's bound.
+		if (refusals.length === 0) {
+			const { tags } = this.#tags(spec, "computer-000000000000", new Date(0).toISOString());
+			const bytes = tagBytes(tags);
+			if (bytes > MAX_TAG_BYTES) {
+				const sizes = Object.entries(tags).map(([key, value]) => `${key} ${Buffer.byteLength(key) + Buffer.byteLength(value)}`).join(", ");
+				refuse(spec.mount === undefined ? "labels" : "mount", `a Modal sandbox's tags come to at most ${MAX_TAG_BYTES} bytes, names and values together, and this computer's would come to ${bytes} (${sizes}): give a shorter image, mount folder or labels`);
+			}
 		}
 		return refusals;
+	}
+
+	/** What create records of `spec` in its spec tag, and the sandbox's tags: the caller's labels, then this provider's own. */
+	#tags(spec: ComputerSpec, name: string, deadline: string): { recorded: Recorded; tags: Record<string, string> } {
+		const mount = spec.mount?.kind === "archil" ? spec.mount : undefined;
+		const recorded: Recorded = {
+			image: spec.image,
+			// An Archil computer's tools run as the tool user alone.
+			user: mount === undefined ? (userOf(spec.user) ?? this.#user) : ARCHIL_USER,
+			cpus: spec.cpus ?? DEFAULT_CPUS,
+			memoryMb: spec.memoryMb ?? DEFAULT_MEMORY_MB,
+			workdir: spec.workdir ?? WORK,
+			// The folder's agent and the claim's epoch: check() held the folder's run and the epoch to the labels before an
+			// Archil spec gets here.
+			...(mount === undefined ? {} : { mount: { disk: mount.disk, region: mount.region, agent: folderAgent(mount.folder), epoch: claimEpoch(spec.labels) } }),
+			...(spec.gpu === undefined ? {} : { gpu: { type: spec.gpu.type, count: spec.gpu.count } }),
+		};
+		return { recorded, tags: { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) } };
 	}
 
 	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<CreatedComputer>> {
@@ -861,24 +944,11 @@ export class ModalProvider implements ComputerProvider {
 		const app = await this.#theApp(signal);
 		if (!app.ok) return app;
 		const name = `computer-${randomBytes(6).toString("hex")}`;
-		const deadline = new Date(Date.now() + spec.lifetimeMs).toISOString();
+		const deadline = new Date(Date.now() + runLifetimeMs(spec)).toISOString();
 		// An Archil mount is made under the run's claim (check() held the spec to both labels), for the tool user alone.
 		const archil = spec.mount?.kind === "archil" ? { mount: spec.mount, run: spec.labels?.[RUN_LABEL] as string, epoch: claimEpoch(spec.labels) } : undefined;
-		const user = archil === undefined ? (userOf(spec.user) ?? this.#user) : ARCHIL_USER;
-		const workdir = spec.workdir ?? WORK;
-		const cpus = spec.cpus ?? DEFAULT_CPUS;
-		const memoryMb = spec.memoryMb ?? DEFAULT_MEMORY_MB;
-		const recorded: Recorded = {
-			image: spec.image,
-			user,
-			network: spec.network as "none" | "open",
-			cpus,
-			memoryMb,
-			workdir,
-			runtime: "vm",
-			...(archil === undefined ? {} : { mount: readBackOf(archil.mount, archil.epoch) }),
-		};
-		const tags = { ...spec.labels, [COMPUTER_LABEL]: "1", [NAME_TAG]: name, [DEADLINE_LABEL]: deadline, [SPEC_TAG]: JSON.stringify(recorded) };
+		const { recorded, tags } = this.#tags(spec, name, deadline);
+		const { user, workdir, cpus, memoryMb } = recorded;
 		// With daemonImage the daemon comes in as a layer of the computer's own image, there before the command starts.
 		// Without, the command is the entrypoint, which waits for the upload below. Either way the computer needs no
 		// network to get it. HOME is a directory init gives the computer's user.
@@ -908,10 +978,12 @@ export class ModalProvider implements ComputerProvider {
 				: modalCommands({ deadline, user, waitSeconds: Math.ceil(waitMs / 1000), home: WORK, ...(gate === undefined ? {} : { gate }) }).entrypoint;
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: ModalCreateParams = {
-			runtime: "vm",
+			// Modal offers GPUs on gVisor only: a GPU computer's runtime, read back by the probe's kernel like a VM's.
+			runtime: runtimeOf(recorded),
+			...(spec.gpu === undefined ? {} : { gpu: modalGpu(spec.gpu) }),
 			command,
 			// Modal ends the sandbox at its timeout: the lifetime, in the whole seconds the SDK takes.
-			timeoutMs: Math.ceil(spec.lifetimeMs / 1000) * 1000,
+			timeoutMs: Math.ceil(runLifetimeMs(spec) / 1000) * 1000,
 			workdir,
 			cpu: Math.min(CPU_REQUEST, cpuLimit),
 			cpuLimit,
@@ -956,7 +1028,8 @@ export class ModalProvider implements ComputerProvider {
 		}
 		if (checked.ok) return ok(checked.value.length > 0 ? { ...ref, notes: checked.value } : ref);
 		// Read before the terminate, which would end it with its own code: whether the sandbox's command had already ended.
-		const why = await this.#endedWords(sandbox, archil?.mount.token, signal);
+		// A sandbox Modal says is ending on its own (gone) is waited for, bounded, so its command's exit and words are read.
+		const why = await this.#endedWords(sandbox, name, archil?.mount.token, checked.error.code === "gone", signal);
 		await letGo();
 		const after = await this.#terminate(sandbox, name, signal);
 		return fail(checked.error.code, `the computer ${name} ${after}: ${checked.error.message}${why}`);
@@ -964,10 +1037,13 @@ export class ModalProvider implements ComputerProvider {
 
 	/**
 	 * When a create's sandbox has already finished, its command's exit code and the tail of its output (stdout, then
-	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read.
+	 * stderr; the token, if any, cut), in words to append; nothing while it runs or when that cannot be read. With
+	 * `ending` (Modal said the sandbox is shutting down), first waits up to endedMs for poll to read it finished: Modal
+	 * ends a sandbox asynchronously, and poll reads null until then, so its command's words would be lost.
 	 */
-	async #endedWords(sandbox: ModalSandbox, token: string | undefined, signal?: AbortSignal): Promise<string> {
-		const { callMs } = this.#timeouts;
+	async #endedWords(sandbox: ModalSandbox, name: string, token: string | undefined, ending: boolean, signal?: AbortSignal): Promise<string> {
+		const { callMs, endedMs, releasePollMs } = this.#timeouts;
+		if (ending) await untilFinished(() => sandbox.poll(), { name, boundMs: endedMs, callMs, minMs: Math.min(releasePollMs, RELEASE_POLL_MAX_MS), maxMs: RELEASE_POLL_MAX_MS, signal });
 		const polled = await call("poll of the sandbox", () => sandbox.poll(), callMs, signal);
 		if (!polled.ok || polled.value === null) return "";
 		const read = async (stream: ModalSandbox["stdout"]) => {
@@ -1107,10 +1183,13 @@ export class ModalProvider implements ComputerProvider {
 		const found = [
 			...tagDrift(tags, read.value),
 			...helloDrift(inside.value.hello, this.#expected()),
-			...probeDrift(inside.value.probe, { user: recorded.user, network: recorded.network }),
+			...probeDrift(inside.value.probe, { user: recorded.user, network: "none", runtime: runtimeOf(recorded) }),
 			...(archil === undefined ? [] : mountDrift(archil.expected, inside.value.mount)),
 		];
-		return found.length === 0 ? ok(probeNotes(inside.value.probe, recorded.network)) : fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		if (found.length > 0) return fail("refused", `it did not match its spec: ${found.join("; ")}`);
+		// Which way init fenced its programs, as hello read it back: said once a way other than the plain one was taken.
+		const fence = inside.value.hello.fence === "userns-netns" ? [`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${runtimeOf(recorded)} may not make one itself`] : [];
+		return ok([...probeNotes(inside.value.probe, "none"), ...fence]);
 	}
 
 	/** One connection's hello and the probe through it, and an Archil computer's mount read back, the connection closed after. */
@@ -1287,7 +1366,7 @@ export class ModalProvider implements ComputerProvider {
 			if (signal?.aborted) return fail("aborted", `hello to the daemon in ${name} was aborted`);
 			if (hello.error.code === "aborted") return fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(totalMs)}`);
 			if (hello.error.code !== "gone") return hello;
-			return { ...fail("modal", `cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
+			return { ...vendorFail("modal",`cannot reach the daemon in ${name}: ${stderr.trim() || hello.error.message}`), notListening: true };
 		}
 		return ok({ client, hello: hello.value, close });
 	}
@@ -1336,9 +1415,8 @@ export class ModalProvider implements ComputerProvider {
 		const recorded = recordedOf(tags);
 		if (typeof recorded === "string") found.push(recorded);
 		else {
-			if (recorded.runtime !== "vm") found.push(`runtime: the tag ${SPEC_TAG} says ${show(recorded.runtime)}; this provider makes vm computers`);
-			const { image, network, cpus, memoryMb, workdir, user } = recorded;
-			const refusals = this.check({ image, lifetimeMs: 1, network, cpus, memoryMb, workdir, user } as ComputerSpec);
+			const { image, cpus, memoryMb, workdir, user, gpu } = recorded;
+			const refusals = this.check({ image, lifetimeMs: 1, network: "none", cpus, memoryMb, workdir, user, ...(gpu === undefined ? {} : { gpu }) } as ComputerSpec);
 			found.push(...refusals.map(({ field, message }) => `${field}: ${message}, as recorded at create`));
 			// No exec in a computer whose user is root: the bridge would run what that user could have replaced.
 			if (isRootUser(user)) return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
@@ -1348,17 +1426,30 @@ export class ModalProvider implements ComputerProvider {
 		if (!inside.ok) return inside;
 		const { hello, probe, mount } = inside.value;
 		found.push(...helloDrift(hello, this.#expected()));
-		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: recorded.network }));
+		if (typeof recorded !== "string") found.push(...probeDrift(probe, { user: recorded.user, network: "none", runtime: runtimeOf(recorded) }));
 		// The mount read back from inside is the one the spec tag records, under the computer's epoch label.
 		if (archil !== undefined) found.push(...mountDrift(archil.expected, mount));
 		if (found.length > 0 || typeof recorded === "string" || deadline === undefined) {
 			return fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		}
-		const { image, network, cpus, memoryMb, workdir } = recorded;
+		const { image, cpus, memoryMb, workdir, gpu } = recorded;
+		const network = "none";
 		const notes = probeNotes(probe, network);
 		return ok({
 			...ref,
-			spec: { image, user: `${probe.uid}:${probe.gid}`, network, cpus, memoryMb, workdir, deadline, kind: hello.kind, ...(archil === undefined || mount === undefined ? {} : { mount }) },
+			spec: {
+				image,
+				user: `${probe.uid}:${probe.gid}`,
+				network,
+				cpus,
+				memoryMb,
+				workdir,
+				deadline,
+				kind: hello.kind,
+				...(archil === undefined || mount === undefined ? {} : { mount }),
+				// Modal reads no GPU back: what create recorded, on a computer the probe read as gVisor, Modal's GPU runtime.
+				...(gpu === undefined ? {} : { gpu }),
+			},
 			...(notes.length > 0 ? { notes } : {}),
 		});
 	}
@@ -1420,9 +1511,9 @@ export class ModalProvider implements ComputerProvider {
 	}
 
 	/**
-	 * Modal reads no policy back. Open is open, nothing being wider; none is read back by the probe from inside, and is
-	 * another network in words when any of its addresses answered (an address that only accepted, and sent nothing back,
-	 * leaves it none). A change is refused: it is fixed at create.
+	 * Modal reads no policy back. A computer here is made with none, read back by the probe from inside, and is another
+	 * network in words when any of its addresses answered (an address that only accepted, and sent nothing back, leaves it
+	 * none). A change is refused: it is fixed at create.
 	 */
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {
 		const problem = refProblem(ref);
@@ -1435,16 +1526,12 @@ export class ModalProvider implements ComputerProvider {
 		if (!found.ok) return found;
 		const recorded = recordedNetwork(found.value.tags);
 		if (typeof recorded !== "string") return fail("refused", `the computer ${ref.name}: ${"other" in recorded ? recorded.other : JSON.stringify(recorded)}`);
-		if (policy !== undefined && policy !== recorded) return fail("refused", `${FIXED}: ${ref.name} was created with network ${recorded}, not ${policy}`);
-		let read: NetworkPolicy = recorded;
-		if (recorded === "none") {
-			const root = rootRecorded(found.value.tags, ref.name);
-			if (root) return root;
-			const inside = await this.#inside(found.value.sandbox, ref.name, signal);
-			if (!inside.ok) return inside;
-			const { reached } = inside.value.probe;
-			if (reached.length > 0) read = { other: `created with network none, yet from inside an answer came back from ${reached.join(", ")}` };
-		}
+		const root = rootRecorded(found.value.tags, ref.name);
+		if (root) return root;
+		const inside = await this.#inside(found.value.sandbox, ref.name, signal);
+		if (!inside.ok) return inside;
+		const { reached } = inside.value.probe;
+		const read: NetworkPolicy = reached.length > 0 ? { other: `created with network none, yet from inside an answer came back from ${reached.join(", ")}` } : recorded;
 		if (policy === undefined || policy === read) return ok(read);
 		return fail("refused", `${ref.name} was asked to keep network ${policy}, and reads back: ${typeof read === "string" ? read : JSON.stringify(read)}`);
 	}
@@ -1460,7 +1547,7 @@ export class ModalProvider implements ComputerProvider {
 	 * loses nothing (every call that changed it synced, and the next claim revokes the hold), so it is said through
 	 * onNote, and the release succeeds once the sandbox is gone.
 	 */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		const problem = refProblem(ref);
 		if (problem) return fail("invalid", problem);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);

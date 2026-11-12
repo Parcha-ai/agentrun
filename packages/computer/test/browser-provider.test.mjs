@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { coreGroups, GROUPS, KIND_SHAPES, kindRefusals } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { providerFor, providerIds, providerModule } from "../dist/providers.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, ECHO, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 
@@ -29,6 +30,7 @@ const VENDORS = {
 			groups: ["cdp", "stream"],
 			maxLifetimeMs: 6 * HOUR,
 			release: ["delete"],
+			browser: { timeout: "wall-clock", stealth: true, profiles: { settleMs: 5_000 }, downloads: { path: "downloads" } },
 		},
 		/** The labels as the vendor holds them, on the session it made. */
 		held: (fake, id) => fake.sessions.get(id).userMetadata,
@@ -71,6 +73,7 @@ const VENDORS = {
 			groups: ["cdp", "stream"],
 			maxLifetimeMs: 72 * HOUR,
 			release: ["delete"],
+			browser: { timeout: "inactivity", minLifetimeMs: 10_000, profiles: { settleMs: 0 }, headless: true },
 		},
 		held: (fake, id) => fake.browsers.get(id).tags,
 		heldLabels: { "agentrun.run": "run-1", job: "j-42" },
@@ -189,7 +192,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const connection = value(await provider.connect(ref), "connect");
 		assert.match(connection.cdp.url, /^wss:\/\/.*SECRET/, "the vendor's own signed URL");
 		assert.equal(fake.dialed.length, 0, "connect dials nothing: the URL is the driver's to dial");
-		assert.deepEqual(connection.hello, { version: provider.version, os: "linux", kind: "browser", arch: "unknown", groups: vendor.capabilities.groups });
+		assert.deepEqual(connection.hello, { protocol: PROTOCOL_VERSION, version: provider.version, os: "linux", kind: "browser", arch: "unknown", groups: vendor.capabilities.groups });
 		assert.deepEqual(value(await connection.client.call("hello", { client: "test" }), "hello"), connection.hello);
 		assert.deepEqual(value(await connection.client.call("ping", {}), "ping"), {});
 		const exec = await connection.client.call("exec.run", { argv: ["true"], timeoutMs: 1000 });
@@ -412,7 +415,7 @@ for (const [id, vendor] of Object.entries(VENDORS)) {
 		const provider = await vendor.make(vendor.fake({ failCreate: 502 }));
 		const failed = await provider.create(spec());
 		assert.equal(failed.ok, false);
-		assert.equal(failed.error.code, id);
+		assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", id]);
 		assert.match(failed.error.message, /POST .* answered 502/);
 		assert.doesNotMatch(failed.error.message, new RegExp(ECHO));
 		const wrongKey = await vendor.make(vendor.fake(), { apiKey: "test-key" });

@@ -19,18 +19,22 @@ import type { ComputerKindView, ComputerProvider, Computers, ComputerSecret } fr
 /** Obvious fakes: none of these is a key anywhere. */
 const FAKE = "not-a-real-key-0123456789";
 
-const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/e2b/keys)";
+const E2B_WHY = "E2B needs E2B_API_KEY saved: save it in Settings → Computers";
 const PHONE_WHY = "no provider serves a phone computer";
 const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 /** A provider's secret as served: its full name "computer:<provider>:<KEY>". */
 const secret = (provider: string, key: string, set: boolean, source: ComputerSecret["source"] = set ? "console" : null): ComputerSecret => ({ name: `computer:${provider}:${key}`, set, source, changed_at: source === "console" ? CHANGED : null });
-const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true };
-const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }) });
-const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true };
-const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved" };
+/** Where a choice's runs have their shell, as the server serves it: a computer that mounts the run's folder gives every
+ *  host tool; one that doesn't, the file tools only. */
+const MOUNTS = { shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
+const NO_SHELL = { shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
+const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, ...MOUNTS };
+const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), ...NO_SHELL });
+const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, ...NO_SHELL };
+const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", ...NO_SHELL };
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
-const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true };
+const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
 const view = (saved = false): Computers => ({
   kinds: [

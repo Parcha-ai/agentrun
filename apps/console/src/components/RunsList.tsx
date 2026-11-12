@@ -5,7 +5,7 @@ import { ProblemCard } from "@/components/Problem";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
 import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
@@ -44,6 +44,22 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
       {runs && onMore && <div className="flex justify-center p-4"><Button type="button" size="sm" onClick={onMore} disabled={loadingMore}>{loadingMore ? "Loading" : "Load more"}</Button></div>}
       </div>
     </div>
+  );
+}
+
+/** A server with no run yet: what a run is, and the two ways to the first one. The Playground starts a run on an agent
+ *  (and says how to make one where there is none); a template makes its agent and runs it. */
+function FirstRun() {
+  return (
+    <section aria-labelledby="first-run" className="border border-primary/50 bg-primary/5 p-5">
+      <p className="caps text-label text-primary-text">No runs yet</p>
+      <h2 id="first-run" className="mt-2 text-xl font-semibold">Start your first run</h2>
+      <p className="mt-1 max-w-prose text-lead text-muted-foreground">A run is one piece of work an agent does: a question answered, a page researched, a file written. Each one is listed here with its state, when it started and what it cost.</p>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <a href="#/playground" className={buttonVariants({ variant: "solid", size: "lg" })}><Play aria-hidden /> Start a run</a>
+        <a href="#/templates" className={buttonVariants({ variant: "outline", size: "lg" })}>Browse templates</a>
+      </div>
+    </section>
   );
 }
 

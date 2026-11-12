@@ -1,3 +1,4 @@
+import { Segmented } from "@/components/ui/segmented";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
 import { Segmented } from "@/components/ui/segmented";

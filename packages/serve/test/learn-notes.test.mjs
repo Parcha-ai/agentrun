@@ -9,7 +9,7 @@ const REFUND = note("name: Refund policy path\ndescription: Shopify stores keep 
 test("a note's front matter: name, description and type, active when it has no status, and its body after", () => {
   assert.deepEqual(format.parseNoteFile("refund-policy-path.md", REFUND), {
     file: "refund-policy-path.md", name: "Refund policy path", description: "Shopify stores keep their policies at /policies/", type: "reference",
-    status: "active", origin: "run", superseded_by: null, supersedes: [], keys: ["name", "description", "type"], body: "Open /policies/ first.\n",
+    status: "active", origin: "run", superseded_by: null, supersedes: [], retired_from: null, keys: ["name", "description", "type"], body: "Open /policies/ first.\n",
   });
   const old = format.parseNoteFile("old.md", note('name: "Old: quoted"\ndescription: \'single\'\ntype: feedback\nstatus: superseded\nsuperseded_by: refund-policy-path.md\nsupersedes: [x.md, "y.md"]\nsource: elsewhere'));
   assert.deepEqual([old.name, old.description, old.status, old.superseded_by, old.supersedes], ["Old: quoted", "single", "superseded", "refund-policy-path.md", ["x.md", "y.md"]], "quotes are cut, and a key it does not know is left alone");
@@ -87,7 +87,7 @@ test("a pending note waits for its owner: it parses, holds its origin, and is in
   assert.equal(approved, "---\nname: Buy from PaperDepot first\ndescription: Prices\ntype: user\norigin: you\n---\nThe body.\n");
   assert.equal(format.parseNoteFile("paperdepot.md", approved).status, "active");
   assert.equal(format.buildIndex([format.parseNoteFile("paperdepot.md", approved)]), "- [Buy from PaperDepot first](paperdepot.md) — Prices\n");
-  assert.equal(format.retire(asked), "---\nname: Buy from PaperDepot first\ndescription: Prices\ntype: user\norigin: you\nstatus: retired\n---\nThe body.\n", "a pending note can be retired");
+  assert.equal(format.retire(asked, "pending"), "---\nname: Buy from PaperDepot first\ndescription: Prices\ntype: user\norigin: you\nstatus: retired\nretired_from: pending\n---\nThe body.\n", "a pending note can be retired, and its retire records it waited");
   assert.equal(format.mergedNote(REFUND, { origin: "run" }), REFUND, "a note the run worked out carries no origin line: absent reads as run");
   assert.equal(format.mergedNote(note("name: T\ndescription: d\ntype: user\norigin: run"), { origin: "you", pending: true }), "---\nname: T\ndescription: d\ntype: user\norigin: you\nstatus: pending\n---\nThe body.\n", "the host's own lines, in place of any");
   assert.equal(format.mergedNote(note("name: T\ndescription: d\ntype: user\norigin: you"), { origin: "run" }), note("name: T\ndescription: d\ntype: user"));

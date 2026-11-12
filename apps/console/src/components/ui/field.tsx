@@ -6,6 +6,10 @@ import { cn } from "@/lib/utils";
 type FieldWiring = { id: string; describedBy?: string; invalid: boolean; required: boolean };
 const FieldContext = React.createContext<FieldWiring | null>(null);
 
+/** A Field's wiring for a control that is not one of this file's (the Picker): the id its label points at, and what
+ *  describes it. Null outside a Field. */
+export const useFieldWiring = () => React.useContext(FieldContext);
+
 function useWiring<P extends { id?: string; required?: boolean; "aria-describedby"?: string; "aria-invalid"?: React.AriaAttributes["aria-invalid"]; "aria-required"?: React.AriaAttributes["aria-required"] }>(props: P) {
   const wiring = React.useContext(FieldContext);
   return {

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, storeOn, T0 } from "./store-helpers.mjs";
+import { queued, storeOn } from "./store-helpers.mjs";
 
 /** A tool as the registry keeps it: as its server listed it (input_schema). */
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
@@ -64,7 +64,7 @@ async function setUp(t, { answers = [] } = {}) {
   const claimOf = (access = { mint, target: { installation: 7, repo: "acme/widgets" } }) =>
     // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
     mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer, githubMcpOrigin: new URL(fake.url).origin });
-  const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work, liveCredentials: true }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   return { store, clock, fake, valid, mints, timers, to, claimOf, call, mint };
 }
 const bearer = (step) => step.credentials.gh?.headers?.authorization;

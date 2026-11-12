@@ -6,10 +6,12 @@ import { Button } from "@/components/ui/button";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { playgroundPrompt } from "@/lib/codingAgentPrompts";
 import { Picker } from "@/components/ui/picker";
+import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError } from "@/lib/client";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
+import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
@@ -87,7 +89,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
-    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
   const send = async () => {
     if (!built.ok || !onSend || attachments.busy) return;
     setSending(true);

@@ -1,17 +1,16 @@
 // A call that never ran (the gate denied it before its intent) streams its end with NO start, exactly as the door's
 // stream says it: the live view infers nothing from a commit's writes, so a task that never ran gets no
-// tool_execution_start (a stub that synthesizes one for a task first seen ended fails here). Checked head to head
-// against the door's stream of the same run with the same gate.
+// tool_execution_start (a stub that synthesizes one for a task first seen ended fails here). Checked against the door's
+// stream of the same run with the same gate, recorded (fixtures/door-denied-call.json, live-support.mjs).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { collect, doorStream, liveWorld, RUN, settled, shape, until } from "./live-support.mjs";
+import { collect, liveWorld, recorded, recordedShape, RUN, SCRIPT, settled, shape, until } from "./live-support.mjs";
 
 const { watchRun } = await import("../dist/live/stream.js");
 
 test("a denied call streams its end with no start, as the door's stream of the same run says it", async (t) => {
-  const script = [{ call: "read" }, { say: "done" }];
-  const door = await doorStream(script, { deny: true });
-  const doorTypes = shape(door.events);
+  const script = SCRIPT;
+  const doorTypes = recordedShape(recorded("door-denied-call").events);
   assert.equal(doorTypes.includes("tool_execution_start"), false, `the door says no start for a call that never ran: ${JSON.stringify(doorTypes)}`);
   assert.ok(doorTypes.some((type) => type.startsWith("tool_execution_end")), "and says its end");
   const w = await liveWorld(t);

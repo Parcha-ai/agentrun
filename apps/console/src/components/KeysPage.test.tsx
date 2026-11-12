@@ -50,11 +50,11 @@ function server(views: ToolKeys[], write: (call: Call) => Response | Promise<Res
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, atRest: "sealed" | "unavailable" = "sealed", onChange?: () => void) {
+async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   // The owner's password session: secrets can be pasted (session.secrets_writable).
-  act(() => root!.render(createElement(KeysPage, { v2, atRest, onChange, writable: true })));
+  act(() => root!.render(createElement(KeysPage, { v2, onChange, writable: true })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (label: string) => [...host.querySelectorAll("li")].find((li) => li.querySelector("span.font-mono")?.textContent === label)!;
@@ -100,7 +100,7 @@ describe("KeysPage", () => {
   it("Add key sends a PUT with only the values typed, then reads the keys again and says it changed", async () => {
     const { v2, calls } = server([view({}), view({ BROWSERBASE_API_KEY: field("BROWSERBASE_API_KEY", "console") })]);
     let changed = 0;
-    const page = await open(v2, "sealed", () => changed++);
+    const page = await open(v2, () => changed++);
     await page.click(page.row("Browserbase"), /^Paste$/);
     expect(page.input("BROWSERBASE_API_KEY").type).toBe("password");
     expect(page.input("BROWSERBASE_API_KEY").getAttribute("autocomplete")).toBe("new-password");
@@ -167,26 +167,6 @@ describe("KeysPage", () => {
     expect(banner.textContent).toContain("not known");
   });
 
-  it("a server that can't store keys says so plainly and offers no save", async () => {
-    const { v2 } = server([view({})]);
-    const page = await open(v2, "unavailable");
-    expect(page.host.textContent).toContain("This server can't store keys");
-    expect(page.host.textContent).toContain("where the server starts");
-    for (const label of ["Parallel", "Monid", "Browserbase"]) expect(page.button(page.row(label), /^Paste$/)!.disabled).toBe(true);
-  });
-
-  it("a 409 no_sealing_key closes the form, says the server can't store keys and disables saving", async () => {
-    const { v2 } = server([view({})], () => json(409, { error: { code: "no_sealing_key", message: "This server was handed no seal key", retryable: false } }));
-    const page = await open(v2);
-    expect(page.host.textContent).not.toContain("can't store keys");
-    await page.click(page.row("Monid"), /^Paste$/);
-    await page.type("MONID_API_KEY", FAKE);
-    await page.click(page.row("Monid"), /^Save$/);
-    expect(page.host.textContent).toContain("This server can't store keys");
-    expect(page.input("MONID_API_KEY")).toBeNull();
-    expect(page.button(page.row("Monid"), /^Paste$/)!.disabled).toBe(true);
-  });
-
   it("a 422 shows its message at the field, and the form stays open", async () => {
     const { v2 } = server([view({})], () => json(422, { error: { code: "input_invalid", message: "MONID_API_KEY is at most 1024 bytes", retryable: false, fields: [{ field: "values.MONID_API_KEY", reason: "too_long", message: "MONID_API_KEY is at most 1024 bytes" }] } }));
     const page = await open(v2);
@@ -212,7 +192,7 @@ describe("KeysPage", () => {
   it("Remove asks first, then sends a DELETE, reads the keys again and says it changed", async () => {
     const { v2, calls } = server([view({ PARALLEL_API_KEY: field("PARALLEL_API_KEY", "console") }), view({})]);
     let changed = 0;
-    const page = await open(v2, "sealed", () => changed++);
+    const page = await open(v2, () => changed++);
     await page.click(page.row("Parallel"), /^Remove$/);
     expect(calls.filter((c) => c.method === "DELETE")).toEqual([]);
     await page.click(page.row("Parallel"), /^Remove$/);

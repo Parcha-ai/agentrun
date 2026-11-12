@@ -9,7 +9,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
-import { isMessageRow } from "@parcha/pi-durable-agent/timeline";
+import { isMessageRow } from "../dist/timeline/index.js";
 import { verify as hookRefusal } from "../dist/standard-webhooks.js";
 import { follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { MESSAGE_RUN, RUN_EXEC, firings, made } from "./trigger-support.mjs";
@@ -108,7 +108,11 @@ test("bad webhook headers are refused before the body is read: a body past 256 K
   assert.equal(res.status, 401);
 });
 
-test("a run that comes to wait on a person between the firing's check and its door's admission is never answered: the door refuses, the firing is skipped, the question stands", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+/** The window cases below hold a message at its door with `beforeSubmit`, but nothing in serve reads that option: the
+ *  hook never runs, so the run never comes to wait (or park, or pause) between the firing's check and the door. */
+const DOOR_SEAM = "needs a seam before a message reaches the run's door: the beforeSubmit option is read by nothing";
+
+test("a run that comes to wait on a person between the firing's check and its door's admission is never answered: the door refuses, the firing is skipped, the question stands", { timeout: 120_000, skip: DOOR_SEAM }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -143,7 +147,7 @@ const GATE = { faux: new URL("./fixtures/faux-gate.mjs", import.meta.url).pathna
 // The window the server's own check cannot see: a person's message in flight (counted, so the run reads working) while
 // a call of its run is parked for its owner's approval. A trigger's message reaching the run then must never answer that
 // approval: it may not answer a person (answers false), so it never declines one either.
-test("a trigger's message that reaches a run while a tool call waits for its owner's approval never declines it: the approval stands, the same one, unanswered, and the firing sends nothing", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+test("a trigger's message that reaches a run while a tool call waits for its owner's approval never declines it: the approval stands, the same one, unanswered, and the firing sends nothing", { timeout: 120_000, skip: DOOR_SEAM }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -193,7 +197,7 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 
 // The cap's twin of the window above: a person's message in flight while the run's turn ends on a refusal for room, so
 // the run is paused at its cap for its person to raise. A trigger's message then never starts a turn in it.
-test("a trigger's message that reaches a run paused at its cap while another message is in flight is refused: the firing is skipped, and no message of the trigger reaches the run", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+test("a trigger's message that reaches a run paused at its cap while another message is in flight is refused: the firing is skipped, and no message of the trigger reaches the run", { timeout: 120_000, skip: DOOR_SEAM }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;
@@ -232,7 +236,7 @@ test("a trigger's message that reaches a run paused at its cap while another mes
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
-test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000, skip: RUN_EXEC }, async (t) => {
+test("a run that comes to wait on a tool call's approval between the firing's check and its door's admission is never messaged: the door refuses, the firing is skipped, the approval stands, unanswered", { timeout: 120_000, skip: DOOR_SEAM }, async (t) => {
   withEnv(t, SEAL);
   const gate = join(await scratch(t), "gate");
   let api;

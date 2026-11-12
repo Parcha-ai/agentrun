@@ -9,13 +9,18 @@
 // - any other model answers through the route's own fetch: the Messages request runs on pi-ai's model of it (the faux
 //   core under --faux, never the network; another provider's or the gateway's on its key from `env`), and its events
 //   come back as a Messages stream.
+//   A model whose catalog entry takes its tools as text (local-models.ts `toolsAs`) gets them in its system prompt and
+//   its calls read back from its reply (text-tools.ts), on this translation alone.
 // Its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past a model's tier is priced at
 // the tier, as its provider bills it), and its cost is that catalog entry, tiers included, for the cap's judgement.
+import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { Wire } from "@parcha/agentrun-kernel";
+import type { ToolsAs } from "../local-models.js";
 import { chooseModel, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
 export type RouteCost = {
@@ -36,6 +41,9 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
 export interface ModelRoute {
   readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key" };
   readonly model: string;
+  /** The model as the run names it (`provider/model-id`, chooseModel's): what the `llm` tool's answer says it ran on,
+   *  never the session provider the runner reaches it through. */
+  readonly named?: string;
   /** The catalog's entry for the model, as pi-ai's model of it takes it: on every wire, what it takes as input (whether it
    *  takes images) and its input limits (an image's most size), which pi's session and its read size an image by; on a
    *  wire that carries its reasoning (Responses), also whether it reasons, its window and its output ceiling. */
@@ -46,6 +54,9 @@ export interface ModelRoute {
   readonly fetch?: typeof fetch;
   /** The catalog's cost of the model, tiers included: what the cap prices a request at before it leaves. */
   readonly cost?: RouteCost;
+  /** True when serve has no price for the model (runModels' `unpriced`): `cost` is then a placeholder of zeros, which the
+   *  cap never reads as a price (capModelOf: price unknown, never $0). */
+  readonly unpriced?: boolean;
   /** The model's most output tokens (its catalog ceiling): the cap's output bound, null when the catalog names none. */
   readonly outputCeiling?: number | null;
 }
@@ -53,12 +64,12 @@ export interface ModelRoute {
 /** The origin a route with its own fetch names: nothing is ever sent there, its fetch answers every request. */
 export const ROUTE_ORIGIN = "https://model-route.invalid";
 
-type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown };
+type PiModel = { id: string; provider: string; api: string; baseUrl?: string; cost: RouteCost; maxTokens?: number; reasoning?: boolean; contextWindow?: number; input?: readonly string[]; inputLimits?: unknown; toolsAs?: ToolsAs };
 /** The wires a caller of routeOf speaks when it names none: Anthropic's Messages alone. */
 const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
-type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string };
+type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string; thinking?: string }[] };
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`; a claimed run's pin, sent as
  *  pinned: chooseModel's PinnedModel), resolved from `env` as main resolves a run's model, on a wire of `wires` (the
@@ -69,17 +80,19 @@ type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: strin
 export async function routeOf(model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv = process.env, tier: Tier = "default", wires: readonly Wire[] = MESSAGES_ONLY, upstream?: typeof fetch, redact?: Redact): Promise<ModelRoute> {
   const chosen = await chooseModel(env, model, tier);
   if ("why" in chosen) throw new Error(chosen.why);
-  const { models } = await runModels(env, tier === "default" ? model : undefined, [tier]);
+  // A tier's own model, when one is named (a subagent's model_tiers), is the one registered, at the tier's price: a gateway
+  // lists only the models it is given, so the host's model for the tier in its place would leave this one unknown.
+  const named = tier !== "default" && typeof model === "string" ? { [tier]: model } : {};
+  const { models, unpriced } = await runModels(env, tier === "default" ? model : undefined, [tier], undefined, named);
   const target = models.getModel(chosen.model.provider, chosen.model.modelId) as unknown as PiModel | undefined;
   if (!target) throw new Error(`no model ${chosen.model.provider}/${chosen.model.modelId} here`);
-  const price = (_model: string, used: RouteUsage): number => {
-    const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    return calculateCost(target as never, usage as never).total;
-  };
+  // A model serve has no price for (runModels' `unpriced`) carries a placeholder cost of zeros: its requests are booked at
+  // no known price (null), never $0, as a CLI run's are (adapters.ts priceOf).
+  const price = (_model: string, used: RouteUsage): number | null => (unpriced.has(chosen.model.modelId) ? null : priceOn(target, used));
   // What the model takes as input and its input limits, on every wire: pi's session sends a model that takes no images
   // pi-ai's placeholder in place of one, and pi's read holds an image to the model's limits (port-models.ts sessionModel).
   const sees = { ...(target.input ? { input: target.input } : {}), ...(target.inputLimits ? { inputLimits: target.inputLimits } : {}) };
-  const route = { model: chosen.model.modelId, price, cost: target.cost, outputCeiling: target.maxTokens ?? null, like: sees };
+  const route = { model: chosen.model.modelId, named: `${chosen.model.provider}/${chosen.model.modelId}`, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, like: sees };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
   if (chosen.model.provider === "anthropic") {
     return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };
@@ -109,8 +122,13 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
   };
   return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
-    const context = contextOf(body, target, (id) => providerIds.get(id) ?? id);
-    const events = models.streamSimple(target as never, context as never, { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) } as never);
+    const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
+    // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
+    // result of its history as text, and its calls read from its reply. A request with no tools goes as it is.
+    const asText = target.toolsAs === "text" && (built.tools?.length ?? 0) > 0;
+    const context = asText ? toolsAsText(built) : built;
+    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(upstream ? { fetch: upstream } : {}) };
+    const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -120,19 +138,36 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         // reports it ("500 {...}"), never this route's envelope around it.
         const sendError = (words: string) => controller.enqueue(encoder.encode(`event: error\n${words.split(/\r?\n/).map((line) => `data: ${line}`).join("\n")}\n\n`));
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
-        // Messages blocks are numbered as sent; a thinking block of pi-ai's is not sent (it carries no signature here).
+        // Messages blocks are numbered as sent. A thinking block is sent too, so the model's reasoning reaches the run's
+        // record as a Timeline row; its text goes through the run's one redactor, so a held key the model quoted in its
+        // thinking is cut before pi's session journals it, not only at read. It carries no signature here, which the bridge
+        // back (contextOf) drops from a later turn's request, so none is needed and the cut thinking is never read as context.
         const blockOf = new Map<number, number>();
         const sentJson = new Set<number>();
         let blocks = 0;
+        // The thinking of the block being streamed, gathered so its whole text is redacted at once (its deltas are not sent).
+        let thinking = "";
         const open = (at: number | undefined) => {
           const index = blocks++;
           blockOf.set(at ?? -1, index);
           return index;
         };
         try {
-          for await (const event of events) {
+          for await (const event of asText ? [] : events) {
             const at = event.contentIndex;
             if (event.type === "text_start") send({ type: "content_block_start", index: open(at), content_block: { type: "text", text: "" } });
+            else if (event.type === "thinking_start") {
+              thinking = "";
+              send({ type: "content_block_start", index: open(at), content_block: { type: "thinking", thinking: "", signature: "" } });
+            } else if (event.type === "thinking_delta") thinking += event.delta ?? "";
+            else if (event.type === "thinking_end") {
+              // The whole thinking at its end, through the run's one redactor, in one delta: a held key the model quoted is
+              // cut before pi's session journals it even where it spans two deltas (a cut per delta could miss a key split
+              // across them).
+              const index = blockOf.get(at ?? -1);
+              send({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: redact(thinking) } });
+              send({ type: "content_block_stop", index });
+            }
             else if (event.type === "text_delta") send({ type: "content_block_delta", index: blockOf.get(at ?? -1), delta: { type: "text_delta", text: event.delta ?? "" } });
             else if (event.type === "toolcall_start") {
               const call = event.partial?.content?.[at ?? -1];
@@ -164,6 +199,76 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
               send({ type: "message_stop" });
             }
           }
+          if (asText) {
+            // The reply whole, then its text and its calls as Messages blocks. A reply that opens a call block and
+            // holds no call it can read is asked again, at most TEXT_TOOL_TRIES times in all, its usage summed, and
+            // only out of what the cap held for this one request (reaskTokens): the re-ask's output limit is what is
+            // left of it once the tries so far and the re-ask's own input, uncached, are paid.
+            const tools = built.tools ?? [];
+            const used = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+            const outputHeld = body.max_tokens ?? target.maxTokens;
+            let heldUsd = 0;
+            let spentUsd = 0;
+            let replies = events;
+            let nextTokens = 0;
+            for (let attempt = 1; ; attempt++) {
+              let again = false;
+              for await (const event of replies) {
+                if (event.type !== "done" && event.type !== "error") continue;
+                const message = (event.type === "done" ? event.message : event.error) ?? {};
+                if (event.type === "error") {
+                  sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"));
+                  break;
+                }
+                const given = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+                const part = { input: given.input, output: given.output, cacheRead: given.cacheRead ?? 0, cacheWrite: given.cacheWrite ?? 0 };
+                used.input += part.input;
+                used.output += part.output;
+                used.cacheRead += part.cacheRead;
+                used.cacheWrite += part.cacheWrite;
+                if (attempt === 1 && outputHeld !== undefined) heldUsd = priceOn(target, { ...part, output: outputHeld });
+                spentUsd += priceOn(target, part);
+                const said = (message.content ?? []).filter((each) => each.type === "text").map((each) => each.text ?? "").join("");
+                // A reply cut at its output limit may stop inside a call: a call block in it is never run, it is broken.
+                const cut = (event.reason ?? message.stopReason) === "length";
+                const parsed = callsOfText(said, tools);
+                const read = cut && (parsed.calls.length > 0 || parsed.broken) ? { text: said.trim(), calls: [], broken: true } : parsed;
+                if (read.broken && attempt < TEXT_TOOL_TRIES && outputHeld !== undefined) {
+                  nextTokens = reaskTokens(target, part, heldUsd - spentUsd, outputHeld);
+                  if (nextTokens > 0 && nextTokens >= part.output) {
+                    again = true;
+                    break;
+                  }
+                }
+                // The reply's thinking first, as the streamed branch sends it: one block, its whole text through the run's
+                // one redactor before pi's session journals it.
+                const thought = (message.content ?? []).filter((each) => each.type === "thinking").map((each) => each.thinking ?? "").join("");
+                if (thought) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "", signature: "" } });
+                  send({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: redact(thought) } });
+                  send({ type: "content_block_stop", index });
+                }
+                if (read.text) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
+                  send({ type: "content_block_delta", index, delta: { type: "text_delta", text: read.text } });
+                  send({ type: "content_block_stop", index });
+                }
+                for (const call of read.calls) {
+                  const index = blocks++;
+                  send({ type: "content_block_start", index, content_block: { type: "tool_use", id: messagesId(`call_${randomUUID().replace(/-/g, "").slice(0, 24)}`), name: call.name, input: {} } });
+                  send({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(call.arguments) } });
+                  send({ type: "content_block_stop", index });
+                }
+                const reason = read.calls.length ? "tool_use" : stopReasonOf(event.reason === "toolUse" ? "stop" : event.reason ?? message.stopReason);
+                send({ type: "message_delta", delta: { stop_reason: reason, stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite } });
+                send({ type: "message_stop" });
+              }
+              if (!again) break;
+              replies = models.streamSimple(target as never, context as never, { ...streamOptions, maxTokens: nextTokens } as never);
+            }
+          }
         } catch (error) {
           sendError(redact((error as Error)?.message ?? String(error)));
         }
@@ -191,6 +296,25 @@ type Part = { readonly type: string; readonly [key: string]: unknown };
 
 const textOf = (content: string | MessagesBlock[] | undefined): string => (typeof content === "string" ? content : (content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n"));
 
+/** A Messages block as pi-ai's part: a text as text, a base64 image as an image; anything else none. */
+const partOf = (block: MessagesBlock): Part[] =>
+  block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [];
+
+/** A tool_result's content as pi-ai's toolResult content: its parts in order (partOf), so a screenshot a tool returned
+ *  reaches the model, with the texts between two images joined by "\n" into one part, so a result of text alone is the
+ *  one text it always was (textOf). A string is one text. Never empty: a result with no text or image part is one empty
+ *  text. */
+const resultOf = (content: string | MessagesBlock[] | undefined): Part[] => {
+  if (typeof content === "string" || content === undefined) return [{ type: "text", text: content ?? "" }];
+  const parts: Part[] = [];
+  for (const part of content.flatMap(partOf)) {
+    const last = parts.at(-1);
+    if (part.type === "text" && last?.type === "text") parts[parts.length - 1] = { type: "text", text: `${String(last.text)}\n${String(part.text)}` };
+    else parts.push(part);
+  }
+  return parts.length ? parts : [{ type: "text", text: "" }];
+};
+
 /** A Messages request as pi-ai's context on `target`: its system prompt, tools and turns (a tool_result as its own
  *  toolResult message, naming the tool its call named; `providerId` maps a call id back to the provider's). */
 function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: string) => string): unknown {
@@ -211,12 +335,10 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
       messages.push({ role: "assistant", content, api: target.api, provider: target.provider, model: target.id, usage: zero, stopReason: content.some((part) => part.type === "toolCall") ? "toolUse" : "stop", timestamp: Date.now() });
       continue;
     }
-    const said = blocks.flatMap((block): Part[] =>
-      block.type === "text" ? [{ type: "text", text: block.text ?? "" }] : block.type === "image" && block.source?.data ? [{ type: "image", data: block.source.data, mimeType: block.source.media_type ?? "image/png" }] : [],
-    );
+    const said = blocks.flatMap(partOf);
     for (const block of blocks.filter((each) => each.type === "tool_result")) {
       const id = block.tool_use_id ?? "";
-      messages.push({ role: "toolResult", toolCallId: providerId(id), toolName: named.get(id) ?? "", content: [{ type: "text", text: textOf(block.content) }], isError: block.is_error === true, timestamp: Date.now() });
+      messages.push({ role: "toolResult", toolCallId: providerId(id), toolName: named.get(id) ?? "", content: resultOf(block.content), isError: block.is_error === true, timestamp: Date.now() });
     }
     if (said.length) messages.push({ role: "user", content: said, timestamp: Date.now() });
   }
@@ -226,4 +348,29 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
     messages,
     ...(body.tools?.length ? { tools: body.tools.map((tool) => ({ name: tool.name, description: tool.description ?? "", parameters: tool.input_schema ?? { type: "object", properties: {} } })) } : {}),
   };
+}
+
+/** How many times a text-tools reply is asked for when it opens a call block that holds no call it can read. */
+const TEXT_TOOL_TRIES = 3;
+
+/** `used` priced on `target`'s catalog entry: pi-ai's calculateCost, tiers included (the proxy's booking, and the cap's). */
+function priceOn(target: PiModel, used: RouteUsage): number {
+  const usage = { ...used, totalTokens: used.input + used.output + used.cacheRead + used.cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  return calculateCost(target as never, usage as never).total;
+}
+
+/** A text-tools re-ask's output limit: the most tokens it may answer with when what is left of the request's hold is
+ *  `leftUsd` (its first try's input as it was billed and its output limit `outputHeld`, less every try so far) and its
+ *  input, the prompt `last` was asked with, is priced uncached at the dearer of the input and cache-write prices, as the
+ *  cap prices a fresh input. Never more than `outputHeld`; 0 when nothing is left. So the one hold the cap took for
+ *  the request covers every try it makes. */
+export function reaskTokens(target: PiModel, last: RouteUsage, leftUsd: number, outputHeld: number): number {
+  const prompt = last.input + last.cacheRead + last.cacheWrite;
+  const at = (output: number) => Math.max(priceOn(target, { input: prompt, output, cacheRead: 0, cacheWrite: 0 }), priceOn(target, { input: 0, output, cacheRead: 0, cacheWrite: prompt }));
+  const inputUsd = at(0);
+  const perToken = (at(1_000_000) - inputUsd) / 1_000_000;
+  const room = leftUsd - inputUsd;
+  if (room < 0) return 0;
+  if (!(perToken > 0)) return outputHeld;
+  return Math.max(0, Math.min(outputHeld, Math.floor(room / perToken)));
 }

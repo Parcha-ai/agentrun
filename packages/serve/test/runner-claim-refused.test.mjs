@@ -13,7 +13,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { ClaimRefused } = await import("../dist/runner/loop-contract.js");
 const { McpClaimRefused } = await import("../dist/runner/mcp-claim.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
-const { UNREADABLE_SIGN_IN } = await import("../dist/runs.js");
+const { UNREADABLE_SIGN_IN } = await import("../dist/run-view.js");
 const { endedReason } = await import("../dist/store/store.js");
 const { handedSignInReadsBack, pointerHash } = await import("../dist/sign-ins-store.js");
 
@@ -66,6 +66,38 @@ test("a claim resuming from a park whose handed sign-in won't read back ends fai
   assert.equal(r.row.summary, UNREADABLE_SIGN_IN);
   assert.equal(r.row.backoffUntil ?? null, null, "no resume backoff");
   assert.equal(r.events.filter((event) => event.type === "released" && event.runId === "run-1").length, 1, "exactly one end");
+});
+
+test("a claim resuming from a park that is refused before any loop starts (the dispatch's: a harness this host never holds) ends failed in its words, once, with no resume retry", async (t) => {
+  const words = "This server has 384 MB of memory and keeps 128 MB for itself; a claude-agent run needs about 288 MB more, so it can't start here. pi and codex runs fit.";
+  const { NeverFits } = await import("../dist/runner/harness-loops.js");
+  const opened = await stores();
+  await queue(opened.server, "run-1");
+  const earlier = await opened.server.claim("run-1", "runner-earlier", { leaseMs: 60_000 });
+  await opened.server.release(earlier, { state: "parked" });
+  await opened.server.command("run-1", { kind: "steer", body: { content: "Go on." } });
+  const events = [];
+  let released;
+  const first = new Promise((resolve) => (released = resolve));
+  const froms = [];
+  // As the dispatch's resolve throws it: from start(), before any inner loop exists.
+  const runner = startRunner({
+    store: opened.runners[0],
+    name: "runner-1",
+    ...TIMING,
+    createLoop: () => ({ start: async (claim) => (froms.push(claim.from), Promise.reject(new NeverFits(words))), command: async () => ({ later: "no loop" }), stop: async () => {} }),
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "released" && event.runId === "run-1") released(event);
+    },
+  });
+  t.after(() => runner.close());
+  const release = await first;
+  const row = await opened.server.runs.get("run-1");
+  assert.deepEqual(froms, ["parked"], "one claim, a resume from the park");
+  assert.equal(release.end, "failed", `ended failed, not parked again for a retry: ${JSON.stringify(release)}`);
+  assert.deepEqual([row.state, row.summary, row.backoffUntil ?? null], ["failed", words, null], JSON.stringify(row));
+  assert.equal(events.filter((event) => event.type === "released" && event.runId === "run-1").length, 1, "exactly one end");
 });
 
 test("a claim resuming from a park whose MCP pin is refused on resume ends failed in the refusal's words, once, with no resume retry; a stop queued before it is answered that the run already failed", async (t) => {

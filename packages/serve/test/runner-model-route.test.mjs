@@ -4,9 +4,10 @@
 // - an Anthropic model goes to Anthropic itself, its key read by name when a request goes;
 // - any other model (another provider's, the gateway's, the faux module's under --faux) answers through the route's own
 //   fetch, which runs the request on pi-ai's model of it and answers in Messages shape, never the network for the faux;
-// - its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past gpt-6-sol's 272k tier is
+// - its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past gpt-6.1-sol's 272k tier is
 //   priced at the tier), and its cost is that catalog entry, for the cap.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
@@ -43,13 +44,13 @@ async function answerOf(response) {
   return { text, stop, used, tools: tools.map((tool) => ({ name: tool.name, input: JSON.parse(tool.json || "{}") })) };
 }
 
-test("a catalog model's route: its provider's key by name, its catalog cost with tiers, and a request past gpt-6-sol's 272k tier priced at the tier", async () => {
-  const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
-  assert.equal(route.model, "gpt-6-sol");
+test("a catalog model's route: its provider's key by name, its catalog cost with tiers, and a request past gpt-6.1-sol's 272k tier priced at the tier", async () => {
+  const route = await routeOf("openai/gpt-6.1-sol", { OPENAI_API_KEY: KEY });
+  assert.equal(route.model, "gpt-6.1-sol");
   assert.equal(route.provider.api, "anthropic-messages", "every route speaks Messages to the proxy");
-  assert.deepEqual(route.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }] }, "the catalog's cost, tiers included");
-  assert.equal(eight(route.price("gpt-6-sol", usage(100_000, 1_000))), eight((100_000 * 2 + 1_000 * 10) / 1e6), "below the tier: the base rates");
-  assert.equal(eight(route.price("gpt-6-sol", usage(300_000, 1_000))), eight((300_000 * 4 + 1_000 * 15) / 1e6), "past 272k input tokens: the tier's rates");
+  assert.deepEqual(route.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] }, "the catalog's cost, tiers included");
+  assert.equal(eight(route.price("gpt-6.1-sol", usage(100_000, 1_000))), eight((100_000 * 2 + 1_000 * 10) / 1e6), "below the tier: the base rates");
+  assert.equal(eight(route.price("gpt-6.1-sol", usage(300_000, 1_000))), eight((300_000 * 4 + 1_000 * 15) / 1e6), "past 272k input tokens: the tier's rates");
   assert.equal(typeof route.fetch, "function", "a provider that does not speak Messages answers through the route's fetch");
 });
 
@@ -99,6 +100,28 @@ test("a request the route's model fails answers an error event whose data is the
   assert.equal(events.length, 1, "one error event");
   const data = events[0].split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
   assert.equal(data, '500 {"message":"the upstream broke"}', "the error event's data is the model's own words");
+});
+
+test("the route sends the model's thinking in Messages shape, its text cut by the run's redactor before it goes", async () => {
+  // A held key the model quotes in its thinking is cut at write (the route's redactor), so it never reaches pi's session
+  // to be journaled, not only cut by the renderer at read. The route's fetch is where a bridged model's blocks become
+  // Messages.
+  const SECRET = `not-a-secret-${randomBytes(6).toString("hex")}`;
+  const redact = (text) => text.replaceAll(SECRET, "[redacted]");
+  const route = await routeOf(undefined, { AGENTRUN_SERVE_FAUX: FAUX }, undefined, undefined, undefined, redact);
+  const response = await route.fetch(`${route.provider.origin}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: route.model, max_tokens: 256, stream: true, messages: [{ role: "user", content: `think of ${SECRET}` }] }),
+  });
+  let thinking = "";
+  for (const line of (await response.text()).split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const event = JSON.parse(line.slice(6));
+    if (event.type === "content_block_delta" && event.delta?.type === "thinking_delta") thinking += event.delta.thinking;
+  }
+  assert.ok(thinking.length > 0, "the route sent the thinking block as Messages thinking");
+  for (let i = 0; i + 8 <= SECRET.length; i++) assert.ok(!thinking.includes(SECRET.slice(i, i + 8)), `the sent thinking holds part of the key: ${thinking}`);
 });
 
 test("a pi run through the adapter on the faux route goes through the kernel's model proxy and ends with the faux model's answers, its tool call run", async (t) => {

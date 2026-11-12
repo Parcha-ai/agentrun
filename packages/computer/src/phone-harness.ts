@@ -12,8 +12,10 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { crc32, deflateSync } from "node:zlib";
+import { promisify } from "node:util";
+import { crc32, deflate } from "node:zlib";
 import { checkActions } from "./actions.js";
+import { PHONE_GROUPS, PHONE_HARNESS, PHONE_IMAGE } from "./descriptors/phone-harness.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
@@ -27,6 +29,7 @@ import {
 	type InputActionsResult,
 	MAX_CHUNK_BYTES,
 	MAX_UI_NODES,
+	PROTOCOL_VERSION,
 	type Rect,
 	type ScreenWatchResult,
 	type UiNode,
@@ -41,25 +44,27 @@ import {
 	type ComputerRef,
 	type ComputerSpec,
 	type CreatedComputer,
-	checkLifetime,
+	checkGpu,
+	checkTenure,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
+import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, redactWords, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
+/** This module's failures: one with code vendor names the phone harness. */
+const fail = failFor("phone-harness");
+
 /** The phone harness's API. */
 export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
-/** What a cloud Android offers through this provider, as its capabilities and hello declare them. */
-export const PHONE_GROUPS: readonly Group[] = ["screen", "input.touch", "input.keys", "apps", "apps.ui_tree"];
 /** A phone mounts no folder. */
-export const MOUNT: readonly MountKind[] = [];
-/** The one configuration it offers, as its capabilities() declare it: the kind registry's entry holds the same. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "android", groups: [...PHONE_GROUPS] }];
-/** The image a phone is read back by: a cloud Android has none to choose, so a setting that names none takes this. */
-export const PHONE_IMAGE = "android";
+export const MOUNT: readonly MountKind[] = PHONE_HARNESS.mounts;
+/** The one configuration it offers, as its capabilities() declare it: its descriptor's. */
+export const CAPABILITIES: readonly KindCapabilities[] = PHONE_HARNESS.capabilities;
 /** The longest lifetime by default: a rented phone bills by the minute. */
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
@@ -145,7 +150,7 @@ async function ledgerSafe<T>(fn: () => Promise<Result<T>>): Promise<Result<T>> {
 	try {
 		return await fn();
 	} catch (error) {
-		if (error instanceof LedgerFailure) return fail("phone", error.message);
+		if (error instanceof LedgerFailure) return vendorFail("phone-harness",error.message);
 		throw error;
 	}
 }
@@ -208,7 +213,7 @@ export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: n
 				}
 				if (error && (error as { killed?: boolean }).killed) return resolve(fail("timeout", `adb did not finish within ${timeoutMs / 1000} s, so it was killed`));
 				if (error && signal?.aborted) return resolve(fail("aborted", "adb was aborted"));
-				if (error && typeof (error as { code?: unknown }).code !== "number") return resolve(fail("phone", `adb could not run: ${error.message.split("\n")[0]}`));
+				if (error && typeof (error as { code?: unknown }).code !== "number") return resolve(vendorFail("phone-harness",`adb could not run: ${error.message.split("\n")[0]}`));
 				resolve(ok({ exitCode: typeof code === "number" ? code : error ? 1 : 0, stdout: Buffer.from(stdout), stderr: Buffer.from(stderr).toString("utf8") }));
 			});
 			// stdin always ends, so no adb waits on it; it carries the input when there is one.
@@ -222,7 +227,7 @@ export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: n
 		const start = await started;
 		if (!start.ok || start.value.exitCode !== 0) {
 			started = undefined;
-			return start.ok ? fail("phone", `adb start-server failed: ${start.value.stderr.trim().split("\n")[0] || `exit code ${start.value.exitCode}`}`) : start;
+			return start.ok ? vendorFail("phone-harness",`adb start-server failed: ${start.value.stderr.trim().split("\n")[0] || `exit code ${start.value.exitCode}`}`) : start;
 		}
 		const frame = (request: string) => `${Buffer.byteLength(request).toString(16).padStart(4, "0")}${request}`;
 		return new Promise((resolve) => {
@@ -249,9 +254,9 @@ export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: n
 				bound = true;
 				socket.write(frame(service));
 			});
-			socket.on("error", (error) => done(fail("phone", `the adb server on 127.0.0.1:${port} could not be reached for ${what}: ${error.message}`)));
+			socket.on("error", (error) => done(vendorFail("phone-harness",`the adb server on 127.0.0.1:${port} could not be reached for ${what}: ${error.message}`)));
 			socket.on("close", () => {
-				if (!bound) return done(fail("phone", `the adb server closed host:transport-id:${transport} before it answered`));
+				if (!bound) return done(vendorFail("phone-harness",`the adb server closed host:transport-id:${transport} before it answered`));
 				// A phone's service answers OKAY and then its output, with no length: the output is what follows.
 				if (transport !== undefined && buffer.subarray(0, 4).toString("latin1") === "OKAY") return done(ok(buffer.subarray(4).toString("utf8")));
 				done(adbAnswer(buffer, what));
@@ -277,8 +282,8 @@ export function adbAnswer(raw: Buffer, what: string): Result<string> {
 	const length = rest.length >= 4 ? Number.parseInt(rest.subarray(0, 4).toString("latin1"), 16) : Number.NaN;
 	const message = Number.isSafeInteger(length) && length >= 0 && rest.length >= 4 + length ? rest.subarray(4, 4 + length).toString("utf8") : rest.toString("utf8");
 	if (status === "OKAY") return ok(message);
-	if (status === "FAIL") return fail("phone", `the adb server refused ${what}: ${redactWords(message.trim())}`);
-	return fail("phone", `the adb server answered ${what} with ${JSON.stringify(raw.subarray(0, 40).toString("latin1"))}, not OKAY or FAIL`);
+	if (status === "FAIL") return vendorFail("phone-harness",`the adb server refused ${what}: ${redactWords(message.trim())}`);
+	return vendorFail("phone-harness",`the adb server answered ${what} with ${JSON.stringify(raw.subarray(0, 40).toString("latin1"))}, not OKAY or FAIL`);
 }
 
 export interface PhoneProviderOptions {
@@ -392,7 +397,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			os: "android",
 			daemon: "none",
 			lifetime: "vendor",
-			network: ["open"],
+			network: [...PHONE_HARNESS.network],
 			isolation: "vm",
 			groups: [...PHONE_GROUPS],
 			maxLifetimeMs: this.#maxLifetimeMs,
@@ -401,7 +406,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	check(spec: ComputerSpec): Refusal[] {
-		const refusals = checkLifetime(spec?.lifetimeMs, this.capabilities());
+		const refusals = checkTenure({ lifetimeMs: spec?.lifetimeMs, owner: spec?.owner }, this.capabilities(), "phone harness");
 		if (typeof spec?.image !== "string" || spec.image === "") refusals.push({ field: "image", message: "image is required: a name the phone is read back by (a cloud Android has no image to choose)" });
 		if (spec?.network !== "open") refusals.push({ field: "network", message: `network ${show(spec?.network)}: a cloud phone's network is open, and it cannot be closed or narrowed` });
 		if (spec?.user !== undefined) refusals.push({ field: "user", message: "user: a cloud phone has no user to choose; every command runs as the phone's shell user" });
@@ -409,6 +414,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (spec?.[field] !== undefined) refusals.push({ field, message: `${field}: a cloud phone's size and folders are the vendor's, and cannot be asked for` });
 		}
 		if (spec?.mount !== undefined) refusals.push({ field: "mount", message: "mount: a cloud phone mounts no folder" });
+		refusals.push(...checkGpu(spec?.gpu, this.capabilities()));
 		return refusals;
 	}
 
@@ -473,7 +479,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		if (answer.code === "session_limit") return fail("limit", `${where}: ${said} (session_limit)`);
 		if (response.status === 404) return fail("not_found", `${where}: ${said} (404)`);
-		const failed = fail("phone", `${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
+		const failed = vendorFail("phone-harness",`${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
 		// A 5xx is no refusal: a gateway may answer it for a request the service went on to act on.
 		return response.status >= 500 ? { ...failed, uncertain: true } : failed;
 	}
@@ -525,7 +531,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ledgerSafe(() => this.#network(ref, policy));
 	}
 
-	release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		return ledgerSafe(() => this.#release(ref, how));
 	}
 
@@ -548,10 +554,10 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
 		const from = this.#now();
 		const requestKey = randomBytes(16).toString("hex");
-		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(spec.lifetimeMs / 1000) };
+		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000) };
 		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it.
 		const pending = pendingId(requestKey);
-		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + spec.lifetimeMs).toISOString(), request: requestKey });
+		await this.#ledger.put({ id: pending, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: new Date(from + runLifetimeMs(spec)).toISOString(), request: requestKey });
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
@@ -564,15 +570,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			const why = !posted.ok ? posted.error.message : `POST /sessions answered ${posted.value.status} with no session (${first?.ok === false ? first.error.message : "no words"})`;
 			const kept = "the ledger keeps the request's key, so list() finds the phone if it was made";
 			const recovered = await this.#api("GET", `/sessions/requests/${requestKey}`);
-			if (!recovered.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and the service has no session for the request: ${recovered.error.message}; ${kept}`);
+			if (!recovered.ok) return fail(cancelled ? "aborted" : "vendor",`${why}; and the service has no session for the request: ${recovered.error.message}; ${kept}`);
 			first = sessionOf(recovered.value.json, `GET /sessions/requests/${requestKey}`);
-			if (!first.ok) return fail(cancelled ? "aborted" : "phone", `${why}; and its recovery answered no session: ${first.error.message}; ${kept}`);
+			if (!first.ok) return fail(cancelled ? "aborted" : "vendor",`${why}; and its recovery answered no session: ${first.error.message}; ${kept}`);
 		} else if (!posted.ok) {
 			// The phone harness refused the request: nothing was made, and the key is forgotten.
 			await this.#ledger.remove(pending);
 			return posted;
 		}
-		if (first === undefined || !first.ok) return fail("phone", "POST /sessions answered no session");
+		if (first === undefined || !first.ok) return vendorFail("phone-harness","POST /sessions answered no session");
 		const id = first.value.id;
 		/** A ledger write about the phone, or the phone ended in words: a phone its ledger cannot record would bill unseen. */
 		const record = async (write: () => void | Promise<void>): Promise<Result<void>> => {
@@ -583,11 +589,11 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				// Ended at once, by the API alone: the ledger has just failed.
 				const ended = await this.#api("DELETE", `/sessions/${encodeURIComponent(id)}`);
 				const after = ended.ok || ended.error.code === "not_found" ? "the phone was ended" : `the phone ${id} could not be ended (${ended.error.message})`;
-				return fail("phone", `${error instanceof Error ? error.message : String(error)}; ${after}`);
+				return vendorFail("phone-harness",`${error instanceof Error ? error.message : String(error)}; ${after}`);
 			}
 		};
 		const named = await record(async () => {
-			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + spec.lifetimeMs) });
+			await this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline: this.#deadlineOf(first.value, from + runLifetimeMs(spec)) });
 			await this.#ledger.remove(pending);
 		});
 		if (!named.ok) return named;
@@ -612,19 +618,19 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				}
 				return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s: ${read.error.message}`);
 			}
-			if (!read.ok) return ended(read.error.code === "gone" ? "phone" : read.error.code, `the phone ${id} did not start: ${read.error.message}`);
+			if (!read.ok) return ended(read.error.code === "gone" ? "vendor" : read.error.code,`the phone ${id} did not start: ${read.error.message}`);
 			session = read.value;
 			if (session.state === "ready") break;
-			if (session.state !== "provisioning") return ended("phone", `the phone ${id} did not start: ${this.#clean(session.error ?? session.state)}`);
+			if (session.state !== "provisioning") return ended("vendor",`the phone ${id} did not start: ${this.#clean(session.error ?? session.state)}`);
 			if (this.#now() - from >= this.#readyMs) return ended("timeout", `the phone ${id} was not ready within ${this.#readyMs / 1000} s`);
 			await this.#sleep(this.#pollMs);
 		}
-		const deadline = this.#deadlineOf(session, from + spec.lifetimeMs);
+		const deadline = this.#deadlineOf(session, from + runLifetimeMs(spec));
 		const kept = await record(() => this.#ledger.put({ id, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
 		if (!kept.ok) return kept;
 		const took = this.#now() - from;
 		if (this.#now() >= Date.parse(deadline)) {
-			return ended("timeout", `the phone ${id}'s lifetime of ${spec.lifetimeMs / 1000} s ended before it was ready (it took ${Math.round(took / 100) / 10} s)`);
+			return ended("timeout", `the phone ${id}'s lifetime of ${runLifetimeMs(spec) / 1000} s ended before it was ready (it took ${Math.round(took / 100) / 10} s)`);
 		}
 		return ok({ id, name: id });
 	}
@@ -668,7 +674,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const entries = await this.#ledger.list();
 		const got = await this.#api("GET", "/sessions", signal ? { signal } : {});
 		if (!got.ok) return got;
-		if (!Array.isArray(got.value.json)) return fail("phone", `GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
+		if (!Array.isArray(got.value.json)) return vendorFail("phone-harness",`GET /sessions answered ${show(got.value.json).slice(0, 200)}, not a list`);
 		const live = new Map<string, Session>();
 		for (const one of got.value.json) {
 			const session = sessionOf(one, "GET /sessions");
@@ -736,8 +742,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return fail("refused", `network ${show(policy)}: a cloud phone's network is open, and it cannot be closed or narrowed`);
 	}
 
-	async #release(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	async #release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		if (how === "stop") return fail("unsupported", "a cloud phone has no stop: release it with delete, which ends the session");
+		if (how !== "delete") return fail("unsupported", `a cloud phone is kept for no agent (the phone harness declares no persistence), so release ${JSON.stringify(how)} is refused and the phone is left as it is: release it with delete`);
 		const entry = await this.#ledger.get(ref.id);
 		if (entry?.released !== undefined) {
 			// Released already, and the service may still be ending it: ok. Its own GET says whether it is gone, and then it is
@@ -776,7 +783,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (state === "device" && id !== undefined) return ok(id);
 			last = state ?? "not listed";
 		}
-		return fail("phone", `adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
+		return vendorFail("phone-harness",`adb connected to the phone, and the adb server still lists it as ${last}, not a device`);
 	}
 
 	async #connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
@@ -796,7 +803,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		// The vendor's shapes (OpenAPI SessionAdb): a DNS name, a port, and a code ph_ and base32 letters. Anything outside
 		// these characters is refused rather than passed to adb.
 		if (typeof host !== "string" || !/^[A-Za-z0-9.:-]+$/.test(host) || !Number.isSafeInteger(port) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(code)) {
-			return fail("phone", `the phone harness gave ${ref.id} no adb link this provider can use (a host, a port and an unlock code)`);
+			return vendorFail("phone-harness",`the phone harness gave ${ref.id} no adb link this provider can use (a host, a port and an unlock code)`);
 		}
 		// The endpoint and the code never reach an argv: the endpoint goes to the adb server over its socket, the unlock as
 		// a shell service on a socket the server bound to the phone, and every spawned adb names the phone by its transport id.
@@ -836,7 +843,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const said = connected.value.trim();
 		// adb's answer names the endpoint, so none of it is passed on: the error is the provider's own words.
 		if (!said.includes("connected") || /cannot|failed|unable/i.test(said)) {
-			return letGo(fail("phone", `adb could not reach the phone of ${ref.id}: the adb server could not connect to its adb endpoint`));
+			return letGo(vendorFail("phone-harness",`adb could not reach the phone of ${ref.id}: the adb server could not connect to its adb endpoint`));
 		}
 		const transport = await this.#transportOf(endpoint);
 		if (!transport.ok) return letGo(transport);
@@ -847,7 +854,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const asked = await onPhone("shell:echo ph-ok", id);
 		if (!asked.ok) return letGo(asked);
 		if (!asked.value.includes("ph-ok")) {
-			if (!/^locked\b/.test(asked.value.trim())) return letGo(fail("phone", `the phone of ${ref.id} answered neither ph-ok nor locked`));
+			if (!/^locked\b/.test(asked.value.trim())) return letGo(vendorFail("phone-harness",`the phone of ${ref.id} answered neither ph-ok nor locked`));
 			// The vendor's unlock is the shell command `unlock <code>`, once per connection (docs, guides/connect-adb): the
 			// shell service's own string, sent over the adb server's socket bound to the phone, so no argv holds the code.
 			// Probe 1 (2026-11-08) showed it live: "unlocked", and getprop answered after it.
@@ -859,7 +866,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (!probe.value.stdout.toString("utf8").includes("ph-ok")) {
 				// The vendor's answer ("wrong code") may echo the code, more than once, or an endpoint: all are taken out.
 				const words = redactWords(unlocked.value.trim().split("\n")[0].replaceAll(code, "[code]"));
-				return letGo(fail("phone", /\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
+				return letGo(vendorFail("phone-harness",/\bunlocked\b/.test(unlocked.value) ? `the phone of ${ref.id} stayed locked after its unlock code` : `the phone of ${ref.id} refused its unlock code: ${words}`));
 			}
 		}
 		const client = new AdbClient(id, adb, release, this.#sleep, this.#now);
@@ -882,7 +889,7 @@ const carries = (labels: Record<string, string>, wanted: Record<string, string>)
 
 function sessionOf(json: unknown, where: string): Result<Session> {
 	const s = json as Session | undefined;
-	if (typeof s !== "object" || s === null || typeof s.id !== "string" || typeof s.state !== "string") return fail("phone", `${where} answered ${show(json).slice(0, 200)}, not a session`);
+	if (typeof s !== "object" || s === null || typeof s.id !== "string" || typeof s.state !== "string") return vendorFail("phone-harness",`${where} answered ${show(json).slice(0, 200)}, not a session`);
 	return ok(s);
 }
 
@@ -958,22 +965,26 @@ class AdbClient implements ComputerClient {
 		readonly now: () => number,
 	) {}
 
-	/** What the phone is: its ABI, its screen's size and density; then the hello it answers. */
+	/** What the phone is: its ABI, its Android release, its screen's size and density; then the hello it answers. */
 	async open(version: string): Promise<Result<HelloResult>> {
 		const abi = await this.#shell("getprop ro.product.cpu.abi");
 		if (!abi.ok) return abi;
+		const release = await this.#shell("getprop ro.build.version.release");
+		if (!release.ok) return release;
 		const size = await this.#shell("wm size");
 		if (!size.ok) return size;
 		const density = await this.#shell("wm density");
 		if (!density.ok) return density;
 		const sizes = [...size.value.matchAll(/(\d+)x(\d+)/g)];
 		const last = sizes.at(-1);
-		if (!last) return fail("phone", `the phone (adb transport ${this.transport}) did not say its screen's size: ${size.value.trim().slice(0, 100)}`);
+		if (!last) return vendorFail("phone-harness",`the phone (adb transport ${this.transport}) did not say its screen's size: ${size.value.trim().slice(0, 100)}`);
 		this.#size = [Number(last[1]), Number(last[2])];
 		const dpi = [...density.value.matchAll(/(\d+)/g)].at(-1);
 		this.#scale = dpi ? Number(dpi[1]) / 160 : 1;
 		const reported = abi.value.trim();
-		this.#hello = { version, os: "android", kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
+		// An empty answer says no release: the hello then carries none.
+		const osVersion = release.value.trim();
+		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", ...(osVersion ? { osVersion } : {}), kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
 		return ok(this.#hello);
 	}
 
@@ -1003,7 +1014,7 @@ class AdbClient implements ComputerClient {
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) {
 			const why = (ran.value.stderr.trim() || ran.value.stdout.toString("utf8").trim()).split("\n")[0] || `exit code ${ran.value.exitCode}`;
-			return fail("phone", `${command.split(" ").slice(0, 2).join(" ")} on the phone failed: ${redactWords(why)}`);
+			return vendorFail("phone-harness",`${command.split(" ").slice(0, 2).join(" ")} on the phone failed: ${redactWords(why)}`);
 		}
 		return ok(ran.value.stdout.toString("utf8"));
 	}
@@ -1011,7 +1022,7 @@ class AdbClient implements ComputerClient {
 	async #execOut(command: string, signal?: AbortSignal): Promise<Result<Buffer>> {
 		const ran = await this.adb(["exec-out", command], { timeoutMs: 60_000, signal: this.#either(signal) });
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0) return fail("phone", `${command.split(" ")[0]} on the phone failed: ${redactWords(ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`)}`);
+		if (ran.value.exitCode !== 0) return vendorFail("phone-harness",`${command.split(" ")[0]} on the phone failed: ${redactWords(ran.value.stderr.trim().split("\n")[0] || `exit code ${ran.value.exitCode}`)}`);
 		return ok(ran.value.stdout);
 	}
 
@@ -1071,7 +1082,9 @@ class AdbClient implements ComputerClient {
 			}
 			rect = r as Rect;
 		}
-		const bytes = encodePng(rgba, width, rect);
+		const bytes = await encodePng(rgba, width, rect);
+		// close() may have run while the frame was deflating: hold nothing for a closed connection.
+		if (this.#closed) return fail("gone", "the connection to the phone is closed");
 		const id = randomBytes(6).toString("hex");
 		this.#held = { id, bytes };
 		const data = bytes.subarray(0, MAX_CHUNK_BYTES);
@@ -1116,9 +1129,13 @@ class AdbClient implements ComputerClient {
 				const frameWidth = Math.min(width, maxWidth as number);
 				const frameHeight = Math.max(1, Math.floor((height * frameWidth) / width));
 				const pixels = frameWidth === width ? rgba : scaleRgba(rgba, width, height, frameWidth, frameHeight);
+				// Encoded before the frame is published: a watch that reads the seq while this one encodes never gets an older
+				// frame under the newer seq.
+				const bytes = await encodePng(pixels, frameWidth, [0, 0, frameWidth, frameHeight]);
+				if (signal.aborted || this.#closed) return aborted();
 				watch.seq += 1;
 				watch.digest = digest;
-				watch.frame = { bytes: encodePng(pixels, frameWidth, [0, 0, frameWidth, frameHeight]), frameWidth, frameHeight, width, height };
+				watch.frame = { bytes, frameWidth, frameHeight, width, height };
 				return ok(this.#frameAnswer());
 			}
 			const left = deadline - this.now();
@@ -1334,7 +1351,7 @@ class AdbClient implements ComputerClient {
 		// package) on top, and a plain start resumes it there. A cleared task starts the app itself (phone probe 2).
 		const started = await this.#shell(`am start -W --activity-clear-task -n ${component}`);
 		if (!started.ok) return started;
-		if (/Error:|Exception/.test(started.value)) return refuse("phone", `am start of ${component}: ${redactWords(started.value.trim().split("\n").at(-1) ?? "")}`);
+		if (/Error:|Exception/.test(started.value)) return vendorFail("phone-harness",`am start of ${component}: ${redactWords(started.value.trim().split("\n").at(-1) ?? "")}`);
 		return ok({});
 	}
 
@@ -1363,13 +1380,13 @@ function pointsOf(action: InputAction): Array<[number, number]> {
 
 /** The frame `adb exec-out screencap` gives: a header (width, height, format, and a color space on newer Androids), then the pixels. */
 export function decodeScreencap(raw: Buffer): Result<{ width: number; height: number; rgba: Buffer }> {
-	if (raw.length < 12) return fail("phone", `screencap gave ${raw.length} bytes, not a frame`);
+	if (raw.length < 12) return vendorFail("phone-harness",`screencap gave ${raw.length} bytes, not a frame`);
 	const width = raw.readUInt32LE(0);
 	const height = raw.readUInt32LE(4);
 	const format = raw.readUInt32LE(8);
 	const pixels = width * height * 4;
 	const header = raw.length - pixels;
-	if (!(width > 0 && height > 0 && (header === 12 || header === 16))) return fail("phone", `screencap gave ${raw.length} bytes for a ${width}x${height} frame`);
+	if (!(width > 0 && height > 0 && (header === 12 || header === 16))) return vendorFail("phone-harness",`screencap gave ${raw.length} bytes for a ${width}x${height} frame`);
 	const rgba = Buffer.from(raw.subarray(header));
 	// 1 is RGBA_8888, 2 RGBX_8888 (alpha unset), 5 BGRA_8888.
 	if (format === 2) for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
@@ -1394,8 +1411,12 @@ function scaleRgba(rgba: Buffer, width: number, height: number, toWidth: number,
 	return out;
 }
 
-/** An 8-bit RGBA PNG, non-interlaced, of rect of a width-wide RGBA frame. */
-export function encodePng(rgba: Buffer, width: number, [x, y, w, h]: Rect): Buffer {
+/** zlib's deflate on its thread pool: a screen's deflate never holds this process's event loop. */
+const deflateAsync = promisify(deflate);
+
+/** An 8-bit RGBA PNG, non-interlaced, of rect of a width-wide RGBA frame. The rows are deflated off the event loop: a
+ *  1080x2400 screen took about 170 ms, every request of the server this harness runs in waiting on it. */
+export async function encodePng(rgba: Buffer, width: number, [x, y, w, h]: Rect): Promise<Buffer> {
 	const rows = Buffer.alloc((w * 4 + 1) * h);
 	for (let row = 0; row < h; row++) {
 		const from = ((y + row) * width + x) * 4;
@@ -1413,7 +1434,7 @@ export function encodePng(rgba: Buffer, width: number, [x, y, w, h]: Rect): Buff
 	ihdr.writeUInt32BE(w, 0);
 	ihdr.writeUInt32BE(h, 4);
 	ihdr.set([8, 6, 0, 0, 0], 8);
-	return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+	return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", await deflateAsync(rows)), chunk("IEND", Buffer.alloc(0))]);
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
@@ -1464,7 +1485,7 @@ export function parseUiTree(xml: string, [width, height]: [number, number]): Res
 		(stack.at(-1)?.children ?? top).push(node);
 		if (!selfClosing) stack.push(node);
 	}
-	if (top.length === 0) return fail("phone", "uiautomator's dump held no node");
+	if (top.length === 0) return vendorFail("phone-harness","uiautomator's dump held no node");
 	if (top.length === 1) return ok({ root: top[0], nodes, truncated });
 	return ok({ root: { role: "hierarchy", bounds: [0, 0, width, height], enabled: true, children: top }, nodes: nodes + 1, truncated });
 }

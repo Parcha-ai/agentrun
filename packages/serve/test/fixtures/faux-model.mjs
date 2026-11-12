@@ -38,6 +38,9 @@ export default function reply(context, faux) {
   return faux.signal && answer instanceof Promise ? Promise.race([answer, abortedOf(faux)]) : answer;
 }
 
+/** The report a format node writes ("Write the card report"): a table, then its Flagged and Grand total lines. */
+export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2 | 1663.10 |\n\nFlagged: Best Buy\nGrand total: $1663.10";
+
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
@@ -51,11 +54,17 @@ function replyTo(context, faux) {
   const read = first.includes("Read the example page");
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then its answer as the tool said it.
   const learned = /Use the learned workflow (\S+) on (.+?)\.$/.exec(first);
+  // "Reply with the learned workflow <name>'s output on <question>.": the run's learned_workflow, then its output as the
+  // tool gave it, and nothing else (a caller that keeps the answer as the workflow wrote it).
+  const verbatim = /Reply with the learned workflow (\S+)'s output on (.+?)\.$/.exec(first);
+  if (verbatim && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
+    return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: verbatim[1], input: { question: verbatim[2] } }), { stopReason: "toolUse" }) : faux.message(textOf(context.messages.at(-1)));
+  }
   if (learned && !context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) && !context.tools?.some((tool) => tool.name === "submit")) {
     return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
-  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  // learned workflow's: the host runner, workflow/host-session.ts, its tools in the context).
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
@@ -78,6 +87,14 @@ function replyTo(context, faux) {
     if (canary.includes("Submit the held key")) {
       if (answered) return faux.message("Submitted.");
       return faux.message(faux.toolCall("submit", { note: `kept ${CUT_KEY} here`, n: 7 }), { stopReason: "toolUse" });
+    }
+    // A node that writes a report in a fixed format (a learned workflow's last node, as a skill's format asks it).
+    if (canary.includes("Write the card report")) {
+      if (answered) return faux.message("Submitted.");
+      // In a session of its own, submit takes the DSL's envelope: the record under `value`.
+      const params = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit")?.parameters;
+      const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1);
+      return faux.message(faux.toolCall("submit", enveloped ? { value: { report: REPORT } } : { report: REPORT }), { stopReason: "toolUse" });
     }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
@@ -129,7 +146,7 @@ function replyTo(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    // In a session of its own (the host runner, workflow/host-session.ts), submit takes the DSL's envelope: the record under `value`.
     const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
     const params = submitTool?.parameters;
     const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));
@@ -176,6 +193,12 @@ function replyTo(context, faux) {
     process.getBuiltinModule("node:fs").writeFileSync(record[1], first);
     return faux.message("Recorded.");
   }
+  // Answers in words, then the given JSON as its last fenced json block: an agent's structured answer
+  // (agent-output-schema.test.mjs). Read off the message's first line; what a trigger appends after it is quoted back
+  // first, as "Handed: ...", so a test reads what the run was handed.
+  const [line, ...rest] = first.split("\n");
+  const structured = /^Answer with this json: (.+)$/.exec(line ?? "");
+  if (structured) return faux.message(`Here is the answer.${rest.join("\n").trim() ? `\n\nHanded: ${rest.join("\n").trim()}` : ""}\n\n\`\`\`json\n${structured[1]}\n\`\`\``);
   // Answers with a console link and the key in a file, in a URL's query (answer-urls.test.mjs).
   const linked = /^Answer with the console link and the key in (\S+)$/.exec(first);
   if (linked) {
@@ -276,6 +299,14 @@ function replyTo(context, faux) {
     if (users.length === 1) return faux.message("Report written.");
     if (users.length === 2) return results === 0 ? faux.message([faux.text("Let me reread the report first."), faux.toolCall("read", { path: "report.md" })], { stopReason: "toolUse" }) : slow(faux, 60_000, "Reread it.");
     return faux.message("");
+  }
+  // Holds its first answer until the first file exists, and the answer to the person's first message until the second
+  // does: a later message lands while that second turn works.
+  const twice = /Hold twice, until (\S+) and then (\S+)\./.exec(first);
+  if (twice) {
+    if (users.length === 1) return untilExists(twice[1]).then(() => faux.message("Answer 1."));
+    if (users.length === 2) return untilExists(twice[2]).then(() => faux.message("Answer 2."));
+    return faux.message("Answer 3.");
   }
   // Holds its first answer until the file exists; the person's follow-up, placed at that answer's end with it, is
   // answered in a run of its own.

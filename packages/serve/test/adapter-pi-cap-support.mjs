@@ -30,8 +30,8 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  runCap's options), until the run is not running or `ms` passes. `asked`: each request the cap judged, with its answer;
  *  `sent`: each body the provider got. */
 export async function capRun(t, options) {
-  strictOptions("capRun", options, ["script", "runCap", "cap", "specOf", "during", "journalOf", "ms"]);
-  const { script, runCap, cap: parkCap, specOf, during, journalOf, ms = 20_000 } = options;
+  strictOptions("capRun", options, ["script", "runCap", "cap", "specOf", "during", "journalOf", "endOfRun", "ms"]);
+  const { script, runCap, cap: parkCap, specOf, during, journalOf, endOfRun, ms = 20_000 } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-cap-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -50,12 +50,14 @@ export async function capRun(t, options) {
   const spec = specOf ? specOf(sent) : piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
   const loop = createAdapterLoop(async (claim, run) => ({
     ...(await spec(claim, run)),
+    // `endOfRun`: the run's end-of-run step (LoopDeps.endOfRun), asked of the run's agent.
+    ...(endOfRun ? { agentId: "agent-1" } : {}),
     ...(parkCap ? { cap: parkCap } : {}),
     // The run's one cap, built by the loop from these options: each request it judged is recorded with its answer.
     runCap: { ...runCap, judged: (request, answer) => void asked.push({ request, answer }) },
   }), { restartLimit: MAX_RESTARTS });
   // `journalOf(journal)`: the claim's journal as the loop sees it (a test's commit hook), else the store's own.
-  const createLoop = journalOf ? (deps) => loop({ ...deps, journal: (claim) => journalOf(deps.journal(claim)) }) : loop;
+  const createLoop = (deps) => loop({ ...deps, ...(journalOf ? { journal: (claim) => journalOf(deps.journal(claim)) } : {}), ...(endOfRun ? { endOfRun } : {}) });
   runner = startRunner({ store, createLoop, name: "runner-a", ...STEADY });
   // `during(server)`: what a test does while the run runs (a person's stop once a request is out), awaited before the read.
   const acting = during ? during(server) : undefined;
@@ -75,7 +77,8 @@ export async function capRun(t, options) {
 /** The run's cap as a loop spec carries it (what E2 fills from the run's launch): its figure and the kernel's park. */
 export const specCap = (capUsd) => ({ capUsd, park: (refusal) => cap.parkOf(refusal, capUsd) });
 
-/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch. */
+/** The data of each root entry of `kind` in run-1's journal, read under a reader's claim at the run's epoch; with no
+ *  `kind`, every root entry whole (for the run's Timeline). */
 export async function rootEntries(store, kind) {
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { createModels } = await import("@earendil-works/pi-ai/models");
@@ -87,7 +90,7 @@ export async function rootEntries(store, kind) {
     const out = [];
     for (let cursor; ; ) {
       const page = await root.entries({ order: "ascending" }, 500, cursor, ctx);
-      for (const entry of page.items) if (entry.kind === kind) out.push(entry.data);
+      for (const entry of page.items) if (kind === undefined) out.push(entry); else if (entry.kind === kind) out.push(entry.data);
       if (page.next === undefined) break;
       cursor = page.next;
     }

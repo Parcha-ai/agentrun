@@ -3,18 +3,17 @@
 // agent's own (definition.tool_settings), capabilities' tools (the one catalog) and an agent's projection of it (GET
 // /v2/agents/{id}'s tools), each answer as the served document says.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, TOOL_SETTINGS_KEY, ToolSettings } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TABLE_TOOLS, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, answerFlow, flowAgent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, launchOf, scratch, serve, withEnv } from "./support.mjs";
 import { blockersOf } from "../dist/runnable.js";
-import { SETTINGS_UNREAD } from "../dist/tool-gate.js";
 
 const base = { gateway: false, parallelKey: false };
 
@@ -290,29 +289,13 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   assert.equal((await again.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "web_search").resolves.pi, "exa-keyless");
 });
 
-test("a kept plane at a later launch: as it was, but Parallel with its key gone is unavailable, never another provider; a settings file it cannot read says so and gives the defaults", async (t) => {
+test("a kept plane at a later launch: as it was, but Parallel with its key gone is unavailable, never another provider", () => {
   const plane = { web_search: "native", web_fetch: "parallel", model: "anthropic/claude-sonnet-4-5" };
   assert.deepEqual(recheckPlane(plane, { PARALLEL_API_KEY: "not-a-secret" }), plane);
   assert.deepEqual(recheckPlane(plane, {}), { ...plane, web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY" });
-  const dir = await scratch(t);
-  const said = [];
-  assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, "no file: the defaults, nothing said");
-  // A file that does not read gives the defaults, its map marked unread (SETTINGS_UNREAD: approvals never lifts no ask
-  // over it); a file that reads with an entry dropped gives the defaults for that entry, unmarked.
-  await writeFile(join(dir, "tool-settings.json"), "{not json");
-  const unread = new ToolSettings(dir, (line) => said.push(line)).get();
-  assert.deepEqual(Object.keys(unread), [], "not JSON: the defaults");
-  assert.equal(unread[SETTINGS_UNREAD], true, "not JSON: marked unread");
-  await writeFile(join(dir, "tool-settings.json"), JSON.stringify({ web_search: { provider: "bing" } }));
-  assert.deepEqual(new ToolSettings(dir, (line) => said.push(line)).get(), {}, "an entry dropped: the defaults, unmarked (the file reads)");
-  assert.equal(said.length, 2);
-  assert.match(said[0], /tool-settings\.json does not read as JSON; every tool takes its defaults until a PUT/);
-  assert.match(said[1], /tool-settings\.json: web_search\.provider not_an_option; that entry is dropped/);
-  assert.ok(!said.join("").includes("bing"), "no value is said");
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
+test("a workflow's model node naming web_search, its revision listing no tools, resolves and runs: on auto, to Parallel where the server holds its key; with keyless Exa picked, to Exa; an empty setting is no setting", async (t) => {
   withEnv(t, { PARALLEL_API_KEY: "not-a-secret" }, ["AGENT_MODEL", "AGENT_MODEL_BASE_URL"]);
   const { api, data } = await serve(t);
   const flow = answerFlow();
@@ -320,11 +303,11 @@ test.skip("a workflow's model node naming web_search, its revision listing no to
   const made = await api("POST", "/agents", flowAgent("finder", flow, { tool_settings: { web_search: {} } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.deepEqual([made.body.definition.tools, made.body.definition.tool_settings], [[], undefined], "nothing listed; an empty setting is none");
-  const planeOfRun = async (id) => JSON.parse(await readFile(join(runDir(data, id), "serve.json"), "utf8")).tool_plane;
+  const planeOfRun = async (id) => launchOf(data, id)?.plane;
   const ran = async () => {
     const started = await api("POST", "/agents/finder/runs", { input: { question: "What is six times seven?" } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    // Saved before its process started, so it is there when the start answers; the run then keeps it.
+    // Saved with the run, so it is there when the start answers; the run then keeps it.
     const pinned = await planeOfRun(started.body.run_id);
     await follow(api, started.body.run_id, ["completed"]);
     assert.deepEqual(await planeOfRun(started.body.run_id), pinned, "kept as it was saved before the launch");
@@ -335,8 +318,7 @@ test.skip("a workflow's model node naming web_search, its revision listing no to
   assert.deepEqual(await ran(), { web_search: "exa-keyless" }, "keyless Exa picked: keyless, the key held or not");
 });
 
-// SKIP (follow-up #2078): a run does not keep the tools its first launch resolved on the runner
-test.skip("a run keeps the tools its first launch resolved: a PUT between its launches changes the next run's, never its own", { timeout: 90_000 }, async (t) => {
+test("a run keeps the tools its first launch resolved: a PUT between its launches changes the next run's, never its own", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
   const files = { parallel: join(dir, "parallel.jsonl"), web: join(dir, "dialled.txt") };
   withEnv(t, { PARALLEL_API_KEY: CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: files.parallel, FAUX_WEB_LOG: files.web }, ["AGENT_MODEL", "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);

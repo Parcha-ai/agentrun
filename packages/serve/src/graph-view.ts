@@ -2,25 +2,26 @@
 // of the revision's workflow; each node's state is `nodeStatus` over the journal's frame (and, once the run ended,
 // `readWorkflowRun`'s, with the task's end); a map's items, a route's branch taken and the interrupted decisions come
 // from the frame; the decisions are the receipts, each joined to its graph node by its execution path (`graphNodeOf`);
-// the calls and the nodes' times are the run process's node log (pause.ts).
+// the calls are the node log the runner keeps on the run's journal (KINDS.nodeEffect, each call's start and end).
 //
-// Where the frame and the receipts come from: while the run goes its process holds its store exclusively, so they are
-// the process's live view (pause.ts `live.json`), and the store is never opened (an open racing the process's own would
-// fail it). Once the run ended, the store.
+// Where the frame and the receipts come from: while the run goes, its live view (pause.ts `live.json`); once the run
+// ended, the store.
 import type { Context } from "@earendil-works/chord";
-import { llmAnswers, type NodeLine, readLiveView, readNodeLog } from "./pause.js";
+import { llmAnswers, type NodeLine, readLiveView } from "./pause.js";
+import { KINDS } from "./runner/journal-kinds.js";
 import type { Store } from "./store/store.js";
 
 export type GraphNodeStatus = "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
 type Item = { index: number; status: GraphNodeStatus; executionPath: string; label?: string; branches?: Record<string, string> };
-type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string; branch?: string; items?: Item[] };
+type NodeView = { status: GraphNodeStatus; startedAt?: string; endedAt?: string; branch?: string; items?: Item[]; model?: string; tier?: string };
+/** The model nodes (graph.ts's model kinds): each runs on its tier's model, else the run's own. */
+const MODEL_KINDS = new Set(["agent", "decide", "extract", "report"]);
 
 export type GraphInput = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
   /** The run has ended: a node it never reached is `not_run`, not `pending`, and its store is read, lock-free. */
   ended: boolean;
   workflow: unknown;
-  storeFile: string;
   /** The run's directory: its node log is there. */
   root: string;
   /** The run's input: what a map's items are read from before its state has them. */
@@ -29,10 +30,9 @@ export type GraphInput = {
   modelCost: number | null;
   /** How many of its llm calls' answers its node log held when its rows were last read: their cost is in `modelCost`. */
   llmRead?: number;
-  /** The one store and a context: when both are given, an ended run's view, pin and decisions read from A's journal
-   *  (store.readJournal) instead of its per-run store file. The cut passes them; without them the file path is read. */
-  store?: Store;
-  context?: Context;
+  /** The one store and a context: an ended run's view, pin and decisions are read from its journal (store.readJournal). */
+  store: Store;
+  context: Context;
 };
 
 type Frame = { done?: string[]; states?: Record<string, unknown>; inputs?: Record<string, unknown>; steps?: Record<string, unknown>; routes?: Record<string, { branch?: string }>; decisions?: Record<string, Record<string, { status?: string }>>; failures?: Record<string, unknown>; partial?: { path?: string } };
@@ -53,20 +53,16 @@ const labelOf = (item: unknown): string | undefined => {
 
 
 export async function runGraph(given: GraphInput) {
-  const [{ graphNodeOf, nodeStatus, workflowGraph }, { readWorkflowRun }, { durableDecisions, readJournal }] = await Promise.all([
-    import("@parcha/agentrun-dsl/graph"),
-    import("@parcha/pi-durable-agent/workflow"),
-    import("@parcha/agentrun-pi/durable"),
-  ]);
+  const { graphNodeOf, nodeStatus, workflowGraph } = await import("@parcha/agentrun-dsl/graph");
   const { id } = given.run;
   const graph = workflowGraph(given.workflow);
   let view: { status: Record<string, string>; escalatedAt?: { path: string }; escalation?: { kind: string | null } };
   let pin: Frame;
   let receipts: Array<Record<string, unknown>>;
   let readAt = new Date().toISOString();
-  if (given.ended && given.store && given.context) {
-    // From the one store's journal (store.readJournal), no file: the run's view and pin as readWorkflowRun reads them over
-    // A, and its decisions as receipts. The same answers as the file path; the cut passes the store and a context.
+  if (given.ended) {
+    // From the one store's journal (store.readJournal): the run's view and pin as readWorkflowRun reads them, and its
+    // decisions as receipts.
     const { store, context } = given;
     const [{ decisionsOverStore }, { readWorkflowRunOver }] = await Promise.all([import("./store-reads/decisions.js"), import("./store-reads/workflow.js")]);
     // The one reader of a workflow run's view over A (node status, outcome, escalation): the workflow-loop builder's.
@@ -81,11 +77,6 @@ export async function runGraph(given: GraphInput) {
       await reads.close(context);
     }
     receipts = await decisionsOverStore(store, id, context);
-  } else if (given.ended) {
-    // Lock-free, as every server read of a run's database (run-db.ts): nothing made beside it, never a lock to wait on.
-    view = await readWorkflowRun({ runId: id, storePath: given.storeFile, revision: { body: { workflow: given.workflow } } as never }, { unlocked: true });
-    pin = ((readJournal(given.storeFile, id, { unlocked: true })?.state as { pin?: Frame } | undefined)?.pin) ?? {};
-    receipts = durableDecisions(given.storeFile, { unlocked: true });
   } else {
     const live = await readLiveView(given.root);
     pin = (live?.pin as Frame | undefined) ?? {};
@@ -93,7 +84,10 @@ export async function runGraph(given: GraphInput) {
     if (live?.at) readAt = live.at;
     view = { status: nodeStatus(graph, { pin: pin as never, result: null }) as Record<string, string> };
   }
-  const lines = await readNodeLog(given.root);
+  // The call nodes' effects, as the runner logged each one's start and end on the run's journal (KINDS.nodeEffect).
+  const { runEntries } = await import("./store-reads/journal.js");
+  const entries = await runEntries(given.store, id, given.context);
+  const lines = entries.filter((entry) => entry.kind === KINDS.nodeEffect).map((entry) => entry.data as unknown as NodeLine);
   const nodeAt = (path: unknown) => (typeof path === "string" ? (graphNodeOf(graph, path)?.path ?? (graph.nodes.some((n) => n.path === path) ? path : undefined)) : undefined);
   const kinds = new Map(graph.nodes.map((node) => [node.path, node.kind]));
 
@@ -235,6 +229,21 @@ export async function runGraph(given: GraphInput) {
   const calls = llmAnswers(lines).slice(given.llmRead ?? 0).map((line) => (isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null));
   const costs: Array<number | null> = [...decisions.map((d) => d.cost_usd), ...calls, given.modelCost];
   const cost = costs.some((c) => c === null) ? null : Math.round((costs as number[]).reduce((a, b) => a + b, 0) * 1e8) / 1e8;
+  // Each model node's model: what its own execution ran on, as the runner kept it before running it (KINDS.nodeModel, by
+  // execution path), with the tier it asked for; a node a map runs once per item reads its newest execution's. A resumed
+  // claim keeps its own executions', so it never rewrites what an earlier node ran on. A decision node's model is its
+  // provider's, from its newest receipt. Any other node has none.
+  for (const entry of entries) {
+    const data = (entry.data ?? {}) as { path?: unknown; tier?: unknown; model?: unknown };
+    if (entry.kind !== KINDS.nodeModel || typeof data.model !== "string") continue;
+    const path = nodeAt(data.path);
+    const own = path ? nodes[path] : undefined;
+    if (!path || !own || !MODEL_KINDS.has(kinds.get(path) ?? "")) continue;
+    own.model = data.model;
+    if (typeof data.tier === "string") own.tier = data.tier;
+    else delete own.tier;
+  }
+  for (const decision of decisions) if (typeof decision.node === "string" && typeof decision.model === "string" && nodes[decision.node]) nodes[decision.node]!.model = decision.model;
   const startedMs = Date.parse(given.run.startedAt);
   const endMs = given.run.endedAt ? Date.parse(given.run.endedAt) : Date.now();
   return {

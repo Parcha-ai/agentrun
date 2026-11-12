@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, capWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, span, utcWhen, wallOf, whenWords } from "./schedules";
+import { bodyOf, capWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf } from "./schedules";
 import type { Firing } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -16,17 +16,76 @@ const firing = (over: Partial<Firing>): Firing => ({ key: "fir_1", by: "schedule
 beforeEach(() => { vi.stubEnv("TZ", "UTC"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-describe("a schedule's when, in words", () => {
-  it("names a cron line and its zone, one time in the viewer's own zone as every console time, and an interval in the largest whole unit", () => {
-    // A cron line in words (cronstrue, 24-hour), its zone after it; the raw line is the page's title, not its words.
-    expect(whenWords({ kind: "schedule", cron: "30 1 * * *", timezone: "America/Los_Angeles" })).toBe("At 01:30 · America/Los_Angeles");
-    expect(whenWords({ kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" })).toBe("At 08:00, only on Monday · UTC");
+// A schedule's whole line, in the viewer's time with the zone said once: the schedule's own time and zone in parentheses
+// when its zone is another, and its next time with its day and zone.
+describe("a schedule's line", () => {
+  const cron = (line: string, timezone: string): Schedule["source"] => ({ kind: "schedule", cron: line, timezone });
+  const NY = { zone: "America/New_York" };
+
+  it("reads a UTC schedule in a New York viewer's time, with its own time in parentheses (the QA case)", () => {
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), "2026-11-16T08:00:00Z", NY)).toBe("At 3:00 AM your time (08:00 UTC), only on Monday · next Mon Nov 16, 3:00 AM EST");
+    // The viewer's zone is the browser's when none is given.
+    vi.stubEnv("TZ", "America/New_York");
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), "2026-11-16T08:00:00Z")).toBe("At 3:00 AM your time (08:00 UTC), only on Monday · next Mon Nov 16, 3:00 AM EST");
+  });
+
+  it("reads a Europe/Madrid schedule in a Los Angeles viewer's time, the day before when its days are named", () => {
+    const LA = { zone: "America/Los_Angeles" };
+    expect(scheduleLine(cron("0 18 * * *", "Europe/Madrid"), "2026-11-12T17:00:00Z", LA)).toBe("At 9:00 AM your time (18:00 Europe/Madrid) · next Thu Nov 12, 9:00 AM PST");
+    expect(scheduleLine(cron("30 7 * * 1-5", "Europe/Madrid"), "2026-11-12T06:30:00Z", LA)).toBe("At 10:30 PM your time the day before (07:30 Europe/Madrid), Monday through Friday · next Wed Nov 11, 10:30 PM PST");
+    expect(scheduleLine(cron("0 20 * * 1", "UTC"), "2026-11-16T20:00:00Z", { zone: "Asia/Tokyo" })).toBe("At 5:00 AM your time the next day (20:00 UTC), only on Monday · next Tue Nov 17, 5:00 AM GMT+9");
+  });
+
+  it("says no parentheses when the schedule is in the viewer's own zone", () => {
+    const MADRID = { zone: "Europe/Madrid" };
+    expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-11-16T07:00:00Z", MADRID)).toBe("At 8:00 AM your time, only on Monday · next Mon Nov 16, 8:00 AM CET");
+    expect(scheduleLine(cron("0 9-17 * * 1-5", "Europe/Madrid"), "2026-11-12T08:00:00Z", MADRID)).toBe("Every hour, between 09:00 and 17:00, Monday through Friday · next Thu Nov 12, 9:00 AM CET");
+  });
+
+  it("reads the hour a clock change gives on each side of it, with the zone's name then", () => {
+    // US: summer time starts Mar 8 and ends Nov 1, 2026.
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), "2026-03-02T08:00:00Z", NY)).toBe("At 3:00 AM your time (08:00 UTC), only on Monday · next Mon Mar 2, 3:00 AM EST");
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), "2026-03-09T08:00:00Z", NY)).toBe("At 4:00 AM your time (08:00 UTC), only on Monday · next Mon Mar 9, 4:00 AM EDT");
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), "2026-10-26T08:00:00Z", NY)).toBe("At 4:00 AM your time (08:00 UTC), only on Monday · next Mon Oct 26, 4:00 AM EDT");
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), "2026-11-02T08:00:00Z", NY)).toBe("At 3:00 AM your time (08:00 UTC), only on Monday · next Mon Nov 2, 3:00 AM EST");
+    // Europe: summer time ends Oct 25, 2026, a week before the US's.
+    const MADRID = { zone: "Europe/Madrid" };
+    expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-10-19T06:00:00Z", MADRID)).toBe("At 8:00 AM your time, only on Monday · next Mon Oct 19, 8:00 AM CEST");
+    expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-10-26T07:00:00Z", MADRID)).toBe("At 8:00 AM your time, only on Monday · next Mon Oct 26, 8:00 AM CET");
+    expect(scheduleLine(cron("0 8 * * 1", "Europe/Madrid"), "2026-10-26T07:00:00Z", NY)).toBe("At 3:00 AM your time (08:00 Europe/Madrid), only on Monday · next Mon Oct 26, 3:00 AM EDT");
+    // An hour its own zone's clock change skips: 02:30 does not exist in Los Angeles on Mar 8, 2026, and the server runs
+    // it at 3:00 AM PDT (10:00Z). Both clocks read the server's instant, never a rebuilt 09:30Z.
+    const LA = { zone: "America/Los_Angeles" };
+    expect(scheduleLine(cron("30 2 * * *", "America/Los_Angeles"), "2026-03-08T10:00:00Z", LA)).toBe("At 3:00 AM your time · next Sun Mar 8, 3:00 AM PDT");
+    expect(scheduleLine(cron("30 2 * * *", "America/Los_Angeles"), "2026-03-08T10:00:00Z", NY)).toBe("At 6:00 AM your time (02:30 America/Los_Angeles) · next Sun Mar 8, 6:00 AM EDT");
+    // An hour it repeats: 01:30 in Los Angeles on Nov 1, 2026 is 08:30Z (PDT) and again 09:30Z (PST); the pass the server
+    // gives is the one both clocks say.
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T08:30:00Z", LA)).toBe("At 1:30 AM your time · next Sun Nov 1, 1:30 AM PDT");
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T09:30:00Z", LA)).toBe("At 1:30 AM your time · next Sun Nov 1, 1:30 AM PST");
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T08:30:00Z", NY)).toBe("At 3:30 AM your time (01:30 America/Los_Angeles) · next Sun Nov 1, 3:30 AM EST");
+    expect(scheduleLine(cron("30 1 * * *", "America/Los_Angeles"), "2026-11-01T09:30:00Z", NY)).toBe("At 4:30 AM your time (01:30 America/Los_Angeles) · next Sun Nov 1, 4:30 AM EST");
+    // With no next time, the time is today's.
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), null, { ...NY, now: Date.parse("2026-07-01T00:00:00Z") })).toBe("At 4:00 AM your time (08:00 UTC), only on Monday · no next time");
+    expect(scheduleLine(cron("0 8 * * 1", "UTC"), null, { ...NY, now: Date.parse("2026-12-01T00:00:00Z") })).toBe("At 3:00 AM your time (08:00 UTC), only on Monday · no next time");
+  });
+
+  it("keeps the words of a line with more than one time, its zone said once", () => {
+    expect(scheduleLine(cron("*/15 * * * *", "UTC"), "2026-11-11T13:15:00Z", NY)).toBe("Every 15 minutes (UTC) · next Wed Nov 11, 8:15 AM EST");
+    expect(scheduleLine(cron("0 9,17 * * *", "UTC"), "2026-11-11T17:00:00Z", NY)).toBe("At 09:00 and 17:00 (UTC) · next Wed Nov 11, 12:00 PM EST");
+    expect(scheduleLine({ kind: "schedule", every_s: 900, start_at: "2026-11-04T00:00:00Z" }, "2026-11-11T13:15:00Z", NY)).toBe("Every 15 minutes · next Wed Nov 11, 8:15 AM EST");
     // One cronstrue can't read stays as it is.
-    expect(whenWords({ kind: "schedule", cron: "not a cron", timezone: "UTC" })).toBe("Cron not a cron · UTC");
-    vi.stubEnv("TZ", "America/Los_Angeles");
-    expect(whenWords({ kind: "schedule", at: "2026-11-05T09:30:00Z" })).toBe("Once, Nov 5, 1:30 AM");
-    vi.stubEnv("TZ", "UTC");
-    expect(whenWords({ kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" })).toBe("Every 5 minutes");
+    expect(scheduleLine(cron("not a cron", "UTC"), null, NY)).toBe("Cron not a cron (UTC) · no next time");
+  });
+
+  it("says a one time once, and what stands in for its next time", () => {
+    const LA = { zone: "America/Los_Angeles" };
+    const once: Schedule["source"] = { kind: "schedule", at: "2026-11-05T09:30:00Z" };
+    expect(scheduleLine(once, "2026-11-05T09:30:00Z", LA)).toBe("Once, Thu Nov 5, 1:30 AM PST");
+    expect(scheduleLine(once, null, LA)).toBe("Once, Thu Nov 5, 1:30 AM PST · no next time");
+    expect(scheduleLine(once, null, { ...LA, instead: "Done · ran Nov 5, 1:30 AM" })).toBe("Once, Thu Nov 5, 1:30 AM PST · Done · ran Nov 5, 1:30 AM");
+  });
+
+  it("says an interval in its largest whole unit", () => {
     expect([60, 90, 3600, 7200, 5400, 86400].map(span)).toEqual(["minute", "90 seconds", "hour", "2 hours", "90 minutes", "24 hours"]);
   });
 });
@@ -95,7 +154,7 @@ describe("the form's body", () => {
   });
   it("says what is missing or not a number, under the field the server would name, and checks nothing else", () => {
     expect(bodyOf(draft({ kind: "cron", cron: "", agentId: "", content: " ", maxCost: "" })).issues).toEqual({
-      "source.cron": "A cron line is needed.", "target.agent_id": "Pick an agent.", "target.input": "Say what each run is asked.", "target.max_cost_usd": "A cost cap is needed: every run a schedule starts is capped.",
+      "source.cron": "Pick when it runs.", "target.agent_id": "Pick an agent.", "target.input": "Say what each run is asked.", "target.max_cost_usd": "A cost cap is needed: every run a schedule starts is capped.",
     });
     expect(bodyOf(draft({ kind: "every", every: "five", maxCost: "two" })).issues).toEqual({ "source.every_s": "A number is needed.", "target.max_cost_usd": "A number is needed." });
     expect(bodyOf(draft({ kind: "at", at: "" })).issues).toEqual({ "source.at": "A time is needed." });
@@ -152,6 +211,6 @@ describe("a 422, by field", () => {
     });
   });
   it("is the whole message for any other refusal", () => {
-    expect(issuesOf(new ClientError(409, "store_unreadable", "triggers.json does not read"))).toEqual({ fields: {}, rest: ["store_unreadable: triggers.json does not read"] });
+    expect(issuesOf(new ClientError(409, "scope_taken", "another trigger listens there"))).toEqual({ fields: {}, rest: ["scope_taken: another trigger listens there"] });
   });
 });

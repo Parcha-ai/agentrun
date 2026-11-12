@@ -11,7 +11,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { workspaceFiles, withRecovery } from "@parcha/agentrun-dsl/recovery";
 
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
-const { createWorkflowExtension } = await import("@parcha/agentrun-pi/durable");
+const { createWorkflowExtension } = await import("../dist/workflow/task.js");
 
 /** The suite's script as a workflow: one call node per `{ call }` step (a chain when there is more than one), the suite's
  *  tool as the call's effect. `{ say }` steps are the model's, which a workflow has none of, so they are left out. A call
@@ -90,8 +90,8 @@ export function workflowSubject() {
       "crash-before-intent": crash, "crash-after-intent": crash, "crash-before-intent-process": crash, "crash-after-intent-process": crash,
       "stalled-past-lease-process": "the workflow subject runs in-process; it names no runner-process module",
       "fault-effects-once": crash, "fault-restarts-bounded": crash, "replay-safe-rerun": crash,
-      "steer-mid-turn": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
-      "approval-names-its-call": person, "approval-double-click": person, "message-never-answers": person,
+      "steer-mid-turn": person, "message-mid-turn-kept": person, "steer-origin": person, "deny-note": person, "park-on-ask": person, "cancel-parked": person,
+      "approval-names-its-call": person, "approval-double-click": person, "approval-race": person, "message-never-answers": person,
       "length-ends-failed": cut, "length-mid-run": cut,
       "end-of-run-answer": "a workflow revision does not learn (the agent definition's learning applies to agentic revisions only), so a workflow run has no end-of-run turn to answer",
     },

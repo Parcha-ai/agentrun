@@ -1,11 +1,11 @@
 // A CLI harness's run as the runner runs it (runner/cli-run-spec.ts cliRunSpecFromLaunch): a run stored with its launch,
 // claimed by a runner whose dispatch resolves a CLI harness to the kernel's adapter loop on this spec, runs its first
 // turn and ends, its answer in the run's own record (record "loop"). The adapter is the one main builds for the harness
-// (adapters.ts adapterFor: its provider on its wire, its catalog price); the run's tools are the kernel registry's hands
+// (its harness-table.ts entry's adapter: its provider on its wire, its catalog price); the run's tools are the kernel registry's hands
 // on its Workspace, its gate the store's tool settings. Every harness here is a stand-in on loopback: no network, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { DATA_ENV } = await import("../dist/server-fs.js");
 const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
-const { saveArchilSettings } = await import("../dist/archil-settings.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
@@ -49,13 +49,22 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-/** A gateway on loopback that answers OpenAI's Responses API with `text`, and records every request body. */
+/** A gateway on loopback that answers OpenAI's Responses API with `text`, and records each model request's body
+ *  (`seen`: every POST to /responses). Anything else that reaches its port is no model request: a host's loopback prober
+ *  (a keyless `GET /`, as codex-run's and opencode-run's gateways pass over) is kept apart (`stray`), answered 404, and
+ *  never counted as one. */
 async function responsesGateway(t, text) {
   const seen = [];
+  const stray = [];
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    seen.push({ path: req.url, body: JSON.parse(body || "{}") });
+    if (req.method !== "POST" || !new URL(req.url, "http://gateway").pathname.endsWith("/responses")) {
+      stray.push(`${req.method} ${req.url} (${req.headers["user-agent"] ?? "no user agent"})`);
+      res.writeHead(404).end();
+      return;
+    }
+    seen.push({ path: req.url, at: Date.now(), body: JSON.parse(body || "{}") });
     const events = [
       { type: "response.output_text.delta", item_id: "m_0", output_index: 0, content_index: 0, delta: text },
       { type: "response.completed", response: { id: "resp_0", object: "response", status: "completed", usage: { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 0 } } } },
@@ -65,7 +74,7 @@ async function responsesGateway(t, text) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { seen, origin: `http://127.0.0.1:${server.address().port}` };
+  return { seen, stray, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
 /** A run of `harness` stored with its launch (`launch`: more of its body, as the server writes it), and a runner whose
@@ -113,7 +122,7 @@ async function runOn(t, { harness, model, env: envOf, prepare, launch: more = {}
  *  working directory (the run's scratch). OpenCode on its stand-in: building its adapter starts nothing. `archil`: Mode 2
  *  over that disk fake, Archil's control plane the fake as a fetch function (`control`: no port, every request recorded). `env`: more of the
  *  runner's environment; `model`: the launch's model. */
-async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" } } = {}) {
+async function specOn(t, harness, { archil, env: more = {}, model = { provider: "openai", modelId: "gpt-5" }, prepare, deps: given = {} } = {}) {
   const control = archil ? archilControlFetch() : undefined;
   // A second net: in Mode 2, any fetch to a host other than this machine's loopback is refused and recorded (`outbound`).
   const outbound = [];
@@ -141,6 +150,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
+  await prepare?.(dir);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: ["read", "write", "bash"] } });
   const launch = { input: { content: "Write a file." }, title: "t", place: { mode: "runner" }, harness, model };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
@@ -148,6 +158,8 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
   // them. No disk token is kept: a computer's mount credential is minted per run from the account key.
   if (archil) {
     await saveArchilSettings(server, ARCHIL_SETTINGS);
+    // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
+    await storeAgentDisk(server, "agent-1", { diskId: ARCHIL_SETTINGS.diskId });
     await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   }
   await server.flush?.();
@@ -156,7 +168,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
   let models = createModels();
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...more };
-  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } } : {}) };
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } } : {}), ...given };
   built = await spec.cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
   return { spec: built, dir, cwd: scratchFolder(dir, "agent-1", RUN), control, outbound };
 }
@@ -174,6 +186,20 @@ function noComputer() {
       return { release: async () => void (released += 1) };
     },
   };
+}
+
+// Ported from date-line.test.mjs: every harness's system prompt starts with one line saying today's date in UTC and where
+// the run works, the same line pi's spec puts first (runner-system-prompt.test.mjs), before the revision's instructions.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`the ${harness} session's system prompt starts with the environment line, the same as pi's, then the revision's instructions`, async (t) => {
+    const { environmentLine } = await import("../dist/environment.js");
+    // The data directory's harnesses, linked as a first use installs them.
+    const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-4-5" } : undefined;
+    const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
+    assert.equal(built.session.system[0], environmentLine(), "the date line first");
+    assert.match(built.session.system[0], /^Today is \d{4}-\d{2}-\d{2} \(UTC\)\./);
+    assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
+  });
 }
 
 test("a claude-agent run, claimed by the runner, runs its first turn through the dispatch on the CLI spec, on the pinned Agent SDK and CLI, and ends with its answer", { timeout: 180_000 }, async (t) => {
@@ -205,7 +231,8 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   const { row, messages, dir, computers } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   assert.deepEqual(messages.map((message) => [message.role, message.text]), [["person", "Say hello."], ["model", "Hello from OpenCode."]]);
-  assert.equal(gateway.seen.length, 1, "one model request, through the session's proxy to the gateway");
+  // Each model request said, so a second one names what it re-sent and whether the run was claimed again (its epoch).
+  assert.equal(gateway.seen.length, 1, `one model request, through the session's proxy to the gateway: ${JSON.stringify(gateway.seen.map((one) => ({ at: one.at, input: one.body.input?.map((item) => item.role ?? item.type) })))} epoch ${row.epoch}; not model requests: ${JSON.stringify(gateway.stray)}`);
   assert.equal(gateway.seen[0].body.model, "openai/gpt-5", "the gateway's own name for the model, as main sends it there");
   const sent = JSON.stringify(gateway.seen[0].body.input);
   assert.ok(sent.includes("Answer briefly."), "the revision's instructions are in the session's system prompt");
@@ -218,6 +245,43 @@ test("an opencode run, claimed by the runner, runs its first turn through the di
   // The release follows the run's end commit (the loop lets its resources go after it), so it is waited for, not raced.
   await until(() => computers.released() === 1, "the computer's release");
   assert.equal(computers.released(), 1, "released once");
+});
+
+// A CLI's files on this machine (its working directory, its private folder) are the claim's own: swept when the claim
+// ends (#2166). Each claim's private folder is its own (harness/<epoch>), so a claim that lets go late (its release
+// follows the run's end commit) sweeps only its own: a next claim's folder, and the scratch folder holding it, stay.
+test("a CLI run's scratch folder is swept at its claim's end", async (t) => {
+  const gateway = await responsesGateway(t, "Hello from OpenCode.");
+  const env = { AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const { row, dir } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const scratch = scratchFolder(dir, "agent-1", RUN);
+  await until(() => !existsSync(scratch), `the scratch folder swept at the claim's end: ${scratch}`, 10_000);
+});
+
+test("a claim's sweep removes its own private folder, and the scratch folder only once no other claim's is in it", async (t) => {
+  assert.equal(typeof spec.sweepScratch, "function", "runner/cli-run-spec.js exports sweepScratch");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-sweep-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const scratch = join(dir, "scratch", "run-1");
+  const harnesses = join(scratch, "harness");
+  for (const epoch of ["1", "2"]) mkdirSync(join(harnesses, epoch, "codex-home"), { recursive: true });
+  await spec.sweepScratch(join(harnesses, "1"), [harnesses, scratch]);
+  assert.equal(existsSync(join(harnesses, "1")), false, "the late claim's own folder is gone");
+  assert.equal(existsSync(join(harnesses, "2", "codex-home")), true, "the next claim's folder stays, whole");
+  await spec.sweepScratch(join(harnesses, "2"), [harnesses, scratch]);
+  assert.equal(existsSync(scratch), false, "the last claim's sweep takes the scratch folder with it");
+  await spec.sweepScratch(join(harnesses, "3"), [harnesses, scratch]);
+});
+
+// A run whose effort is above its harness's highest level (a revision's or the host's "max"; OpenCode's and Codex's
+// reasoning stops at xhigh) thinks at that highest, and its metrics name the level it ran at, never the one it asked for.
+test("a CLI run's effort above its harness's highest runs at that highest, and its metrics name the level it ran at", async (t) => {
+  const gateway = await responsesGateway(t, "Done.");
+  const env = { AGENT_MODEL_BASE_URL: gateway.origin, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const { row } = await runOn(t, { harness: "opencode", model: { provider: "openai", modelId: "gpt-5" }, env, launch: { effort: "max" } });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.equal(row.metrics?.effort, "xhigh", `the metrics name the level it ran at: ${JSON.stringify(row.metrics)}`);
 });
 
 // A run a trigger started: its launch names the trigger and the first input's origin (run-launch.ts, as the server writes
@@ -246,12 +310,19 @@ for (const [source, owner] of [["schedule", true], ["webhook", false]]) {
 
 test("a CLI's install is looked up in the server's data directory (deps.data), as main's server names it to its runs (AGENTRUN_SERVE_DATA), never under the runner's HOME/.local/share", async (t) => {
   // The runner's own environment names no data directory, and its HOME is a folder of the test's: claude-agent's Agent SDK
-  // is installed in neither, so building the spec says where it looked.
+  // is installed in neither, so the claim installs it, into the server's data. The install is a stand-in that refuses,
+  // naming where it was asked to install (no test reaches npm): the spec says where it looked.
   const home = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-cli-home-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const env = { HOME: home, XDG_DATA_HOME: "", [DATA_ENV]: "", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` };
-  const failed = await specOn(t, "claude-agent", { env, model: { provider: "anthropic", modelId: "claude-haiku-4-5" } }).then(() => undefined, (error) => error);
+  const asked = [];
+  const installForClaim = async (_entry, dir) => {
+    asked.push(dir);
+    throw new Error(`Claude Code is not installed in ${dir}, and this test installs nothing`);
+  };
+  const failed = await specOn(t, "claude-agent", { env, model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, deps: { installForClaim } }).then(() => undefined, (error) => error);
   assert.ok(failed, "the Agent SDK is installed nowhere here, so the spec is refused");
+  assert.equal(asked.length, 1, "the claim asked to install it, once");
   assert.match(failed.message, new RegExp(`${join(process.env.TMPDIR ?? tmpdir(), "runner-cli-spec-").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^/\\s]+/harnesses/claude-agent`), `looked up under the server's data: ${failed.message}`);
   assert.ok(!failed.message.includes(join(home, ".local", "share")), `nothing under the runner's HOME/.local/share: ${failed.message}`);
 });

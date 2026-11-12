@@ -8,7 +8,7 @@
 // keep their own key.
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -19,6 +19,24 @@ const { startServe } = await import("../dist/server.js");
 const { openSqliteStore, openPostgresStore, sealColumn, sealedAt } = await import("../dist/store/index.js");
 const { startRunnerProcess } = await import("../dist/runner/main.js");
 const { importCommand } = await import("../dist/import.js");
+const { OUTBOUND_WEBHOOK } = await import("../dist/webhooks.js");
+const { unseal } = await import("../dist/sealing.js");
+
+/** Whether the outbound webhook's signing secret the store in `data` keeps (its sealed settings' row) opens under `key`. */
+function webhookSecretOpens(data, key) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    const row = db.prepare("SELECT sealed FROM trigger_settings WHERE adapter = ? AND scope = 'server' AND field = 'secret'").get(OUTBOUND_WEBHOOK.id);
+    assert.ok(row, `${data}: the store keeps the webhook's secret`);
+    unseal(key, Buffer.from(row.sealed, "base64"), `trigger_settings|${OUTBOUND_WEBHOOK.id}|server|secret`);
+    return true;
+  } catch (error) {
+    if (error instanceof assert.AssertionError) throw error;
+    return false;
+  } finally {
+    db.close();
+  }
+}
 
 /** The refusal, word for word: a store whose secrets another key sealed. */
 const WORDS = "this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY";
@@ -199,7 +217,7 @@ test("(d) Postgres: a second process with another key on the same database refus
   await runner.close();
 });
 
-test("a store whose only secret is kept beside it (the outbound webhook's signing secret, in webhook.json) and no record of its key: a start with no key refuses and makes none; with the key it opens and records it", { timeout: 60_000 }, async (t) => {
+test("a store whose only secret is the outbound webhook's signing secret (a sealed settings row) and no record of its key: a start with no key refuses and makes none; with the key it opens and records it", { timeout: 60_000 }, async (t) => {
   await cleanEnv(t);
   const key = newKey();
   const data = join(await scratch(t), "data");
@@ -209,10 +227,11 @@ test("a store whose only secret is kept beside it (the outbound webhook's signin
   assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
   await server.close();
   delete process.env.AGENTRUN_SEAL_KEY;
-  // The store's record of its key gone, and no secret in the store itself: the webhook's is the only one.
+  // The store's record of its key gone, and no other secret in the store: the webhook's is the only one.
   const db = new DatabaseSync(join(data, "store.sqlite"));
   db.prepare("DELETE FROM settings WHERE key = 'seal_key'").run();
-  assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no secret in the store");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM sealed_keys").get().n, 0, "no key in the store");
+  assert.deepEqual(db.prepare("SELECT adapter, scope, field FROM trigger_settings").all().map((row) => ({ ...row })), [{ adapter: OUTBOUND_WEBHOOK.id, scope: "server", field: "secret" }], "the webhook's secret its one sealed value");
   db.close();
   await refuses(startServe({ data, port: 0 }));
   assert.equal(existsSync(keyFile(data)), false, "no key is made over the webhook's secret");
@@ -243,7 +262,6 @@ test("two servers on two data directories in one process each keep their own key
   await cleanEnv(t);
   const { client } = await import("./support.mjs");
   const { hostSecrets } = await import("../dist/secrets.js");
-  const { webhookSecretIn } = await import("../dist/webhooks.js");
   const [a, b] = [join(await scratch(t), "a"), join(await scratch(t), "b")];
   // Both boot at once, each making a key of its own in its data directory.
   const [first, second] = await Promise.all([startServe({ data: a, port: 0 }), startServe({ data: b, port: 0 })]);
@@ -259,8 +277,8 @@ test("two servers on two data directories in one process each keep their own key
   }
   // What each sealed opens under its own key alone, never the other's.
   for (const [data, own, other] of [[a, keyA, keyB], [b, keyB, keyA]]) {
-    assert.ok("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: own }), `${data}: its own key opens it`);
-    assert.ok(!("secret" in webhookSecretIn(data, { AGENTRUN_SEAL_KEY: other })), `${data}: the other's key does not`);
+    assert.ok(webhookSecretOpens(data, Buffer.from(own, "base64")), `${data}: its own key opens it`);
+    assert.ok(!webhookSecretOpens(data, Buffer.from(other, "base64")), `${data}: the other's key does not`);
   }
   // Both keys are cut from what a run writes while their servers are open.
   const listed = hostSecrets({});

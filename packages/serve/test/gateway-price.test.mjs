@@ -1,12 +1,13 @@
 // A gateway model's price, which a run's cost is reckoned from: AGENT_MODEL_PRICE (or its tier's) when set, else the list
-// price pi-ai's catalog gives that model id (a $0 entry included), else none: the cost of its answers is then unknown,
+// price pi-ai's catalog gives that model id (a metered entry, never a plan's $0: #2339), else none: the cost of its answers is then unknown,
 // never $0. No network: runModels only builds the models, and the runs below talk to a Responses endpoint on loopback.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { timelineOf } from "../dist/timeline/index.js";
+import * as modelModule from "../dist/model.js";
 import { runModels } from "../dist/model.js";
 import { agent, follow, responsesEndpoint, serve } from "./support.mjs";
 
@@ -104,8 +105,7 @@ test("through a gateway a revision's provider/model-id is sent whole (OpenRouter
   assert.deepEqual((await costOf({ AGENT_MODEL: `${bare.provider}/${bare.id}` })).default, vendorCost, `${bare.provider}/${bare.id}`);
 });
 
-// SKIP (follow-up #2057): the gateway is asked for the model with an agent-model/ prefix, not the model's own name
-test.skip("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know has no price, so under the cap it is refused before anything is sent, and with no cap its run's cost reads unknown, never $0", async (t) => {
+test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know has no price, so under the cap it is refused before anything is sent, and with no cap its run's cost reads unknown, never $0", async (t) => {
   const tokens = 1_000_000;
   const endpoint = await responsesEndpoint(t, "42", tokens);
   const names = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
@@ -194,10 +194,39 @@ test("an answer of a model with no price carries no total, so its run's cost is 
   assert.equal(plain.usage.cost.total, undefined, "an answer through the provider's stream");
 });
 
-test("a model the catalog lists at $0 is a known $0, not one with no price", async () => {
-  const free = builtinModels().getModels().find((model) => entries(model.id).length > 0 && entries(model.id).every(({ cost }) => total(cost) === 0));
-  assert.ok(free, "pi-ai's catalog lists a model at $0");
-  const { unpriced } = await runModels({ ...GATEWAY, AGENT_MODEL: free.id }, undefined);
-  assert.deepEqual([...unpriced], [], `${free.id} is listed, so its price is known`);
-  assert.deepEqual((await costOf({ AGENT_MODEL: free.id })).default, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+// #2339: a plan's $0 listing never prices a metered model. pi-ai's catalog has listed the bare id `deepseek-v4-flash` only
+// under subscription plans (qwen-token-plan, at $0), while the gateways that meter it list `deepseek/deepseek-v4-flash` at a
+// price. Through a gateway the model is metered: it takes the metered price, under its vendor's id, and an id listed only
+// at $0 with no metered listing anywhere has no price (unknown), never $0. The rule is pinned on a stub catalog
+// (catalogPrices' shape), so pi-ai adding or repricing an entry never breaks it; the live catalog is read apart, below.
+const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+const METERED = { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0 };
+const METERED_HIGH = { input: 0.2, output: 0.8, cacheRead: 0.02, cacheWrite: 0 };
+const STUB = new Map([
+  ["deepseek-v4-flash", [{ provider: "qwen-token-plan", cost: ZERO }]],
+  ["deepseek/deepseek-v4-flash", [{ provider: "openrouter", cost: METERED }, { provider: "vercel-ai-gateway", cost: METERED_HIGH }]],
+  ["plan-only-model", [{ provider: "some-plan", cost: ZERO }]],
+]);
+
+test("a plan's $0 listing never prices a metered model (a stub catalog): the bare id takes its vendor's metered price; an id listed only at $0 is unpriced", () => {
+  const { catalogPrice } = modelModule;
+  for (const id of ["deepseek-v4-flash", "deepseek/deepseek-v4-flash"]) assert.deepEqual(catalogPrice(STUB, id, undefined), METERED_HIGH, `${id}: the highest metered price, never the plan's $0`);
+  assert.equal(catalogPrice(STUB, "plan-only-model", undefined), undefined, "listed at $0 alone: no price, never $0");
+  // A paid entry for the bare id beside the plan's $0: that paid entry prices it.
+  const paidToo = new Map([...STUB, ["deepseek-v4-flash", [{ provider: "qwen-token-plan", cost: ZERO }, { provider: "deepseek", cost: METERED }]]]);
+  assert.deepEqual(catalogPrice(paidToo, "deepseek-v4-flash", undefined), METERED);
+});
+
+test("pi-ai's own catalog, read through a gateway: deepseek-v4-flash is never priced $0, and an id it lists only at $0 has no price", async () => {
+  for (const ref of ["deepseek-v4-flash", "deepseek/deepseek-v4-flash"]) {
+    const cost = (await costOf({}, ["default"], ref)).default;
+    assert.ok(cost === undefined || total(cost) > 0, `${ref}: never $0: ${JSON.stringify(cost)}`);
+  }
+  // An id every listing prices at $0, with no metered listing under any vendor's id (whichever the catalog has now):
+  // unknown, never $0. A catalog with none has nothing to read here.
+  const ids = [...new Set(builtinModels().getModels().map((model) => model.id))];
+  const onlyFree = ids.find((id) => !id.includes("/") && entries(id).every(({ cost }) => total(cost) === 0) && !ids.some((other) => other.endsWith(`/${id}`) && entries(other).some(({ cost }) => total(cost) > 0)));
+  if (onlyFree === undefined) return;
+  const { unpriced } = await runModels({ ...GATEWAY, AGENT_MODEL: onlyFree }, undefined);
+  assert.deepEqual([...unpriced], [onlyFree], `${onlyFree}: listed at $0 alone, so through a gateway it has no price`);
 });

@@ -16,12 +16,12 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, StoreConstraint, type StoreRole, storeTarget } from "../../store/index.js";
+import { AnswerTaken, dropPostgresSchema, openPostgresStore, openStore, RunFinal, type RunRow, type Store, type StoreRole, storeTarget } from "../../store/index.js";
 import { sendCommand } from "../commands.js";
 import { callsOf, journalRecords, messagesOf, type CallRecord, type MessageRecord } from "../journal-reader.js";
-import { type AnswerData, KINDS } from "../journal-kinds.js";
+import { type AnswerData, KINDS, MESSAGE_SENT_AGAIN } from "../journal-kinds.js";
 import type { EndOfRunAnswer, EndOfRunTurn, LoopDeps, LoopFactory } from "../loop-contract.js";
-import { timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { timelineReducer, type TimelineEvent } from "../../timeline/index.js";
 import { emptyState, translate } from "../../live/translate.js";
 
 /** The one row a person's stop gives on the live timeline (live/translate.ts STOPPED_BY_YOU), the same on every harness. */
@@ -126,22 +126,18 @@ function crashAt(point: keyof KernelHooks, holder: { runner?: Runner; crashed?: 
   return {
     beforeIntent: async () => (point === "beforeIntent" ? crash() : undefined),
     beforeResult: async () => (point === "beforeResult" ? crash() : undefined),
+    afterMessageSent: async () => (point === "afterMessageSent" ? crash() : undefined),
   };
 }
 
 /** The Postgres store each registered subject's worlds open (registerHarnessConformance's `storeUrl`), by the subject
  *  object the suite's cases are handed: none for the data directory's SQLite store. */
 const STORE_URLS = new WeakMap<ConformanceSubject, string>();
-/** Cases a Postgres store can't pass yet, each with what it waits on: they run on SQLite and are skipped on Postgres. */
-const POSTGRES_PENDING: Readonly<Record<string, string>> = {
-  "approval-double-click": "waits on the Postgres commands_one_answer migration (pgstore-1): the one-answer index is SQLite's today",
-};
+/** Cases a Postgres store can't pass yet, each with what it waits on: they run on SQLite and are skipped on Postgres. None
+ *  today. */
+const POSTGRES_PENDING: Readonly<Record<string, string>> = {};
 
 /** A store in a data directory of its own, one queued run, and runners started on it (each its own connection). */
-/** The suite's short lease, for the crash cases: a crashed runner's claim must run out for the second runner to take
- *  the run over. */
-const TAKEOVER: Partial<typeof TIMING> = {};
-
 /** The stores' clock skew a runner process reads (child.ts): the file holds the milliseconds the clock moved, so the
  *  process's store moves with the case's (runOut). */
 export const storeClockOf = (file: string | undefined): (() => number) => {
@@ -652,6 +648,85 @@ const CASES: readonly Case[] = [
     },
   },
   {
+    id: "message-mid-turn-kept",
+    title: "messages sent mid-turn are never dropped: each is taken, in order, and the model answers each",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, letSlowGo, slowStarted } = suiteTools();
+      // A harness that steers places a message in the turn in flight (steer-mid-turn); one that does not (a CLI's: its
+      // adapter's facts say steer false) sends each as a turn of its own once the turn ends, in the order they came. Either
+      // way the model reads it, and its row is taken, never refused after the API accepted it (#2174).
+      const steers = subject.facts?.steer !== false;
+      const texts = steers ? ["check the totals"] : ["check the totals", "and the dates"];
+      // The model's steps: the call, then what it says after it (the steer it read, when it steers), then, for each message
+      // sent as a turn of its own, that message (the last the person sent).
+      const script: ScriptStep[] = [{ call: "slow" }, { sayLastSteer: true }, ...(steers ? [] : texts.map((): ScriptStep => ({ sayLastSteer: true })))];
+      await w.start("runner-a", { script, tools, hooks: quiet });
+      await slowStarted;
+      const rows: { id: number }[] = [];
+      for (const text of texts) rows.push(await sendCommand(w.server, RUN, { kind: "steer", body: { text } }));
+      // The tool goes on once every message is with the loop: the turn in flight has them, never a timer.
+      await until(() => rows.every((row) => w.handedOver(row.id)), "the messages handed to the loop mid-turn");
+      letSlowGo();
+      await w.ended("ended");
+      const { calls, messages } = await w.read();
+      const slow = calls.find((call) => call.tool === "slow");
+      assert.ok(slow?.endEntry !== undefined && slow.status === "done", `slow ran to its end: ${JSON.stringify(calls)}`);
+      const sent = texts.map((text) => messages.find((message) => message.role !== "model" && message.text === text));
+      assert.ok(sent.every((message) => message !== undefined), `each message is in the journal: ${JSON.stringify(messages)}`);
+      for (const [i, message] of sent.entries()) {
+        assert.ok(message!.entry > slow.endEntry!, `"${texts[i]}" comes after the call it was sent during: ${JSON.stringify(messages)}`);
+        if (i > 0) assert.ok(message!.entry > sent[i - 1]!.entry, `in the order they came: ${JSON.stringify(messages)}`);
+        const answered = messages.find((one) => one.role === "model" && one.entry > message!.entry && one.text.includes(texts[i]!));
+        assert.ok(answered, `the model answered "${texts[i]}": ${JSON.stringify(messages)}`);
+      }
+      for (const row of rows) {
+        const taken = await w.commandRow(row.id);
+        assert.ok(taken.takenAt !== null && taken.refused === null, `its row is taken, not refused: ${JSON.stringify(taken)}`);
+      }
+    },
+  },
+  {
+    id: "message-resent-after-crash",
+    title: "a message sent as its own turn by a runner lost before its row was taken is sent again by the next, and the timeline says so",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, letSlowGo, slowStarted } = suiteTools();
+      const text = "check the totals";
+      // The call, then the turn's words, then the message's turn (sent once by runner-a, again by runner-b), each saying
+      // the message it was given.
+      const script: ScriptStep[] = [{ call: "slow" }, { sayLastSteer: true }, { sayLastSteer: true }, { sayLastSteer: true }];
+      const holder: { runner?: Runner; crashed?: boolean } = {};
+      await w.start("runner-a", { script, tools, hooks: crashAt("afterMessageSent", holder) }, holder);
+      await slowStarted;
+      const row = await sendCommand(w.server, RUN, { kind: "steer", body: { text } });
+      await until(() => w.handedOver(row.id), "the message handed to the loop mid-turn");
+      letSlowGo();
+      // runner-a dies once the session holds the message, before the commit that records it and takes its row.
+      await until(() => holder.crashed, "the crash after the message was sent", EVENT_WAIT_MS);
+      assert.equal((await w.commandRow(row.id)).takenAt, null, "the row is untaken when runner-a is lost");
+      await w.claimsSettled("runner-a");
+      w.runOut();
+      await w.start("runner-b", { script, tools, hooks: quiet });
+      await w.ended("ended", EVENT_WAIT_MS);
+      const { messages } = await w.read();
+      const sent = messages.filter((message) => message.role !== "model" && message.text === text);
+      assert.ok(sent.length >= 1, `the message is on the record: ${JSON.stringify(messages)}`);
+      assert.ok(messages.some((message) => message.role === "model" && message.text.includes(text) && message.entry > sent[0]!.entry), `the model answered it: ${JSON.stringify(messages)}`);
+      const taken = await w.commandRow(row.id);
+      assert.ok(taken.takenAt !== null && taken.refused === null, `its row is taken once runner-b sent it: ${JSON.stringify(taken)}`);
+      // Never silent: the timeline says the message went again, once, before it.
+      const rows = await w.liveRows();
+      const again = rows.filter((one) => one.summary === MESSAGE_SENT_AGAIN);
+      const shown = JSON.stringify(rows.map((one) => [one.kind, one.summary]));
+      assert.deepEqual(again.map((one) => one.kind), ["phase"], `one row says it was sent again: ${shown}`);
+      // Just before the message it was said of: the person's row of it is the next message row.
+      const at = rows.indexOf(again[0]!);
+      const message = rows.findIndex((one, i) => i > at && one.kind === "user_message");
+      assert.ok(message > at && rows[message]!.text === text, `the notice comes right before the message it was sent again: ${shown}`);
+      assert.ok(!rows.slice(0, at).some((one) => one.kind === "user_message" && one.text === text), `no row of the message before the notice: ${shown}`);    },
+  },
+  {
     id: "stop-ends-turn",
     title: "stop ends the turn; the run says why",
     async body(subject, t) {
@@ -666,6 +741,8 @@ const CASES: readonly Case[] = [
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
       // Why it stopped is on the run row, staged in the end commit: one place for every harness.
       assert.match(row.summary ?? "", /stopped/, `the run says why it stopped: ${JSON.stringify(row.summary)}`);
+      // A person's stop, told from a cancel in the store: its turn is over, not the run (a message reopens it).
+      assert.equal(row.outcome, "stopped", `the run's outcome says a person stopped it: ${JSON.stringify(row)}`);
       assert.ok(row.endedAt !== null, "its end commit stamped ended_at");
       assert.ok((await w.commandRow(stop.id)).takenAt !== null, "the stop row is taken");
       // The live timeline: one row says the person stopped it, worded the same on every harness, and nothing a person
@@ -690,8 +767,9 @@ const CASES: readonly Case[] = [
       const { calls, messages } = await w.read();
       assert.ok(calls.every((call) => call.status !== "pending"), `no call left pending: ${JSON.stringify(calls)}`);
       assert.equal(messages.some((message) => message.text === "never"), false, "the turn did not go on");
-      // The end main's cancel writes: stopped, its summary "cancelled", staged in the end commit.
+      // The end main's cancel writes: stopped, its summary "cancelled" and its outcome 'cancelled', staged in the end commit.
       assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(row.outcome, "cancelled", `the run's outcome says it was cancelled: ${JSON.stringify(row)}`);
       const taken = await w.commandRow(cancel.id);
       assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
       await assert.rejects(sendCommand(w.server, RUN, { kind: "steer", body: { text: "go on" } }), RunFinal, "a cancelled run takes no more messages");
@@ -708,6 +786,7 @@ const CASES: readonly Case[] = [
       const cancel = await sendCommand(w.server, RUN, { kind: "cancel" });
       const row = await w.ended("stopped");
       assert.equal(row.summary, CANCELLED, `the run says it was cancelled: ${JSON.stringify(row)}`);
+      assert.equal(row.outcome, "cancelled", `the run's outcome says it was cancelled: ${JSON.stringify(row)}`);
       assert.equal(ran.asked, 0, "the asked call never ran");
       const taken = await w.commandRow(cancel.id);
       assert.ok(taken.takenAt !== null && taken.refused === null, `the cancel row is taken, not refused: ${JSON.stringify(taken)}`);
@@ -726,10 +805,13 @@ const CASES: readonly Case[] = [
       await sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId, note: "not on a Friday" } });
       await w.ended("ended");
       assert.equal(ran.asked, 0, "denied, it never ran");
-      const { answers, messages } = await w.read();
+      const { answers, messages, calls } = await w.read();
       // The fields this case is about; its time is the loop's clock's (adapter-pi-approval-entries pins it).
       assert.deepEqual(answers.map(({ callId: id, approved, decision, note }) => ({ callId: id, approved, decision, note })), [{ callId, approved: false, decision: "deny", note: "not on a Friday" }], "the answer is a deny that keeps the note");
-      const said = messages.filter((message) => message.role === "model").map((message) => message.text);
+      // What the model said after the asked call: its answer to the refusal. What it said with the call, before the gate
+      // asked (a CLI's "Calling asked."), is on the record before the call's row, as pi keeps a call's text in its message.
+      const asked = calls.find((call) => call.callId === callId);
+      const said = messages.filter((message) => message.role === "model" && message.entry > (asked?.startEntry ?? -1)).map((message) => message.text);
       assert.equal(said.length, 1, `the model answered once: ${JSON.stringify(messages)}`);
       // Main's words for a call a person denied (tool-gate.ts refusedText), the note with them. The harness may frame a
       // refusal its own way (pi: a blocked call's error) around them.
@@ -811,12 +893,37 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
-      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), StoreConstraint, "a second answer to one approval is never written");
+      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
       const { calls } = await w.read();
       assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
+    },
+  },
+  {
+    id: "approval-race",
+    title: "an approve and a deny sent at once write one answer: the store refuses the other (one answer per approval), and the run acts on the one written",
+    async body(subject, t) {
+      const w = await world(subject, t);
+      const { tools, ran } = suiteTools();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      await w.ended("parked");
+      const callId = await w.askedCall();
+      // Both sent before either is awaited (on Postgres, each on its own pooled connection). Whichever is written first, the
+      // store's one-answer index refuses the other: no order is imposed, so the case holds for either winner.
+      const settled = await Promise.allSettled([
+        sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }),
+        sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId } }),
+      ]);
+      const won = settled.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof sendCommand>>> => r.status === "fulfilled");
+      const lost = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      assert.equal(won.length, 1, `one answer is written, not both: ${JSON.stringify(settled.map((r) => r.status))}`);
+      assert.ok(lost[0]?.reason instanceof AnswerTaken, `the other is refused by the store as answered already (AnswerTaken), never a bare constraint: ${String(lost[0]?.reason)}`);
+      await w.ended("ended");
+      const winner = won[0]!.value;
+      assert.equal(ran.asked, winner.kind === "approve" ? 1 : 0, "the run acted on the answer written, never the other");
+      assert.equal((await w.commandRow(winner.id)).refused, null, "the answer written stands");
     },
   },
   {
@@ -902,12 +1009,13 @@ const CASES: readonly Case[] = [
 ];
 
 
-const CLI_NEVER_RERUNS = "a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
+const STEERS_IN_TURN = "it places a message sent mid-turn in the turn in flight, its row taken in its submission's commit, so it never sends one as a turn of its own (message-resent-after-crash)";
+const CLI_NEVER_RERUNS ="a CLI never reruns a call that started; only the model calls again (its adapter's facts: rerunsStarted false)";
 
 /** The cases a harness's declared facts rule out, each with why: what it does by design, not what it cannot model yet. */
 export function factsRuleOut(facts: ConformanceSubject["facts"]): Partial<Record<ConformanceCase, string>> {
   if (!facts) return {};
-  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so the loop refuses a steer for it in words`;
+  const noSteer = `${facts.id} takes no message mid-turn (its adapter's facts: steer false), so a message sent while it works is never placed in the turn in flight: it is the run's next turn (message-mid-turn-kept)`;
   return {
     // steer-origin steers the turn in flight too: its message is taken mid-turn, or never.
     ...(facts.steer ? {} : { "steer-mid-turn": noSteer, "steer-origin": noSteer }),
@@ -943,12 +1051,12 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
   const ruledOut = factsRuleOut(subject.facts);
   for (const entry of CASES) {
     const processCase = entry.id.endsWith("-process");
-    const byFacts = ruledOut[entry.id];
+    // A harness that steers (any whose facts do not say steer false, as message-mid-turn-kept reads them) places a message
+    // in the turn in flight, its row taken in the commit of its submission: it never sends one as a turn of its own.
+    const byFacts = ruledOut[entry.id] ?? (entry.id === "message-resent-after-crash" && subject.facts?.steer !== false ? STEERS_IN_TURN : undefined);
     const notYet = subject.unsupported?.[entry.id] ?? (processCase && !subject.process ? "it names no module a runner process can load (subject.process)" : undefined);
     const onPostgres = storeUrl ? POSTGRES_PENDING[entry.id] : undefined;
     const skip = byFacts ? `${subject.name} does not do this by design: ${byFacts}` : notYet ? `${subject.name} cannot model this yet: ${notYet}` : onPostgres ? `on Postgres, ${onPostgres}` : undefined;
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
-
-export const CONFORMANCE_CASES: readonly ConformanceCase[] = CASES.map((entry) => entry.id);

@@ -8,11 +8,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { wireName } from "../dist/catalog.js";
-import { capBefore, capToolSpend, holdsInFlight, paidCall, spentIn, useSpend } from "../dist/cap.js";
+import { holdsInFlight, paidCall, useSpend } from "../dist/cap.js";
 import { chargeOf, CLIP, monidClient, monidText } from "../dist/monid.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import fakeMonid, { calls, KEY } from "./fixtures/faux-monid.mjs";
-import { agent, client, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -119,21 +119,6 @@ test("another harness's paid-call check holds each model request still in flight
   assert.equal(holds.total(), 0, "one admitted with no figure (no cap) holds nothing");
 });
 
-/** The run's store entries of `kind`. */
-const entriesOf = (data, runId, kind) => {
-  // The run's process writes the store meanwhile: a read that finds it locked tries again.
-  for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-    try {
-      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record))).filter((entry) => kind === undefined || entry.kind === kind);
-    } catch (error) {
-      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
-    } finally {
-      db.close();
-    }
-  }
-};
-
 test("/usage by meter during a monid run in flight: tokens are the run's model cost, and no tool charge is reported until the call settles", { timeout: 90_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
@@ -224,8 +209,7 @@ test("capabilities list the three, on every harness: missing MONID_API_KEY on a 
   assert.deepEqual((await listed()).map((tool) => [tool.name, tool.available, tool.missing]), NAMES.map((name) => [name, true, undefined]));
 });
 
-// SKIP (follow-up #2089): with the key set, a claude-agent run's monid_run call does not run
-test.skip("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
+test("a revision naming the three saves with a warning on a keyless server and its run is 409, on pi and claude-agent alike; with the key the claude-agent one runs", { timeout: 60_000 }, async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("finder", { tools: NAMES }));

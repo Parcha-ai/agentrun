@@ -15,6 +15,7 @@ import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
 import { Banner, Chip, Input, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
+import { Tabs } from "@/components/ui/tabs";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
@@ -22,12 +23,13 @@ import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { placeLabel, type Places } from "@/lib/place";
-import { providerLabel } from "@/lib/toolSettings";
+import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
 import { elapsed, metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
+import { drawnNodeCount, nodesWord } from "@/lib/wfGraph";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null; history?: RunHistory };

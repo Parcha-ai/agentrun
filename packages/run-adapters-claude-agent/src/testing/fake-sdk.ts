@@ -346,7 +346,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           delta: (d) => (pieces.push(d), wake?.()),
           end: (error) => ((over = error === undefined ? {} : { error: new Error(error) }), said.delete(id), wake?.()),
         });
-        const request = { url: `${options.env.ANTHROPIC_BASE_URL}/v1/messages?beta=true`, model: String(options.model ?? 'claude-sonnet-4-5'), text, authorization: `Bearer ${options.env.ANTHROPIC_AUTH_TOKEN}` };
+        const request = { url: `${options.env.ANTHROPIC_BASE_URL}/v1/messages?beta=true`, model: String(options.model ?? 'claude-sonnet-5-5'), text, authorization: `Bearer ${options.env.ANTHROPIC_AUTH_TOKEN}` };
         child.stdin.write(`${JSON.stringify({ id, say: request })}\n`);
         for (;;) {
           while (pieces.length) yield delta(pieces.shift()!);

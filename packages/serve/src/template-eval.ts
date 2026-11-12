@@ -13,14 +13,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, cpSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Compile } from "typebox/schema";
 import { parseDocument } from "yaml";
+import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
-import { MCP_SERVER_NAME } from "./mcp-servers.js";
+import { MCP_SERVER_NAME } from "./mcp-probe.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
-import { applyBodyOf, compiled, type Package, PackageError, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
 import { isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -68,9 +68,16 @@ export type Grader =
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string }
   | { file: string; type: "schema"; schema: string; validate: Validate };
-/** One answer of a fake tool: taken when every argument `when` lists equals the call's. */
-type Answer = { when: Json; result: Json };
-export type McpFixture = { server: string; description: string; tools: Record<string, { description: string; input: Json; answers: Answer[]; default?: Json }> };
+/** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
+ *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
+type Answer = { when: Json | Json[]; result: Json };
+/** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
+ *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
+ *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
+ *  path:, filename:, extension: and language: qualifiers; the others ignored), answered as `path:line: text` lines, at
+ *  most `limit` (default 100), after `note` when given. Taken when no answer of the tool matches the call. */
+export type FakeSearch = { query: string; files: { path: string; text: string }[]; limit?: number; note?: string };
+export type McpFixture = { server: string; description: string; tools: Record<string, { description: string; input: Json; answers: Answer[]; default?: Json; search?: FakeSearch }> };
 export type EvalCase = {
   name: string;
   description: string;
@@ -136,13 +143,17 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
   const tools: McpFixture["tools"] = {};
   for (const [tool, spec] of Object.entries(value.tools)) {
     const answers = isObject(spec) && Array.isArray(spec.answers) ? spec.answers : undefined;
-    const ok = isObject(spec) && !unknown(spec, ["description", "input", "answers", "default"]).length && typeof spec.description === "string" && isObject(spec.input) && spec.input.type === "object"
-      && answers !== undefined && answers.every((a) => isObject(a) && !unknown(a, ["when", "result"]).length && isObject(a.when) && isObject(a.result)) && (spec.default === undefined || isObject(spec.default));
+    const search = isObject(spec) ? spec.search : undefined;
+    const searchOk = search === undefined || (isObject(search) && !unknown(search, ["query", "files", "limit", "note"]).length && typeof search.query === "string" && search.query !== ""
+      && Array.isArray(search.files) && search.files.every((f) => isObject(f) && typeof f.path === "string" && typeof f.text === "string")
+      && (search.limit === undefined || (Number.isSafeInteger(search.limit) && (search.limit as number) >= 1)) && (search.note === undefined || typeof search.note === "string"));
+    const ok = isObject(spec) && !unknown(spec, ["description", "input", "answers", "default", "search"]).length && searchOk && typeof spec.description === "string" && isObject(spec.input) && spec.input.type === "object"
+      && answers !== undefined && answers.every((a) => isObject(a) && !unknown(a, ["when", "result"]).length && (isObject(a.when) || (Array.isArray(a.when) && a.when.length > 0 && a.when.every(isObject))) && isObject(a.result)) && (spec.default === undefined || isObject(spec.default));
     if (!ok || !/^[A-Za-z0-9_.-]{1,128}$/.test(tool)) {
-      bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...}, result: an MCP tool result}], default?: a result}`);
+      bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
     }
-    tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}) };
+    tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}), ...(isObject(spec.search) ? { search: spec.search as FakeSearch } : {}) };
   }
   return { server: value.server, description: value.description, tools };
 }
@@ -206,13 +217,9 @@ function graderOf(dir: string, p: Package, file: string, text: string, mcp: Reco
       } catch {
         return bad(`${file}: ${path} is not JSON`), undefined;
       }
-      try {
-        const validator = Compile(schema as Parameters<typeof Compile>[0]);
-        const validate: Validate = (value) => validator.Errors(value)[1].map((e) => `${e.instancePath || "/"} ${e.message}`);
-        return { file, type, schema: path, validate };
-      } catch (error) {
-        return bad(`${file}: ${path} does not compile as a JSON Schema: ${(error as Error).message}`), undefined;
-      }
+      const compiled = schemaCheck(schema);
+      if ("why" in compiled) return bad(`${file}: ${path} ${compiled.why}`), undefined;
+      return { file, type, schema: path, validate: compiled.check };
     }
   }
   return undefined;
@@ -325,33 +332,6 @@ export type RunRecord = {
 };
 export type Verdict = { pass: boolean; reason: string; cost_usd?: number | null; run_id?: string };
 
-/** The text of the last fenced `json` block in `text` (```json or a longer fence, ~~~ too), or undefined. */
-export function lastJsonBlock(text: string): string | undefined {
-  const lines = text.split(/\r?\n/);
-  let found: string | undefined;
-  for (let i = 0; i < lines.length; i++) {
-    const open = /^ {0,3}(`{3,}|~{3,})\s*json\s*$/i.exec(lines[i]!);
-    if (!open) continue;
-    const fence = open[1]!;
-    const end = lines.findIndex((line, j) => j > i && new RegExp(`^ {0,3}${fence[0] === "`" ? "`" : "~"}{${fence.length},}\\s*$`).test(line));
-    if (end < 0) break;
-    found = lines.slice(i + 1, end).join("\n");
-    i = end;
-  }
-  return found;
-}
-
-/** The answer's last fenced json block, parsed, or why there is none. */
-function answerJson(answer: string): { value: unknown } | { why: string } {
-  const block = lastJsonBlock(answer);
-  if (block === undefined) return { why: "the answer has no fenced json block" };
-  try {
-    return { value: JSON.parse(block) };
-  } catch (error) {
-    return { why: `the answer's last json block is not JSON: ${(error as Error).message}` };
-  }
-}
-
 /** The text a grader with a `target` reads: that field of the answer's JSON (a string as it is, anything else as JSON). */
 function targetOf(answer: string, target: string): { text: string } | { why: string } {
   const json = answerJson(answer);
@@ -373,8 +353,72 @@ const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isO
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
   if (!spec) return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server} has no tool ${tool}.` }] };
-  const hit = spec.answers.find((answer) => Object.entries(answer.when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value)));
-  return hit?.result ?? spec.default ?? { isError: true, content: [{ type: "text", text: `The fake ${fixture.server}'s ${tool} has no answer for these arguments.` }] };
+  const matches = (when: Json) => Object.entries(when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value));
+  const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
+  if (hit) return hit.result;
+  if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
+  return spec.default ?? { isError: true, content: [{ type: "text", text: `The fake ${fixture.server}'s ${tool} has no answer for these arguments.` }] };
+}
+
+/** Languages a search's language: qualifier names, by file extension. */
+const LANGUAGES: Record<string, string[]> = {
+  typescript: [".ts", ".tsx", ".mts", ".cts"], ts: [".ts", ".tsx", ".mts", ".cts"], javascript: [".js", ".mjs", ".cjs", ".jsx"], js: [".js", ".mjs", ".cjs", ".jsx"],
+  python: [".py"], go: [".go"], rust: [".rs"], shell: [".sh", ".bash"], markdown: [".md"], json: [".json"], yaml: [".yml", ".yaml"], css: [".css"], html: [".html"],
+};
+
+/** A fake search's answer for `query` (FakeSearch). */
+export function searched(search: FakeSearch, query: string): string {
+  const tokens = [...query.matchAll(/(-?)(\w+):("[^"]*"|\S+)|"([^"]*)"|\/((?:\\.|[^/])+)\/|(\S+)/g)];
+  const filters: ((path: string) => boolean)[] = [];
+  const terms: { test: (line: string) => boolean; not: boolean }[] = [];
+  let not = false;
+  for (const [, neg, key, rawValue, quoted, regex, bare] of tokens) {
+    const value = rawValue?.replace(/^"|"$/g, "");
+    if (key !== undefined && value !== undefined) {
+      const name = key.toLowerCase();
+      const keep = name === "path" ? (path: string) => path.includes(value.replace(/^\/+/, "").replace(/\*+/g, ""))
+        : name === "filename" ? (path: string) => (path.split("/").pop() ?? "").includes(value)
+        : name === "extension" ? (path: string) => path.endsWith(`.${value.replace(/^\./, "")}`)
+        : name === "language" && LANGUAGES[value.toLowerCase()] ? (path: string) => LANGUAGES[value.toLowerCase()]!.some((ext) => path.endsWith(ext))
+        : undefined;
+      // NOT before a qualifier excludes what it keeps, as -qualifier does; either way the NOT is spent here.
+      const exclude = (neg === "-") !== not;
+      not = false;
+      if (keep) filters.push(exclude ? (path) => !keep(path) : keep);
+      continue;
+    }
+    if (bare === "AND" || bare === "OR") continue;
+    if (bare === "NOT") {
+      not = true;
+      continue;
+    }
+    // A /.../ term is its text, never a regular expression: the fake runs on the eval's thread, where a pattern such as
+    // /(a+)+$/ could hold it past any timeout. An escaped punctuation mark (\. \( \/) is that mark.
+    const literal = (regex !== undefined ? regex.replace(/\\([^\w\s])/g, "$1") : (quoted ?? bare ?? "")).toLowerCase();
+    if (!literal) {
+      not = false;
+      continue;
+    }
+    const test = (line: string) => line.toLowerCase().includes(literal);
+    terms.push({ test, not });
+    not = false;
+  }
+  const limit = search.limit ?? 100;
+  const wanted = terms.filter((t) => !t.not);
+  const shown: string[] = [];
+  let total = 0;
+  let files = 0;
+  for (const file of search.files) {
+    if (!filters.every((keep) => keep(file.path))) continue;
+    const lines = file.text.split("\n");
+    if (!wanted.every((t) => lines.some(t.test)) || terms.some((t) => t.not && lines.some(t.test))) continue;
+    files++;
+    const hits = wanted.length ? lines.flatMap((line, i) => (wanted.some((t) => t.test(line)) ? [`${file.path}:${i + 1}: ${line.trim().slice(0, 200)}`] : [])) : [`${file.path}:1: ${(lines[0] ?? "").trim().slice(0, 200)}`];
+    total += hits.length;
+    for (const hit of hits) if (shown.length < limit) shown.push(hit);
+  }
+  const head = `${total} matching line${total === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"}${total > shown.length ? ` (the first ${shown.length} shown)` : ""}`;
+  return [search.note ? `${search.note}\n${head}` : head, ...shown].join("\n");
 }
 
 /** A deterministic grader's verdict on one run: every type but llm. */
@@ -498,8 +542,9 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
 type Answered = { status: number; body: unknown };
-/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). */
-type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true }) => Promise<Answered>;
+/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `signal`: the
+ *  request and the read of its body stop when it aborts, and the call rejects. */
+export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; signal?: AbortSignal }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
 function apiOf(baseUrl: string, token: string): Api {
@@ -509,6 +554,7 @@ function apiOf(baseUrl: string, token: string): Api {
       method,
       headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": raw ? "text/markdown" : "application/json" }), ...headers },
       ...(body === undefined ? {} : { body: raw ? body : JSON.stringify(body) }),
+      ...(options.signal ? { signal: options.signal } : {}),
     }).catch((error: unknown) => {
       throw new ApiFailure(`${method} ${path}: the server did not answer (${(error as Error).cause instanceof Error ? ((error as Error).cause as Error).message : (error as Error).message})`);
     });
@@ -611,6 +657,26 @@ async function presentOf(api: Api, runId: string, paths: readonly string[]): Pro
 }
 
 const costOf = (view: Json): number | null => (isObject(view.cost) && typeof view.cost.usd === "number" ? view.cost.usd : null);
+/** How long a run's metrics read may take before the run is reported without them. */
+export const METRICS_TIMEOUT_MS = 10_000;
+/** The metrics of the one run `agentId` made (RunMetrics), from GET /stats?agent=; null when the server kept none (the run
+ *  has not ended, or ended without them) or the read fails, takes over `timeoutMs`, or is stopped by `signal` (the eval's
+ *  stop, which its caller then throws): a run's result never fails on its metrics. */
+export async function metricsOf(api: Api, agentId: string, signal?: AbortSignal, timeoutMs = METRICS_TIMEOUT_MS): Promise<RunMetrics | null> {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const bound = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const read = await api("GET", `/stats?agent=${encodeURIComponent(agentId)}`, undefined, {}, { signal: bound }).catch(() => undefined);
+  const analytics = read?.status === 200 && isObject(read.body) && isObject(read.body.analytics) ? read.body.analytics : undefined;
+  const totals = analytics && isObject(analytics.totals) ? analytics.totals : undefined;
+  if (!analytics || !totals || !(typeof totals.runs_with_metrics === "number" && totals.runs_with_metrics > 0)) return null;
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const tools: RunMetrics["tools"] = {};
+  for (const tool of Array.isArray(analytics.tools) ? analytics.tools : []) if (isObject(tool) && typeof tool.tool === "string") tools[tool.tool] = { calls: count(tool.calls), errors: count(tool.errors) };
+  return {
+    input: count(totals.input), cache_read: count(totals.cache_read), cache_write: count(totals.cache_write), output: count(totals.output),
+    requests: count(totals.requests), unmetered: count(totals.unmetered), tool_calls: Object.values(tools).reduce((sum, t) => sum + t.calls, 0), tools,
+  };
+}
 
 // ---- the eval ---------------------------------------------------------------------------------------------------------
 
@@ -642,7 +708,13 @@ export type EvalOptions = {
 type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
 type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
-export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[] };
+/** A run's tokens, model requests and tool calls as its end wrote them (GET /stats over the run's agent: an eval makes a
+ *  fresh agent for each run). `input` excludes cached input: the whole prompt is `input + cache_read + cache_write`.
+ *  `tools` is GET /stats' 20 most-called tools, and `tool_calls` sums them: a run that called more than 20 tools counts low. */
+export type RunMetrics = { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number; tool_calls: number; tools: Record<string, { calls: number; errors: number }> };
+/** `answer`, `calls`, `mcp_calls`, `created_at`, `ended_at` and `metrics`: what the run left, kept in the report so a caller scores the
+ *  run itself after the eval's temp server is gone (a hill climb's parser and judge, say). */
+export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
 export type Report = {
   package: { name: string; version: string; dir: string };
@@ -829,6 +901,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const view = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
   // A run that waits on a person (a question, an approval, its cap) is graded as it stands, then cancelled.
   await settle(ctx, runId, ended.status);
+  // Its metrics once it has ended (a cancelled run's end writes them too), before the eval's server can go.
+  const metrics = await metricsOf(api, agentId, options.signal);
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
@@ -843,7 +917,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     })(),
   };
   stopped();
-  const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view) };
+  const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics };
   // Waiting on its person's answer (an ask_person question, a tool call's approval) is where such a run stops, and is
   // graded; paused at its cap, or stopped, it did not get there.
   const pending = isObject(view.pending) && typeof view.pending.kind === "string" ? view.pending.kind : undefined;
@@ -906,7 +980,8 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
   }
   const served = ctx.served;
   const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
-  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => !same(view[key], served[key]));
+  // computer_here is the server's answer to the package's computer list, never the package: not compared.
+  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   const local = compiled(pkg, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -918,18 +993,17 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json): Promise<void> 
 }
 
 /** The pins a case's apply fills (from its parameters) set on the in-process server before it applies, as an owner sets
- *  them (deploy/walk.md): until the store cutover an agent's own pin is not kept (AGENT_LAYER_PINS), and the apply makes a
- *  pinned write the server does not pin deny, so a case that grants one could never reach its fake. The server's pin
- *  then holds the call to the case's own target, as it does in production. Another server's (--server) settings are its
- *  owner's, left as they are: there an unpinned write stays deny and its case says so. */
+ *  them (deploy/walk.md): the server's pin holds the call to the case's own target beside the agent's own, as it does in
+ *  production. Another server's (--server) settings are its owner's, left as they are: there the agent's own pin alone
+ *  holds the write. */
 async function serverPins(ctx: Ctx, one: EvalCase): Promise<void> {
   const { api, pkg, options } = ctx;
   if (options.server) return;
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
-  const { unkept } = compiled(pkg, parameters, { mcp: pkg.mcp, defaultTools: [], grants: [], pins: false });
-  if (!unkept.length) return;
+  const pins = filledPins(pkg.mcp, parameters).filter(({ empty }) => !empty.length);
+  if (!pins.length) return;
   const settings = expectOk("reading the server's tool settings", await api("GET", "/settings/tools"));
-  for (const { tool, pin } of unkept) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
+  for (const { tool, pin } of pins) settings[tool] = { ...(isObject(settings[tool]) ? settings[tool] : {}), pin };
   expectOk("pinning the case's writes on the server", await api("PUT", "/settings/tools", settings));
 }
 

@@ -1,7 +1,7 @@
 // Pricing is money and has no integration path until a host composes the extension: the arithmetic is pinned here.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchUsage, LIST_PRICES, resolvePrices, searchUsage, sessionCharge, sessionPrice, startSpent, withEstimate } from "../dist/index.js";
+import { LIST_PRICES, resolvePrices, sessionCharge, sessionPrice, startSpent, withEstimate } from "../dist/index.js";
 
 const at = (s) => new Date(Date.UTC(2026, 9, 6, 12, 0, s)).toISOString();
 /** The meter bills to the picodollar, so sums are compared at that resolution. */
@@ -48,14 +48,6 @@ test("unpriced and invalid sessions record their seconds, charge nothing and say
   }
   const first = sessionCharge(startSpent(at(100)), at(50), resolvePrices());
   assert.deepEqual([first.spent.seconds, first.spent.chargedThrough], [0, at(100)]);
-});
-
-test("fetch and search are charged per call at list price, and fetch with proxies at its own", () => {
-  const prices = resolvePrices();
-  assert.equal(fetchUsage(prices, false).usage.cost.total, 0.001);
-  assert.equal(fetchUsage(prices, true).usage.cost.total, 0.004);
-  assert.equal(searchUsage(prices).usage.cost.total, 0.007);
-  assert.equal(searchUsage(resolvePrices({ searchUsd: 0.01 })).usage.cost.total, 0.01, "the host's plan wins");
 });
 
 test("a bill topped up to the minimum is exactly the minimum, at any millisecond: 60 s and $0.002 at $0.002 a minute", () => {
@@ -122,4 +114,19 @@ test("list-priced dollars are tracked as the charges accumulate: a record that r
   assert.deepEqual([pico(other.usd), other.estimatedUsd], [0.301, 0.001]);
   // Nothing new billed (the release already closed the record): the estimate it held stays, and nothing is added.
   assert.deepEqual(withEstimate(other, other, true).estimatedUsd, 0.001);
+});
+
+// A host that gives a cut call's hold back (agentrun's runner, on a lost claim) relies on this: a charge is the session's
+// wall time since its last COMMITTED charge (its record's chargedThrough), so time a charge covered that never committed
+// (computed, billed at the provider, its process lost before the commit) is billed by the next charge, never lost.
+test("a charge that never commits leaves the session's record as it was: the next charge, its release, bills that time too", () => {
+  const prices = { sessionUsdPerHour: 0.12, sessionMinimumS: 60 };
+  const committed = sessionCharge(startSpent(at(0)), at(100), prices).spent;
+  // A call's charge through 200 s, computed and never committed (its process lost): the record stays at 100 s.
+  const lost = sessionCharge(committed, at(200), prices);
+  assert.equal(lost.spent.seconds, 200);
+  // The next claim's release, from the committed record: the 100 s the lost charge covered, and the 30 s after it.
+  const release = sessionCharge(committed, at(230), prices, "priced", true);
+  assert.equal(release.spent.seconds, 230, "every second since the session opened, once");
+  assert.ok(Math.abs(release.spent.usd - (0.12 * 230) / 3600) < 1e-11, `the whole time billed, the lost charge's included: ${release.spent.usd}`);
 });

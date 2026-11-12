@@ -7,14 +7,19 @@ import type { BeforeRequest } from "../../runner.js";
 import { CapRefused } from "./errors.js";
 import { inputBound, pricingOf } from "./price.js";
 import { capRule, isFigure } from "./rule.js";
-import { unmeasured } from "./words.js";
+import { SPEND_CAP_REACHED, unmeasured } from "./words.js";
 import type { CapMode, CapModel, ModelCapRequest, Previous } from "./types.js";
+
+/** The cap's refusal as the runner takes it: its words, its code, and what the run's end is decided from (parkOf): for
+ *  good, or for room with its figures. */
+const refusalOf = (error: CapRefused) => ({ refuse: error.message, code: error.code, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) });
 
 export interface BeforeRequestOptions {
   /** The run's cap, read before every request. Undefined: no cap, nothing refused. */
   capUsd(): number | undefined;
-  /** A model as the cap prices it, by its id; undefined: a model with no price here. */
-  modelOf(id: string): CapModel | undefined;
+  /** A model as the cap prices it, by its id and the route its request came by (ModelRequest.route; absent, the
+   *  session's own): one id two routes price apart is priced as its route books it. Undefined: a model with no price here. */
+  modelOf(id: string, route?: string): CapModel | undefined;
   /** The session's previous request on a model, as its usage reported it: none prices the input uncached. */
   previousOf?(model: string): Previous | undefined;
   /** What the run spent beside the session's model requests, which the runner's booking does not hold: its priced tools'
@@ -38,7 +43,11 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
   return (request) => {
     const capUsd = options.capUsd();
     if (capUsd === undefined) return undefined;
-    const model = options.modelOf(request.model) ?? unpriced(request.model);
+    // `owed`: money already owed at the provider: booked and held, never asked of the rule; only for charges incurred
+    // outside a call (a browser session's release, the time a person used). It counts in the run's spend and holds like
+    // any paid step, so every refusable step after it sees it. Only a figure is money: one that is not goes to the rule.
+    if (request.paid?.owed && isFigure(request.feeUsd ?? 0)) return { holdUsd: request.feeUsd ?? 0 };
+    const model = options.modelOf(request.model, request.route) ?? unpriced(request.model);
     // A request the host sends beside the harness's own (its host label: a learned workflow's node) is another
     // conversation's prompt: nothing of the session's cache is read for it, so it is priced as a cache miss.
     const previous = request.host === undefined ? options.previousOf?.(request.model) : undefined;
@@ -57,8 +66,8 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
     // neither (no hold, no price or no measure) cannot be kept within the cap: refused for good, as an unmeasured input.
     let inFlight = 0;
     for (const flight of request.inFlight) {
-      const figure = isFigure(flight.holdUsd) ? flight.holdUsd : worstOf(options.modelOf(flight.model), flight.inputTokensMax, flight.outputTokensMax);
-      if (figure === undefined) return { refuse: unmeasured(capUsd) };
+      const figure = isFigure(flight.holdUsd) ? flight.holdUsd : worstOf(options.modelOf(flight.model, flight.route), flight.inputTokensMax, flight.outputTokensMax);
+      if (figure === undefined) return { refuse: unmeasured(capUsd), code: SPEND_CAP_REACHED };
       inFlight += figure;
     }
     // The run's spend and holds: the runner's (its model requests) and the host's (its priced tools).
@@ -76,7 +85,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
         const judged = capRule.judge({ kind: "tool", id: `turn-${request.turn}`, name: request.paid.name, holdUsd: request.feeUsd ?? 0, basis: request.paid.basis }, { capUsd, spentUsd, heldUsd, mode, now: now() });
         return { holdUsd: judged.heldUsd };
       } catch (error) {
-        if (error instanceof CapRefused) return { refuse: error.message, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) };
+        if (error instanceof CapRefused) return refusalOf(error);
         throw error;
       }
     }
@@ -86,7 +95,7 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
         return { holdUsd: judged.heldUsd, boundUsd: judged.boundUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
       } catch (error) {
         // Its words, and what the run's end is decided from (parkOf): for good, or for room with its figures.
-        if (error instanceof CapRefused) return { refuse: error.message, forGood: error.forGood, ...(error.figures ? { figures: error.figures } : {}) };
+        if (error instanceof CapRefused) return refusalOf(error);
         throw error;
       }
     };

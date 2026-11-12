@@ -1,5 +1,7 @@
 // The recovery driver on a memory store with scripted adapters: what a run commits, what a later open is answered
 // from, and what it refuses. Every later open of one store stands for a later process of the same run.
+import { frozenEffectId, frozenStepSessionId } from '../dist/recovery/frozen-snapshot.js';
+import { gatewayIntentOf } from '../dist/recovery/handoff-receipts.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,10 +12,7 @@ import { runWorkflow, DecisionProviderError, judgeFromProvider } from '@parcha/a
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
-import {
-  openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, RecoveryError, nodeAt,
-  frozenEffectId, frozenStepSessionId, frozenStepId, FROZEN_SNAPSHOT_SCHEMA, gatewayIntentOf,
-} from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, RecoveryError, nodeAt, frozenStepId, FROZEN_SNAPSHOT_SCHEMA } from '@parcha/agentrun-dsl/recovery';
 
 const scratch = mkdtempSync(join(tmpdir(), 'agentrun-recovery-driver-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -758,7 +757,6 @@ test('an escalation is one commit that names its own revision; every later open 
   const workflow = doc([{ node: 'extract', label: 'read', instructions: 'Read it.', out: 'Any', as: 'record' }]);
   const row = { kind: 'gate', stage: 'review', summary: 'A person has to look.', state: { seen: 1 }, workflow_sha_used: 'sha-w', pin_sha256: 'sha-w', step_label: 'read', step_exec_id: null, cost_usd: 0.5, turns: 3, effect_calls: 1, evidence_dir: 'evidence' };
   const store = memoryStore(); let driver = await open(store, workflow);
-  await assert.rejects(driver.handoff({ cost_usd: 1, turns: 1, effect_calls: 0 }), fault('FROZEN_CHECKPOINT_INVALID', 'A handoff follows an escalation; none is recorded'));
   const escalated = await driver.escalate(row);
   assert.match(escalated.tail, new RegExp(`^${KEY}:escalated:[a-z0-9]{1,8}$`));
   assert.deepEqual(escalated, { ...row, tail: escalated.tail, revision: 2 });
@@ -769,13 +767,7 @@ test('an escalation is one commit that names its own revision; every later open 
   assert.deepEqual(journal.state.escalation, escalated);
   driver = await open(store, workflow);
   assert.deepEqual([driver.escalation(), await driver.escalate({ ...row, kind: 'failure' })], [escalated, escalated]);
-  assert.deepEqual(await driver.handoff({ cost_usd: 0.5, turns: 3, effect_calls: 1 }), escalated);
-  const moved = await driver.handoff({ cost_usd: 0.75, turns: 4, effect_calls: 1 });
-  assert.deepEqual([moved.cost_usd, moved.turns, moved.revision, moved.tail], [0.75, 4, 2, escalated.tail]);
-  await driver.annotateHandoff({ escalation_revision: 2, tail: escalated.tail, inherit: 'full', block_chars: 10, digest_chars: 20 });
   await driver.close(); journal = await operator(store, workflow);
-  assert.deepEqual(journal.notes.map((note) => note.kind), ['escalation', 'handoff', 'inherited']);
-  assert.deepEqual(journal.notes[1].detail, { escalation_revision: 2, previous_cost_usd: 0.5, cost_usd: 0.75, turns: 4, effect_calls: 1 });
   // A step's identity names the continuation when the escalation is about a step.
   const named = memoryStore(); driver = await open(named, workflow);
   assert.equal((await driver.escalate({ ...row, step_exec_id: frozenStepId('step', step(0)) })).tail, `${KEY}:escalated:${frozenStepId('step', step(0))}`);

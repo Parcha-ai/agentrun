@@ -87,22 +87,6 @@ describe("RunDetail's Report tab before an answer", () => {
     }
   });
 
-  it("a run that waits on something this console doesn't know yet says it waits for you, never for an answer below or that it stopped", () => {
-    // A kind of `pending` a newer server may send (one this console knows neither as a question, an approval nor a
-    // budget pause): only its kind is read, nothing else of it.
-    for (const [name, state] of [["run.input_required.waiting.1", "waiting"], ["run.input_required.idle.1", "idle"]] as const) {
-      const f = runFixture(name);
-      const run = { ...f.run, state, pending: { kind: "a_future_kind" } } as unknown as Run;
-      const shown = report(run, f.page.rows);
-      expect(shown, name).not.toContain(WRITING);
-      expect(shown, name).toContain("Waiting for you");
-      expect(shown, name).toContain("The run continues once you give it what it waits on.");
-      expect(shown, name).not.toContain("Waiting for your answer");
-      expect(shown, name).not.toContain("reply below");
-      expect(shown, name).not.toContain("Stopped before it wrote an answer.");
-    }
-  });
-
   it("a run paused at its spend cap says so, with what it spent of its cap from the served figures, and points at the raise above", () => {
     const f = runFixture("run.input_required.waiting.1");
     const said = "Not sent: this run has spent $0.04 of its $0.05 cap.";
@@ -161,5 +145,19 @@ describe("RunDetail's Report tab before an answer", () => {
       const f = runFixture(name);
       expect(report(f.run, f.page.rows), name).toContain(WRITING);
     }
+  });
+});
+
+// A run opened on its Graph tab whose graph is not there (its read was refused): the default tab is open and the tab
+// row has a Tab stop, never a blank view no key leaves.
+describe("RunDetail, opened on a Graph tab that is not there", () => {
+  it("opens the run's default tab, selected and reachable", () => {
+    const f = runFixture("run.completed.idle.1");
+    const html = renderToStaticMarkup(createElement(RunDetail, { run: f.run, agentName: "invoice-checker", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, onMessage: () => {}, tab: "graph" }));
+    const tabs = html.match(/<button[^>]*role="tab"[^>]*>[^<]*/g) ?? [];
+    expect(tabs.some((t) => t.endsWith("Graph"))).toBe(false);
+    const open = tabs.filter((t) => t.includes('aria-selected="true"'));
+    expect(open.length).toBe(1);
+    expect(open[0]).toContain('tabindex="0"');
   });
 });

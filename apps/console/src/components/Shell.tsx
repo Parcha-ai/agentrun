@@ -110,7 +110,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
         {banners}
-        <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
       </div>
     </div>
   );

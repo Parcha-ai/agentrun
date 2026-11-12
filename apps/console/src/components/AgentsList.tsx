@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { fieldBoxClass, Input } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { waitingOf, waitingWords } from "@/lib/learning";
 import { cn } from "@/lib/utils";

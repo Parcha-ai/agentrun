@@ -6,15 +6,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { durableDecisions } from "@parcha/agentrun-pi/durable";
+import { durableDecisions } from "../dist/workflow/readers.js";
 import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { client, FAUX, flowAgent, follow, runDir, runRecordOf, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -27,17 +27,8 @@ const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 /** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
 const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
 const OTHER_GATEWAY_KEY = "gateway-key-not-jevs";
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The descriptor a run's process is handed the key on: the first one after its stdio and its secrets pipe. */
 const KEY_FD = "4";
-/** The descriptor `environ` names for the key, without printing the rest of it. */
-const keyFdIn = (environ) => /(?:^|\0)AGENTRUN_SERVE_DECISION_KEY_FD=([^\0]*)/.exec(environ)?.[1];
-/** Whether `pid`'s descriptor `fd` is a Unix socket, as the handed one is (one end of a socket pair). A run's process
- *  opens no other, and a closed low number is soon open again for something else, so "not open" would prove nothing. */
-async function handedSocket(pid, fd) {
-  const inode = /^socket:\[(\d+)\]$/.exec(await readlink(`/proc/${pid}/fd/${fd}`).catch(() => ""))?.[1];
-  return inode !== undefined && (await readFile(`/proc/${pid}/net/unix`, "utf8")).split("\n").some((line) => line.trim().split(/\s+/)[6] === inode);
-}
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
 /** The same question, put to Parallel. */
@@ -61,8 +52,6 @@ const flow = (steps, output = { schemaId: "Probe", path: "probe" }) => ({
   output,
   root: { node: "chain", steps },
 });
-/** What a run that cannot reach the key reports. */
-const CLEAN = { leaked: false, key_set: false, fd_open: false, sub_leaked: false, sub_fd_open: false, node_leaked: false, node_fd_open: false, host_env_leaked: false };
 const QUESTION = "State of Delaware. Certificate of Incorporation of Example Widgets, Inc.";
 
 /** The canary as the decision key and a file for the fake Jev's calls, in this process's environment for test `t`. */
@@ -94,55 +83,9 @@ async function startFlow(api, steps, output, { schemas = {}, tools, tool_setting
   return started.body.run_id;
 }
 
-/** The run's process, once it serves its door (after its app, which reads the key, has returned): its pid. */
-async function processOf(data, runId, not) {
-  for (let i = 0; ; i++) {
-    const record = runRecordOf(data, runId);
-    const pid = record.holder?.pid;
-    if (record.status === "running" && record.holder?.serve && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
-    assert.ok(i < 400, "the run's process serves");
-    await sleep(50);
-  }
-}
-
-/** The escalation kinds the run's ended tasks hold, from its released store. */
-function escalations(storePath) {
-  const db = new DatabaseSync(storePath, { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM tasks").all().map((row) => JSON.parse(row.record).state?.outcome?.result?.escalation?.kind).filter(Boolean);
-  } finally {
-    db.close();
-  }
-}
-
-/** The failure messages the run's ended tasks hold, from its released store. */
-function failures(storePath) {
-  const db = new DatabaseSync(storePath, { readOnly: true });
-  try {
-    return db.prepare("SELECT record FROM tasks").all().map((row) => JSON.parse(row.record).state?.outcome?.error?.message).filter(Boolean);
-  } finally {
-    db.close();
-  }
-}
-
-/** Every file under `dir` (small ones only) whose bytes hold `needle`. */
-async function filesHolding(dir, needle) {
-  const found = [];
-  for (const entry of await readdir(dir, { withFileTypes: true, recursive: true })) {
-    if (!entry.isFile()) continue;
-    const path = join(entry.parentPath ?? entry.path, entry.name);
-    if ((await stat(path)).size > 32 * 2 ** 20) continue;
-    if ((await readFile(path)).includes(needle)) found.push(path);
-  }
-  return found;
-}
-
-/** A model node that reports the names of the decision keys its process was handed (faux-model.mjs), and its schema. */
-const keysNode = (tools) => ({ node: "extract", label: "keys", instructions: "Report the decision keys.", out: "Names", as: "names", ...(tools ? { tools } : {}) });
-const NAMES = { Names: { type: "object", required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } } };
-
-test("decisionProvidersFor and decisionKeysFor: Jev's key by its route, OpenRouter's for an OpenRouter node, none for Parallel picked without its key, and a node's need and a web tool's together", async () => {
-  const { decisionProvidersFor } = await import("../dist/runs.js");
+test("a revision's decision providers (needsOf) and decisionKeysFor: Jev's key by its route, OpenRouter's for an OpenRouter node, none for Parallel picked without its key, and a node's need and a web tool's together", async () => {
+  const { needsOf } = await import("../dist/run-secrets.js");
+  const decisionProvidersFor = async (revision) => (await needsOf(revision)).decisionProviders;
   const { decisionKeysFor } = await import("../dist/decisions.js");
   const { handsParallel, planeFor } = await import("../dist/tool-plane.js");
   const { toolingOf } = await import("../dist/tools.js");
@@ -311,8 +254,7 @@ async function timeline(api, runId) {
   return page.body.rows;
 }
 
-// SKIP (follow-up #2089): the run's cost leaves out its decisions' cost, so the timeline's usage row and the run's cost disagree
-test.skip("a judge's and a route's decisions are timeline rows: the judge's node, provider and each answer with its probability, the route's branch and unsure when it took that branch, and their cost on the usage row", async (t) => {
+test("a judge's and a route's decisions are timeline rows: the judge's node, provider and each answer with its probability, the route's branch and unsure when it took that branch, and their cost on the usage row", async (t) => {
   await withCanary(t);
   const { api } = await serve(t, { fauxJev: FAUX_JEV });
   const branch = (name) => ({ criteria: `the case is ${name}`, body: { ...probe(), label: `probe ${name}` } });
@@ -346,8 +288,7 @@ test("a workflow followed live through its end: the usage row its cursor last re
   assert.match(usage?.summary ?? "", /^Cost: /, `the followed usage row: ${JSON.stringify(usage)}`);
 });
 
-// SKIP (follow-up #2089): the run's cost leaves out the cost the decision provider reported, so it reads 0
-test.skip("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
+test("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
   await withCanary(t);
   process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });

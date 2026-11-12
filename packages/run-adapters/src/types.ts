@@ -135,6 +135,8 @@ export interface ModelRequest {
   /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
    *  plus what the provider adds), undefined when it was not measured. */
   inputTokensMax?: number;
+  /** Its `inputTokensMax` is its provider's count, not its bytes (ProxyRequest.inputTokensCounted). */
+  inputTokensCounted?: true;
   /** The most output tokens the request asks for, when its body says (the proxy's policy reads it). */
   outputTokensAsked?: number;
   /** The least output it may be limited to and still answer: its answer's 1,024 tokens, plus the least thinking its
@@ -145,8 +147,14 @@ export interface ModelRequest {
   /** A paid tool call, no model request (a web search's request, a monid call): held at `feeUsd` alone by the cap's tool
    *  rule, `name` and `basis` in a refusal's words. `call`: the tool call it was booked under, written on its
    *  runner.request so the run view puts its charge under that call. `charged_by`: who charges for it (the tool's
-   *  provider: parallel, monid, an MCP server, a browser vendor), written there too, as main's charge row names it. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string };
+   *  provider: parallel, monid, an MCP server, a browser vendor), written there too, as main's charge row names it.
+   *  `tool` and `tag`: the tool whose charge it is (a browser's, "browser") and its session, written there for the run
+   *  view to place it as main's charge of that tool. `owed`: money its provider is already owed (a browser session's
+   *  release, the time a person used): held at `feeUsd` and booked, never asked of the cap's rule, so a run past its cap
+   *  or of unknown spend still counts it (main keeps it so: keepHold). `hold`: a hold-only step: money reserved, not
+   *  spent; given back on a lost claim, never booked as cut (its holder's charges book the money, each its own step).
+   *  `ref`: the one booking it names (a browser charge's session and time): a second admit of the same ref is not booked. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
@@ -158,6 +166,10 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
+   *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
+   *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
+  route?: string;
 }
 
 /** What a paid request cost, once it completed. */
@@ -245,13 +257,24 @@ export interface SessionIO {
    *  runs nothing; a park holds the call, writing nothing, until the session's signal is aborted (the run parks on a
    *  person). Absent: every call runs. */
   gate?(call: GateCall, context?: unknown): Promise<GateAnswer>;
+  /** A tool the adapter adds of its own (read_skill_file over the session's skills), made the host's: its calls go the
+   *  way the host's own tools' do (the run's record of the call and its result, which its Timeline shows, the rule before
+   *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
+   *  keeps no record of calls, and the tool runs as it is. */
+  hostTool?(tool: HostTool): HostTool;
 }
+
+/** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */
+export const hostedTool = (io: Pick<SessionIO, "hostTool">, tool: HostTool): HostTool => (io.hostTool ? io.hostTool(tool) : tool);
 
 /** A call as the host's gate is asked about it. */
 export interface GateCall {
   readonly callId: string;
   readonly tool: string;
   readonly args: Record<string, unknown>;
+  /** The call runs again after an earlier attempt whose start the log holds (a replay-safe call a crash cut): that
+   *  attempt may have been sent, so a refusal never says nothing was. */
+  readonly replayed?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
@@ -292,9 +315,8 @@ export interface AdapterSession {
   recover(): Promise<void>;
   /** Record the open turn as ended, interrupted, and send nothing: the turn is not to be resumed (a person stopped it, and
    *  an interrupt writes no end in the session). Only when `state` is `open_turn`; the session is `idle` after, here and
-   *  when a later process opens it, and the next `send` is a turn of its own. A follow-up closes a cut turn the same way
-   *  (kernel/follow-up.ts, FollowUpTarget.settleOpenTurn), naming its own prompt (`opening`): that one is withdrawn and
-   *  never carried, and the rest is left as it is. */
+   *  when a later process opens it, and the next `send` is a turn of its own. A host that closes a cut turn of its own
+   *  prompt names it (`opening`): that one is withdrawn and never carried, and the rest is left as it is. */
   settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
@@ -317,8 +339,10 @@ export interface AdapterSession {
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
    *  takes and the API it speaks. Undefined while no proxy is up (no turn has attached one yet). Every model request of
-   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. */
-  port?(label: string): SessionPort | undefined;
+   *  a session goes through that one proxy: the same policy, origin, credential, price and booking. `tier`: the run's
+   *  model of that tier instead (a learned workflow's node of a tier), on a proxy of its own beside the session's, with
+   *  that model's origin, credential and price and the session's booking; undefined when the session has none for it. */
+  port?(label: string, tier?: string): SessionPort | undefined;
 }
 
 /** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */

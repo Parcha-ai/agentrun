@@ -14,12 +14,12 @@ const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
   agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: kind === "agentic" ? { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"] } : { version: 1, name: "Flow", skills: [], tools: [], workflow: { version: 1, root: { kind: "agent", id: "a", task: "t" } } },
 });
-const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
   learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
 };
-const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 } };
+const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
 const ended: TimelinePage = { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
 
 let root: ReturnType<typeof createRoot> | undefined;

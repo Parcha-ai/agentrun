@@ -8,11 +8,11 @@
 import assert from "node:assert/strict";
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, follow, runDir, runRecordOf, serve } from "./support.mjs";
+import { agent, follow, runDir, scratchDir, serve, serverLog } from "./support.mjs";
 
 /** A key for the fake endpoint: no real one. */
 const KEY = `not-a-secret-${"anthropic"}`;
@@ -45,8 +45,6 @@ async function claudeProcess() {
   return undefined;
 }
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
-/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
 async function claudeServe(t, fake, env = {}, model = MODEL) {
@@ -97,8 +95,7 @@ async function filesUnder(dir, at = "") {
   return out;
 }
 
-// SKIP (follow-up #2080): the claude-agent CLI on the runner does not run under setpriv --no-new-privs as pi's commands do.
-test.skip("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
@@ -115,7 +112,7 @@ test.skip("a run on claude-agent: through the adapter's proxy with the native mo
   assert.equal(field(status, "NoNewPrivs"), "1", "under setpriv --no-new-privs, as pi's commands are");
   assert.equal(field(status, "Uid")?.split(/\s+/)[0], String(process.getuid()), "as the run's own user");
   const cwd = await readlink(`/proc/${cli}/cwd`);
-  assert.equal(cwd, realpathSync(join(runDir(data, runId), "work")), "the CLI works in the run's workspace, where its file tools write");
+  assert.equal(cwd, realpathSync(scratchDir(data, runId)), "the CLI works in the run's scratch folder, the alias of its workspace that its file tools take (cli-run-spec.ts)");
   const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0").filter(Boolean);
   assert.ok(!environ.some((line) => line.includes(KEY)), "the key never reaches the CLI");
   assert.deepEqual(environ.filter((line) => /^(ANTHROPIC_API_KEY|AGENTRUN_[A-Z_]*)=/.test(line)).map((line) => line.split("=")[0]), [], "nor the server's variables");
@@ -136,8 +133,7 @@ test.skip("a run on claude-agent: through the adapter's proxy with the native mo
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 
-// SKIP (follow-up #2080): a claude-agent run on the runner works in a scratch folder, not the run folder this test reads from.
-test.skip("a claude-agent run writes where its CLI works: a relative path, the CLI's own absolute one and a learning note all land in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run writes where its CLI works: a relative path, the CLI's own absolute one and a learning note all land in the workspace, and no tool result names the server's data directory", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   // The model as sonnet answers (QA run 3, F20): a relative path, then the file at its working directory's absolute
   // path, then a learning note as M2's end-of-run turn writes one; then a path out of the workspace and a file that is not
   // there, then its answer.
@@ -167,7 +163,10 @@ test.skip("a claude-agent run writes where its CLI works: a relative path, the C
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 150_000 });
   const work = join(runDir(data, runId), "work");
   assert.ok(cwd, "the CLI told its model its working directory");
-  assert.equal(realpathSync(cwd), realpathSync(work), "the CLI's working directory is the run's workspace");
+  // On the runner the CLI works in the run's scratch folder, off the run's disk: an alias of its workspace for the run's
+  // file tools (cli-run-spec.ts), so what it writes there lands in the workspace. It is swept at the claim's release, so
+  // its path is compared, under the data root as given or as resolved.
+  assert.ok([data, realpathSync(data)].some((root) => cwd === scratchDir(root, runId)), `the CLI's working directory is the run's scratch folder: ${cwd}`);
   const calls = rows.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);
   assert.deepEqual(calls, [["write", "success"], ["read", "success"], ["write", "success"], ["write", "success"], ["write", "failed"], ["read", "failed"]], JSON.stringify(rows.filter((r) => r.kind === "tool_result").map((r) => r.tool_result_preview)));
   // What the model was told of each call: the CLI sends each tool's result back in the next request.
@@ -176,7 +175,10 @@ test.skip("a claude-agent run writes where its CLI works: a relative path, the C
   assert.ok(told.some((text) => text.includes("relative")), `the relative write landed where the read looks: ${told.join(" | ")}`);
   assert.equal(await readFile(join(work, "hello.md"), "utf8"), "hello\n", "the absolute write landed on the same file, in the workspace");
   assert.equal(await readFile(join(work, ".learning", "note.md"), "utf8"), "noted\n", "the learning note is in the workspace");
-  assert.deepEqual((await filesUnder(work)).sort(), [".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
+  // The host's own folder stays, empty: the run's shell scratch (its TMPDIR, run-tools.ts TMP_DIR) swept at the end. The
+  // sweep runs as the session closes, after the end commit the follow saw: the list is read once it is done (bounded).
+  for (let i = 0; i < 100 && (await filesUnder(work)).some((path) => path.startsWith(`.agentrun${sep}`)); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual((await filesUnder(work)).sort(), [".agentrun", ".learning", join(".learning", "note.md"), "hello.md"], "and nothing else: the CLI keeps no file of its own there");
   assert.ok(!existsSync(join(runDir(data, runId), "escape.md")), "the path out was not written");
   assert.ok(told.some((text) => /escape\.md: outside the workspace/.test(text)), `the path out is refused: ${told.join(" | ")}`);
   assert.ok(told.some((text) => /missing\.md/.test(text) && /ENOENT|no such file/i.test(text)), `the missing file is named: ${told.join(" | ")}`);
@@ -231,13 +233,47 @@ test("a claude-agent run's skills: one the adapter takes is the Skill tool's (ag
   assert.ok(asked.slice(asked.indexOf(first) + 1).some((m) => holds(m.body.messages, CITE)), "loading cite puts its SKILL.md before the model");
 });
 
+test("a claude-agent run's read of a skill's file (read_skill_file) is on its Timeline: the call naming the file, then its result holding the file, under one call id (#2306)", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const SOURCES = `not-a-secret-${"sources"}-primary-first`;
+  let read = false;
+  const fake = await fakeAnthropic({
+    reply: (request) => {
+      // The first turn offered the adapter's read_skill_file reads cite's other file; every other request is answered.
+      const reader = request.tools.find((name) => name.endsWith("read_skill_file"));
+      if (!read && reader) {
+        read = true;
+        return { tool: { name: reader, input: { skill: "cite", path: "reference/sources.md" } } };
+      }
+      return { text: "Claude answered." };
+    },
+  });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake);
+  const skills = {
+    "cite/SKILL.md": "---\nname: cite\ndescription: How this agent cites its sources.\n---\nRead reference/sources.md first.\n",
+    "cite/reference/sources.md": `${SOURCES}: primary sources first.\n`,
+  };
+  const created = await api("POST", "/agents", { ...agent("reader", { harness: "claude-agent", model: `anthropic/${MODEL}`, skills: ["cite"] }), skills });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const run = await api("POST", "/agents/reader/runs", { input: { content: "Read cite's sources file, then answer." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  assert.ok(read, "the model was offered read_skill_file and called it");
+  const call = rows.find((row) => row.kind === "tool_use" && row.tool_name === "read_skill_file");
+  assert.ok(call, `the read's call is on the Timeline: ${JSON.stringify(rows.map((row) => [row.kind, row.tool_name]))}`);
+  assert.equal(call.tool_input_preview, "reference/sources.md", "the call names the file it reads");
+  const result = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === call.tool_use_id);
+  assert.ok(result && rows.indexOf(call) < rows.indexOf(result), "its result follows it, under the same call id");
+  assert.deepEqual([result.tool_name, result.tool_status], ["read_skill_file", "success"]);
+  assert.ok(String(result.tool_result_preview ?? result.text ?? "").includes(SOURCES), `the result is the file: ${JSON.stringify(result)}`);
+});
+
 /** This test's own caller, by its user-agent. */
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-7b21e4`;
 
-// SKIP (follow-up #2078): a dotted OpenRouter model name is not priced at Anthropic's id on the runner
-test.skip("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
   t.after(() => fake.close());
   // OpenRouter's name for claude-haiku-4-5: dotted, as the gateway names it, never the catalog's dashed id.
@@ -271,8 +307,8 @@ test("a capped run on a model named as OpenRouter names it (dotted) is held to i
   assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
 });
 
-// SKIP (follow-up #2078): it reads a file in the run's own folder, which runs no longer write
-test.skip("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run's model proxy reports a refusal in the server's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const server = serverLog(t);
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
@@ -289,12 +325,12 @@ test.skip("a claude-agent run's model proxy reports a refusal in the run's log: 
   assert.equal(refused.status, 401, "a caller without the session's key is refused");
   release();
   await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
-  const log = await readFile(join(runDir(data, runId), "process.log"), "utf8");
+  const log = server.text();
   const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
-  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the server's log: ${log}`);
+  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the server's log`);
 });
 
 test("a refused key ends a claude-agent run at the provider's first 401: one request, no retries, and the run's error in plain words", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {

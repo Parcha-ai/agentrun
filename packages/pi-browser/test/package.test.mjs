@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection } from "@parcha/pi-browser";
+import { BROWSER_TOOLS, browserSection } from "@parcha/pi-browser";
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -56,15 +56,11 @@ const CALLS = [
   ["browser_relaunch", { verified: true, geolocation: { country: "GB", city: "LONDON" } }, true],
   ["browser_relaunch", { geolocation: { city: "LONDON" } }, false],
   ["browser_downloads", {}, true],
-  ["web_fetch", { url: "https://example.com/filing", format: "raw" }, true],
-  ["web_fetch", { format: "markdown" }, false],
-  ["web_search", { query: "delaware file number acme", n: 5 }, true],
-  ["web_search", { n: 5 }, false],
 ];
 
 test("pi validates every tool's arguments against the contract: today's shapes reach the tool, malformed ones never do", async () => {
   const executed = [];
-  const tools = [...BROWSER_TOOLS, ...WEB_TOOLS].map((contract) => defineTool({
+  const tools = BROWSER_TOOLS.map((contract) => defineTool({
     name: contract.name, description: contract.description, parameters: contract.parameters, replay: contract.replay, executionMode: contract.executionMode,
     execute: async (args, api) => { executed.push({ callId: api.callId, tool: contract.name, args }); return { content: [{ type: "text", text: "ok" }] }; },
   }));
@@ -176,12 +172,11 @@ test("importing the package has no effect: sideEffects is false, and loading eve
   assert.deepEqual(JSON.parse(out.stdout), []);
 });
 
-test("pi-durable and chord are the pi family's one version, 1.5.0 exactly, the dev pins the same, and the pi coding agent stays an unbounded peer as pi's package guidance says", () => {
+test("pi-durable and chord are the pi family's one version, 1.5.0 exactly, the dev pins the same, and they are its only pi peers", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(SRC, "..", "package.json"), "utf8"));
   const pinned = ["@earendil-works/chord", "@earendil-works/pi-durable"];
   const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => name.startsWith("@earendil-works/"));
-  assert.deepEqual(peers.map(([name]) => name).sort(), [...pinned, "@earendil-works/pi-coding-agent"].sort());
-  assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
+  assert.deepEqual(peers.map(([name]) => name).sort(), [...pinned].sort());
   for (const name of pinned) {
     assert.equal(manifest.peerDependencies[name], "1.5.0", `${name} is the family's exact version`);
     const pin = manifest.devDependencies?.[name];

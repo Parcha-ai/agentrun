@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { CODEX_BINARY_SHA256, CODEX_VERSION } from "@parcha/agentrun-harness-codex";
+import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION } from "@parcha/agentrun-harness-codex";
 import { codexTarget, findCodex } from "../../run-adapters-codex/dist/binary.js";
 import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
@@ -158,8 +158,27 @@ test("AgentRun ships Codex's install lock: the launcher at the pin, its platform
   assert.deepEqual(Object.entries(lock.packages).filter(([path, entry]) => path && !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity ?? "")).map(([path]) => path), [], "every package by its sha512");
 });
 
-// SKIP (follow-up #2078): Codex's first-use install does not run as before on the runner
-test.skip("the first codex run installs exactly 0.164.0, with this platform's binary, into <data>/harnesses/codex, and runs that binary once it is in", { timeout: 300_000, skip: skipReal }, async (t) => {
+/** Each package of `lock` whose sha512 is not the one the Codex adapter pins (CODEX_NPM_INTEGRITY), and each pinned
+ *  package the lock does not hold: npm holds each tarball to the lock, so the lock must hold the pin. */
+const driftFromPin = (lock) => {
+  const held = Object.fromEntries(Object.entries(lock.packages).filter(([path]) => path).map(([path, entry]) => [path.replace(/^node_modules\//, ""), entry.integrity]));
+  return [
+    ...Object.entries(held).filter(([name, integrity]) => CODEX_NPM_INTEGRITY[name] !== integrity).map(([name]) => `${name}: not the pinned sha512`),
+    ...Object.keys(CODEX_NPM_INTEGRITY).filter((name) => !(name in held)).map((name) => `${name}: pinned, not in the lock`),
+  ];
+};
+
+test("the install lock AgentRun ships for Codex holds exactly the tarballs the adapter pins: each package's sha512 is CODEX_NPM_INTEGRITY's, and a lock that drifts from it is caught", () => {
+  const lock = JSON.parse(readFileSync(new URL("../harnesses/codex/package-lock.json", import.meta.url), "utf8"));
+  assert.deepEqual(driftFromPin(lock), [], "the shipped lock is the pin");
+  // A lock edited or regenerated to point at another tarball, or to drop a platform: caught here, before npm ci trusts it.
+  const tampered = structuredClone(lock);
+  tampered.packages[`node_modules/${CODEX}`].integrity = `sha512-${"A".repeat(86)}==`;
+  delete tampered.packages["node_modules/@openai/codex-linux-arm64"];
+  assert.deepEqual(driftFromPin(tampered), [`${CODEX}: not the pinned sha512`, "@openai/codex-linux-arm64: pinned, not in the lock"]);
+});
+
+test("the first codex run installs exactly 0.164.0, with this platform's binary, into <data>/harnesses/codex, and runs that binary once it is in", { timeout: 300_000, skip: skipReal }, async (t) => {
   assert.equal(CODEX_VERSION, PIN);
   const registry = await registryFor(t, pinnedBinary());
   const { api, data, exes } = await codexServe(t, registry, { real: true });
@@ -190,8 +209,7 @@ test("a second codex run doesn't reinstall: on the same data, after a restart, n
   await second.close();
 });
 
-// SKIP (follow-up #2078): Codex's first-use install does not run as before on the runner
-test.skip("a person's npm config that omits optional packages still installs Codex's platform binary, and the run runs it", { timeout: 300_000, skip: skipReal }, async (t) => {
+test("a person's npm config that omits optional packages still installs Codex's platform binary, and the run runs it", { timeout: 300_000, skip: skipReal }, async (t) => {
   const registry = await registryFor(t, pinnedBinary());
   const { api, data, exes } = await codexServe(t, registry, { npm: { omit: "optional" }, real: true });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
@@ -201,8 +219,7 @@ test.skip("a person's npm config that omits optional packages still installs Cod
   await ranInstalled(api, run.body.run_id, data, exes);
 });
 
-// SKIP (follow-up #2078): Codex's first-use install does not run as before on the runner
-test.skip("capabilities say codex installs on first use until it is installed, and the waiting run reads that it installs", { timeout: 300_000, skip }, async (t) => {
+test("capabilities say codex installs on first use until it is installed, and the waiting run reads that it installs", { timeout: 300_000, skip }, async (t) => {
   const registry = await registryFor(t);
   registry.hold(CODEX);
   const { api } = await codexServe(t, registry);

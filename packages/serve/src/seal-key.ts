@@ -16,13 +16,12 @@
 // start makes a key and records it (and the import's, which sets a data directory up as the server does); a runner reads
 // one and checks it, and never makes or records one. Several data directories in one process each keep their own key.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, type Stats, writeSync } from "node:fs";
 import { join } from "node:path";
-import { unseal } from "@parcha/pi-durable-agent";
+import { unseal } from "./sealing.js";
 import type { Store } from "./store/index.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { handedSecret, holdSealKey } from "./secrets.js";
-import { webhookSecretIn } from "./webhooks.js";
 
 /** The seal key's own directory in the data directory, and its file there. */
 export const SEAL_KEY_DIR = "seal";
@@ -49,9 +48,6 @@ export type SealKey = { readonly key: Buffer; readonly text: string; readonly pa
 /** A key a start booted: on this process's redaction list (secrets.ts holdSealKey) until release(), which its holder calls
  *  as it closes. */
 export type BootedSealKey = SealKey & { readonly release: () => void };
-
-/** Where the data directory `dataDir` keeps its seal key. */
-export const sealKeyPath = (dataDir: string): string => join(dataDir, SEAL_KEY_DIR, SEAL_KEY_FILE);
 
 const HOW = `Hand the server ${SEAL_KEY_ENV} (32 random bytes in base64, e.g. \`openssl rand -base64 32\`), or let it keep one in ${SEAL_KEY_DIR}/${SEAL_KEY_FILE} in its data directory, made at the first start.`;
 const refused = (why: string) => new SealKeyRefused(`No seal key: ${why}. ${HOW}`);
@@ -163,7 +159,7 @@ function recordedIn(value: unknown): string | null | undefined {
 const sameText = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** What a store holds that names its key: the fingerprint it records, and, with none recorded, the values it keeps
- *  sealed and those its data directory keeps sealed beside it (each a check of whether a key opens it). */
+ *  sealed (each a check of whether a key opens it). */
 type StoreSeal = { readonly fingerprint: string | null | undefined; readonly sealed: ReadonlyArray<(key: Buffer) => boolean> };
 
 /** The store slice the check reads and writes. */
@@ -178,42 +174,11 @@ function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
   }
 }
 
-/** The values data directory `dataDir` keeps sealed beside the store, under the same key: the outbound webhook's signing
- *  secret (webhooks.ts) and any trigger settings file (sealed-settings.ts), each a check of whether a key opens it. */
-function sealedBeside(dataDir: string): Array<(key: Buffer) => boolean> {
-  const checks: Array<(key: Buffer) => boolean> = [];
-  if (webhookSecretIn(dataDir, {}) !== undefined) checks.push((key) => "secret" in (webhookSecretIn(dataDir, { [SEAL_KEY_ENV]: key.toString("base64") }) ?? {}));
-  let names: string[] = [];
-  try {
-    names = readdirSync(dataDir);
-  } catch {
-    // No data directory yet: nothing kept beside the store.
-  }
-  for (const name of names) {
-    const adapter = /^trigger-settings-(.+)\.json$/.exec(name)?.[1];
-    if (adapter === undefined) continue;
-    let values: unknown;
-    try {
-      values = (JSON.parse(readFileSync(join(dataDir, name), "utf8")) as { values?: unknown }).values;
-    } catch {
-      continue;
-    }
-    if (!values || typeof values !== "object") continue;
-    for (const [scope, fields] of Object.entries(values as Record<string, unknown>)) {
-      if (!fields || typeof fields !== "object") continue;
-      for (const [field, sealed] of Object.entries(fields as Record<string, unknown>)) {
-        if (typeof sealed === "string") checks.push((key) => opensUnder(key, Buffer.from(sealed, "base64"), `trigger-settings|${adapter}|${scope}|${field}`));
-      }
-    }
-  }
-  return checks;
-}
-
-async function storeSealOf(store: SealKeyStore, dataDir: string): Promise<StoreSeal> {
+async function storeSealOf(store: SealKeyStore): Promise<StoreSeal> {
   const fingerprint = recordedIn(await store.settings.get(SEAL_KEY_SETTING));
   if (fingerprint !== undefined) return { fingerprint, sealed: [] };
   const rows = (await store.sealedSecrets.all()).map((row) => (key: Buffer) => opensUnder(key, row.sealed, row.aad));
-  return { fingerprint, sealed: [...rows, ...sealedBeside(dataDir)] };
+  return { fingerprint, sealed: rows };
 }
 
 const holdsSecrets = (seal: StoreSeal) => seal.fingerprint !== undefined || seal.sealed.length > 0;
@@ -249,7 +214,7 @@ export interface BootSealKeyOptions {
 }
 
 async function sealKeyFor(store: SealKeyStore, dataDir: string, given: string | undefined, role: SealKeyRole, write: boolean): Promise<SealKey | undefined> {
-  const kept = await storeSealOf(store, dataDir);
+  const kept = await storeSealOf(store);
   const dir = join(dataDir, SEAL_KEY_DIR);
   const file = join(dir, SEAL_KEY_FILE);
   let seal: SealKey | undefined;

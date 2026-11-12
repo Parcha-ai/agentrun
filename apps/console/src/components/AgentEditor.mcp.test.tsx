@@ -16,7 +16,7 @@ import recorded from "@/fixtures/mcp.requests.json";
 // grants `mcp:<server>/<tool>`, and a grant whose server is gone, or no longer lists the tool, says so.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const CAPS = { harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true }]), mcp: true, mcpHarnesses: ["pi", "claude-agent"] };
+const CAPS = { harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], thinking: [], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }]), mcp: true, mcpHarnesses: ["pi", "claude-agent"] };
 const definition = (tools: string[]) => ({ id: "calc", version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools });
 const agent = (tools: string[], harness = "pi"): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { ...definition(tools), harness } } as Agent);
 const tool = (name: string, description: string) => ({ name, description, input_schema: { type: "object" } });
@@ -162,28 +162,6 @@ describe("the Tools step's MCP servers", () => {
     expect(disabled("claude-agent")).toBe(true);
     expect(disabled("pi")).toBe(false);
     expect(renderToStaticMarkup(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", onChange: () => {} }))).toContain("claude-agent drops a tool whose schema&#x27;s root has anyOf");
-  });
-
-  it("takes a list whose file can't be read as a failed read: the grants can't be checked, never deleted", async () => {
-    const fetch = (async (url: string) => {
-      const path = String(url);
-      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", etag: '"r1"' } });
-      if (path === "/v2/agents/calc") return json(200, agent(["read", "mcp:fake/add"]));
-      if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [], next_cursor: null });
-      if (path === "/v2/settings/mcp-servers") return json(200, { servers: [], file_unreadable: true });
-      return json(404, { error: { code: "not_found", message: path, retryable: false } });
-    }) as typeof globalThis.fetch;
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
-    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-    await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
-    await settle();
-    expect(host.textContent).toContain("The MCP servers could not be read.");
-    expect(host.textContent).toContain("Can't check right now");
-    expect(host.textContent).not.toContain("not saved here any more");
-    expect([...host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Retry")).toBe(true);
   });
 
   it("says nothing of MCP on a server without MCP servers", () => {

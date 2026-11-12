@@ -8,8 +8,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { ARCHIL_MOUNT_LABEL, DaytonaProvider, EPOCH_LABEL, readBackOf, RUN_LABEL } from "../dist/index.js";
-import { API, ARCHIL_HELPER, fakeDaytona, KEY, scriptOf, statusText } from "./fake-daytona.mjs";
+import { DaytonaProvider } from "../dist/daytona.js";
+import { ARCHIL_MOUNT_LABEL, EPOCH_LABEL, readBackOf, RUN_LABEL } from "../dist/index.js";
+import { API, ARCHIL_GPU_SNAPSHOT, ARCHIL_HELPER, ARCHIL_PREFLIGHT, fakeDaytona, KEY, scriptOf, statusText } from "./fake-daytona.mjs";
 
 const FAST = { requestMs: 2000, createMs: 2000, startMs: 300, deleteMs: 2000, stopMs: 500, goneMs: 500, uploadMs: 2000, execMs: 2000, helloMs: 1000, pollMs: 1, retryMs: 1, listedMs: 2000, listedStableMs: 0 };
 const TOKEN = "tok-daytona-archil-0123456789abcdef";
@@ -108,6 +109,46 @@ test("create: preflight, mount (the token on its stdin alone), serve, each as ro
 	tokenOnlyOnStdin(fake);
 	const exec = fake.requests.filter((r) => /\/exec$/.test(r.path));
 	assert.ok(exec.every((r) => r.body.suppressInputEcho === true), "no command echoes its input");
+});
+
+test("a GPU computer with an Archil mount is refused before any request: daytona-gpu's user is not root and it has no Archil client", async () => {
+	const gpu = { type: "H100", count: 1 };
+	for (const image of [SPEC.image, "default", "daytona-gpu"]) {
+		const { fake, provider } = setup();
+		assert.deepEqual(provider.check({ ...SPEC, image, gpu }).map(({ field }) => field), ["gpu"], image);
+		const made = await provider.create({ ...SPEC, image, gpu });
+		assert.equal(made.ok, false);
+		assert.match(made.error.message, /gpu: a GPU computer here takes no archil mount: Daytona's GPU runtime gives it no \/dev\/fuse/, image);
+		assert.equal(fake.requests.length, 0, "nothing was asked of Daytona");
+	}
+});
+
+test("our GPU snapshot (gpuSnapshot): a GPU computer is made from it with no resources and root installs; with an Archil mount it is refused up front, as Daytona's GPU host has no /dev/fuse; and an Archil computer whose preflight finds no /dev/fuse is refused in those words", async () => {
+	const gpu = { type: "H100", count: 1 };
+	const { fake, provider } = setup({}, { gpuSnapshot: ARCHIL_GPU_SNAPSHOT });
+	assert.deepEqual(provider.capabilities().gpu.mounts, [], "a GPU computer takes no mount, on our snapshot too");
+	assert.deepEqual([provider.capabilities().gpu.types, provider.capabilities().gpu.max], [["H100"], 1], "the GPU its name says");
+	for (const image of ["default", ARCHIL_GPU_SNAPSHOT]) {
+		assert.deepEqual(provider.check({ ...SPEC, image, mount: undefined, gpu }), [], image);
+		assert.match(provider.check({ ...SPEC, image, gpu }).map((r) => `${r.field}: ${r.message}`).join("; "), /^gpu: a GPU computer here takes no archil mount/, image);
+	}
+	assert.match(provider.check({ ...SPEC, mount: undefined, gpu }).map((r) => r.message).join("; "), /made from the GPU snapshot agentrun-archil-gpu-h100-0123456789ab alone, not "agentrun-archil-snap"/);
+	const made = await provider.create({ ...SPEC, image: "default", mount: undefined, gpu });
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	const posted = fake.requests.find((request) => request.method === "POST" && /\/sandbox$/.test(request.path));
+	assert.deepEqual([posted.body.snapshot, posted.body.target, posted.body.autoDeleteInterval], [ARCHIL_GPU_SNAPSHOT, "earth", 0]);
+	for (const field of ["cpu", "gpu", "gpuType", "memory", "disk"]) assert.equal(field in posted.body, false, `no ${field}: the snapshot carries its own`);
+	assert.deepEqual(made.value.notes, ["the daemon was installed by root (uid 0), as root"]);
+	const attached = await provider.attach({ id: made.value.id });
+	assert.equal(attached.ok, true, attached.ok ? "" : attached.error.message);
+	assert.deepEqual(attached.value.spec.gpu, gpu);
+	// An Archil computer on a host with no FUSE device: the preflight says so, and the create fails in those words.
+	const bare = setup({ archil: { preflight: { exitCode: 0, output: ARCHIL_PREFLIGHT.replace("fuse present", "fuse absent") } } });
+	const refused = await bare.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /this computer has no \/dev\/fuse, so the Archil folder can't be mounted/);
+	// A name that is not one of ours is refused at construction, in words.
+	assert.throws(() => setup({}, { gpuSnapshot: "daytona-gpu-archil" }), /not a GPU snapshot of box\/Dockerfile: box\/build-daytona\.py --gpu H100 prints its name/);
 });
 
 test("attach and list read the mount back under the epoch label, exclusive; network() reads none from the daemon (lo alone), and refuses any policy but none", async () => {

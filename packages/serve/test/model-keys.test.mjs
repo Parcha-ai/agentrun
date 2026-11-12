@@ -14,7 +14,7 @@ import { readingOf } from "../dist/server.js";
 import { agent, client, FAUX, follow, printed, responsesEndpoint, scratch, serve, withEnv } from "./support.mjs";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { modelOn, providerFor } from "../dist/provider.js";
+import { modelOn } from "../dist/provider.js";
 /** A fake key, made at runtime: distinct per name, and no credential-shaped literal for the source export to flag. */
 const fakeKey = (name) => ["not-a-secret", name].join("-");
 
@@ -32,7 +32,7 @@ test("with no AGENT_MODEL a provider's key gives the default: anthropic, then op
   assert.equal(hostModel({}), undefined);
   assert.equal(hostModel(keyed("anthropic", "openai", "openrouter")), "anthropic/claude-sonnet-5-5");
   assert.equal(hostModel(keyed("openai", "openrouter")), "openai/gpt-6.1-sol");
-  assert.equal(hostModel(keyed("openrouter")), "openrouter/openai/gpt-6-sol", "pi's on OpenRouter: on its bearer route (model.ts)");
+  assert.equal(hostModel(keyed("openrouter")), "openrouter/openai/gpt-6.1-sol", "pi's on OpenRouter: on its bearer route (model.ts)");
   assert.equal(hostModel({ ...keyed("anthropic"), AGENT_MODEL: "openai/gpt-6-luna" }), "openai/gpt-6-luna", "the host's own default wins");
   assert.equal(hostModel(keyed("anthropic"), "fast"), "anthropic/claude-sonnet-5-5", "a tier with no model of its own takes the default");
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "codex"), "openai/gpt-6.1-sol", "codex runs OpenAI's models");
@@ -65,8 +65,8 @@ test("the host's model counts for a harness only when that harness runs it: clau
 // namespaced one (team/model) and even one that looks like another vendor's. Without a gateway, codex runs OpenAI's only.
 test("behind a gateway, codex takes AGENT_MODEL as the gateway's own string, whatever it holds; without one, only OpenAI's ids", () => {
   const gw = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" };
-  for (const id of ["team/model", "my-gw/gpt-x", "anthropic/x", "gpt-6-luna", "openai/gpt-6-luna", "openrouter/openai/gpt-6-sol"]) assert.equal(harnessRuns(gw, id, "codex"), true, `behind a gateway: ${id}`);
-  for (const [id, runs] of [["team/model", false], ["my-gw/gpt-x", false], ["anthropic/x", false], ["gpt-6-luna", false], ["openai/gpt-6-luna", true], ["openrouter/openai/gpt-6-sol", true]]) assert.equal(harnessRuns({}, id, "codex"), runs, `no gateway: ${id}`);
+  for (const id of ["team/model", "my-gw/gpt-x", "anthropic/x", "gpt-6-luna", "openai/gpt-6-luna", "openrouter/openai/gpt-6.1-sol"]) assert.equal(harnessRuns(gw, id, "codex"), true, `behind a gateway: ${id}`);
+  for (const [id, runs] of [["team/model", false], ["my-gw/gpt-x", false], ["anthropic/x", false], ["gpt-6-luna", false], ["openai/gpt-6-luna", true], ["openrouter/openai/gpt-6.1-sol", true]]) assert.equal(harnessRuns({}, id, "codex"), runs, `no gateway: ${id}`);
   assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model" }, "default", "codex"), "team/model");
   assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model", ...keyed("openai") }, "default", "codex"), "team/model", "never the OpenAI key's default instead");
   assert.equal(hostModel({ ...gw, AGENT_MODEL: "team/model" }, "default", "claude-agent"), undefined, "claude-agent never takes the gateway");
@@ -76,7 +76,7 @@ test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway
   // OpenCode's model requests go where codex's do (provider.ts' providerFor): OpenAI with its key, OpenRouter with its
   // key, or the gateway.
   assert.equal(hostModel(keyed("anthropic", "openai"), "default", "opencode"), "openai/gpt-6.1-sol", "an OpenAI key's default");
-  assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), "openai/gpt-6-sol", "OpenRouter's key alone: codex's route");
+  assert.equal(hostModel(keyed("anthropic", "openrouter"), "default", "opencode"), "openai/gpt-6.1-sol", "OpenRouter's key alone: codex's route");
   assert.equal(hostModel(keyed("anthropic"), "default", "opencode"), undefined, "no OpenAI or OpenRouter key: none");
   assert.equal(hostModel({ AGENT_MODEL: "gpt-6-luna", AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", ...keyed("anthropic") }, "default", "opencode"), "gpt-6-luna", "the gateway's own id");
   assert.equal(hostModel({ AGENT_MODEL: "openai/gpt-6-luna" }, "default", "opencode"), "openai/gpt-6-luna");
@@ -196,8 +196,7 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token 
   }
 });
 
-// SKIP (follow-up #2057): the gateway is asked for the model with an agent-model/ prefix, not the model's own name
-test.skip("a model key saved with no restart: a server with none says no model runs and refuses the run; saved, a revision that names no model runs on its default; the key is in no answer, log or file", { timeout: 60_000 }, async (t) => {
+test("a model key saved with no restart: a server with none says no model runs and refuses the run; saved, a revision that names no model runs on its default; the key is in no answer, log or file", { timeout: 60_000 }, async (t) => {
   const endpoint = await responsesEndpoint(t, "42", 10);
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url }, MODEL_VARS);
   const lines = [];
@@ -239,8 +238,7 @@ test.skip("a model key saved with no restart: a server with none says no model r
 const CODEX_FAKE = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_FAKE], env: { FAKE_CODEX_MODEL: "remote" } }) };
 for (const [harness, model] of [["codex", "anthropic/claude-sonnet-5-5"], ["pi", "anthropic/claude-sonnet-5-5"]]) {
-  // SKIP (follow-up #2057): the gateway is asked for the model with an agent-model/ prefix, not the model's own name
-  test.skip(`behind a gateway, with AGENT_MODEL set and OpenAI's key on the server, a ${harness} agent naming no model runs on AGENT_MODEL's string (${model}), on the gateway's key alone`, { timeout: 90_000 }, async (t) => {
+  test(`behind a gateway, with AGENT_MODEL set and OpenAI's key on the server, a ${harness} agent naming no model runs on AGENT_MODEL's string (${model}), on the gateway's key alone`, { timeout: 90_000 }, async (t) => {
     const gw = await startFauxGateway({ text: "42" });
     t.after(() => gw.close());
     const gateway = made();
@@ -266,5 +264,5 @@ test("an opencode run is handed the model key its route sends, as a codex run is
     assert.equal(codex.length, 1, `setup: codex holds one key with ${Object.keys(env)}`);
     assert.deepEqual(harnessModelKeys("opencode", env), codex, `opencode, with ${Object.keys(env)}`);
   }
-  assert.deepEqual(harnessModelKeys("opencode", { OPENROUTER_API_KEY: k }, "openrouter/openai/gpt-6-sol"), ["OPENROUTER_API_KEY"], "a model named on OpenRouter");
+  assert.deepEqual(harnessModelKeys("opencode", { OPENROUTER_API_KEY: k }, "openrouter/openai/gpt-6.1-sol"), ["OPENROUTER_API_KEY"], "a model named on OpenRouter");
 });

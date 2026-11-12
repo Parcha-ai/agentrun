@@ -1,5 +1,5 @@
 /-!
-# The record gate (`packages/pi/src/durable/record.ts`)
+# The record gate (`packages/serve/src/workflow/record.ts`)
 
 A node delivers its record through one `submit` tool. A submit that passes the structural checks
 meets the second reading: one answer per reviewer (the host's own reviewers and the node's verify

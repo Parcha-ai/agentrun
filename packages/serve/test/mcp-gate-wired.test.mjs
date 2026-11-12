@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
-import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve as serveOf, whenFree, withEnv } from "./support.mjs";
 
 const TOKEN = `not-a-secret-${"mcp-gate-wired-0123"}`;
 const json = { "content-type": "application/json" };
@@ -88,8 +88,9 @@ async function setup(t, harness) {
   const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const run = async (id) => {
-    assert.equal((await server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra }))).status, 201);
-    const started = await server.api("POST", `/agents/${id}/runs`, { input: { content } });
+    const made = await whenFree(() => server.api("POST", "/agents", agent(id, { tools: ["mcp:fake/add"], ...extra })));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const started = await whenFree(() => server.api("POST", `/agents/${id}/runs`, { input: { content } }));
     assert.equal(started.status, 202, JSON.stringify(started.body));
     return started.body.run_id;
   };
@@ -109,8 +110,7 @@ for (const harness of HARNESSES) {
     assert.equal(calls(fake).length, 0, "nothing was sent");
   });
 
-  // Codex's parked call through its own MCP client writes no call record yet (its rows have no call to read).
-  test(`${harness}: with no setting the call asks and parks, the MCP server sees nothing, and the owner's allow runs it exactly once`, { timeout: 240_000, skip: harness === "codex" && "#21: a parked door call writes its call record (MCP, next)" }, async (t) => {
+  test(`${harness}: with no setting the call asks and parks, the MCP server sees nothing, and the owner's allow runs it exactly once`, { timeout: 240_000 }, async (t) => {
     const { api, fake, answer, run, model } = await setup(t, harness);
     const runId = await run(`ask-${harness}`);
     const { rows } = await follow(api, runId, ["input_required"], { deadlineMs: 180_000 });

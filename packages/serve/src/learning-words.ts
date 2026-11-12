@@ -7,7 +7,7 @@
 // secret later is found only whole, so a part of it kept would show for good. A run's learning keeps the parts its
 // words are made of (`learned`, `verdict`), and each read says them again (wordsOf): every part cut of the host's
 // secrets as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
-import { CAPS, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
+import { CAPS, CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, learnedPlace, parseVerdict, type Problem, type Verdict } from "./learn/index.js";
 import type { LearnedFile, Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 note", "2 notes". */
@@ -48,6 +48,7 @@ const RULE_WORDS: Record<string, string> = {
   edited: "a change to a note it had (a new note replaces an old one instead)",
   deleted: "a deleted note",
   exists: "a note under a name already taken",
+  duplicate: "a note that says what another one says",
   too_large: `a note over ${CAPS.note / 1024} KB`,
   too_many_notes: `more than ${CAPS.newNotes} new notes`,
   note: "a note whose header is not in shape",
@@ -83,19 +84,19 @@ const rulesIn = (problems: readonly Pick<Problem, "rule" | "path">[]) => [...new
 export const STOPPED = {
   unreadable: "the agent's notes could not be read, so the run started without them",
   notCopied: "the agent's notes could not be copied into the run, so the run started without them",
+  noSeed: "the run started without the agent's notes",
   serverStopped: "the server stopped while it set up the run's notes, so the run started without them",
   cancelled: "the run was cancelled",
   cancelledLooking: "the run was cancelled while it looked back",
   crashed: "the run's process ended before it could look back",
-  crashedLooking: "the run's process ended while it looked back",
   timedOut: "looking back took too long",
-  notAsked: "looking back could not start",
   failed: "looking back ended on an error",
-  notSetAside: "the new notes could not be set aside to be checked",
   notChecked: "the new notes could not be checked",
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
   noReview: "the review of the new notes gave no answer",
   unread: "the review of the new notes gave an answer that could not be read",
+  contradicted: "the review of the new notes contradicted itself: it kept them and said not to",
+  contradictedTwice: "the review of the new notes contradicted itself twice: it kept them and said not to",
 } as const;
 
 /** A run's learning, in words, by where it stands. */
@@ -104,6 +105,9 @@ export const said = {
   reflecting: "Looking back on this run…",
   /** The end-of-run turn's message, as a person reads it in the timeline: never the prompt the model is sent. */
   asked: "Looking back on this run.",
+  /** The end-of-run turn asked again because a workflow draft failed its dry run (learn/reflect.ts reflectDryRun), as a
+   *  person reads it in the timeline: never the ask, which holds the check's words. */
+  askedDryRun: "Looking back again: a workflow draft did not pass its dry run.",
   proposed: (notes: number, skills = 0, workflows = 0) => `Checking ${listed([...(notes || !(skills || workflows) ? [count(notes, "new note")] : []), ...(skills ? [count(skills, "skill")] : []), ...(workflows ? [count(workflows, "workflow")] : [])])}…`,
   /** What it learned, by name, and how many older notes they replace, and its skill and workflow by name; then what
    *  waits for the owner's OK, by name; then, when the grader dropped an item and kept others (a verdict per item), its
@@ -124,6 +128,9 @@ export const said = {
     return dropped ? `${base}${base.endsWith(".") ? "" : "."} ${dropped}` : base;
   },
   empty: "Nothing new to remember from this run.",
+  /** A run whose only work was its learned workflows, each answering, with nothing said after its first message: it was
+   *  not asked to look back (runner/learning-end.ts onlyLearnedWorkflows). */
+  onlyWorkflow: "Nothing new: the run only ran a learned workflow.",
   /** A merge whose every item the owner has since retired: nothing it learned is kept now. */
   retiredSince: "What it learned was retired since.",
   /** The run's answer gave its notes, but not in the format asked for, so none was read. */
@@ -149,7 +156,7 @@ export const said = {
 /** The reasons learn/grade.ts' parseVerdict gives of its own, never the grader's: an answer it could not read, and one
  *  it refused (an item for a file it was not asked about, a file judged twice, a new note with no item, a merge that
  *  did not keep every note). Found by asking it, so they follow it. */
-const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","keep":false,"why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","keep":false,"why":"w"},{"file":"a.md","keep":false,"why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
+const OWN_REASONS = new Set(["", "[]", '{"merge":true,"reason":"r","items":[{"file":"a.md","decision":"drop","why":"w"}]}', '{"merge":false,"reason":"r","items":[]}', '{"merge":false,"reason":"r","items":[{"file":"b.md","decision":"drop","why":"w"}]}', '{"merge":false,"reason":"r","items":[{"file":"a.md","decision":"drop","why":"w"},{"file":"a.md","decision":"drop","why":"w"}]}'].map((answer) => parseVerdict(answer, ["a.md"]).reason));
 /** The skill or the workflow draft at `file` as a person names it ("the skill X", "the workflow Y"), or undefined for a
  *  note's file or a draft's README.md. */
 const learnedWords = (file: string): string | undefined => {
@@ -165,7 +172,9 @@ const learnedWords = (file: string): string | undefined => {
  *  secrets: a name is the run's to choose. */
 export function notKept(verdict: Pick<Verdict, "reason" | "items">, lost: readonly Pick<LearnedFile, "file">[] = []): string {
   const dropped = verdict.items.find((item) => !item.keep);
-  const said_ = dropped?.why ? said.grader(dropped.why) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
+  // A grade that contradicted itself (it kept every item and said no merge: once, or again when asked again) is said as
+  // such: never its own reason, which may say the items can be kept.
+  const said_ = dropped?.why ? said.grader(dropped.why) : verdict.reason === CONTRADICTED_TWICE_REASON ? said.stopped(STOPPED.contradictedTwice) : verdict.reason === CONTRADICTED_REASON ? said.stopped(STOPPED.contradicted) : OWN_REASONS.has(verdict.reason) ? said.stopped(STOPPED.unread) : said.grader(verdict.reason);
   const subject = dropped?.why ? learnedWords(dropped.file) : undefined;
   const others = [...new Set(lost.flatMap(({ file }) => learnedWords(file) ?? []))].filter((words) => words !== subject);
   if (!subject && !others.length) return said_;
@@ -173,20 +182,25 @@ export function notKept(verdict: Pick<Verdict, "reason" | "items">, lost: readon
   return said_.replace(/^Not kept: /, `Not kept, ${named}: `);
 }
 
+/** The why of a note main already holds the same (a run's new note, or a skill re-filed as one: runner/learning-loop.ts
+ *  takenOnMain): no change, so no words of a run's learning say it, the merge's own or a read's rebuilt from its verdict. */
+export const SAME_NOTE = "The same rule is already one of the agent's notes.";
+
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, or why the
  *  grader kept nothing, said again from its parts (`learned`, `pending`, `verdict`) each cut by `cut` first (the host's
- *  secrets as they are now); any other detail, the server's own sentence, cut as well. The caller cuts the words short
- *  after. */
+ *  secrets as they are now), and the whole line cut again, as notKept's is: a skill's or a workflow's file names it in
+ *  the words, uncut until then; any other detail, the server's own sentence, cut as well. The caller cuts the words
+ *  short after. */
 export function wordsOf(learning: Pick<Learning, "state" | "reason" | "detail" | "learned" | "pending" | "verdict" | "skills" | "workflows" | "problems" | "lost">, cut: (text: string) => string): string | null {
   const { learned, pending, verdict } = learning;
   if (learning.state === "merged") {
     const kept = Array.isArray(learned) ? learned : [];
     const waiting = Array.isArray(pending) ? pending.filter((note) => typeof note?.name === "string") : [];
     const files = [...(Array.isArray(learning.skills) ? learning.skills : []), ...(Array.isArray(learning.workflows) ? learning.workflows : [])].filter((file) => typeof file?.file === "string" && typeof file.name === "string");
-    if (kept.length || waiting.length || files.length) return said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string").map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []);
+    if (kept.length || waiting.length || files.length) return cut(said.merged(kept.map((note) => ({ name: cut(note.name), supersedes: note.supersedes })), waiting.map((note) => ({ name: cut(note.name) })), files.map((file) => ({ file: file.file, name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), (verdict?.items ?? []).filter((item) => !item.keep && typeof item.why === "string" && item.why !== SAME_NOTE).map((item) => ({ why: cut(item.why) })), Array.isArray(learning.problems) ? learning.problems : []));
   }
   if (learning.state === "dropped" && learning.reason === "grader" && verdict) {
-    // serve.json's `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
+    // the stored `lost` is read as untrusted: an entry out of shape is left out. The whole line is cut again, the names
     // in it included.
     const lost = Array.isArray(learning.lost) ? learning.lost.filter((file) => typeof file?.file === "string") : [];
     return cut(notKept({ reason: cut(verdict.reason), items: (verdict.items ?? []).map((item) => ({ ...item, why: cut(item.why) })) }, lost));
