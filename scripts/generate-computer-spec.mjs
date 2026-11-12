@@ -200,6 +200,7 @@ const constants = {
   features: { ...protocol.FEATURES },
   keys: [...protocol.KEYS],
   uiRoles: [...protocol.UI_ROLES],
+  uiFlags: [...protocol.UI_FLAGS],
 };
 if (constants.errorKinds.length === 0) throw new Error('DaemonErrorKind did not produce its kinds');
 

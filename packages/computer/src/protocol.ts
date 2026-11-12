@@ -679,7 +679,9 @@ export interface UiTarget {
 	window?: string;
 }
 
-export type UiFlag = "focused" | "disabled" | "selected" | "checked" | "secure" | "offscreen";
+/** What a node's flags may say. secure: a password field, whose value is never sent. offscreen: in the tree, scrolled out of view. */
+export const UI_FLAGS = ["focused", "disabled", "selected", "checked", "secure", "offscreen"] as const;
+export type UiFlag = (typeof UI_FLAGS)[number];
 
 export interface UiNode {
 	ref: UiRef;
