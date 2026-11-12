@@ -50,7 +50,7 @@ const DIGITS = ["1234", "5678", "9012"].join("");
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 
 test("a workflow run whose input holds a held key, cut or whole, and an all-digit one: its title on its page, the runs list and its agent's runs holds neither, and the run keeps its input as given", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: DIGITS, PARALLEL_API_KEY: KEY }, [...NAMES, "PARALLEL_API_KEY"]);
+  withEnv(t, { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: DIGITS, PARALLEL_API_KEY: KEY }, [...NAMES, "PARALLEL_API_KEY"]);
   const { api, data } = await serve(t);
   const flow = {
     v: 2, name: "wf",

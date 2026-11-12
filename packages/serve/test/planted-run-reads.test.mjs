@@ -168,7 +168,7 @@ async function handed(data, runId, agentId, pointer, sealKey) {
 test("no planted secret in a run's words shows on any run read route: a run handed a sign-in this server opens is cut of it, and one it can't open is withheld in the view's words", { timeout: 240_000 }, async (t) => {
   const seal = randomBytes(32);
   // The workflow's llm calls route to a model by AGENT_MODEL, with a key that is no plant.
-  withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64"), AGENT_MODEL: "openai/gpt-6-sol", OPENAI_API_KEY: `not-a-plant-${randomBytes(8).toString("hex")}` }, ["AGENTRUN_SEAL_KEY", "AGENT_MODEL", "OPENAI_API_KEY", "PARALLEL_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64"), AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: `not-a-plant-${randomBytes(8).toString("hex")}` }, ["AGENTRUN_SEAL_KEY", "AGENT_MODEL", "OPENAI_API_KEY", "PARALLEL_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
   const logs = [];
   const server = await serve(t, { faux: FAUX_READ, log: (line) => logs.push(line) });
   // A stored tool key and a trigger's signing secret, each written the way the owner writes one.

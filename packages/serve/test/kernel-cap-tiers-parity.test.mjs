@@ -16,7 +16,7 @@ function piPrice(model, { cached, fresh }, output) {
   return Math.max(priced({ input: fresh, cacheRead: cached, output }), priced({ cacheWrite: fresh, cacheRead: cached, output }));
 }
 
-for (const [provider, id] of [["openrouter", "openai/gpt-6-sol"], ["openai", "gpt-6-sol"]]) {
+for (const [provider, id] of [["openrouter", "openai/gpt-6.1-sol"], ["openai", "gpt-6.1-sol"]]) {
   test(`${provider} ${id}: the kernel prices every request as pi-ai's calculateCost does, below, at and past its tier's threshold`, () => {
     const model = builtinModels({}).getModel(provider, id);
     assert.ok(model?.cost?.tiers?.length, `the catalog gives ${id} a tier: ${JSON.stringify(model?.cost)}`);

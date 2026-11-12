@@ -4,7 +4,7 @@
 // - an Anthropic model goes to Anthropic itself, its key read by name when a request goes;
 // - any other model (another provider's, the gateway's, the faux module's under --faux) answers through the route's own
 //   fetch, which runs the request on pi-ai's model of it and answers in Messages shape, never the network for the faux;
-// - its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past gpt-6-sol's 272k tier is
+// - its price is pi-ai's calculateCost on the catalog's cost, tiers included (a request past gpt-6.1-sol's 272k tier is
 //   priced at the tier), and its cost is that catalog entry, for the cap.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -44,13 +44,13 @@ async function answerOf(response) {
   return { text, stop, used, tools: tools.map((tool) => ({ name: tool.name, input: JSON.parse(tool.json || "{}") })) };
 }
 
-test("a catalog model's route: its provider's key by name, its catalog cost with tiers, and a request past gpt-6-sol's 272k tier priced at the tier", async () => {
-  const route = await routeOf("openai/gpt-6-sol", { OPENAI_API_KEY: KEY });
-  assert.equal(route.model, "gpt-6-sol");
+test("a catalog model's route: its provider's key by name, its catalog cost with tiers, and a request past gpt-6.1-sol's 272k tier priced at the tier", async () => {
+  const route = await routeOf("openai/gpt-6.1-sol", { OPENAI_API_KEY: KEY });
+  assert.equal(route.model, "gpt-6.1-sol");
   assert.equal(route.provider.api, "anthropic-messages", "every route speaks Messages to the proxy");
-  assert.deepEqual(route.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }] }, "the catalog's cost, tiers included");
-  assert.equal(eight(route.price("gpt-6-sol", usage(100_000, 1_000))), eight((100_000 * 2 + 1_000 * 10) / 1e6), "below the tier: the base rates");
-  assert.equal(eight(route.price("gpt-6-sol", usage(300_000, 1_000))), eight((300_000 * 4 + 1_000 * 15) / 1e6), "past 272k input tokens: the tier's rates");
+  assert.deepEqual(route.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] }, "the catalog's cost, tiers included");
+  assert.equal(eight(route.price("gpt-6.1-sol", usage(100_000, 1_000))), eight((100_000 * 2 + 1_000 * 10) / 1e6), "below the tier: the base rates");
+  assert.equal(eight(route.price("gpt-6.1-sol", usage(300_000, 1_000))), eight((300_000 * 4 + 1_000 * 15) / 1e6), "past 272k input tokens: the tier's rates");
   assert.equal(typeof route.fetch, "function", "a provider that does not speak Messages answers through the route's fetch");
 });
 
