@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
-import { decisionKey } from "@parcha/agentrun-pi/durable";
+import { decisionKey } from "../dist/workflow/decisions.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const { decisionsOverStore } = await import("../dist/store-reads/decisions.js");

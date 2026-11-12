@@ -84,7 +84,7 @@ type Trigger = Omit<TriggerRow, "source" | "target"> & { source: Source; target:
 type Told = "queued" | "unsaved" | "off" | "closed";
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
-/** A run's provenance, kept in its serve.json: the trigger that started it, and the firing. `name`: the trigger's name as
+/** A run's provenance, kept with its launch row: the trigger that started it, and the firing. `name`: the trigger's name as
  *  it was at the firing, put on the run so its Timeline row names the trigger without a store read (runs.ts
  *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
 export type RunTrigger = { id: string; firing_key: string; name?: string };

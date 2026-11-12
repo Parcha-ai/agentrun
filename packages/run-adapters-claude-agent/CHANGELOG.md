@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.35 (2026-11-11)
+
+- A capped run straight to Anthropic is no longer paused by a cap it could work under. Before each answer request on a route to `https://api.anthropic.com` (pi and claude-agent), the model proxy asks Anthropic's free token count (`POST /v1/messages/count_tokens`). It sends only the credential and version headers, and never goes through a gateway or any other base. The request's input bound is then that count plus the tool-use prompt, where before it was the body's bytes (about two to three times the tokens billed). A count that fails, says nothing or takes over 3 seconds leaves the byte bound, and the request goes on. Through OpenRouter or any other gateway the bound stays the bytes, so the cap still never passes.
+
+  The serve README's spend-cap section now states the smallest cap that works, by cap mode, measured on a pi desktop run on Sonnet. In `strict` mode (and in `expected`, the default, until the runner prices a step from the previous request's cache, #2504) it is $0.05 for the first request and $0.11 for a five-step run through a gateway, and $0.03 and $0.09 straight to Anthropic. The console's cap fields say it in a line, with a link. A cap below these still pauses with `Not sent: ... the next step needs at least $X`. A policy may count a request through `ProviderPolicy.countInput` (`InputCounter`, `countedInputOf` in the kernel host).
+- A capped run that reads screenshots is no longer refused at its cap after the first one. A model request's input bound counted an image's base64 as one token per byte, and then the image's billed maximum on top. A 1280x720 screenshot (about a megabyte of base64) read as some 1.3 million input tokens, so a Sonnet step under a $1.50 cap "needed at least $4.83" when Claude bills it a few cents.
+
+  Each image, in every turn, now counts at what the routed model's provider can bill it as, in place of its data's bytes, whatever API carries it. The size comes from the image's own header (PNG, JPEG, GIF or WebP):
+  - Anthropic: its 28-pixel patches or its area at 750 pixels a token, whichever is more, at most 4,784.
+  - OpenAI: its 512-pixel tiles after resizing (85 + 170 each; 85 at detail low), or for a patch-billed mini or nano model its 32-pixel patches at that model's multiplier when more, at most 73,800.
+  - Google: 258 per 768-pixel tile, at least 1,120.
+  - Any other provider: the most of the three.
+  An image whose size can't be read counts at its provider's per-image maximum, never at its bytes. An image-shaped object outside where the API reads images (a tool call's arguments) is counted at its bytes, as text.
+
+  `InputShape.images` (the kernel host's `providerInputOverhead`) is now a list of images, each with the bytes its data takes and its size when known; `InputShape.model` names the routed model; the figure can be below 0, and so can a policy's `serverInputOverhead`, never past the body's bytes. Upgrading: pass `images: [{ bytes, width?, height? }]`, built with `imageInputOf`, `messagesImagesIn` or `responsesImagesIn`, and the model, in place of a count.
+
 ## 0.1.0-beta.34 (2026-11-11)
 
 - The server checks a harness's pinned binary (claude-agent's CLI, Codex, OpenCode: its sha256, then the version it reports) without holding its event loop, so requests, timers and store answers go on while a binary of hundreds of MiB is hashed and run. Before, the first check in a process held every request for one to several seconds (GET /v2/capabilities, a server's start, an adapter made for a run). The binary is now hashed off the loop a chunk at a time and run as a child the loop does not wait on. A pass is kept for the adapter's own check, which then reads nothing, and two checks of one binary at once read it once. New: `checkedOnceAsync` and `sha256OfFileAsync` (kernel host), `verifyClaudeAgentCliAsync` (claude-agent), and `verifyCodexAsync` and `verifyCodexBinaryAsync` (Codex). Who breaks: a program that calls the kernel's `checkedOnce` with its own check. A check is now a `BinaryCheck`, a generator that yields each probe (`{ kind: "sha256", path }` or `{ kind: "run", path, args, env, timeoutMs }`) and is given back its answer, so one check runs either way.

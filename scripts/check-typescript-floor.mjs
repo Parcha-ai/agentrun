@@ -18,12 +18,14 @@ try {
   await writeFile(fixture, `import { z } from 'zod';
 import {defineWorkflow,runTypedWorkflow} from '../packages/dsl/dist/index.js';
 import {createJevRunner,type JevOptions} from '../packages/jev/dist/index.js';
-import {createPiRunner,type PiRunnerOptions} from '../packages/pi/dist/index.js';
+import {AgentRun,AgentRunError,type ClientOptions,type Run} from '../packages/client/dist/index.js';
 import {openRecovery,withRecovery,memoryStore,type RecoveryJournal,type RecoveryStore} from '../packages/dsl/dist/recovery/index.js';
 const workflow=defineWorkflow({name:'floor',schemas:{Input:z.strictObject({text:z.string()}),Output:z.strictObject({text:z.string()})},input:'Input',output:{schema:'Output',path:'result'},steps:[{node:'code',label:'copy',code:'s=>({result:{text:s.text}})'}]});
-async function consumer(jev:JevOptions,pi:PiRunnerOptions){
- const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev),runNode:createPiRunner(pi)});
+async function consumer(jev:JevOptions,options:ClientOptions,runId:string){
+ const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev)});
  if(result.status==='complete'){const text:string=result.output.text;void text;}
+ // A server's run, through the typed client: waited on until it ends.
+ try{const run:Run=await new AgentRun(options).runs.wait(runId);void run;}catch(error){if(error instanceof AgentRunError)void error.message;}
  // @ts-expect-error input must keep its inferred string type.
  await runTypedWorkflow(workflow,{text:42},{});
 }

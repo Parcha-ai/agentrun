@@ -184,23 +184,6 @@ export function rolloutText(lines: readonly string[]): string {
   return out;
 }
 
-/**
- * The rollout path relative to `CODEX_HOME`, from the absolute path
- * app-server reports. Codex resumes a thread only from a file with its
- * canonical name, `rollout-<YYYY-MM-DDTHH-MM-SS>-<threadId>.jsonl` (any
- * directory under `sessions/`, any timestamp): anything else is "no rollout
- * found" or "not a canonical rollout filename".
- */
-export function relativeRolloutPath(absolute: string, threadId: string): string {
-  const at = absolute.lastIndexOf('/sessions/');
-  const rel = at >= 0 ? absolute.slice(at + 1) : '';
-  const name = rel.slice(rel.lastIndexOf('/') + 1);
-  if (rel.includes('..') || !/^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-/.test(name) || name !== `${name.slice(0, 28)}${threadId}.jsonl`) {
-    return `sessions/rollout-1970-01-01T00-00-00-${threadId}.jsonl`;
-  }
-  return rel;
-}
-
 /** A thread id as the harness accepts it from app-server (untrusted: it names a file to tail). */
 const THREAD_ID = /^[0-9A-Za-z-]{8,64}$/;
 

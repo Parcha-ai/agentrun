@@ -14,7 +14,7 @@
 // the answer. A lost claim or a shutdown seals the journal and ends the loop interrupted, writing nothing more, so the
 // next claim resumes where the journal stands.
 import type { Context } from "@earendil-works/chord";
-import type { CommitResult, ConversationId, EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
+import { type CommitResult, type ConversationId, type EntryRecord, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { KINDS } from "./journal-kinds.js";
 import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
@@ -206,6 +206,22 @@ export async function entriesOf(journal: Journal, conversationId: ConversationId
     if (page.next === undefined) return out;
     cursor = page.next;
   }
+}
+
+/** The entries of the run's agent conversations, in log order: its root's and each one a task of the run owns (a
+ *  subagent's: runner/subagent.ts), never the loop's own session records. What a run's end reads its metrics and cost
+ *  from, so a child's requests count as the run's. */
+export async function agentEntriesOf(journal: Journal, context: Context): Promise<EntryRecord[]> {
+  const ids: ConversationId[] = [];
+  for (let cursor: unknown = undefined; ; ) {
+    const page = await journal.scanConversations({ order: "ascending" } as never, 500, cursor as never, context);
+    for (const record of page.items) if (Number(record.id) === Number(ROOT_CONVERSATION_ID) || record.owner !== undefined) ids.push(record.id);
+    if (page.next === undefined) break;
+    cursor = page.next;
+  }
+  const out: EntryRecord[] = [];
+  for (const id of ids) out.push(...(await entriesOf(journal, id, context)));
+  return out.sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 export function findData<T>(entries: readonly EntryRecord[], kind: string, test: (data: T) => boolean): T | undefined {

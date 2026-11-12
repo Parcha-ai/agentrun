@@ -41,14 +41,14 @@ export type ToolResults = Map<string, { text: string; isError: boolean }>;
  *  nested-tool members) belongs to the tool task pi runs a tool in, which a host tool, called by another harness, has
  *  none of: the full type cannot be built here, so a read of any other member throws, naming it, rather than reading as
  *  "is not a function". `conversationId` is the run's root conversation, where a host tool's calls are made: serve's
- *  browser-cost `capped` reads it, now that the browser binds as a host tool on the runner. `snapshot`, `conversation`
- *  and `waitForTask` are the run's own Harness's (run.harness, the claim's journal on the runner), as `commit` is: a
- *  document, a conversation or a task of this run, never another's. A remote executor (workspace/executors.ts
- *  piExecutor) has no run Harness and gives none of these four (RUN_ONLY_MEMBERS); the coding tools it runs read none.
+ *  browser-cost `capped` reads it, now that the browser binds as a host tool on the runner. `snapshot` and
+ *  `waitForTask` are the run's own Harness's (run.harness, the claim's journal on the runner), as `commit` is: a
+ *  document or a task of this run, never another's. A remote executor (workspace/executors.ts
+ *  piExecutor) has no run Harness and gives none of these three (RUN_ONLY_MEMBERS); the coding tools it runs read none.
  *  `memo` and `taskId` are a pi tool task's own, which a host tool runs in none of: they are not given here. */
-export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models", "conversationId", "snapshot", "conversation", "waitForTask"] as const;
+export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models", "conversationId", "snapshot", "waitForTask"] as const;
 /** The members a host tool's api gives only on a run's Harness: a remote executor's api has none of them. */
-export const RUN_ONLY_MEMBERS = ["conversationId", "snapshot", "conversation", "waitForTask"] as const;
+export const RUN_ONLY_MEMBERS = ["conversationId", "snapshot", "waitForTask"] as const;
 type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]>;
 const hostApi = (given: HostApi): ToolExecutionApi =>
   new Proxy(given, {
@@ -71,10 +71,9 @@ export interface HostToolCtx {
   env(): Promise<ToolExecutionApi["env"]>;
   readonly commit: ToolExecutionApi["commit"];
   readonly agent: ToolExecutionApi["agent"];
-  /** The run's own Harness's snapshot, conversation and waitForTask (run.harness, the claim's journal on the runner), as
-   *  `commit` is: a document, conversation or task of this run only. */
+  /** The run's own Harness's snapshot and waitForTask (run.harness, the claim's journal on the runner), as
+   *  `commit` is: a document or task of this run only. */
   readonly snapshot: ToolExecutionApi["snapshot"];
-  readonly conversation: ToolExecutionApi["conversation"];
   readonly waitForTask: ToolExecutionApi["waitForTask"];
   /** A gate for a tool that cannot be run on the runner yet: undefined to run the call, else the refusal that is its answer,
    *  so the tool is listed but never run as a stub. No tool sets it now (learned_workflow runs for real on every session's
@@ -115,7 +114,7 @@ export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCt
         agent: ctx.agent,
         models: createModels(),
         conversationId: ROOT_CONVERSATION_ID,
-        snapshot: ctx.snapshot, conversation: ctx.conversation, waitForTask: ctx.waitForTask,
+        snapshot: ctx.snapshot, waitForTask: ctx.waitForTask,
       });
       // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
       // monid's answer a failure as an error result, which is kept as it is.

@@ -1,4 +1,4 @@
-// The driver of every browser computer (AgentRun's browser kind: Browserbase's, Kernel's, or the `local` provider's
+// The driver of every browser computer (AgentRun's browser kind: Browserbase's, Kernel's, or the `local-chrome` provider's
 // Chrome on this machine), over its CDP URL: raw CDP, with no Stagehand and nothing loaded into the browser. snapshot is
 // Chrome's accessibility tree with "frame-node" ids, and run takes actions alone (an op, a snapshot id, a value), each
 // carried out with CDP input events and answered with one line of what changed; run code is refused in words, since the
