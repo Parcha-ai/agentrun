@@ -13,6 +13,7 @@ import { ApiError } from "../dist/errors.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { ArchilClaimRefused, archilClaim } from "../dist/workspace/index.js";
 import { limitOf } from "../dist/workspace/archil-disks.js";
+import { runDiskOf } from "../dist/workspace/run-disk.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { serve, withEnv } from "./support.mjs";
@@ -353,4 +354,61 @@ test("one agent's disk removals are taken in turn, and each touches the stored r
   assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: NEWER });
   await forgetAgentDisk(env.store, "agent-a", NEWER);
   assert.equal(await agentDiskOf(env.store, "agent-a"), undefined);
+});
+
+/** runDiskOf for run `runId` of `agentId` over the fake control plane (no mount: only the disk the claim resolves). */
+const diskFor = ({ store, control }, { agentId, runId, launch, availableMs = 5_000 }) =>
+  runDiskOf({ store, agentId, runId, ...(launch ? { launch } : {}), availableMs, control: { region: REGION, key: () => API, baseUrl: control.baseUrl, fetch: control.fetch } });
+
+/** An `answer` for the fake that reads every disk as `creating` for its next `state.left` reads. */
+const creatingFor = (state) => ({ method, path }) => {
+  if (method !== "GET" || !/^\/api\/disks\/dsk-/.test(path) || state.left <= 0) return undefined;
+  state.left -= 1;
+  return { status: 200, body: { success: true, data: { id: path.split("/").pop(), name: "n", region: REGION, status: "creating" } } };
+};
+
+test("a disk just made is stored on the agent as pending before the wait for it, so a wait that fails leaves it findable; a claim that finds it waits, then clears the mark", async (t) => {
+  const state = { left: 1000 };
+  const env = await setup(t, { answer: creatingFor(state) });
+  await assert.rejects(diskFor(env, { agentId: "agent-a", runId: "run-1", availableMs: 200 }), (error) => error instanceof ArchilClaimRefused && /can't be made/.test(error.message));
+  const left = await agentDiskOf(env.store, "agent-a");
+  assert.equal(left?.pending, true, "stored as pending though its wait failed");
+  assert.equal(posts(env.control, "/api/disks").length, 1);
+  // The next claim finds it pending: it reads the disk (still creating once), waits, then the mark is cleared.
+  state.left = 1;
+  const reads = () => env.control.requests.filter((one) => one.method === "GET" && one.path === `/api/disks/${left.diskId}`).length;
+  const before = reads();
+  assert.deepEqual(await diskFor(env, { agentId: "agent-a", runId: "run-2" }), { diskId: left.diskId, kind: "agent" });
+  assert.ok(reads() - before >= 2, "it waited: the creating read, then an available one");
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: left.diskId }, "pending cleared");
+  assert.equal(posts(env.control, "/api/disks").length, 1, "no second disk");
+  // A ready disk is not read again.
+  const settled = reads();
+  await diskFor(env, { agentId: "agent-a", runId: "run-3" });
+  assert.equal(reads(), settled, "a disk not pending costs no read");
+});
+
+test("a run with no launch disk keeps its agent's disk on its first claim: a reopened run mounts that disk, or is refused once it was removed, never another", async (t) => {
+  const env = await setup(t);
+  const routes = createArchilRoutes({ store: env.store, sealKey: Buffer.alloc(32), env: { ARCHIL_API_KEY: API }, control: { baseUrl: env.control.baseUrl, fetch: env.control.fetch } });
+  const first = await diskFor(env, { agentId: "agent-a", runId: "run-r" });
+  assert.deepEqual(await env.store.settings.get(`${ARCHIL_SETTINGS_KEY}.run.run-r`), { diskId: first.diskId }, "kept for the run");
+  assert.deepEqual(await diskFor(env, { agentId: "agent-a", runId: "run-r" }), first, "the reopened run mounts it");
+  // The disk is removed and the agent's next run makes another; the reopened run is refused, the new run mounts the new one.
+  await archilRoute(routes, "deleteAgentArchil", { agent: agentOf("agent-a", { archived: true }) });
+  const other = await diskFor(env, { agentId: "agent-a", runId: "run-s" });
+  assert.notEqual(other.diskId, first.diskId);
+  await assert.rejects(diskFor(env, { agentId: "agent-a", runId: "run-r" }), (error) => error instanceof ArchilClaimRefused && /has been removed/.test(error.message));
+  assert.deepEqual(await diskFor(env, { agentId: "agent-a", runId: "run-s" }), other);
+});
+
+test("the remove route keeps a pending disk's mark while it counts the live runs, and a refused removal restores it", async (t) => {
+  const env = await setup(t);
+  const routes = createArchilRoutes({ store: env.store, sealKey: Buffer.alloc(32), env: { ARCHIL_API_KEY: API }, control: { baseUrl: env.control.baseUrl, fetch: env.control.fetch } });
+  await storeAgentDisk(env.store, "agent-a", { diskId: CUSTOMER, pending: true });
+  const seen = [];
+  const counting = { ...agentOf("agent-a", { archived: true }), liveOn: async () => (seen.push(await agentDiskOf(env.store, "agent-a")), 1) };
+  await assert.rejects(archilRoute(routes, "deleteAgentArchil", { agent: counting }), (error) => error instanceof ApiError && error.code === "precondition_failed");
+  assert.deepEqual(seen, [{ diskId: CUSTOMER, removing: true, pending: true }], "removing, still pending");
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: CUSTOMER, pending: true }, "restored with its mark");
 });
