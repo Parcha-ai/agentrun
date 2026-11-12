@@ -150,7 +150,8 @@ The server maps an attached computer to a provider so a run takes it like any ot
   connection: one run holds the computer at a time, so its refs and states are that run's.
 - **A provider per paired computer.** `attachedProvider(paired, hub)` is a `ComputerProvider` with id `attached`. Its
   capabilities are the computer's kind and os as it paired, the groups of its live `hello`, network as the machine has
-  it, and isolation `machine`. Its daemon mode is `none` for now (see the open questions).
+  it, and isolation `machine`. Its daemon mode is `none`: no `computerd init` runs on the machine, so none of init's promises about programs hold, and
+  `exec` and `files` are groups it may declare but not Core ([`kinds.md`](kinds.md)).
 - **Claim, not make.** `create` claims the computer for a run, with the run's labels: refused `gone` while it is not
   attached, `refused` while another run holds it. `release` with `delete` ends the run's hold and deletes nothing;
   `stop` is refused. A person's machine is never made, stopped or deleted by a run.
@@ -181,8 +182,5 @@ These touch files under the current hold (serve's `computers.ts`, `openapi.ts`, 
 
 ## Open questions
 
-- **The daemon mode.** An attached driver is neither `computerd init` (it keeps none of init's promises about
-  programs, because it runs none) nor a provider answering itself. It declares `none` today, which gives the right Core
-  groups. A mode of its own, `driver`, would say it plainly; it is a change to `DaemonMode` and the kind table.
 - **A Mac-mini VM** dials out the same way, with a token baked into its golden image and revoked when the VM is
   deleted. Whether that token is per image or per VM is the pool's call.
