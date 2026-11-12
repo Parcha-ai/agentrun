@@ -35,8 +35,17 @@ export function loopComputerOf(computer: RunComputer | undefined, held: HeldComp
 export function channelCallOf(command: Pick<Command, "body">): ComputerCall | { readonly refused: string } {
   const body = (command.body ?? {}) as { method?: unknown; params?: unknown };
   if (typeof body.method !== "string" || !PROTOCOL_METHODS.includes(body.method)) return { refused: `${JSON.stringify(body.method ?? null)} is not a computer protocol method.` };
-  const params = body.params && typeof body.params === "object" && !Array.isArray(body.params) ? (body.params as Record<string, unknown>) : {};
-  return { method: body.method, params };
+  // The params come as one JSON text (computer-channel.ts callComputer): an object, or none.
+  let params: unknown = {};
+  if (body.params !== undefined) {
+    try {
+      params = typeof body.params === "string" ? JSON.parse(body.params) : undefined;
+    } catch {
+      params = undefined;
+    }
+  }
+  if (!params || typeof params !== "object" || Array.isArray(params)) return { refused: "The call's params are not a JSON object's text." };
+  return { method: body.method, params: params as Record<string, unknown> };
 }
 
 /** What one call came to: the computer's answer, the call's record, and when it ended (ms). */

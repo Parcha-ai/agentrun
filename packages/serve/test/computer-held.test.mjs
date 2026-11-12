@@ -361,13 +361,16 @@ test("hold and hold_minutes on a run's create: a boolean, a whole number of minu
   }
 });
 
-test("the protocol's methods are the spec's, and a call row names one with object params and answers no park", async () => {
+test("the protocol's methods are the spec's, and a call row names one with its params as an object's JSON text and answers no park", async () => {
   const spec = JSON.parse(readFileSync(new URL("../../../spec/computer/protocol.json", import.meta.url), "utf8"));
   assert.deepEqual([...PROTOCOL_METHODS].sort(), spec.methods.map((method) => method.name ?? method).sort());
   const sink = { command: async (runId, command) => ({ id: 1, runId, ...command }) };
   await assert.rejects(sendCommand(sink, "run-1", { kind: "computer_call", body: { answers: false } }), /names its protocol method/);
   await assert.rejects(sendCommand(sink, "run-1", { kind: "computer_call", body: { method: "hello" } }), /answers no park/);
-  await assert.rejects(sendCommand(sink, "run-1", { kind: "computer_call", body: { method: "hello", params: [], answers: false } }), /params are an object/);
+  for (const params of [{}, "[]", "null", "{"]) {
+    await assert.rejects(sendCommand(sink, "run-1", { kind: "computer_call", body: { method: "hello", params, answers: false } }), /params are a JSON object's text/, JSON.stringify(params));
+  }
+  assert.equal((await sendCommand(sink, "run-1", { kind: "computer_call", body: { method: "hello", params: "{\"a\":\"\\u0000\"}", answers: false } })).kind, "computer_call");
   await assert.rejects(sendCommand(sink, "run-1", { kind: "computer_start", body: { x: 1 } }), /carries nothing/);
   assert.equal((await sendCommand(sink, "run-1", { kind: "computer_release" })).kind, "computer_release");
 });

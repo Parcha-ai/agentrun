@@ -11,7 +11,8 @@
 // The journal contract (the runner writes it; the server's hold reads it, computer-held.ts):
 //   computer.call, `{ by, at, method, ok, ms, code?, steps?, expect? }`: row `by`'s call, as computer-calls.ts records one:
 //     never a param's value, never the answer's bytes.
-// The row: computer_call `{ method, params, answers: false }` (a call answers no park: it never wakes a parked run).
+// The row: computer_call `{ method, params, answers: false }`, `params` the call's params as one JSON text (a call answers
+// no park: it never wakes a parked run).
 //
 // POST /v2/runs/{id}/computer/call is the owner's door to it (computer-held-routes.ts); another door, such as an MCP
 // route, calls callComputer the same way.
@@ -135,7 +136,9 @@ export async function callComputer(store: ChannelStore, runId: string, call: Com
   const run = await store.runs.get(runId);
   if (!run) throw new ApiError("not_found", `no run ${runId}`);
   if (run.state !== "running") throw new ApiError("computer_not_live", `run ${runId}'s computer is not up now: the run is ${run.state}`);
-  const id = await sendRow(store, runId, { kind: COMPUTER_CALL, body: { method: call.method, params: call.params, answers: false } }, (options.takeMs ?? TAKE_MS) + CALL_MS, options.pollMs);
+  // The params as one JSON text: the store never reads into them, and a string Postgres's jsonb refuses (an escaped NUL, a
+  // lone surrogate) is only escaped text inside it, so the row settles (store/dialect.ts settledBody) whatever was typed.
+  const id = await sendRow(store, runId, { kind: COMPUTER_CALL, body: { method: call.method, params: JSON.stringify(call.params ?? {}), answers: false } }, (options.takeMs ?? TAKE_MS) + CALL_MS, options.pollMs);
   const answer = await store.answerOf(runId, id);
   return (answer?.value as ComputerAnswer | undefined) ?? { ok: false, error: { code: "gone", message: "the call's answer was already read" } };
 }

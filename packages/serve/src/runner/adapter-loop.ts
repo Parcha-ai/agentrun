@@ -655,6 +655,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** A cancel, a lost claim or a shutdown that came after a person's stop, and the cut it gives the held computer that
    *  stop kept (writeEnd). */
   let laterStop: StopReason | undefined;
+  /** Whether the run's first stop kept its computer (keeps), as the runner was told when it chose to go on handing the
+   *  run's rows on: a stop that came before the hold was up (the computer still coming up) did not, so its end lets the
+   *  computer go, never waiting for a release no row can bring. */
+  let keptAtStop = false;
+  const keeps = (reason: StopReason): boolean => reason.kind === "command" && !reason.cancel && heldNow !== undefined && heldNow.state() !== "released" && !gate?.sealed;
   let cutHeld: () => void = () => {};
   const heldCut = new Promise<void>((resolve) => (cutHeld = resolve));
   /** Aborted by any stop of the run (AdapterRun.stopped, with the claim's signal): a host tool call in flight (a CLI's door
@@ -2521,7 +2526,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // computer's release after it, wait for the owner's release or the hold's lapse, the owner's calls still answered.
     // A cancel, a lost claim or a shutdown meanwhile ends the wait; a cancel's end is then the run's, taking both rows.
     const stop = stopReason;
-    if (stop?.kind === "command" && !stop.cancel && take.includes(stop.commandId) && heldNow && heldNow.state() !== "released" && !theGate.sealed) {
+    if (stop?.kind === "command" && keptAtStop && take.includes(stop.commandId) && heldNow && heldNow.state() !== "released" && !theGate.sealed) {
       const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
       handingBack = true;
       await heldNow.heldAtEnd(Promise.race([heldCut, aborted, on.closed]), heldWords.stopped(heldNow.minutes));
@@ -2610,10 +2615,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (command.kind === "pause" || command.kind === "resume") return { refused: AGENTIC_PAUSE_REFUSED };
       return { refused: `an adapter loop takes no ${command.kind} command` };
     },
-    keepsComputer(reason) {
-      return reason.kind === "command" && !reason.cancel && heldNow !== undefined && heldNow.state() !== "released" && !gate?.sealed;
-    },
+    keepsComputer: keeps,
     async stop(reason) {
+      // The runner asked keepsComputer right before this call: the first stop's answer is the one its end keeps to.
+      if (stopReason === undefined) keptAtStop = keeps(reason);
       // A cancel, a lost claim or a shutdown after a stop that kept the run's computer: the hold ends with it (writeEnd).
       if (stopReason && stopReason !== reason && (reason.kind !== "command" || reason.cancel)) {
         laterStop ??= reason;
