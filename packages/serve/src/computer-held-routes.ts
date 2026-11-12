@@ -10,9 +10,11 @@
 // They are the owner's: the server's token or the owner's session. A run never holds the server's token (runner/main.ts
 // RUNNER_ONLY), so no run's agent reaches its own computer this way: it drives it through its tools.
 import { callComputer, callIssues, type ChannelOptions, type ChannelStore, sendRow, TAKE_MS } from "./computer-channel.js";
-import { type ComputerCallOptions, type ComputerCallStore, entriesOf, runOver } from "./computer-commands.js";
+import { type ComputerCallOptions, type ComputerCallStore, computerHoldOf, entriesOf, runOver } from "./computer-commands.js";
 import { COMPUTER_RELEASE, COMPUTER_START, heldIn, type HeldState, holdIssues } from "./computer-held.js";
+import { computerOfPlace, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { ApiError, invalid } from "./errors.js";
+import { runComputerField } from "./run-computer.js";
 import { readLaunchBody } from "./run-launch.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
@@ -43,6 +45,23 @@ export async function heldField(store: HeldStore, runId: string, options: HeldOp
   // A run that ended while it held its computer (a stop, a failure) let it go with its end.
   const state = read.state !== "released" && (await runOver(store, runId)) ? "released" : read.state;
   return { state, minutes: read.minutes, ...(state === "released" ? {} : { until: new Date(read.until).toISOString() }), ...(read.why ? { why: read.why } : {}) };
+}
+
+/** The run read's `computer` field (`{ computer }`, or nothing for a run with none): its revision's computer setting, else
+ *  the one its place says; taken_over while the owner holds it (computerHoldOf, read from the run's journal only while its
+ *  computer is up); with `held` for a run that holds its computer for its owner. `view` is the run read so far. */
+export async function runComputerRead(store: HeldStore & Pick<Store, "agents">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
+  const run = await store.runs.get(runId);
+  const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
+  const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
+  if (!setting) return {};
+  const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
+  const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) };
+  const hold = runComputerField(setting, read)?.state === "ready" ? await computerHoldOf(store, runId, options) : "agent";
+  const field = runComputerField(setting, read, (_, state) => (hold === "person" ? "taken_over" : state));
+  if (!field) return {};
+  const held = await heldField(store, runId, options);
+  return { computer: { ...field, ...(held ? { held } : {}) } };
 }
 
 /** The body as an object: 422 otherwise. */

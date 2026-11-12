@@ -1641,15 +1641,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The run's journal so far: a take an earlier claim's computer left in force ends released here (computer-journal.ts).
           await computerNow.up(await entriesOf(gate.journal, root.id, context));
         }
-        // The run's computer held for its owner: the hold goes on where the last pass left it, or starts waiting on the
-        // run's first claim. A new claim's computer is not the one an open hold held: the run ends in those words.
+        // The run's computer held for its owner: the hold starts waiting on the run's first pass. A later pass's computer
+        // (a new claim's, or a restart's after a fault: closeSession let the last one go) is not the one an open hold held,
+        // nor has what the owner set up on it: the run ends in those words.
         heldNow = undefined;
         if (spec.held) {
           const [journalOf, rootOf] = [harness, root];
           heldNow = journalHeld(spec.held, (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context), now);
-          if ((await heldNow.up(await entriesOf(gate.journal, root.id, context), restarts === 0)) === "lost") {
+          if ((await heldNow.up(await entriesOf(gate.journal, root.id, context))) === "lost") {
             return await writeEnd(harness, root, gate, { state: "failed", summary: heldWords.lost }, []);
           }
         }
