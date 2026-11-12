@@ -1319,7 +1319,9 @@ export class OrgoDesktopClient implements ComputerClient {
 					rgba.set([red, green, blue, 255], (y * width + x) * 4);
 				}
 			}
-			bytes = encodePng(rgba, width, rect);
+			bytes = await encodePng(rgba, width, rect);
+			// close() may have run while the region was deflating: hold nothing for a closed connection.
+			if (this.#closed) return fail("gone", "the connection to the computer is closed");
 		}
 		const id = randomBytes(6).toString("hex");
 		this.#held = { id, bytes };

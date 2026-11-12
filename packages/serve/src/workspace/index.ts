@@ -30,14 +30,14 @@ export { type RunComputer, type RunHold, runTools, type RunTools, withKindTools 
 export { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
-  type ResolvedComputer, runShellOf, shellPlaceOf, type StartedComputer,
+  type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export {
   claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DAEMON_CACHE_IN_VOLUME, DOCKER_HOST_ADDRESSES_ENV,
   type DockerComputerOptions, dockerHostAddressesOf, dockerVolumeOf,
 } from "./computer-deps.js";
-export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ImageWait, type OpenComputerView, type ProviderMakers, type ViewEnd } from "./computer-for-claim.js";
+export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type ImageWait, type OpenComputerView, type ProviderMakers, type ViewEnd } from "./computer-for-claim.js";
 export { JANITOR_EVERY_MS, type JanitorDeps, type ProviderSweep, startJanitor, sweepServerComputers } from "./computer-janitor.js";
 export { agentComputerOf, agentComputerView, ownerGoneOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";

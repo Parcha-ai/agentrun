@@ -14,7 +14,7 @@
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
-import type { ComputerOwner, ComputerProvider, ComputerSpec, MountReadBack, Result } from "@parcha/agentrun-computer";
+import type { ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
 import { ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
@@ -117,6 +117,14 @@ export interface ComputerForClaimDeps {
    *  a host that lacks it, or a named image pulled); never when the host has it. The run's caller says it on the run's
    *  timeline. Absent: nothing is said. */
   readonly onImageWait?: ImageWait;
+  /** Told once a computer the claim made through its provider is connected, with what it says it is (its hello's OS,
+   *  the OS's version and its architecture): the run's caller says it on the run's timeline. A browser session, made
+   *  by the run's tool, is never told. Absent: nothing is said. */
+  readonly onConnected?: (said: ComputerSaid) => void;
+  /** Why this machine cannot run a provider's computers, by its provider id (computers.ts hostCommandRefusals: the
+   *  phone's adb not on PATH), in words that say how to fix it, or undefined: refused with code computer_unavailable
+   *  before anything is rented. Absent: not asked. */
+  readonly hostWhy?: (provider: string) => string | undefined;
   /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
    *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
   readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
@@ -160,6 +168,13 @@ function phonePlatform(machine: string | undefined, entry: ProviderEntry | undef
 /** The provider's watch of a computer's screen (ComputerProvider.watch), where it has one. */
 /** Told once, before the claim waits on its computer's image being built or pulled; never when the host has it. */
 export type ImageWait = (making: "build" | "pull", tag: string) => void;
+/** What a computer the claim made says it is, once it is connected: the provider's name in words, the agent's setting
+ *  kind, and its hello's own facts (its OS, the OS's version where it says one, its architecture). */
+export type ComputerSaid = {
+  readonly provider: string;
+  readonly kind: Exclude<ComputerSettingKind, "none">;
+  readonly hello: Pick<HelloResult, "os" | "osVersion" | "arch">;
+};
 /** The image `provider` made ready, when its descriptor declares it prepares its image (`entry.prepareImage`): its
  *  prepareImage(), its recipe built when the engine lacks it or its image by name pulled, answering the tag to start
  *  from; undefined for any other provider, which starts from its spec's image. A provider whose descriptor declares it
@@ -241,7 +256,7 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   const created = await provider.create(spec, signal ? { signal } : {});
@@ -262,6 +277,7 @@ async function providerLaunch(
     groups: hello.groups,
     // What the machine says it is (a phone's android or ios): its live view's input platform.
     machine: hello.kind,
+    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
     client,
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
@@ -305,7 +321,7 @@ async function ownedLaunch(
   spec: ComputerSpec,
   context: OwnedContext,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
   const { store, agentId } = context;
   // One run at a time, taken in the store before anything is listed or made (agent-computer.ts holdAgentComputer): two
   // runs of the agent that claim at once never both make a computer. With no run rows to read, a holder is still going.
@@ -338,7 +354,7 @@ async function ownedStart(
   spec: ComputerSpec,
   context: OwnedContext,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
   const call = signal ? { signal } : {};
   const { store, agentId, note } = context;
   const older = await releaseOlder(provider, claim.runId, claim.epoch, call);
@@ -387,6 +403,7 @@ async function ownedStart(
     id: ref.id,
     groups: hello.groups,
     machine: hello.kind,
+    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
     client,
     // An agent's own computer mounts no run's folder (resolve-computer.ts refuses one that would).
     async readBack(): Promise<Result<MountReadBack>> {
@@ -478,6 +495,7 @@ export async function computerForClaim(
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
+      deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: launched.hello });
       return launched;
     },
   };
@@ -487,6 +505,9 @@ export async function computerForClaim(
   if (resolved.kind === "none") return { computer: undefined, release: noop };
   const refusedKind = deps.refuseKind?.(resolved.kind);
   if (refusedKind) throw unavailable(refusedKind);
+  // The program its provider runs on this machine (the phone's adb) is checked before anything is rented.
+  const hostRefusal = resolved.provider ? deps.hostWhy?.(resolved.provider) : undefined;
+  if (hostRefusal) throw unavailable(`This agent's computer is a ${resolved.kind} on ${resolved.provider}, and this runner cannot run it: ${hostRefusal.replace(/[.!?]+$/, "")}.`);
 
   // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
   // start fails after it was minted.

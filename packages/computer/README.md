@@ -778,7 +778,7 @@ key.
 
 - **The volume** `computer-<hex>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy
   makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
-- **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.4-bookworm-slim, pinned by
+- **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.5-trixie-slim, pinned by
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
   package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
@@ -2254,7 +2254,9 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
 - **No daemon.** Nothing runs on the phone. `connect()` asks the phone harness for the session's adb link, runs
-  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it.
+  connects to it, unlocks the phone with the session's code (never in a result or an error) and probes it. Its hello
+  carries what the probe read: `arch` from `getprop ro.product.cpu.abi`, and `osVersion`, the Android release from
+  `getprop ro.build.version.release` (such as `"15"`; absent when the phone says none).
   - Neither the endpoint nor the code is ever in a spawned adb's argv, which `/proc` shows to every user of the host.
     The endpoint goes to the local adb server over its socket protocol (`host:connect`, `host:devices-l`,
     `host:disconnect`). The unlock is the vendor's shell command `unlock <code>`, once per connection; every shell
@@ -2323,8 +2325,9 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   - `list()` reads the ledger before `GET /sessions`, so it never forgets a phone a create records while it runs. It
     forgets a phone the listing leaves out only once that phone's own `GET /sessions/<id>` is a 404.
 - **adb** is an option too: a transport, `{ run(args, { input }), server(service) }` (tests give a fake), or the path of
-  the `adb` CLI (Android platform-tools; default `adb` on PATH), whose server it starts and speaks to on the loopback
-  (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
+  the `adb` CLI (Android platform-tools; default `adb` on PATH, which the phone's descriptor names as its
+  `hostCommand`, so a server says it is missing before any phone is rented), whose server it starts and speaks to on
+  the loopback (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
   socket requests reach one server. `adbCli(path, { env })` spawns adb from the environment given, with every
   `ADB_*`, `ANDROID_ADB_*` and `ANDROID_SERIAL` variable dropped, so nothing in it points the CLI at another server or
   device. The library reads no environment of its own: the conformance module passes its own, minus its

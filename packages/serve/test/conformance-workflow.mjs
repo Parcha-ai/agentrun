@@ -11,7 +11,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { workspaceFiles, withRecovery } from "@parcha/agentrun-dsl/recovery";
 
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
-const { createWorkflowExtension } = await import("@parcha/agentrun-pi/durable");
+const { createWorkflowExtension } = await import("../dist/workflow/task.js");
 
 /** The suite's script as a workflow: one call node per `{ call }` step (a chain when there is more than one), the suite's
  *  tool as the call's effect. `{ say }` steps are the model's, which a workflow has none of, so they are left out. A call
