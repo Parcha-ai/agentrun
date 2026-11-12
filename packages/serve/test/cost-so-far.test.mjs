@@ -3,13 +3,10 @@
 // cost is known, `unpriced` how many have none, on the run, its timeline's usage row and its list row (read back from the
 // run's meta once the server no longer holds the run). No ceiling is claimed. A run whose every cost is known has neither.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { metersIn } from "../dist/cap.js";
-import { readRunDbSync } from "../dist/run-db.js";
 import { startServe } from "../dist/index.js";
-import { agent, client, follow, runDir, scratch, serve } from "./support.mjs";
+import { agent, client, follow, journalOf, scratch, serve } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -188,12 +185,10 @@ test.skip("pi: after a stop read early, the turn's end and the stop's booking ar
   events.release();
   let lastError;
   await until(() => `the stopped request's end mark is in the store: timed out; last read error: ${lastError?.message ?? "none"}`, async () => {
-    const store = join(runDir(options.data, runId), "store", "run.sqlite");
-    if (!existsSync(store)) return false;
-    // The repository's reader of a store a live process writes (run-db.ts): lock-free and read-only, never in the
-    // writer's way. A read that fails while the store moves is "not yet"; a timeout names the last such error.
+    // The run's journal in the one store, read-only beside the server that writes it. A read that fails while the store
+    // moves is "not yet"; a timeout names the last such error.
     try {
-      return readRunDbSync(store, true, (db) => db.prepare("SELECT count(*) AS n FROM entries WHERE record LIKE '%agentrun.request_ended%'").get().n > 0);
+      return journalOf(options.data, runId).some((entry) => entry.kind === "agentrun.request_ended");
     } catch (error) {
       lastError = error;
       return false;
