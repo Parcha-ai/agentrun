@@ -125,7 +125,7 @@ test("a follow-up placed with a carry holds the carried text in the session's st
 // and the send): the prompt is placed, so no withdraw takes it, and nothing sent it. The adapter reads whether its CLI
 // recorded it; a placed prompt it never recorded is unsent, and settleTurn carries it (`unsent`) as it carries one
 // stopped before it was placed. A prompt the host wrote (a follow-up's,
-// `host`) is withdrawn and never carried: a host prompt that never ran is dropped (follow-up.ts).
+// `host`) is withdrawn and never carried: a host prompt that never ran is dropped.
 
 test("a prompt placed but never sent, stopped: settleTurn's `unsent` carries it into the next one, and it stays placed, so nothing sends it on its own", async () => {
   const store = memorySessionStore();

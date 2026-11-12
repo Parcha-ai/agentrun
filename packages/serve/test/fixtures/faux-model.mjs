@@ -55,7 +55,7 @@ function replyTo(context, faux) {
     return results === 0 ? faux.message(faux.toolCall("learned_workflow", { name: learned[1], input: { question: learned[2] } }), { stopReason: "toolUse" }) : faux.message(`Ran: ${textOf(context.messages.at(-1))}`);
   }
   // A workflow's model node on pi-durable (its submit tool added by a system message), or in a session of its own (a
-  // learned workflow's: agentrun-pi's host runner, its tools in the context).
+  // learned workflow's: the host runner, workflow/host-session.ts, its tools in the context).
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit")) || context.tools?.some((tool) => tool.name === "submit")) {
     // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
     // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
@@ -129,7 +129,7 @@ function replyTo(context, faux) {
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
-    // In a session of its own (agentrun-pi's host runner), submit takes the DSL's envelope: the record under `value`.
+    // In a session of its own (the host runner, workflow/host-session.ts), submit takes the DSL's envelope: the record under `value`.
     const submitTool = [...context.messages.flatMap((m) => m.toolsAdded ?? []), ...(context.tools ?? [])].find((tool) => tool.name === "submit");
     const params = submitTool?.parameters;
     const enveloped = Boolean(params?.properties?.value && Object.keys(params.properties).length === 1 && params.required?.includes("value"));

@@ -12,7 +12,9 @@
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { PROVIDERS } from "@parcha/agentrun-computer";
 import { dockerPathsForRuns } from "../box-paths.js";
+import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_TABLE_ENV } from "../harness-table.js";
@@ -147,7 +149,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
   // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
   // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
-  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
+  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,

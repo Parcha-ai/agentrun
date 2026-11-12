@@ -234,7 +234,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
 
 /** An `agentrun.budget` entry's data: the pending budget the kernel cap parked the run with (parkOf), and the cap's words
  *  as the run row's summary says them. */
-type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string };
+type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: number; needs_usd?: number; least_cap_usd?: number; suggested_cap_usd?: number }; words: string; node?: string | null };
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
@@ -309,7 +309,8 @@ export function budgetOf(entries: readonly JournalEntry[], run: Pick<RunView, "m
   const figures = p.spent_usd !== undefined && p.needs_usd !== undefined
     ? { spent_usd: micro(p.spent_usd), needs_usd: micro(p.needs_usd), ...(p.least_cap_usd !== undefined ? { least_cap_usd: p.least_cap_usd } : {}), suggested_cap_usd: suggestedCap(cap, p.spent_usd, p.needs_usd), overshoot_bound_usd: microUp(0) }
     : {};
-  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt };
+  // A workflow's pause names the node whose step waits (null when not known); an agentic run's names none.
+  return { kind: "budget", cap_usd: cap, ...figures, said: mark.words, at: meaningful(run.rows)?.timestamp ?? run.updatedAt, ...(mark.node !== undefined ? { node: mark.node } : {}) };
 }
 
 /** The run's meta the status and pending views read: a structural subset of RunMeta, so the server passes its live
@@ -639,7 +640,7 @@ export const WITHHELD_TITLE = "Withheld: a sign-in this run used can't be read";
 export const MALFORMED = "malformed";
 export type Handed = string[] | typeof MALFORMED;
 
-/** A run's `sign_in_handed` as read from its serve.json: undefined when absent (never handed one); the hashes it names;
+/** A run's `sign_in_handed` as read from its stored row: undefined when absent (never handed one); the hashes it names;
  *  MALFORMED for any other value. */
 export function handedMark(value: unknown): Handed | undefined {
   if (value === undefined) return undefined;
@@ -684,7 +685,7 @@ export async function handedPointers(signIns: SignInReader | undefined, agentId:
   return refs.every((ref) => ref !== undefined) ? { refs: refs as string[] } : "unreadable";
 }
 
-/** shown() for a run this server holds no Run for (an ended one a list reads from its row and serve.json alone): cut of
+/** shown() for a run this server holds no Run for (an ended one a list reads from its row and journal alone): cut of
  *  every secret this server never shows (serverSecrets) and of what the run was handed of its agent's sign-in
  *  (handedPointers); `withheld` when that can't be read back here, as a load would hide the run. `browser` and `handed`
  *  come from the run's record (its plane's vendor browser and its `sign_in_handed` mark); `damaged` when the record was

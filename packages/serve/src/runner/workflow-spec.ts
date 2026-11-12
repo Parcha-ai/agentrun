@@ -52,12 +52,8 @@ import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
+import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 import { bookedSpend } from "./metrics.js";
-
-/** A model node's submit tool, by name: pi's SUBMIT_TOOL (packages/pi/src/host-tools.ts). Named here, not imported from
- *  @parcha/agentrun-pi, whose root loads its runner and with it pi-coding-agent, an optional peer an installed server
- *  does not have: importing it here stopped the runner from starting. workflow-submit-name.test.mjs holds the two equal. */
-export const SUBMIT_TOOL = "submit";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = WORKFLOW_SESSION;
@@ -249,6 +245,8 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const hooks = deferredHooks();
     // The call nodes' effects in flight: a model request inside one is not where a pause lands (pauseAtEffects).
     const flight: EffectsInFlight = { count: 0 };
+    // The workflow's steps under way, by label: a model request the cap holds names its node when one step alone is open.
+    const steps = openSteps();
     // What a model node offers its model: its `submit` and the tools its node names. The session proxy's policy drops every
     // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
     // nodes send their requests straight to the provider (app.ts:117), unfiltered.
@@ -342,6 +340,13 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
           modelOf,
+          // Each model node's execution, kept on the node log (KINDS.nodeModel) before it runs: its path, the tier it asked
+          // for and the model id that tier's route sends it to, so the run's graph says what each execution ran on, and a
+          // later claim with another model of the tier never rewrites an earlier one's.
+          onModelNode: async ({ executionPath, tier }) => {
+            await nodeLog?.append([{ kind: KINDS.nodeModel, data: { path: executionPath, ...(tier ? { tier } : {}), model: modelOf(tier).modelId } as never }]);
+          },
+          steps,
           // The nodes' tools as the registry holds them (their booked registrations, never their bindings' own raw ones, which
           // would book beside the run's ledger), and the run's gate over them by name (main's registry.install).
           sharedExtensions: [nodeToolGate(nodeNames, nodePolicy), ...[...nodeTools.values()].flatMap((binding) => binding.extensions)],
@@ -380,7 +385,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           key: SESSION,
           label: SESSION,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
-          beforeRequest: parkOnRefusal(run.before, hooks, flight),
+          beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
         });
         // The run's decisions book on the same cap, under their own session (DECISION_SESSION); created now the Harness is
@@ -409,7 +414,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
 /** The run's rule with a park on a refusal: `before` (runCap's one rule for the model session) is asked, and on a refusal
  *  the run parks through the loop's hook (parkOf decides room vs for good from the refusal), the same as the pi adapter's
  *  parkAtCap. It still returns the refusal, so the proxy refuses the request and the node's turn ends. */
-export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">, flight: EffectsInFlight = { count: 0 }): BeforeRequest {
+export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHooks, "park" | "paused" | "pause">, flight: EffectsInFlight = { count: 0 }, steps?: OpenSteps): BeforeRequest {
   const park = hooks.park;
   return async (request) => {
     // A person's pause in force parks the run here, before the request is sent, as a refusal does: the request is
@@ -427,9 +432,32 @@ export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHoo
     // words instead (the net under the call's hold, holdAtEffects).
     if (verdict && "refuse" in verdict && flight.count === 0) {
       const refusal = verdict as Refusal;
-      park({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}) });
+      // Its node: the one workflow step under way (every model request goes through the run's one port, which names no
+      // node); none when several run at once, as a map's items do.
+      const node = steps?.only();
+      park({ message: refusal.refuse, forGood: refusal.forGood ?? true, ...(refusal.figures ? { figures: refusal.figures } : {}), ...(node !== undefined ? { node } : {}) });
     }
     return verdict;
+  };
+}
+
+/** The workflow's steps under way, by label (the workflow's node.start/node.end, through the host): `only` is the label
+ *  of the one step open, else undefined (none, or several at once). */
+export interface OpenSteps { start(label: string): void; end(label: string): void; only(): string | undefined }
+export function openSteps(): OpenSteps {
+  const open = new Map<string, number>();
+  return {
+    start: (label) => void open.set(label, (open.get(label) ?? 0) + 1),
+    end: (label) => {
+      const left = (open.get(label) ?? 0) - 1;
+      if (left > 0) open.set(label, left);
+      else open.delete(label);
+    },
+    only: () => {
+      if (open.size !== 1) return undefined;
+      const [[label, count]] = [...open];
+      return count === 1 ? label : undefined;
+    },
   };
 }
 
@@ -869,7 +897,9 @@ async function decisionRequestOf(provider: DecisionProvider, params: JudgeParams
   const questions = Object.keys(params.questions).length;
   const images = Object.keys(params.images ?? {}).length;
   const base = { kind: "decision" as const, id, inputTokens, questions, images };
-  if (provider.id === "parallel") return { ...base, model: openrouterModel("parallel", null, null), requestUsd: PARALLEL_DECISION_USD };
+  // Parallel charges by the request, nothing by the token: priced at $0 a token and its request price, never as a model
+  // with no price (which the cap refuses, failing every capped workflow's Parallel decision).
+  if (provider.id === "parallel") return { ...base, model: openrouterModel("parallel", { input: 0, output: 0 }, null), requestUsd: PARALLEL_DECISION_USD };
   if (provider.id === "jev") return { ...base, model: { id: "jev", api: "openrouter", price: { input: JEV_INPUT_USD * 1e6, output: 0 }, outputCeiling: null } };
   const priced = provider as DecisionProvider & { priceOf?(model: string): Promise<DecisionModelPrice | null> };
   const model = params.model;
@@ -986,7 +1016,7 @@ function bookedNodeTools(binding: ToolBinding, paid: () => RunTools | undefined,
   };
 }
 
-/** The tool names a workflow's model node offers its model: the node's `submit` (pi's SUBMIT_TOOL) and every tool the
+/** The tool names a workflow's model node offers its model: the node's `submit` (SUBMIT_TOOL) and every tool the
  *  workflow's model nodes name. */
 export function nodeOffer(workflow: Workflow): string[] {
   return [...new Set([SUBMIT_TOOL, ...workflowTools(workflowNodes(workflow, inspectWorkflow(workflow))).nodes])];

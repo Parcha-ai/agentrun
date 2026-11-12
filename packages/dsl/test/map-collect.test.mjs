@@ -3,10 +3,11 @@
 // never collected stops the map as it does without the field. Under recovery a collected failure commits once and
 // answers its item in every later process, in both layouts; every later open of one store stands for a later process.
 import assert from 'node:assert/strict';
+import { WorkflowOutputInvalidError } from '../dist/workflow.js';
 import { test } from 'node:test';
 import {
   runWorkflow, validateWorkflow, isItemFailure, NODE_FIELDS, EffectFailure, EffectOutcomeUnknownError, EscalationSignal,
-  WorkflowCodeError, WorkflowOutputInvalidError, WorkflowStateError, WorkflowVerificationError,
+  WorkflowCodeError, WorkflowStateError, WorkflowVerificationError,
 } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery, openJournal, RecoveryError, FROZEN_SNAPSHOT_SCHEMA_V4 } from '@parcha/agentrun-dsl/recovery';
 

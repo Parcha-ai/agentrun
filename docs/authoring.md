@@ -36,7 +36,7 @@ Run `npm run demo -- --no-evidence` to make every source fail the evidence check
 
 For a first edit, change `keep: { path: 'answersQuestion', gte: 0.8 }` to `gte: 0.99` in `typed-research.ts`, then rerun `npm run demo`. The scripted evidence probability is `0.95`, so it now stops. No rebuild is needed for this TypeScript example. Restore `0.8` before running the unchanged acceptance tests. This changes a real execution rule; changing a prompt alone will not change the scripted model responses.
 
-The [configured research walkthrough](live-research.md) wires the same workflow to Jev and your saved Pi default, and includes independently labeled evidence cases.
+The [configured research walkthrough](live-research.md) wires the same workflow to Jev and your own agents, and includes independently labeled evidence cases.
 
 ## Use in your own app
 
@@ -193,4 +193,4 @@ const candidate = await authorWorkflow({ request, outputDir: './candidates', run
 
 For an authoritative SOP, supply complete `rubricSections` to `authorWorkflow` and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them.
 
-The contract's grammar sentences are enforced by `validateWorkflow`, by engine admission (`sopSection` headings) or by `candidatePolicyErrors`; the package tests pair 49 of them with a candidate their check refuses. The guarantee is bounded by those checks, not a proof that every accepted workflow is correct. A few sentences state intent that no mechanical check can decide: keep the workflow small, the generative kinds' duties (transcribe, judge, gather, render), keep code away from prose, never paraphrase policy, never invent tools or results, and send uncertainty to an escalation or an explicit fallback. They stay because they define what the language is for. A host's acceptance checks and tool admission judge them.
+The contract's grammar sentences are enforced by `validateWorkflow`, by engine admission (`sopSection` headings) or by the candidate check `authorWorkflow` runs; the package tests pair 49 of them with a candidate their check refuses. The guarantee is bounded by those checks, not a proof that every accepted workflow is correct. A few sentences state intent that no mechanical check can decide: keep the workflow small, the generative kinds' duties (transcribe, judge, gather, render), keep code away from prose, never paraphrase policy, never invent tools or results, and send uncertainty to an escalation or an explicit fallback. They stay because they define what the language is for. A host's acceptance checks and tool admission judge them.

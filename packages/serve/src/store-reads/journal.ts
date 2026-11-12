@@ -208,9 +208,11 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
     const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
     if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
     traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
-      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown };
+      const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; model?: unknown; tier?: unknown };
       if (typeof one.label !== "string" || typeof one.status !== "string") return [];
-      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0 }];
+      // A model node's model and tier, each through the run's cut as the label is.
+      return [{ label: said(one.label), kind: String(one.kind ?? ""), status: one.status, duration_ms: typeof one.duration_ms === "number" ? one.duration_ms : 0,
+        ...(typeof one.model === "string" ? { model: said(one.model) } : {}), ...(typeof one.tier === "string" ? { tier: said(one.tier) } : {}) }];
     }));
   }
   if (!traces.size) return rows;
@@ -227,7 +229,13 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   const paid = bookedSpend(entries, "paid");
   const at = rows.findIndex((row) => row.kind === "usage");
   const kept = rows.filter((row) => row.kind !== "usage");
-  if (!model.requests && !paid.requests) return kept;
+  if (!model.requests && !paid.requests) {
+    // A run whose cap refused its first request (its park at the cap, an agentrun.budget entry) says it sent none, as a
+    // pi run's usage line does: never a request it did not make, and never silence about why nothing ran.
+    if (!entries.some((entry) => entry.kind === KINDS.budget) || kept.length === 0) return kept;
+    const last = kept[kept.length - 1]!;
+    return [...kept, { ...last, id: `${last.conversation_id ?? 0}:usage`, kind: "usage", summary: "no model request sent", agent_label: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, usage: { usd: 0, requests: 0 } }];
+  }
   const usd = model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
   const unpriced = model.unpriced + paid.unpriced;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
@@ -284,8 +292,9 @@ export async function wholeAnswers(store: Store, runId: string, context: Context
   // rest of the answer is past what it read, so that row is read again too.
   const cut = (row: TimelineEvent) => row.kind === "final_answer" && row.text !== null && (row.text.length >= CAPS.text || row.text.endsWith("...") || row.text === "[redacted]");
   if (!rows.some(cut)) return rows;
-  let kept = answersServed.get(store);
-  if (!kept) answersServed.set(store, (kept = new Map()));
+  // Kept by the store a snapshot was taken of: each snapshot's own store is a new object, and would never hit.
+  let kept = answersServed.get(store.origin);
+  if (!kept) answersServed.set(store.origin, (kept = new Map()));
   const keyOf = (row: TimelineEvent) => `${runId}\0${row.id}\0${whole.key}`;
   let uncut: Map<string, string | null> | undefined;
   const out: TimelineEvent[] = [];
