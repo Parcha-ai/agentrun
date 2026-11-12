@@ -20,7 +20,17 @@ export const MODAL_GPU_MAX = 8;
  * being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
  * namespace itself (a live probe, 11-11: unshare -n refused, unshare -Urn allowed).
  */
-export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({ types: [...MODAL_GPU_TYPES], max: MODAL_GPU_MAX, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" });
+export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({
+	types: [...MODAL_GPU_TYPES],
+	max: MODAL_GPU_MAX,
+	isolation: "gvisor",
+	preemptible: true,
+	mounts: [],
+	// Its gVisor runtime gives /dev/fuse (modal-6, 11-11: a character device 10:229 that opens), but Archil's FUSE mount
+	// under gVisor is not proven safe for the Archil client.
+	unmounted: Object.freeze({ why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true }),
+	fence: "userns-netns",
+});
 
 export const MODAL = defineProvider({
 	id: "modal",
