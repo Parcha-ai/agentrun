@@ -8,7 +8,7 @@
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
+import { type ComputerProvider, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
@@ -36,9 +36,10 @@ export interface SettingKindSpec {
   readonly optional: readonly string[];
 }
 
-/** A provider configuration's machine kind and groups, the GPUs it gives where it declares them, and the image a setting
- *  selects it by, where it names one, as the kind registry gives them. */
-export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[]; readonly gpu?: GpuCapability; readonly image?: string };
+/** A provider configuration's machine kind and groups, the GPUs it gives where it declares them, whether it keeps an
+ *  agent's own computer between runs (persistence), and the image a setting selects it by, where it names one, as the
+ *  kind registry gives them. */
+export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[]; readonly gpu?: GpuCapability; readonly persistence?: unknown; readonly image?: string; readonly options?: Readonly<Record<string, unknown>> };
 
 /** A provider as the kind registry's PROVIDERS gives it. */
 export interface ProviderEntry {
@@ -136,8 +137,10 @@ export interface ComputerRoutesOptions {
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
  *  its keys as SecretMeta under `secrets`, each named "computer:<provider>:<KEY>", and `required`, the names of the ones
  *  it needs. `network`: what this server's allow-list means for a vendor-hosted computer, in words (networkWords).
- *  `images`: the images it offers for the kind, by name, where it offers any to choose. */
-export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string; network?: string; images?: string[]; gpu?: GpuView } & ShellChoice;
+ *  `images`: the images it offers for the kind, by name, where it offers any to choose. `persistent`: present where an
+ *  agent's computer of this kind can be kept between its runs (computer.persistent: true), with the images that keep one
+ *  where it offers images to choose. */
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; ready: boolean; why?: string; network?: string; images?: string[]; persistent?: { images?: string[] }; gpu?: GpuView } & ShellChoice;
 /** A choice's shell (workspace runShellOf, in this server's mode), the host tools it gives (the kernel registry's
  *  hostToolDefs for that shell) and what it leaves out in words (absent on a computer that mounts the folder). */
 export type ShellChoice = { shell: ShellPlace; host_tools: string[]; shell_note?: string };
@@ -275,11 +278,16 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           const daemon = daemons.get(provider.id);
           const why = unusable(kind, provider) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
-          const images = imagesOf(provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0), provider.defaultImage?.[kind]);
+          const serving = provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0);
+          const images = imagesOf(serving, provider.defaultImage?.[kind]);
           const network = refusedOpen(provider) ? NETWORK_REFUSED_WORDS : networkWords(provider.network);
           // A sandbox's GPUs: only a sandbox takes them (computer-setting.ts computerIssues).
           const gpu = kind === "sandbox" ? sandboxGpu(kinds, provider) : undefined;
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(gpu ? { gpu: gpuView(gpu, provider.label, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
+          // The configurations of this kind that keep an agent's own computer (computer-setting.ts persistenceIssues).
+          const keeping = serving.filter((one) => one.persistence !== undefined);
+          const keptImages = images.filter((image) => keeping.some((one) => (one.image ?? provider.defaultImage?.[kind]) === image));
+          const persistent = keeping.length === 0 ? undefined : images.length > 0 ? { images: keptImages } : {};
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ready: why === undefined, ...(why ? { why } : {}), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider.label, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
         const offered = kind === "none" || serving.some((provider) => unusable(kind, provider) === undefined);
         const why = offered ? undefined
@@ -364,7 +372,23 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings, keyTable);
   }
 
-  return { view, saveKeys, test, claimRefusal, claimOptions };
+  /** The provider an agent's own computer lives on (workspace/agent-computer.ts reconcileAgentComputer deletes it
+   *  through it): made from its saved keys and the server's settings, with the create() options of the configuration
+   *  `image` selects, and the store's ledger (the factories'). Throws, in words, when it cannot be made here. */
+  async function providerFor(providerId: string, image: string | undefined): Promise<Pick<ComputerProvider, "release">> {
+    const entry = providerOf(providerId);
+    if (!entry) throw new Error(`this server has no computer provider ${JSON.stringify(providerId)}`);
+    const options = providerOptions(providerId, await keysOf(entry), settings, keyTable);
+    if (!options.ok) throw new Error(options.error.message);
+    const make = Object.hasOwn(factories, providerId) ? factories[providerId] : undefined;
+    if (typeof make !== "function") throw new Error(`this server cannot make a ${entry.label} provider`);
+    const configuration = image === undefined ? undefined : entry.capabilities.find((one) => one.image === image);
+    const made = (await make({ ...options.options, ...((configuration?.options ?? {}) as Record<string, string>) })) as unknown as Partial<Pick<ComputerProvider, "release">>;
+    if (typeof made.release !== "function") throw new Error(`this server's ${entry.label} provider cannot release a computer`);
+    return made as Pick<ComputerProvider, "release">;
+  }
+
+  return { view, saveKeys, test, claimRefusal, claimOptions, providerFor };
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;
