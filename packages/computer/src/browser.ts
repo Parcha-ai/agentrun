@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import type { CallOptions } from "./client.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type Group, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
-import type { ComputerCapabilities, ComputerSpec, Refusal } from "./provider.js";
+import type { BrowserFeatures, BrowserSpec, CallContext, ComputerCapabilities, ComputerProvider, ComputerRef, ComputerSpec, Refusal } from "./provider.js";
 import { checkGpu, checkLifetime } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result } from "./result.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
@@ -149,17 +149,19 @@ export async function recoverCreate(
 	return words.join("; ");
 }
 
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "gpu"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "gpu", "browser"]);
 
 /**
  * The checks every browser provider makes before a vendor call: the image is chromium, the lifetime is within the
- * vendor's cap (and at least min), the network is open, the labels are ones the vendor's metadata holds, and no field a
- * browser does not take (a size, a user, a workdir, a mount).
+ * vendor's cap (and at least min), the network is open, the labels are ones the vendor's metadata holds, the session's
+ * options are ones capabilities().browser declares (browserSpecRefusals), and no field a browser does not take (a size,
+ * a user, a workdir, a mount).
  */
 export function checkBrowser(spec: ComputerSpec, capabilities: ComputerCapabilities, vendor: string, minLifetimeMs = 1): Refusal[] {
 	const refusals: Refusal[] = [];
 	const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
 	const { image, lifetimeMs, network, labels } = given;
+	refusals.push(...browserSpecRefusals(given.browser, capabilities.browser ?? { timeout: "wall-clock" }, vendor));
 	if (image !== BROWSER_IMAGE) refusals.push({ field: "image", message: `a ${vendor} computer runs ${vendor}'s own Chromium: image is "${BROWSER_IMAGE}", not ${JSON.stringify(image)}` });
 	const lifetime = checkLifetime(lifetimeMs, capabilities);
 	refusals.push(...lifetime);
@@ -291,6 +293,13 @@ export function cdpUrlProblem(url: unknown, name: string, domain: string): strin
 	return undefined;
 }
 
+/** What a REST call sends: a JSON body, a query and a signal. */
+export interface RestInit {
+	body?: unknown;
+	query?: URLSearchParams;
+	signal?: AbortSignal;
+}
+
 /** What the REST calls share: one request, never retried, read whole; a failure throws a BrowserVendorError. */
 export interface RestReply {
 	status: number;
@@ -303,7 +312,7 @@ export async function restCall(
 	method: string,
 	route: string,
 	call: string,
-	init: { body?: unknown; query?: URLSearchParams; signal?: AbortSignal } = {},
+	init: RestInit = {},
 ): Promise<RestReply> {
 	const query = init.query?.toString();
 	let response: Response;
@@ -353,3 +362,153 @@ export function httpsBase(url: string, what: string): string {
 /** A vendor's session id as a ref or attach gives it: a plain token, never a path. */
 export const idProblem = (id: unknown, vendor: string) =>
 	typeof id === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(id) ? undefined : `${typeof id === "string" ? JSON.stringify(id) : String(id)} is not a ${vendor} session's id`;
+
+/**
+ * A GET whose success is bytes, streamed (Accept application/octet-stream); undefined when the vendor answers 404. A
+ * redirect is followed once, to https only, and without the key's headers, so a storage host is never handed the key.
+ * A failure throws a BrowserVendorError that names the call and the status alone.
+ */
+export async function restBytes(
+	o: { vendor: string; fetch: typeof fetch; base: string; headers: Record<string, string> },
+	route: string,
+	call: string,
+	signal?: AbortSignal,
+): Promise<AsyncIterable<Uint8Array> | undefined> {
+	const get = (url: string, headers: Record<string, string>) =>
+		o.fetch(url, { method: "GET", headers: { ...headers, Accept: "application/octet-stream" }, redirect: "manual", ...(signal ? { signal } : {}) });
+	const drop = (response: Response) => response.body?.cancel().catch(() => undefined);
+	let response: Response;
+	try {
+		response = await get(`${o.base}${route}`, o.headers);
+		if (response.status >= 300 && response.status < 400) {
+			const location = response.headers.get("location");
+			await drop(response);
+			let next: URL | undefined;
+			try {
+				next = location ? new URL(location, `${o.base}${route}`) : undefined;
+			} catch {
+				next = undefined;
+			}
+			if (next === undefined) throw new BrowserVendorError(o.vendor, call, response.status, "no_location");
+			if (next.protocol !== "https:") throw new BrowserVendorError(o.vendor, call, response.status, "redirect_not_https");
+			response = await get(next.href, {});
+		}
+	} catch (error) {
+		if (isAbort(error) || error instanceof BrowserVendorError) throw error;
+		throw new BrowserVendorError(o.vendor, call, undefined, undefined, { cause: error });
+	}
+	if (response.status === 404) {
+		await drop(response);
+		return undefined;
+	}
+	if (!response.ok) {
+		await drop(response);
+		throw new BrowserVendorError(o.vendor, call, response.status);
+	}
+	if (response.body === null) throw new BrowserVendorError(o.vendor, call, response.status, "no_body");
+	return response.body as unknown as AsyncIterable<Uint8Array>;
+}
+
+/** The bytes as they come, failing in words once they pass maxBytes: what reached the reader before then is all it gets. */
+export async function* limitedBytes(body: AsyncIterable<Uint8Array>, maxBytes: number, what: string): AsyncIterable<Uint8Array> {
+	let total = 0;
+	for await (const chunk of body) {
+		total += chunk.byteLength;
+		if (total > maxBytes) throw new Error(`${what} is larger than the ${maxBytes}-byte limit`);
+		yield chunk;
+	}
+}
+
+// ---- A browser session's own options (spec.browser), its features (capabilities().browser), and the optional members --
+
+/** One file a session downloaded, as downloads.list gives it. */
+export interface BrowserFile {
+	name: string;
+	sizeBytes: number;
+	modifiedAt: string | null;
+}
+
+/** Saved profiles: a pointer is a capability (whoever holds it opens the profile), so no error's words carry one. */
+export interface BrowserProfiles {
+	create(context?: CallContext): Promise<Result<string>>;
+	/** A profile the vendor no longer knows is removed. */
+	remove(pointer: string, context?: CallContext): Promise<Result<void>>;
+}
+
+/** The files a session downloaded, kept by the vendor. */
+export interface BrowserDownloads {
+	list(ref: ComputerRef, context?: CallContext): Promise<Result<BrowserFile[]>>;
+	/** The file's bytes, streamed; the stream fails in words once it passes maxBytes. */
+	read(ref: ComputerRef, name: string, maxBytes: number, context?: CallContext): Promise<Result<AsyncIterable<Uint8Array>>>;
+}
+
+/**
+ * A provider of browsers, with the members its features may bring: profiles where capabilities().browser declares
+ * profiles, downloads where it declares downloads.
+ */
+export interface BrowserComputerProvider extends ComputerProvider {
+	readonly profiles?: BrowserProfiles;
+	readonly downloads?: BrowserDownloads;
+}
+
+/** Whether a provider is a browser provider: its capabilities are of kind browser and declare its sessions' features. */
+export function isBrowserProvider(provider: ComputerProvider): provider is BrowserComputerProvider {
+	let capabilities: ComputerCapabilities | undefined;
+	try {
+		capabilities = typeof provider?.capabilities === "function" ? provider.capabilities() : undefined;
+	} catch {
+		return false;
+	}
+	const browser = capabilities?.browser as unknown;
+	return capabilities?.kind === "browser" && typeof browser === "object" && browser !== null;
+}
+
+/** A viewport's longest side, in pixels. */
+const MAX_VIEWPORT = 10_000;
+const SESSION_FIELDS = new Set(["viewport", "profile", "stealth", "headless"]);
+
+/** A profile's pointer as a provider takes it: a plain token, so it is a path segment and never a path. */
+export const pointerOk = (pointer: unknown): pointer is string => typeof pointer === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(pointer);
+
+const only = (value: object, fields: string[]) => Object.keys(value).every((key) => fields.includes(key));
+
+/**
+ * Why spec.browser is not one this provider takes, field by field: a malformed option, or one its features
+ * (capabilities().browser) do not declare (a flag set false asks for nothing, so it is never refused). The words never
+ * carry a pointer.
+ */
+export function browserSpecRefusals(session: unknown, features: BrowserFeatures, vendor: string): Refusal[] {
+	if (session === undefined) return [];
+	if (typeof session !== "object" || session === null || Array.isArray(session)) return [{ field: "browser", message: "a browser's options are an object" }];
+	const refusals: Refusal[] = [];
+	const given = session as Record<string, unknown>;
+	for (const [field, value] of Object.entries(given)) {
+		if (!SESSION_FIELDS.has(field) && value !== undefined) refusals.push({ field: `browser.${field}`, message: `a browser takes no ${field}` });
+	}
+	const { viewport, profile } = given;
+	if (viewport !== undefined) {
+		const side = (n: unknown) => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= MAX_VIEWPORT;
+		const v = viewport as { width?: unknown; height?: unknown } | null;
+		if (typeof v !== "object" || v === null || !only(v, ["width", "height"]) || !side(v.width) || !side(v.height)) {
+			refusals.push({ field: "browser.viewport", message: `a viewport is { width, height }, each a whole number of pixels from 1 to ${MAX_VIEWPORT}` });
+		}
+	}
+	const flags: Array<[keyof BrowserSpec & keyof BrowserFeatures, string]> = [
+		["stealth", "stealth mode"],
+		["headless", "headless mode"],
+	];
+	for (const [field, what] of flags) {
+		const value = given[field];
+		if (value === undefined) continue;
+		if (typeof value !== "boolean") refusals.push({ field: `browser.${field}`, message: `${field} is true or false` });
+		else if (value && features[field] !== true) refusals.push({ field: `browser.${field}`, message: `a ${vendor} browser has no ${what}, so ${field} is refused` });
+	}
+	if (profile !== undefined) {
+		const p = profile as { pointer?: unknown; save?: unknown } | null;
+		if (features.profiles === undefined) refusals.push({ field: "browser.profile", message: `a ${vendor} browser keeps no profile` });
+		else if (typeof p !== "object" || p === null || !only(p, ["pointer", "save"]) || !pointerOk(p.pointer) || typeof p.save !== "boolean") {
+			refusals.push({ field: "browser.profile", message: "a profile is { pointer, save }: a plain token profiles.create gave, and true or false" });
+		}
+	}
+	return refusals;
+}

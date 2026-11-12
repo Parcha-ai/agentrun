@@ -9,6 +9,11 @@
 // Browserbase answer 504 after 75 s), POST /v1/sessions/{id} with status REQUEST_RELEASE (release), and
 // GET /v1/sessions/{id}/debug (the live view). The key is the X-BB-API-Key header.
 //
+// A session's own options (spec.browser): viewport and a profile ride browserSettings (a profile is a context,
+// { id: pointer, persist: save }); stealth is Browserbase's Verified browser with its CAPTCHA solver (verified and
+// solveCaptchas; the solver is off otherwise, as Browserbase's default is on). Profiles are contexts: POST /v1/contexts ({ projectId } when the provider has one) and DELETE /v1/contexts/{id}. Downloads are the session's
+// synced files: GET /v1/downloads?sessionId=&limit=&offset= (paged by total) and GET /v1/downloads/{id}, the bytes.
+//
 // A label's key is not its metadata key: Browserbase refuses a dot in a userMetadata key (POST /v1/sessions answered 400
 // "Key is not a valid metadata key: agentrun.conformance", found live on 11-08), and the protocol's labels are dotted
 // (agentrun.run, agentrun.epoch). metadataKey() writes each "." as "_", and labelKey() reads it back. check() takes a
@@ -19,6 +24,10 @@ import { BROWSERBASE } from "./descriptors/browserbase.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import {
 	cdpUrlProblem,
+	type BrowserComputerProvider,
+	type BrowserDownloads,
+	type BrowserFile,
+	type BrowserProfiles,
 	type BrowserStream,
 	browserClient,
 	browserHello,
@@ -35,11 +44,14 @@ import {
 	idProblem,
 	labelsOf,
 	labelsProblem,
+	limitedBytes,
 	memoryUrls,
+	pointerOk,
 	queryable,
 	type ReleaseConfirm,
 	recoverCreate,
 	releaseConfirmed,
+	restBytes,
 	restCall,
 	type UrlStore,
 	causedFail,
@@ -50,6 +62,7 @@ import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import {
 	type AttachedComputer,
+	type BrowserFeatures,
 	type CallContext,
 	type ComputerCapabilities,
 	type ComputerConnection,
@@ -132,10 +145,19 @@ export interface BrowserbaseDebug {
 	pages?: Array<{ id?: string; url?: string; title?: string; debuggerFullscreenUrl?: string }>;
 }
 
+/** One row of a session's downloads, as GET /v1/downloads answers it; only what the provider reads. */
+export interface BrowserbaseDownload {
+	id: string;
+	filename: string;
+	size: number;
+	createdAt?: string;
+}
+
 /**
  * The calls the provider makes, one Browserbase request each, never retried where a retry could open a second paid
  * browser. A failure throws, with the HTTP status as `status` when one came back; the provider returns it as a result
- * whose hidden cause is the thrown error, so a host that gave its own api rethrows its own error.
+ * whose hidden cause is the thrown error, so a host that gave its own api rethrows its own error. The optional calls
+ * back the session options and members of the same name: a host's api without them declares none of those.
  */
 export interface BrowserbaseApi {
 	create(body: Record<string, unknown>, signal?: AbortSignal): Promise<BrowserbaseSession>;
@@ -145,7 +167,18 @@ export interface BrowserbaseApi {
 	/** "gone" when Browserbase does not know the session (404). */
 	release(id: string, signal?: AbortSignal): Promise<"gone" | "asked">;
 	debug(id: string, signal?: AbortSignal): Promise<BrowserbaseDebug>;
+	/** Makes a context (POST /v1/contexts): its id. */
+	createContext?(signal?: AbortSignal): Promise<string>;
+	/** "gone" when Browserbase does not know the context (404). */
+	deleteContext?(id: string, signal?: AbortSignal): Promise<"gone" | "deleted">;
+	/** One page of a session's downloads, from offset, and how many there are in all. */
+	listDownloads?(sessionId: string, offset: number, signal?: AbortSignal): Promise<{ downloads: BrowserbaseDownload[]; total: number }>;
+	/** A download's bytes, streamed; undefined when Browserbase does not know it (404). */
+	readDownload?(id: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array> | undefined>;
 }
+
+/** A plain id as Browserbase answers one (a context's, a download's): a token, never a path. */
+const plainId = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(id);
 
 /** Browserbase's v1 REST API over fetch: the default api. */
 export function browserbaseRest({ apiKey, apiUrl = BROWSERBASE_API_URL, projectId, fetch: fetcher = fetch }: { apiKey: string; apiUrl?: string; projectId?: string; fetch?: typeof fetch }): BrowserbaseApi {
@@ -187,15 +220,55 @@ export function browserbaseRest({ apiKey, apiUrl = BROWSERBASE_API_URL, projectI
 			if (answer.status === 404) throw new BrowserVendorError(NAME, call, 404);
 			return (answer.json ?? {}) as BrowserbaseDebug;
 		},
+		async createContext(signal) {
+			const call = "POST /v1/contexts";
+			const answer = await restCall(o, "POST", "/v1/contexts", call, { body: projectId ? { projectId } : {}, ...(signal ? { signal } : {}) });
+			const id = (answer.json as { id?: unknown } | null)?.id;
+			if (answer.status === 404 || !plainId(id)) throw new BrowserVendorError(NAME, call, answer.status, "no_context_id");
+			return id;
+		},
+		async deleteContext(id, signal) {
+			const answer = await restCall(o, "DELETE", `/v1/contexts/${encodeURIComponent(id)}`, "DELETE /v1/contexts/{id}", signal ? { signal } : {});
+			return answer.status === 404 ? "gone" : "deleted";
+		},
+		async listDownloads(sessionId, offset, signal) {
+			const call = "GET /v1/downloads";
+			const query = new URLSearchParams({ sessionId, limit: String(DOWNLOADS_PAGE), offset: String(offset) });
+			const answer = await restCall(o, "GET", "/v1/downloads", call, { query, ...(signal ? { signal } : {}) });
+			// A list is never "not found": a 404 is a wrong base URL, and an empty answer would hide every file.
+			if (answer.status === 404) throw new BrowserVendorError(NAME, call, 404);
+			const page = answer.json as { downloads?: unknown; total?: unknown } | null;
+			if (!Array.isArray(page?.downloads) || !Number.isInteger(page.total)) throw new BrowserVendorError(NAME, call, answer.status, "not_a_list");
+			return { downloads: page.downloads as BrowserbaseDownload[], total: page.total as number };
+		},
+		async readDownload(id, signal) {
+			return restBytes(o, `/v1/downloads/${encodeURIComponent(id)}`, "GET /v1/downloads/{id}", signal);
+		},
 	};
 }
+
+/** Rows per downloads page, and the most pages a list reads before it fails rather than run on. */
+const DOWNLOADS_PAGE = 100;
+const MAX_PAGES = 100;
+
+/** How long after a saving session ends Browserbase may still be writing its context back. */
+export const BROWSERBASE_PROFILE_SETTLE_MS = 5_000;
+/** The directory Browserbase syncs a session's downloads from: a driver sets the download behaviour into it. */
+export const BROWSERBASE_DOWNLOADS_PATH = "downloads";
 
 export interface BrowserbaseProviderOptions {
 	/** With apiUrl and fetch, the REST api is built from it; required unless api is given. */
 	apiKey?: string;
-	/** Named in every create and release; a key behind a credential proxy names none. */
+	/** Named in every create and release; none behind a gateway (env), whose key names the project. */
 	projectId?: string;
+	/** Browserbase's API; default BROWSERBASE_BASE_URL in env (a gateway that fronts it), else Browserbase's own. */
 	apiUrl?: string;
+	/**
+	 * The host's own variables its descriptor declares (hostEnv): BROWSERBASE_BASE_URL, a gateway that fronts the API, and
+	 * BROWSERBASE_CONNECT_BASE_URL, one that fronts the sessions' sockets. Behind either, the gateway's key names the
+	 * project, so no projectId is sent.
+	 */
+	env?: Readonly<Record<string, string | undefined>>;
 	fetch?: typeof fetch;
 	/** The calls, a host's own (pi-browser's SDK client); default the REST api. */
 	api?: BrowserbaseApi;
@@ -205,9 +278,6 @@ export interface BrowserbaseProviderOptions {
 	sleep?: (ms: number) => Promise<void>;
 }
 
-/** What a host may add to a session's create body: Browserbase's own settings (proxies, browserSettings, region, extensionId, a context). */
-export type BrowserbaseSessionSettings = Record<string, unknown>;
-
 const refOf = (s: BrowserbaseSession): ComputerRef => ({ id: s.id, name: s.id });
 const deadlineOf = (s: BrowserbaseSession) => {
 	const at = typeof s.expiresAt === "string" ? new Date(s.expiresAt) : undefined;
@@ -215,28 +285,51 @@ const deadlineOf = (s: BrowserbaseSession) => {
 };
 
 /** Computers that are Browserbase sessions. */
-export class BrowserbaseProvider implements ComputerProvider {
+export class BrowserbaseProvider implements ComputerProvider, BrowserComputerProvider {
 	readonly id = "browserbase";
 	readonly version = VERSION;
+	/**
+	 * A session ends at its timeout, a wall clock; it may be stealth (Verified, with the CAPTCHA solver); it opens a
+	 * context as a profile (written back about 5 s after a saving session ends) and keeps what is saved into downloads/. A
+	 * host's api without a call declares no feature that needs it. capabilities().browser gives it.
+	 */
+	readonly #browser: BrowserFeatures;
+	readonly profiles?: BrowserProfiles;
+	readonly downloads?: BrowserDownloads;
 	readonly #api: BrowserbaseApi;
 	readonly #projectId: string | undefined;
 	readonly #urls: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
 
-	constructor({ apiKey, projectId, apiUrl, fetch: fetcher, api, urls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
+	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, api, urls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
 		if (api === undefined && (typeof apiKey !== "string" || apiKey === "")) throw new Error("set options.apiKey to a Browserbase API key, or options.api to a host's own Browserbase calls: the provider reads no environment");
-		this.#projectId = projectId || undefined;
-		this.#api = api ?? browserbaseRest({ apiKey: apiKey as string, ...(apiUrl ? { apiUrl } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
+		const gateway = env.BROWSERBASE_BASE_URL?.trim() || undefined;
+		const behindGateway = Boolean(gateway || env.BROWSERBASE_CONNECT_BASE_URL?.trim());
+		this.#projectId = behindGateway ? undefined : projectId || undefined;
+		const base = apiUrl || gateway;
+		this.#api = api ?? browserbaseRest({ apiKey: apiKey as string, ...(base ? { apiUrl: base } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
 		this.#urls = urls ?? memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
+		const a = this.#api;
+		const hasProfiles = typeof a.createContext === "function" && typeof a.deleteContext === "function";
+		const hasDownloads = typeof a.listDownloads === "function" && typeof a.readDownload === "function";
+		this.#browser = {
+			timeout: "wall-clock",
+			stealth: true,
+			...(hasProfiles ? { profiles: { settleMs: BROWSERBASE_PROFILE_SETTLE_MS } } : {}),
+			...(hasDownloads ? { downloads: { path: BROWSERBASE_DOWNLOADS_PATH } } : {}),
+		};
+		if (hasProfiles) this.profiles = { create: (context) => this.#createProfile(context), remove: (pointer, context) => this.#removeProfile(pointer, context) };
+		if (hasDownloads) this.downloads = { list: (ref, context) => this.#listDownloads(ref, context), read: (ref, name, maxBytes, context) => this.#readDownload(ref, name, maxBytes, context) };
 	}
 
 	/**
 	 * A browser: Browserbase ends a session at its timeout (lifetime vendor), at most 6 h; it reaches the open web; each
-	 * session is its own VM. Browserbase keeps a session's downloads, but the protocol has no method that reads them yet,
-	 * so downloads is not declared.
+	 * session is its own VM. browser is what its sessions offer beyond the protocol. Its downloads are read through the
+	 * downloads member (browser.downloads); the group stays undeclared until the kind registry's entry (kinds.ts)
+	 * declares it too.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
@@ -249,6 +342,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 			groups: [...(CAPABILITIES[0] as KindCapabilities).groups],
 			maxLifetimeMs: BROWSERBASE_MAX_LIFETIME_MS,
 			release: ["delete"],
+			browser: structuredClone(this.#browser),
 		};
 	}
 
@@ -264,16 +358,24 @@ export class BrowserbaseProvider implements ComputerProvider {
 
 	/**
 	 * Makes a session at most once: with keepAlive, so a dropped CDP client never ends it, the lifetime as its timeout in
-	 * whole seconds, and the labels as its userMetadata. settings are Browserbase's own create fields a host adds (a
-	 * proxy, a viewport, an extension); what the protocol sets wins over them.
+	 * whole seconds, and the labels as its userMetadata. spec.browser is the session's own options, each refused by check()
+	 * unless declared.
 	 */
-	async create(spec: ComputerSpec, { signal, settings = {} }: { signal?: AbortSignal; settings?: BrowserbaseSessionSettings } = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
+		const browser = spec.browser;
 		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
+		// Browserbase solves CAPTCHAs unless told not to: a browser's options say so either way, the solver only with stealth.
+		const browserSettings = {
+			...(browser?.viewport ? { viewport: { width: browser.viewport.width, height: browser.viewport.height } } : {}),
+			...(browser !== undefined ? { solveCaptchas: browser.stealth === true } : {}),
+			...(browser?.stealth ? { verified: true } : {}),
+			...(browser?.profile ? { context: { id: browser.profile.pointer, persist: browser.profile.save } } : {}),
+		};
 		const body = {
-			...settings,
+			...(Object.keys(browserSettings).length > 0 ? { browserSettings } : {}),
 			timeout: Math.ceil(runLifetimeMs(spec) / 1000),
 			keepAlive: true,
 			userMetadata: toMetadata(written),
@@ -299,6 +401,75 @@ export class BrowserbaseProvider implements ComputerProvider {
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
+	}
+
+	/** A new context, a profile's pointer: one POST /v1/contexts, never retried. */
+	async #createProfile({ signal }: CallContext = {}): Promise<Result<string>> {
+		try {
+			return ok(await (this.#api.createContext as NonNullable<BrowserbaseApi["createContext"]>).call(this.#api, signal));
+		} catch (error) {
+			return vendorFailure("browserbase", NAME, "POST /v1/contexts", error);
+		}
+	}
+
+	/** Deletes the context; one Browserbase no longer knows is removed. The words never carry the pointer. */
+	async #removeProfile(pointer: string, { signal }: CallContext = {}): Promise<Result<void>> {
+		if (!pointerOk(pointer)) return fail("invalid", "a profile's pointer is a plain token, as profiles.create gave it");
+		try {
+			await (this.#api.deleteContext as NonNullable<BrowserbaseApi["deleteContext"]>).call(this.#api, pointer, signal);
+			return ok(undefined);
+		} catch (error) {
+			return vendorFailure("browserbase", NAME, "DELETE /v1/contexts/{id}", error);
+		}
+	}
+
+	/** Every row of a session's downloads, page by page until total; a page that cannot be read fails the whole list. */
+	async #downloadRows(id: string, signal?: AbortSignal): Promise<Result<BrowserbaseDownload[]>> {
+		const problem = idProblem(id, NAME);
+		if (problem) return fail("invalid", problem);
+		const page = this.#api.listDownloads as NonNullable<BrowserbaseApi["listDownloads"]>;
+		const rows: BrowserbaseDownload[] = [];
+		for (let pages = 0; pages < MAX_PAGES; pages++) {
+			let got: { downloads: BrowserbaseDownload[]; total: number };
+			try {
+				got = await page.call(this.#api, id, rows.length, signal);
+			} catch (error) {
+				return vendorFailure("browserbase", NAME, "GET /v1/downloads", error);
+			}
+			for (const row of got.downloads) {
+				if (!plainId(row?.id) || typeof row.filename !== "string" || row.filename === "" || !Number.isFinite(row.size) || row.size < 0) {
+					return vendorFail("browserbase", "Browserbase GET /v1/downloads answered a row that is not a download");
+				}
+			}
+			rows.push(...got.downloads);
+			if (got.downloads.length === 0 || rows.length >= got.total) return ok(rows);
+		}
+		return vendorFail("browserbase", `Browserbase kept answering more pages of downloads past ${MAX_PAGES}`);
+	}
+
+	async #listDownloads(ref: ComputerRef, { signal }: CallContext = {}): Promise<Result<BrowserFile[]>> {
+		const rows = await this.#downloadRows(ref?.id, signal);
+		if (!rows.ok) return rows;
+		// Browserbase suffixes each name with a timestamp, so a name is one file in a session.
+		return ok(rows.value.map((d) => ({ name: d.filename, sizeBytes: d.size, modifiedAt: typeof d.createdAt === "string" ? d.createdAt : null })));
+	}
+
+	/** A download's bytes by its name: refused past maxBytes before it is fetched when its size says so, and cut once the stream passes it. */
+	async #readDownload(ref: ComputerRef, name: string, maxBytes: number, { signal }: CallContext = {}): Promise<Result<AsyncIterable<Uint8Array>>> {
+		if (!Number.isInteger(maxBytes) || maxBytes < 0) return fail("invalid", "maxBytes is a whole number of bytes");
+		const rows = await this.#downloadRows(ref?.id, signal);
+		if (!rows.ok) return rows;
+		const row = rows.value.find((d) => d.filename === name);
+		if (row === undefined) return fail("not_found", `the Browserbase session ${ref.id} downloaded no file named ${JSON.stringify(name)}`);
+		if (row.size > maxBytes) return fail("limit", `the download ${JSON.stringify(name)} is ${row.size} bytes, larger than the ${maxBytes}-byte limit`);
+		let body: AsyncIterable<Uint8Array> | undefined;
+		try {
+			body = await (this.#api.readDownload as NonNullable<BrowserbaseApi["readDownload"]>).call(this.#api, row.id, signal);
+		} catch (error) {
+			return vendorFailure("browserbase", NAME, "GET /v1/downloads/{id}", error);
+		}
+		if (body === undefined) return fail("not_found", `Browserbase no longer holds the download ${JSON.stringify(name)}`);
+		return ok(limitedBytes(body, maxBytes, `the download ${JSON.stringify(name)}`));
 	}
 
 	/**

@@ -15,6 +15,8 @@ import {
 	epochProblem,
 	IDLE_TTL_LABEL,
 	OWNER_LABEL,
+	OWNER_SERVER_LABEL,
+	ownerFilter,
 	ownerLabels,
 	ownerOf,
 	ownerProblem,
@@ -142,6 +144,19 @@ test("an agent's computer carries agentrun.owner=agent:<id>, and its idle TTL wh
 		assert.equal(read.error.code, "invalid");
 		assert.match(read.error.message, words);
 	}
+});
+
+test("an owner that names its server carries agentrun.owner-server too; ownerOf reads it back, and ownerFilter is what an owner's listing filters by", () => {
+	assert.equal(OWNER_SERVER_LABEL, "agentrun.owner-server");
+	const owner = { agent: "ag-1", server: "0123456789ab", idleTtlMs: 60_000 };
+	assert.deepEqual(ownerLabels(owner), { "agentrun.owner": "agent:ag-1", "agentrun.owner-server": "0123456789ab", "agentrun.idle-ttl-ms": "60000" });
+	assert.deepEqual(ownerOf(ownerLabels(owner)), { ok: true, value: owner });
+	assert.deepEqual(ownerFilter(owner), { "agentrun.owner": "agent:ag-1", "agentrun.owner-server": "0123456789ab" }, "no idle TTL in a filter");
+	assert.deepEqual(ownerFilter({ agent: "ag-1" }), { "agentrun.owner": "agent:ag-1" });
+	for (const server of ["", "a\0b", 7]) assert.match(ownerProblem({ agent: "a", server }), /owner\.server/, JSON.stringify(server));
+	const read = ownerOf({ [OWNER_LABEL]: "agent:a", [OWNER_SERVER_LABEL]: "" });
+	assert.equal(read.ok, false);
+	assert.match(read.error.message, /agentrun\.owner-server reads "", not a server's id/);
 });
 
 test("checkTenure: a run's computer needs a lifetime; an agent's needs persistence, an owner that is one, and no lifetime", () => {

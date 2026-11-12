@@ -20,6 +20,7 @@
 // told a deny: its Plane resolves a denied capability as under ask, and the gate, which reads the permission at each
 // call, is the one place that refuses it, so a deny lifted mid-run is lifted at the next call.
 import { blurbOf } from "./tool-blurbs.js";
+import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
 import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
@@ -45,10 +46,11 @@ export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch",
  *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
  *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
  *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
- *  agent naming it is refused until it is turned on again. The browser's: `auto`, Browserbase where the server holds its
- *  keys, else Kernel where it holds Kernel's; `browserbase` or `kernel`, that one alone; `chrome`, a Chrome on the
- *  server's own host, which no server sets up yet (browserBy). */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"], web_fetch: ["kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] } as const);
+ *  agent naming it is refused until it is turned on again. The browser's: `auto`, the computer registry's first browser
+ *  provider whose keys the server holds (Browserbase, else Kernel); a browser provider's id (`browserbase`, `kernel`:
+ *  BROWSER_VENDOR_IDS), that one alone; `chrome`, a Chrome on the server's own host, which no server sets up yet
+ *  (browserBy). */
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"] as const, web_fetch: ["kernel", "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
@@ -235,36 +237,56 @@ export const isUnavailable = (resolution: Resolution | undefined): resolution is
 /** Why `resolution` is unavailable, in words. A vendor picked whose key this server does not hold (its value, kept in a
  *  run's meta and read back, names the variables) names where to save the key first, then the variable to set. */
 export const whyUnavailable = (resolution: string): string => {
-  if (resolution === NO_BROWSER_KEY) return `it needs ${keyNeeded(BROWSER_KEYS.browserbase)}, or ${keyNeeded(BROWSER_KEYS.kernel)}`;
+  if (resolution === NO_BROWSER_KEY) return `it needs ${BROWSER_VENDORS.map((vendor) => keyNeeded(vendor.keys)).join(", or ")}`;
   const why = resolution.replace(/^unavailable: /, "");
   const picked = /^(\S+) picked, no (.+)$/.exec(why);
   return picked ? `${picked[1]} is picked, and it needs ${keyNeeded(picked[2]!.split(" and "))}` : why;
 };
 
-/** The keys each of the browser's vendors needs, by name: a tool key's fields (tool-keys.ts), set or saved. Its plane
- *  value is the vendor's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch web_fetch calls so. */
-export const BROWSER_KEYS = Object.freeze({ browserbase: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"], kernel: ["KERNEL_API_KEY"] } as const);
-type BrowserVendor = keyof typeof BROWSER_KEYS;
-const LABELS: Record<BrowserVendor, string> = { browserbase: "Browserbase", kernel: "Kernel" };
-const isVendor = (name: unknown): name is BrowserVendor => name === "browserbase" || name === "kernel";
-const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => ({ browserbase: BROWSER_KEYS.browserbase.every((name) => Boolean(env[name])), kernel: BROWSER_KEYS.kernel.every((name) => Boolean(env[name])) });
+/** The browser's vendors: the computer registry's providers of a browser (kinds.ts PROVIDERS), in its order, each with
+ *  the keys it needs by name (its required keys: a tool key's fields, tool-keys.ts, set or saved) and its name in words.
+ *  Its plane value is the provider's id: `kernel` on browser is Kernel's hosted browser, never the guarded fetch
+ *  web_fetch calls so. A hosted browser provider added to the registry is a vendor here with no edit. A browser
+ *  provider that needs no key (this machine's Chrome) is no hosted vendor: `auto` would always hold its keys, so it is
+ *  left out, and an agent picks it as its computer instead. */
+const BROWSER_VENDORS: readonly { readonly id: string; readonly label: string; readonly keys: readonly string[] }[] = Object.freeze(
+  hostedBrowsers().map((entry) => Object.freeze({ id: entry.id, label: entry.label, keys: Object.freeze(entry.keys.filter((key) => key.required).map((key) => key.name)) })),
+);
+/** The registry's browser providers that need a key, in its order. */
+function hostedBrowsers(): typeof COMPUTER_PROVIDERS {
+  return COMPUTER_PROVIDERS.filter((entry) => entry.kinds.includes("browser") && entry.keys.some((key) => key.required));
+}
+/** The hosted browser providers' ids, in the registry's order (PROVIDERS.browser lists them between `auto` and `chrome`). */
+function browserProviderIds(): string[] {
+  return hostedBrowsers().map((entry) => entry.id);
+}
+export const BROWSER_VENDOR_IDS: readonly string[] = Object.freeze(browserProviderIds());
+export const BROWSER_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.keys])));
+type BrowserVendor = string;
+const LABELS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.label])));
+const isVendor = (name: unknown): name is BrowserVendor => typeof name === "string" && Object.hasOwn(BROWSER_KEYS, name);
+const browserKeysOf = (env: NodeJS.ProcessEnv): Record<BrowserVendor, boolean> => Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.keys.every((name) => Boolean(env[name]))]));
 /** A vendor picked whose keys the server does not hold: unavailable, never the other vendor. */
-const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor].join(" and ")}`;
+const noBrowserKey = (vendor: BrowserVendor): Resolution => `unavailable: ${vendor} picked, no ${BROWSER_KEYS[vendor]!.join(" and ")}`;
 /** The keys a browser that resolves to `resolution` runs on: its vendor's (BROWSER_KEYS), none for no vendor. */
-export const browserNeeds = (resolution: string | undefined): readonly string[] => (isVendor(resolution) ? BROWSER_KEYS[resolution] : []);
-/** `auto` where the server holds neither vendor's keys. */
-export const NO_BROWSER_KEY: Resolution = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
+export const browserNeeds = (resolution: string | undefined): readonly string[] => (isVendor(resolution) ? BROWSER_KEYS[resolution]! : []);
+/** `auto` where the server holds no vendor's keys. */
+export const NO_BROWSER_KEY: Resolution = `unavailable: no browser key: set or save ${BROWSER_VENDORS.map((vendor) => `${vendor.label}'s (${vendor.keys.join(" and ")})`).join(" or ")}`;
 /** `chrome` picked: a Chrome on the server's own host, refused by name until a server can set one up. */
 export const NO_CHROME: Resolution = "unavailable: a local Chrome is not set up on this server";
 
-/** The browser `chosen` (picked as `picked` says) resolves to with the vendors' `keys`: `auto` is Browserbase where its
- *  keys are held, else Kernel where its key is, else unavailable; a vendor picked is that vendor or unavailable; `chrome`
- *  is unavailable by name. */
-function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = { browserbase: false, kernel: false }): { resolves: Resolution; why: string } {
+/** The browser `chosen` (picked as `picked` says) resolves to with the vendors' `keys`: `auto` is the registry's first
+ *  vendor whose keys are held (Browserbase, else Kernel), else unavailable; a vendor picked is that vendor or
+ *  unavailable; `chrome` is unavailable by name. */
+function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, boolean> = {}): { resolves: Resolution; why: string } {
   if (chosen === "chrome") return { resolves: NO_CHROME, why: whyUnavailable(NO_CHROME) };
-  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and it needs ${keyNeeded(BROWSER_KEYS[chosen])}` };
-  if (keys.browserbase) return { resolves: "browserbase", why: "Browserbase: its key is set or saved" };
-  if (keys.kernel) return { resolves: "kernel", why: "Kernel: its key is set or saved, and Browserbase's is not" };
+  if (isVendor(chosen)) return keys[chosen] ? { resolves: chosen as Resolution, why: `${LABELS[chosen]}, ${picked}` } : { resolves: noBrowserKey(chosen), why: `${LABELS[chosen]} is picked, and it needs ${keyNeeded(BROWSER_KEYS[chosen]!)}` };
+  const first = BROWSER_VENDORS.findIndex((vendor) => keys[vendor.id]);
+  if (first >= 0) {
+    const vendor = BROWSER_VENDORS[first]!;
+    const passed = BROWSER_VENDORS.slice(0, first).map((one) => `${one.label}'s`);
+    return { resolves: vendor.id as Resolution, why: `${vendor.label}: its key is set or saved${passed.length ? `, and ${passed.join(" and ")} is not` : ""}` };
+  }
   return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
 }
 
@@ -356,12 +378,13 @@ export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefi
  *  (NO_BROWSER_KEY) and `chrome` stay frozen. The same Plane where nothing changes. */
 export function keptVendor(plane: Plane): Plane {
   const vendor = (Object.keys(BROWSER_KEYS) as BrowserVendor[]).find((name) => plane.browser === noBrowserKey(name));
-  return vendor ? { ...plane, browser: vendor } : plane;
+  return vendor ? { ...plane, browser: vendor as Resolution } : plane;
 }
 
-/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: Kernel's where
- *  Kernel is picked or resolved, else Browserbase's, so a page links a missing key to the row it is saved on. */
-export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): "kernel" | "browserbase" => (picked === "kernel" || resolution === "kernel" ? "kernel" : "browserbase");
+/** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: the vendor it
+ *  resolved to, else the one picked, else the registry's first (Browserbase), so a page links a missing key to the row
+ *  it is saved on. */
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
 
 /** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
  *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept

@@ -1,10 +1,12 @@
 // An agent's computer, its one setting for where its tools run (Settings → Computers): `computer: { kind, provider?,
-// image?, gpu? }` on its revision. kind is none, sandbox, desktop, phone or browser; provider names one of the computer
-// providers (the computer package's kind registry), and is absent for none; image names one the provider offers for the
-// kind, and absent is the kind's default; a sandbox's gpu is { type, count }. The v2 API's `place` is this setting's view,
-// one to one where it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is {kind: "sandbox",
-// provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder on the runner, so
-// its place reads runner.
+// image?, gpu?, persistent? }` on its revision. kind is none, sandbox, desktop, phone or browser; provider names one of
+// the computer providers (the computer package's kind registry), and is absent for none; image names one the provider
+// offers for the kind, and absent is the kind's default; a sandbox's gpu is { type, count }; persistent: true keeps the
+// agent's own computer between its runs, where the configuration declares persistence. The v2 API's `place` is this
+// setting's view, one to one where it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is
+// {kind: "sandbox", provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder
+// on the runner, so its place reads runner.
+import { configurationOf, PROVIDERS, serves } from "@parcha/agentrun-computer";
 import type { InputIssue } from "./errors.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -20,8 +22,8 @@ export type GpuSetting = { readonly type: string; readonly count: number };
  *  absent, the kind's default. A sandbox may ask for GPUs; whether its provider gives them is the claim's check. */
 export type ComputerSetting =
   | { readonly kind: "none" }
-  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting }
-  | { readonly kind: Exclude<ComputerKind, "none" | "sandbox">; readonly provider: string; readonly image?: string };
+  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean }
+  | { readonly kind: Exclude<ComputerKind, "none" | "sandbox">; readonly provider: string; readonly image?: string; readonly persistent?: boolean };
 
 /** A GPU type's name as a setting keeps it: the vendor's own ("T4", "A100-80GB", "RTX-PRO-6000"); store/agent-body.ts
  *  keeps the same. */
@@ -39,6 +41,11 @@ export const gpuOf = (computer: { readonly kind: string; readonly gpu?: GpuSetti
 const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind[]; check(value: unknown, field: string): InputIssue[] }>> = {
   image: {
     check: (value, field) => (typeof value === "string" && value.trim() !== "" && value === value.trim() ? [] : [{ field, reason: "invalid", message: `${field} is the name of an image the provider offers for the kind (GET /computers lists them), with no spaces around it` }]),
+  },
+  // An agent's own computer, kept between its runs (workspace/agent-computer.ts): true asks for it, where the provider's
+  // configuration keeps one (persistenceIssues); false or absent is a fresh computer for each run.
+  persistent: {
+    check: (value, field) => (typeof value === "boolean" ? [] : [{ field, reason: "wrong_type", message: `${field} is true (this agent keeps its own computer between runs) or false (a fresh one for each run)` }]),
   },
   gpu: {
     kinds: ["sandbox"],
@@ -87,7 +94,28 @@ export function computerIssues(value: unknown, field: string): InputIssue[] {
     return named.length === 0 ? [] : bad("not_allowed", `no computer names no ${named.join(" or ")}`, `Remove ${named.map((key) => `${field}.${key}`).join(" and ")}.`);
   }
   if (typeof value.provider !== "string" || value.provider === "") return bad("missing", `a ${kind} computer names its provider (Settings → Computers lists them)`);
-  return Object.entries(OPTIONAL).flatMap(([key, { check }]) => (value[key] === undefined ? [] : check(value[key], `${field}.${key}`)));
+  const issues = Object.entries(OPTIONAL).flatMap(([key, { check }]) => (value[key] === undefined ? [] : check(value[key], `${field}.${key}`)));
+  if (issues.length > 0 || value.persistent !== true) return issues;
+  return persistenceIssues(kind, value.provider, typeof value.image === "string" ? value.image : undefined, `${field}.persistent`);
+}
+
+/**
+ * Why `persistent: true` is refused, at `field`: the configuration the setting selects keeps no computer for an agent.
+ * Read from the computer package's registry, each configuration's declared persistence (kinds.test holds it equal to the
+ * built provider's), so a save needs no vendor call. A provider the registry does not list (a --faux one, or one the
+ * readiness check names as unknown) is left to the claim's refusal.
+ */
+function persistenceIssues(kind: Exclude<ComputerKind, "none">, provider: string, image: string | undefined, field: string): InputIssue[] {
+  const entry = PROVIDERS.find((one) => one.id === provider);
+  if (!entry) return [];
+  const configuration = configurationOf(entry.capabilities.filter((one) => serves(one, kind)), image, entry.defaultImage?.[kind]);
+  if (!configuration || configuration.persistence !== undefined) return [];
+  return [{
+    field,
+    reason: "not_allowed",
+    message: `${entry.label}'s ${image === undefined ? "default" : JSON.stringify(image)} ${kind} keeps no computer for an agent between runs: it declares no persistence`,
+    fix: `Remove ${field}, or pick a computer that keeps one (GET /v2/computers shows which do).`,
+  }];
 }
 
 /** The setting and its place a definition says, from `computer` or `place` (both: they must agree), or undefined when

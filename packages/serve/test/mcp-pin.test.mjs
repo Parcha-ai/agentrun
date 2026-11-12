@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { openSqliteStore } from "../dist/store/index.js";
 import { TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
-import { agent, call, clientOwnerSession, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, retried, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -32,10 +32,10 @@ async function setup(t) {
   const { cookie, origin } = await clientOwnerSession(server);
   const answer = async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body })).status;
   const sends = () => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "send_message");
-  const make = async (id, setting) => { const made = await server.api("POST", "/agents", agent(id, { tools: [SEND], tool_settings: { [SEND]: setting } })); assert.equal(made.status, 201, JSON.stringify(made.body)); };
+  const make = async (id, setting) => { const made = await retried(server.api)("POST","/agents", agent(id, { tools: [SEND], tool_settings: { [SEND]: setting } })); assert.equal(made.status, 201, JSON.stringify(made.body)); };
   /** A run of agent `id` that sends to `channel`. */
   const send = async (id, channel) => {
-    const started = await server.api("POST", `/agents/${id}/runs`, { input: { content: `Call mcp__fake__send_message with ${JSON.stringify({ channel_id: channel, message: "the digest" })}` } });
+    const started = await retried(server.api)("POST",`/agents/${id}/runs`, { input: { content: `Call mcp__fake__send_message with ${JSON.stringify({ channel_id: channel, message: "the digest" })}` } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     return started.body.run_id;
   };
@@ -91,7 +91,7 @@ test("under ask, a call not as pinned is refused and never asks; one as pinned a
 
 test("a call approved under ask is checked against the pin in force when it is approved: a pin set while it waited refuses it, unsent", { timeout: 240_000 }, async (t) => {
   const { api, sends, send, answer } = await setup(t);
-  const made = await api("POST", "/agents", agent("waits", { tools: [SEND] }));
+  const made = await retried(api)("POST", "/agents",agent("waits", { tools: [SEND] }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   // No pin yet: the call to C0EVIL is as pinned as any, and parks on its ask.
   const run = await send("waits", "C0EVIL");
@@ -122,7 +122,7 @@ test("the server's pin is kept and served; a pin that is not one is 422", { time
   const nested = await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: { id: "C0123" } } } });
   assert.equal(nested.status, 422, JSON.stringify(nested.body));
   assert.deepEqual(fields(nested), [[`${SEND}.pin.channel_id`, "wrong_type"]]);
-  const onRead = await api("POST", "/agents", agent("read-pin", { tools: ["read"], tool_settings: { read: { pin: { path: "x" } } } }));
+  const onRead = await retried(api)("POST", "/agents",agent("read-pin", { tools: ["read"], tool_settings: { read: { pin: { path: "x" } } } }));
   assert.equal(onRead.status, 422, JSON.stringify(onRead.body));
   assert.deepEqual(fields(onRead), [["definition.tool_settings.read.pin", "not_allowed"]]);
 });
@@ -131,7 +131,7 @@ test("an unattended agent (approvals never) never lifts a pin: a call not as pin
   const { api, sends, send } = await setup(t);
   // The send left at the owner's default (an MCP tool asks), the agent unattended, and the destination pinned on the
   // server: never turns the ask into an allow, and the pin, checked before that, still refuses another channel.
-  const made = await api("POST", "/agents", agent("unattended", { tools: [SEND], approvals: "never" }));
+  const made = await retried(api)("POST", "/agents",agent("unattended", { tools: [SEND], approvals: "never" }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal((await api("PUT", "/settings/tools", { [SEND]: { pin: { channel_id: "C0123" } } })).status, 200);
 
@@ -168,7 +168,7 @@ test("a broken pin in the server's stored settings is served as pin_broken, and 
   assert.deepEqual(saved.body[SEND], { permission: "allow", pin_broken: true });
   assert.deepEqual((await store.settings.get(TOOL_SETTINGS_KEY))[SEND], { permission: "allow", pin: broken });
   // An agent can't carry the mark.
-  const own = await api("POST", "/agents", agent("marked", { tools: [SEND], tool_settings: { [SEND]: { pin_broken: true } } }));
+  const own = await retried(api)("POST", "/agents",agent("marked", { tools: [SEND], tool_settings: { [SEND]: { pin_broken: true } } }));
   assert.equal(own.status, 422, JSON.stringify(own.body));
   // A valid pin repairs it.
   const repaired = await api("PUT", "/settings/tools", { [SEND]: { permission: "allow", pin: { channel_id: "C0123" } } });
