@@ -65,7 +65,8 @@ public enum MacPlatform {
 
 	/// A driver for one connection.
 	public static func driver() -> Driver {
-		Driver(platform: make(), policy: policy(), machine: machine)
+		// One line per ui.act in Computerd.log: where its time went.
+		Driver(platform: make(), policy: policy(), machine: machine, timing: Timing(trace: { log($0) }))
 	}
 }
 #endif

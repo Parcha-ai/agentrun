@@ -456,10 +456,10 @@ final class EngineTests: XCTestCase {
 	func testSettleWaitsForQuietButNotForever() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())
-		// A window that redraws for 600 ms after the press, then holds still.
+		// A window whose tree changes for 600 ms after the press, then holds still.
 		os.react = { entry, os in
 			guard entry == "ax.AXPress 3" else { return }
-			for t in stride(from: 100.0, through: 600, by: 100) { os.after(t) { $0.frameHash += 1 } }
+			for t in stride(from: 100.0, through: 600, by: 100) { os.after(t) { $0.elements[2]?.value = "\(t)" } }
 		}
 		var start = os.now
 		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
@@ -468,11 +468,42 @@ final class EngineTests: XCTestCase {
 		// One that never holds still: the act answers after maxSettleMs.
 		os.react = { entry, os in
 			guard entry == "ax.AXPress 3" else { return }
-			for t in stride(from: 50.0, through: 10_000, by: 50) { os.after(t) { $0.frameHash += 1 } }
+			for t in stride(from: 50.0, through: 10_000, by: 50) { os.after(t) { $0.elements[2]?.value = "\(t)" } }
 		}
 		start = os.now
 		_ = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
 		XCTAssertLessThanOrEqual(os.now - start, Double(Limits.maxSettleMs) + 200)
+	}
+
+	func testASetTheAppThrowsAwayIsNotVerified() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		// Finder's name field outside rename mode: it shows the new name, settles, then goes back to the old one.
+		os.react = { entry, os in
+			guard entry.hasPrefix("ax.set 4") else { return }
+			os.after(400) { $0.elements[4]?.value = "" }
+		}
+		let thrown = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "final.txt")]))
+		XCTAssertEqual(ran(thrown, 0)?.0, .semantic)
+		XCTAssertEqual(ran(thrown, 0)?.1, false, "the value did not last")
+		os.react = nil
+		let kept = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "kept")]))
+		XCTAssertEqual(ran(kept, 0)?.1, true)
+	}
+
+	func testARedrawAloneNeitherHoldsASettleNorVerifiesAStep() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		// A blinking caret: the window's image changes every 50 ms, and its tree never does.
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			for t in stride(from: 50.0, through: 10_000, by: 50) { os.after(t) { $0.frameHash += 1 } }
+		}
+		let start = os.now
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))]))
+		XCTAssertLessThan(os.now - start, 500, "the tree held still, so the settle did")
+		XCTAssertEqual(ran(result, 0)?.1, false, "a redraw is not the step's effect")
+		XCTAssertFalse(result.changed)
 	}
 
 	func testCallsRunOneAtATime() async throws {

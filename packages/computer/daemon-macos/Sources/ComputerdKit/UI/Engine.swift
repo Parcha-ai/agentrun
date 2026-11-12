@@ -18,8 +18,15 @@ public struct Timing: Sendable {
 	public var settleMaxMs = Double(Limits.maxSettleMs)
 	/// How often an expect looks again.
 	public var expectPollMs: Double = 100
+	/// How long a set value must hold after the settle to count as verified.
+	public var lastingMs: Double = 500
+	/// Told one line per act: each step's route and ms with the looks its settle took, the expect's ms, and the time a
+	/// look takes. The Mac app writes it to its log.
+	public var trace: (@Sendable (String) -> Void)?
 
-	public init() {}
+	public init(trace: (@Sendable (String) -> Void)? = nil) {
+		self.trace = trace
+	}
 }
 
 /// The ui group for one connection: observe and act on apps through a Platform, under the owner's Policy. The rules are
@@ -33,6 +40,10 @@ public actor UIEngine {
 	var store = StateStore()
 	var busy = false
 	var waiting: [CheckedContinuation<Void, Never>] = []
+	/// Where an act's time went, for timing.trace: looks taken, their ms, and the ms of the image hashes among them.
+	var looks = 0
+	var lookMs = 0.0
+	var frameMs = 0.0
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -59,8 +70,14 @@ public actor UIEngine {
 	// MARK: looking
 
 	/// A look at the target's window, under the policy. With ui.tree off it is the window alone, found in the window
-	/// server's list, with no nodes; with ui.image off as well there is nothing to look with.
-	func look(_ target: Target?) async throws -> View {
+	/// server's list, with no nodes; with ui.image off as well there is nothing to look with. The image's hash is read
+	/// when there are no nodes, or when framed (a look kept as a state): reading it is a window capture, the slow part.
+	func look(_ target: Target?, framed: Bool = false) async throws -> View {
+		let start = clock.now()
+		defer {
+			looks += 1
+			lookMs += clock.now() - start
+		}
 		if let app = target?.app { try policy.check(app) }
 		let resolved: ResolvedTarget
 		let snapshot: Snapshot
@@ -85,8 +102,17 @@ public actor UIEngine {
 		case (.off(let tree), .off(let image)):
 			throw RPCError.denied("ui.tree is off here: \(tree); and ui.image is off: \(image). Without either, Computerd cannot see a window")
 		}
-		let frame = platform.capture.feature.isOn ? await platform.capture.windowHash(resolved) : nil
-		return View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: frame)
+		let view = View(target: resolved, nodes: snapshot.nodes, truncated: snapshot.truncated, frame: nil)
+		return framed || snapshot.nodes.isEmpty ? await self.framed(view) : view
+	}
+
+	/// The look with its image's hash, read now if it has none.
+	func framed(_ view: View) async -> View {
+		guard view.frame == nil, platform.capture.feature.isOn else { return view }
+		let start = clock.now()
+		let frame = await platform.capture.windowHash(view.target)
+		frameMs += clock.now() - start
+		return view.with(frame: frame)
 	}
 
 	// MARK: observe
@@ -115,7 +141,7 @@ public actor UIEngine {
 			empty = "ui.tree is off here: \(reason)"
 			edge = edge ?? Limits.defaultImageEdge
 		}
-		let view = try await look(params.target)
+		let view = try await look(params.target, framed: true)
 		var image: UiImage?
 		if let edge {
 			let shot = try await platform.capture.window(view.target, maxEdge: edge, maxBytes: Limits.maxChunkBytes)
@@ -260,6 +286,9 @@ public actor UIEngine {
 		let target = params.target ?? held.map { Target(app: $0.target.app.id, window: $0.target.window.id) }
 		let foreground = params.foreground ?? false
 
+		let started = clock.now()
+		(looks, lookMs, frameMs) = (0, 0, 0)
+		var spent: [String] = []
 		let first = try await look(target)
 		// Every later look is of the window the first one found, even if another app comes to the front; when a step
 		// closes it, of the app's next main window (settleAfterStep).
@@ -269,14 +298,17 @@ public actor UIEngine {
 		var refused = false
 		for step in params.steps {
 			try Task.checkCancellation()
+			let (at, looked) = (clock.now(), looks)
 			do {
 				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground)
 				results.append(.ran(route: route, verified: verified))
 				view = after
 				window = after.target.asTarget
+				spent.append("\(step.verb) \(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
 			} catch let error as RPCError where Self.stepKinds.contains(error.kind) {
 				results.append(.error(StepError(kind: error.kind, message: error.message)))
 				refused = true
+				spent.append("\(step.verb) refused \(error.kind.rawValue) \(Int(clock.now() - at)) ms")
 				break
 			}
 		}
@@ -287,6 +319,7 @@ public actor UIEngine {
 			view = try await settle(window)
 		}
 		var outcome: ExpectOutcome?
+		let expectAt = clock.now()
 		if let expect = params.expect, !refused {
 			let settled = view
 			let until = clock.now() + Double(expect.timeoutMs ?? Limits.defaultExpectMs)
@@ -304,8 +337,16 @@ public actor UIEngine {
 			}
 			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
 			if view.fingerprint != settled.fingerprint { view = try await settle(window) }
+			spent.append("expect \(outcome!.rawValue) \(Int(clock.now() - expectAt)) ms")
 		}
+		// A state keeps its image's hash, for a later point with no element under it.
+		view = await framed(view)
 		let state = store.add(view)
+		if let trace = timing.trace {
+			let app = view.target.app.id
+			let each = looks > 0 ? Int(lookMs / Double(looks)) : 0
+			trace("ui.act \(app): \(Int(clock.now() - started)) ms; \(spent.joined(separator: "; ")); \(looks) looks, \(each) ms each, \(Int(frameMs)) ms of image hashes")
+		}
 		return UiActResult(steps: results, state: state, changed: first.fingerprint != view.fingerprint, expect: outcome)
 	}
 
@@ -315,6 +356,10 @@ public actor UIEngine {
 	/// How a step's effect is checked once it settled: a readback, or a change in the window.
 	enum Check {
 		case readback(@Sendable () -> Bool)
+		/// A readback that must still hold a moment after the settle: a set value an app takes into the field and then
+		/// throws away (Finder's name field outside its rename mode shows the new name, then the old one, and renames
+		/// nothing) is not the step's effect.
+		case lasting(@Sendable () -> Bool)
 		case change
 	}
 
@@ -336,7 +381,7 @@ public actor UIEngine {
 			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
 		}
 		let (node, element) = try self.element(step.ref, in: view)
-		if let point = step.point { try bind(point, view: view, state: state, held: held) }
+		if let point = step.point { try await bind(point, view: view, state: state, held: held) }
 
 		let attempts: [Attempt]
 		switch step {
@@ -360,7 +405,7 @@ public actor UIEngine {
 				semantic(node!.settable ? nil : "\(ref)'s value cannot be set: click it and type instead") {
 					try self.ax.setValue(value, on: element!)
 					let ax = self.ax
-					return secure ? .readback { false } : .readback { ax.value(element!) == value }
+					return secure ? .readback { false } : .lasting { ax.value(element!) == value }
 				},
 			]
 
@@ -520,6 +565,11 @@ public actor UIEngine {
 			let after = try await settleAfterStep(view.target)
 			switch check {
 			case .readback(let holds): return (attempt.route, holds(), after)
+			case .lasting(let holds):
+				guard holds() else { return (attempt.route, false, after) }
+				try await sleep(timing.lastingMs)
+				guard holds() else { return (attempt.route, false, try await settle(after.target.asTarget)) }
+				return (attempt.route, true, after)
 			case .change: return (attempt.route, view.fingerprint != after.fingerprint, after)
 			}
 		}
@@ -562,7 +612,7 @@ public actor UIEngine {
 
 	/// A point is good while it still means what it meant in its state: the same window at the same size, and the same
 	/// element under it, looking the same. The window may have moved: points are the window's.
-	func bind(_ point: Point, view: View, state: String?, held: View?) throws {
+	func bind(_ point: Point, view: View, state: String?, held: View?) async throws {
 		let (x, y) = (Int(point.x), Int(point.y))
 		guard let held else {
 			throw RPCError.stale("state \(state ?? "") is no longer held: observe again, and read the point from the new state")
@@ -584,7 +634,7 @@ public actor UIEngine {
 		}
 		// With no element under the point (always so with ui.tree off), only the window's image can say it still shows
 		// what the state did.
-		if before == nil && held.frame != view.frame {
+		if before == nil, await held.frame != framed(view).frame {
 			throw RPCError.stale("the window shows something else than at state \(state!), so (\(x), \(y)) may not land on what it showed: observe again")
 		}
 	}

@@ -135,6 +135,7 @@ class Task:
         self.nonce = uuid.uuid4().hex[:6]
         self.calls, self.notes = [], []
         self.observed = 0
+        self.window = None
         self.folder = os.path.join(out, tid)
         self.t0 = time.monotonic()
         self.rec = Recorder(os.path.join(self.folder, "frames"), lambda: time.monotonic() - self.t0) if movie else None
@@ -171,7 +172,7 @@ class Task:
         return reply
 
     def observe(self, label="observe", **extra):
-        params = {"target": {"app": self.app}}
+        params = {"target": self.target()}
         params.update(extra)
         # An app just opened may swap its first window for another (Notes does): not_found is asked again, for 10 s.
         deadline = time.monotonic() + 10
@@ -199,7 +200,7 @@ class Task:
             except Failed as e:
                 print(f"    (tried, and it did not do it: {e})", flush=True)
                 return None
-        params = {"target": {"app": self.app}, "steps": steps}
+        params = {"target": self.target(), "steps": steps}
         if expect is not None:
             params["expect"] = expect
         if state is not None:
@@ -222,7 +223,7 @@ class Task:
         """super+w on the task's window, as teardown. Closing the act's own window leaves no window to settle on, which
         the driver answers not_found: the window is then gone, as asked."""
         self.say(label)
-        reply = self.call("ui.act", {"target": {"app": self.app}, "steps": [{"key": "super+w"}]}, label)
+        reply = self.call("ui.act", {"target": self.target(), "steps": [{"key": "super+w"}]}, label)
         kind = (reply.get("error") or {}).get("data", {}).get("kind")
         if kind not in (None, "not_found"):
             raise Failed(f"{label}: {reply['error'].get('message')}")
@@ -230,7 +231,7 @@ class Task:
     def dump(self):
         """The window's nodes, printed, for a failed task."""
         try:
-            r = self.c.call("ui.observe", {"target": {"app": self.app}}).get("result") or {}
+            r = self.c.call("ui.observe", {"target": self.target()}).get("result") or {}
         except Exception as e:
             print(f"  (no observation: {e!r})")
             return
@@ -267,8 +268,13 @@ class Task:
         if "error" in reply:
             raise Failed(f"{label}: {reply['error'].get('message')}")
 
-    def launch(self, label=None):
-        reply = self.call("apps.launch", {"id": self.app, "background": True}, label or f"open {self.app} in the background")
+    def target(self):
+        """The task's app, and its window once the task pinned one (an app such as Finder has other windows open)."""
+        return {"app": self.app, "window": self.window} if self.window else {"app": self.app}
+
+    def launch(self, label=None, background=True):
+        words = label or f"open {self.app}" + (" in the background" if background else ", in front")
+        reply = self.call("apps.launch", {"id": self.app, "background": background}, words)
         if "error" in reply:
             raise Failed(f"apps.launch {self.app}: {reply['error'].get('message')}")
 
@@ -356,6 +362,8 @@ def finder_rename_file(t):
     t.run_exec(["/usr/bin/open", "-g", folder], "open -g the folder")
     t.wait_for("draft", "wait for the folder's window")
     tree = t.observe()
+    # Finder has other windows open on a real desktop: every later call names this one.
+    t.window = tree["window"]["id"]
     # By element, never by point: the window may sit under other apps' windows on a real desktop. As a list, each
     # file is a row whose name is a text field Accessibility reaches.
     as_list = find(tree["nodes"], role="radio", name="list view")
@@ -377,16 +385,30 @@ def finder_rename_file(t):
                 return got
             time.sleep(0.25)
 
+    # Each way is judged by the disk, never by the window: Finder's name field takes a set value and shows it while
+    # renaming nothing. The ways, most background first; the one that renamed it goes in the notes.
+    def renamed(way, steps, foreground=False):
+        r = t.act(steps, way, foreground=foreground, must=False)
+        routes = ", ".join((s.get("route", "?") + ("" if s.get("verified") else " unverified")) for s in (r or {}).get("steps") or [])
+        if listing(3) == want:
+            t.notes.append(f"renamed by: {way} [{routes}]")
+            return True
+        print(f"    (the folder still holds draft.txt after: {way} [{routes}])", flush=True)
+        return False
+
+    # Enter on the selected file edits its name with the part before .txt selected: typing replaces that.
+    keys = [{"key": "enter"}, {"type": "final"}, {"key": "enter"}]
     field = find(tree["nodes"], role="textbox", value="draft.txt")
-    done = False
-    if field is not None:
-        set_it = t.act([{"set": field["ref"], "value": "final.txt"}], "set its name field to final.txt", expect={"text": "final.txt", "timeoutMs": 5000}, must=False)
-        done = set_it is not None and listing(3) == want
-        if set_it is not None and not done:
-            print("    (the name field took the text, but Finder did not rename the file)", flush=True)
+    done = field is not None and renamed("set its name field to final.txt", [{"set": field["ref"], "value": "final.txt"}])
+    done = done or renamed("rename it in the background: enter, type final, enter", keys)
     if not done:
-        # Enter on the selected file edits its name with the name before .txt selected: typing replaces that.
-        t.act([{"key": "enter"}, {"type": "final"}, {"key": "enter"}], "rename it: enter, type final, enter", expect={"text": "final.txt", "timeoutMs": 10000})
+        # Finder starts a rename only in its key window: bring it forward, raise the task's window, and rename as a
+        # person does.
+        t.launch(background=False)
+        window = find(tree["nodes"], role="window")
+        if window is not None:
+            t.act([{"perform": window["ref"], "action": "AXRaise"}], "raise the folder's window", must=False)
+        done = renamed("rename it in front: enter, type final, enter", keys, foreground=True)
     names = listing(5)
     if names != want:
         raise Failed(f"the folder holds {names}, not final.txt and other.txt")

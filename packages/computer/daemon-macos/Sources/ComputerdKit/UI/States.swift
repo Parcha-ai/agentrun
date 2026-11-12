@@ -5,8 +5,11 @@ struct View: Sendable {
 	let target: ResolvedTarget
 	let nodes: [RawNode]
 	let truncated: Bool
-	/// The window image's hash, so a redraw with the same tree counts as a change.
+	/// The window image's hash: always read when the tree has no nodes (ui.tree off), and for a look kept as a state;
+	/// nil on the looks a settle and an expect take, where the tree says what changed.
 	let frame: Int?
+
+	func with(frame: Int?) -> View { View(target: target, nodes: nodes, truncated: truncated, frame: frame) }
 
 	/// The node for an element, if this look has it.
 	func node(_ handle: ElementHandle) -> RawNode? {
@@ -31,7 +34,9 @@ struct View: Sendable {
 		return [node.role, node.name ?? "", value, node.desc ?? "", "\(b.x),\(b.y),\(b.w),\(b.h)", node.flags.sorted().map(\.rawValue).joined(separator: ",")].joined(separator: "\u{1f}")
 	}
 
-	/// What a person would see of the whole window: its id and size, every node, and the image's hash.
+	/// What a person would see of the whole window: its id and size and every node; with no nodes (ui.tree off), the
+	/// image's hash. Not the image when there is a tree: a blinking caret or a spinner redraws the window every half
+	/// second, which held every settle to maxSettleMs and counted as a step's effect.
 	var fingerprint: Int {
 		var h = Hasher()
 		h.combine(target.window.id)
@@ -41,7 +46,7 @@ struct View: Sendable {
 			h.combine(node.handle)
 			h.combine(looks(node))
 		}
-		h.combine(frame)
+		if nodes.isEmpty { h.combine(frame) }
 		return h.finalize()
 	}
 }
