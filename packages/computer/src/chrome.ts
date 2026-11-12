@@ -1,4 +1,4 @@
-// Launching a Chrome on this machine, the pieces the local browser (local.ts, local-supervisor.ts) is made of. Moved
+// Launching a Chrome on this machine, the pieces the local browser (local-chrome.ts, local-supervisor.ts) is made of. Moved
 // here from pi-browser, which starts its own local Chrome (packages/pi-browser/src/providers/chrome-args.ts findChrome, and
 // src/providers/cdp.ts alive, leadsOwnGroup, killTree, ownDebugger and singletonDir), so pi-browser can import them back
 // once it depends on this package; and the fence and sandbox check of PR #1718's local Chrome for serve

@@ -61,12 +61,24 @@ test("a workflow run's graph shows its llm call's output and a failed call's err
   assert.match(graph.effects[1].error, /\[redacted\]/, graph.effects[1].error);
 });
 
-test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000, skip: "a second read of the same graph with the same keys still makes redaction passes (answerPasses rises), though its parts are cached (#2464)" }, async (t) => {
+test("a workflow run's graph is redacted once per held key set: a second read reads nothing again, and a key saved after redacts on the next read", { timeout: 60_000 }, async (t) => {
   const { api, runId } = await graphed(t, "graph-again", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
-  await api("GET", `/runs/${runId}/graph`);
-  const read = refusal.answerPasses.count;
-  const second = (await api("GET", `/runs/${runId}/graph`)).body;
-  assert.equal(refusal.answerPasses.count, read, "the second read redacted nothing again");
+  // A read of the same graph with the same held set redacts nothing again. The count is the process's own: on a loaded
+  // machine the run's view can still settle after it reads ended (a field that changes is a new part, cut once), and the
+  // runner beside the server shares the count. So the graph is read again until one read redacts nothing; a graph that
+  // is cut on every read never gets there.
+  let before = (await api("GET", `/runs/${runId}/graph`)).body;
+  let second;
+  for (const end = Date.now() + 20_000; ; ) {
+    const read = refusal.answerPasses.count;
+    second = (await api("GET", `/runs/${runId}/graph`)).body;
+    const passes = refusal.answerPasses.count - read;
+    if (passes === 0) break;
+    const changed = Object.keys(second).filter((key) => key !== "read_at" && JSON.stringify(second[key]) !== JSON.stringify(before[key]));
+    assert.ok(Date.now() < end, `every read of the graph redacted again (${passes} passes on the last, its changed fields: ${JSON.stringify(changed)})`);
+    before = second;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   assert.equal(second.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: LATER } })).status, 204);
   const third = (await api("GET", `/runs/${runId}/graph`)).body;

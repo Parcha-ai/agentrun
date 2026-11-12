@@ -1,8 +1,8 @@
-// Whether a Docker computer can be had on this server: its daemon asked (boxes.ts askDockerDaemon, `docker version`)
+// Whether a Docker computer can be had on this server: its daemon asked (place-offers.ts askDockerDaemon, `docker version`)
 // within a short bound, the answer kept for a while and asked again after it, so a daemon that comes up after the start
 // is seen. Settings → Computers' view, a run's start check and the claim's launch read it, and say one thing when no
 // daemon answers (noDockerWords): a hosted server (Render and the like) runs none, so a vendor's computer is the way.
-import { askDockerDaemon, type DockerDaemon } from "./boxes.js";
+import { askDockerDaemon, type DockerDaemon } from "./place-offers.js";
 
 export type { DockerDaemon };
 
@@ -13,7 +13,7 @@ export const DAEMON_TTL_MS = 30_000;
 
 const UP: DockerDaemon = { up: true };
 
-/** One ask of the daemon, bounded by its signal: boxes.ts askDockerDaemon, or a test's stand-in. */
+/** One ask of the daemon, bounded by its signal: place-offers.ts askDockerDaemon, or a test's stand-in. */
 export type DaemonAsk = (signal: AbortSignal) => Promise<DockerDaemon>;
 
 /** The daemon's answer as reads take it: asked at the first read, within `timeoutMs` (no answer in time is none), kept

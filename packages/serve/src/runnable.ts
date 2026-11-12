@@ -10,7 +10,7 @@ import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOffers } fro
 import { builtinHarness, harnessOf, onAdapter } from "./harness-table.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
-import type { BoxOffer } from "./boxes.js";
+import type { BoxOffer } from "./place-offers.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
@@ -26,8 +26,9 @@ import type { ShellPlace } from "@parcha/agentrun-kernel/kernel";
 /** The harnesses an agent's MCP tools run on here. */
 export const MCP_HARNESSES: readonly string[] = HARNESSES.filter((id) => builtinHarness(id)!.mcp);
 
-/** A revision's computer setting: a kind, its provider, and a sandbox's GPUs (computer-setting.ts). */
-export type RevisionComputer = { kind: string; provider?: string; gpu?: { type: string; count: number } };
+/** A revision's computer setting: a kind, its provider, the image it starts from, and a sandbox's GPUs
+ *  (computer-setting.ts). */
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } };
 
 /** A revision's body as it is saved or stored. `unnamed`: its `place` is the one a revision that names none resolves to
  *  (place.ts defaultPlaceOf), not one it names. `computer`: its computer setting (computer-setting.ts), when it has one. */
@@ -76,7 +77,7 @@ const PRICE_FIX = "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
- *  server's box registry set up at its start (boxes.ts); none, every box is unavailable. `offers`: the harnesses' offers
+ *  server found at its start (place-offers.ts); none, every box is unavailable. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
  *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check.
  *  `shellOf`: where a run of an agent with that computer setting has its shell here now (resolve-computer.ts

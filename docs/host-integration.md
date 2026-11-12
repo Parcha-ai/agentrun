@@ -95,8 +95,8 @@ Authoring has the same split as execution. The package owns the language: `autho
 | --- | --- | --- |
 | `name` | the host's name | the addendum's heading |
 | `initialState` | the keys the host seeds into state, each with what it holds | tells the author the seed; `authorWorkflow` validates candidates against exactly these keys |
-| `outputTypes` | its artifact types, each `prose` (the report writer under the host's name) or `file` (a produced file) | lists them; `candidatePolicyErrors` refuses any other artifact type; `applyHostOutputTypes` turns prose types into the report writer for validation, acceptance and execution |
-| `nodeKinds` | the node kinds it runs | lists them; `candidatePolicyErrors` refuses any other kind |
+| `outputTypes` | its artifact types, each `prose` (the report writer under the host's name) or `file` (a produced file) | lists them; `authorWorkflow` refuses any other artifact type; `applyHostOutputTypes` turns prose types into the report writer for validation, acceptance and execution |
+| `nodeKinds` | the node kinds it runs | lists them; `authorWorkflow` refuses any other kind |
 | `rules` | host rules, one sentence each | renders them verbatim; the host enforces them in its acceptance callback or tool admission |
 | `metadataKeys` | the node `metadata` keys an author may set, each with what it holds | lists them; without it the contract tells authors to set no metadata; the host enforces the keys in its acceptance callback |
 
