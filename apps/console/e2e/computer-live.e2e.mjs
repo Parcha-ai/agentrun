@@ -19,7 +19,7 @@ import { fixture, launchBrowser, LOOPBACK, newContext, newPage, ROOT, setUp } fr
 const { values } = parseArgs({ options: { tap: { type: "string" } } });
 const dir = await mkdtemp(join(tmpdir(), "agentrun-e2e-computer-"));
 // The desktop's provider key: a stand-in, given only to the fake desktop.
-process.env.E2B_API_KEY = "e2b-test-not-a-key";
+process.env.E2B_API_KEY = "fake-test-key";
 const dist = (file) => import(join(ROOT, "packages/serve/dist", file));
 const { startServe, fauxEnvOf } = await dist("server.js");
 const { openSqliteStore } = await dist("store/index.js");

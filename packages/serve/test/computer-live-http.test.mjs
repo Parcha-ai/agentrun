@@ -35,7 +35,7 @@ test("a runner run's desktop registers its live view: GET /computer is live with
 test("the same on a runner on another host than its server: the viewer's row names the runner's host, and the server reaches it there", { timeout: 120_000, skip: LINUX_ONLY }, (t) => desktopRun(t, REMOTE));
 
 test("a runner on another host that is not one of the server's runners: its viewer is never dialled, and GET /computer is not live", { timeout: 120_000, skip: LINUX_ONLY }, async (t) => {
-  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.2" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
+  withEnv(t, { E2B_API_KEY: "fake-test-key", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.2" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
   const desktop = fakeDesktopProvider({ holdShot: 2 });
   t.after(() => desktop.letGo());
   const server = await serve(t, { accounts: true, openSetup: true, faux: FAUX, computers: { load: desktop.load } });
@@ -54,7 +54,7 @@ test("a runner on another host that is not one of the server's runners: its view
 /** A runner run's desktop, watched and taken over through the server; `env`: the runner on another host (REMOTE). */
 async function desktopRun(t, env = {}) {
   // The desktop's provider key, as the server and its runner read it: a stand-in, which only the fake desktop is given.
-  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key", ...env }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
+  withEnv(t, { E2B_API_KEY: "fake-test-key", ...env }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
   // The agent's second look waits inside the shot until the test lets it go.
   const desktop = fakeDesktopProvider({ holdShot: 2 });
   t.after(() => desktop.letGo());
@@ -148,7 +148,7 @@ async function desktopRun(t, env = {}) {
 // #2170: a desktop or phone run whose screen is not open (no runner has it, or its viewer does not answer) has a computer
 // all the same: GET /computer reads none with its kind, never off with "this run's agent has no computer".
 test("a desktop or phone run whose screen is not open reads none with its kind; only an agent with no computer reads off (#2170)", { timeout: 120_000 }, async (t) => {
-  withEnv(t, { E2B_API_KEY: "e2b-test-not-a-key" }, ["E2B_API_KEY"]);
+  withEnv(t, { E2B_API_KEY: "fake-test-key" }, ["E2B_API_KEY"]);
   // No runner: the runs stay queued, their computers never made, so no viewer answers.
   const server = await serve(t, { runner: false, accounts: true, openSetup: true, faux: FAUX });
   const owner = await clientOwnerSession(server);
