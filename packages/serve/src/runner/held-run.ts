@@ -72,10 +72,11 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
     return isCut ? "cut" : "moved";
   };
   return {
-    /** The run's computer is up for this pass. `prior`, the run's root entries before it; `fresh`, a new claim's computer.
-     *  A run's first claim writes the hold waiting. A new claim of a run whose hold was not over finds it gone with the
-     *  computer that held it: released, `lost` (the loop ends the run in those words). */
-    async up(prior: readonly { readonly kind: string; readonly data?: unknown }[], fresh: boolean): Promise<"held" | "lost" | "released"> {
+    /** The run's computer is up for this pass. `prior`, the run's root entries before it. A run's first pass writes the
+     *  hold waiting. Every pass starts its own computer (the last pass's went at its close: a new claim, or a restart after
+     *  a fault within one), so a pass that finds a hold not over finds it gone with the computer that held it, and what
+     *  the owner set up on it: released, `lost` (the loop ends the run in those words). */
+    async up(prior: readonly { readonly kind: string; readonly data?: unknown }[]): Promise<"held" | "lost" | "released"> {
       const before = heldIn(prior.map((entry) => ({ kind: entry.kind, data: entry.data })));
       if (before === undefined) {
         await move("waiting", {}, heldWords.waiting(spec.minutes));
@@ -83,11 +84,8 @@ export function journalHeld(spec: HeldSpec, commit: (entries: readonly RootEntry
       }
       read = before;
       if (before.state === "released") return "released";
-      if (fresh) {
-        await move("released", { why: "lost" }, heldWords.lost);
-        return "lost";
-      }
-      return "held";
+      await move("released", { why: "lost" }, heldWords.lost);
+      return "lost";
     },
     /** Where the hold is now. */
     state: (): HeldState | undefined => read?.state,

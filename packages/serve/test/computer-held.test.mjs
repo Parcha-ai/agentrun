@@ -20,7 +20,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { STEADY_LEASE } from "./runner-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { answerFlow, scratch, serve, withEnv } from "./support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { heldField, heldRoute } = await import("../dist/computer-held-routes.js");
@@ -312,13 +312,13 @@ test("the routes refuse in words: start and release of a run that holds no compu
   assert.deepEqual(issues(params), [422, [["params", "wrong_type"]]]);
 });
 
-test("the hold lets the computer go when no call comes for its minutes, and a new claim finds the hold it had gone with its computer", async () => {
+test("the hold lets the computer go when no call comes for its minutes, and a new claim or a restart finds the hold it had gone with its computer", async () => {
   const written = [];
   let clock = 1_000;
   const commit = async (entries) => void written.push(...entries);
   const minutes = 0.01; // 600 ms
   const held = journalHeld({ minutes }, commit, () => clock);
-  assert.equal(await held.up([], true), "held");
+  assert.equal(await held.up([]), "held");
   assert.deepEqual(written.map((one) => [one.kind, one.data.state]), [["computer.held", "waiting"], ["agentrun.phase", undefined]]);
   assert.equal(held.refusesCall(), undefined, "a waiting hold takes calls");
   // A call starts the count again: the runner tells the hold, and the journal reads it from the call's entry.
@@ -337,12 +337,16 @@ test("the hold lets the computer go when no call comes for its minutes, and a ne
   // A new claim of a run whose hold was waiting: its computer is not the one held.
   const lost = [];
   const again = journalHeld({ minutes: 1 }, async (entries) => void lost.push(...entries), () => 5_000);
-  assert.equal(await again.up([{ kind: "computer.held", data: { state: "waiting", at: 1_000, minutes: 1 } }], true), "lost");
+  assert.equal(await again.up([{ kind: "computer.held", data: { state: "waiting", at: 1_000, minutes: 1 } }]), "lost");
   assert.deepEqual(lost[0].data, { state: "released", at: 5_000, minutes: 1, why: "lost" });
-  // A restart within the claim keeps the hold where it was.
-  const kept = journalHeld({ minutes: 1 }, async () => {}, () => 5_000);
-  assert.equal(await kept.up([{ kind: "computer.held", data: { state: "started", at: 1_000, minutes: 1, by: 3 } }], false), "held");
-  assert.equal(kept.state(), "started");
+  // Nor is a restart's within the claim (the faulted pass let its computer go): the started hold is lost with it.
+  const restarted = [];
+  const after = journalHeld({ minutes: 1 }, async (entries) => void restarted.push(...entries), () => 6_000);
+  assert.equal(await after.up([{ kind: "computer.held", data: { state: "started", at: 1_000, minutes: 1, by: 3 } }]), "lost");
+  assert.deepEqual([after.state(), after.lapse(), restarted[0].data.why], ["released", "lost", "lost"]);
+  // A hold already over stays over.
+  const over = journalHeld({ minutes: 1 }, async () => assert.fail("nothing written"), () => 6_000);
+  assert.equal(await over.up([{ kind: "computer.held", data: { state: "released", at: 1_000, minutes: 1, by: 4 } }]), "released");
 });
 
 test("hold and hold_minutes on a run's create: a boolean, a whole number of minutes up to the most, and only for a computer that speaks the protocol", () => {
@@ -391,6 +395,12 @@ test("served: hold on a run's create, the run read's computer.held, and the thre
   assert.deepEqual(fields(await api("POST", "/agents/desk/runs", { input: { content: "x" }, hold: true, hold_minutes: HOLD_MAX_MINUTES + 1 })), [422, [["hold_minutes", "not_an_option"]]]);
   assert.deepEqual(fields(await api("POST", "/agents/desk/runs", { input: { content: "x" }, hold: "yes" })), [422, [["hold", "wrong_type"]]]);
   assert.deepEqual(fields(await api("POST", "/agents/desk/runs", { input: { content: "x" }, hold_minutes: 5 })), [422, [["hold_minutes", "not_an_option"]]]);
+  // A workflow's loop opens no held computer and takes no start or release: its run holds none, whatever its computer.
+  const flow = await api("POST", "/agents", { definition: { id: "flow", name: "flow", workflow: answerFlow(), computer: { kind: "desktop", provider: "e2b" } } });
+  assert.equal(flow.status, 201, JSON.stringify(flow.body));
+  const refused = await api("POST", "/agents/flow/runs", { input: { question: "x" }, hold: true });
+  assert.deepEqual(fields(refused), [422, [["hold", "not_an_option"]]], JSON.stringify(refused.body));
+  assert.match(refused.body.error.fields[0].message, /workflow run does not hold its computer/);
 
   const held = await api("POST", "/agents/desk/runs", { input: { content: "Do the task." }, hold: true, hold_minutes: 5 });
   assert.equal(held.status, 202, JSON.stringify(held.body));

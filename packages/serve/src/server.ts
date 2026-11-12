@@ -126,15 +126,14 @@ import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
-import { heldField, heldRoute, holdIssues } from "./computer-held-routes.js";
+import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, inArchilMode } from "./archil-settings.js";
-import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { computerOfPlace, type ComputerKind, type ComputerSetting } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
-import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runFolder, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
@@ -1099,17 +1098,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
   };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
-  const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
-    const run = await store.runs.get(runId);
-    const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
-    const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
-    if (!setting) return {};
-    const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
-    const field = runComputerField(setting, { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) });
-    // A run that holds its computer for its owner says where the hold is (computer-held-routes.ts heldField).
-    const held = field ? await heldField(store, runId, { context: ctx }) : undefined;
-    return field ? { computer: { ...field, ...(held ? { held } : {}) } } : {};
-  };
+  const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.

@@ -615,6 +615,8 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // revision's computer, else its place's).
   const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);
   if (hold !== undefined && "field" in hold) throw invalid([hold]);
+  // A workflow's loop opens no held computer and takes no start or release: its run holds nothing.
+  if (hold !== undefined && revision.kind === "workflow") throw invalid([{ field: "hold", reason: "not_an_option", message: "hold is for an agent's run: a workflow run does not hold its computer for its owner." }]);
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
