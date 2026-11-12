@@ -9,7 +9,7 @@
 // outlives the server that took it.
 import {
   type ComputerHoldAnswer, type ComputerCallOptions, type ComputerCallStore, computerAsk, computerHoldOf, entriesOf, handBackComputer, holdIn,
-  holdShown, type JournalEntry, runOver, runViewedKind, takeOverComputer, type ViewedKind,
+  holdShown, runOver, runViewedKind, takeOverComputer, type ViewedKind,
 } from "./computer-commands.js";
 import { ApiError, invalid } from "./errors.js";
 import { unknownFields } from "./validate.js";
@@ -43,10 +43,6 @@ export async function computerViewOf(store: ComputerCallStore, runId: string, op
   if (!hold.up || (await runOver(store, runId))) return { kind, state: "none", hold: "agent", why: `this run's ${kind} is not up now` };
   return { kind, state: "live", hold: holdShown(hold, await store.commands(runId, 0)).state };
 }
-
-/** Whether the run's computer is taken over now, for the run read's computer field (run-computer.ts ComputerStateOf):
- *  from the run's journal and its rows. */
-export const takenOverIn = (entries: readonly JournalEntry[], commands: Parameters<typeof holdShown>[1]): boolean => holdShown(holdIn(entries), commands).state === "person";
 
 /** How a request to one of the routes came: by the owner's signed-in page, or with a token; whether this server has
  *  accounts (for the refusal's words); its body. */

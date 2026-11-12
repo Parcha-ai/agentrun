@@ -1060,5 +1060,3 @@ export function registerHarnessConformance(given: ConformanceSubject, { test, st
     test(`${subject.name}: ${entry.title}`, { timeout: CASE_TIMEOUT_MS, ...(skip ? { skip } : {}) }, (t) => entry.body(subject, t));
   }
 }
-
-export const CONFORMANCE_CASES: readonly ConformanceCase[] = CASES.map((entry) => entry.id);
