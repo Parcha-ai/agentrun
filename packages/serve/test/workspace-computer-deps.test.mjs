@@ -277,7 +277,8 @@ test("a Daytona or an E2B sandbox under the server's default box_allow asks for 
 
 // AGENTRUN_DAYTONA_SNAPSHOT names the snapshot of every Daytona computer (one of box/Dockerfile, which an Archil mount
 // needs), as AGENTRUN_DOCKER_IMAGE names Docker's image; Daytona's provider sends it as the create's snapshot
-// (computer/test/daytona-provider.test.mjs). Unset or blank, the registry's default stands. No other provider reads it.
+// (computer/test/daytona-provider.test.mjs). Serve reads the variable Daytona's descriptor declares (imageEnv), never
+// Daytona's id. Unset or blank, the registry's default stands. No other provider reads it.
 test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no other provider's; unset or blank, Daytona's default snapshot", async () => {
   const snapshot = "agentrun-archil-0123456789ab";
   const spec = computerSpecOf({ AGENTRUN_DAYTONA_SNAPSHOT: ` ${snapshot} ` });
@@ -292,6 +293,9 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
   for (const env of [{}, { AGENTRUN_DAYTONA_SNAPSHOT: "" }, { AGENTRUN_DAYTONA_SNAPSHOT: "  " }]) {
     assert.equal(computerSpecOf(env)(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT, JSON.stringify(env));
   }
+  // Any provider whose descriptor declares an imageEnv gets the same, by its variable alone.
+  const declared = { ...entryOf("e2b"), imageEnv: "AGENTRUN_FIXTURE_IMAGE" };
+  assert.equal(computerSpecOf({ AGENTRUN_FIXTURE_IMAGE: "fixture-template" })(declared, "sandbox", {}).image, "fixture-template");
 });
 
 // A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]):
