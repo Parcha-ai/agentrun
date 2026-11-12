@@ -13,8 +13,11 @@ const TIMING = { leaseMs: LEASE_MS, renewEveryMs: 100, stopMarginMs: 150, pollMs
 
 /** An observed store whose claims and renews are told as they return: `returned(op, n)` waits until `op` (claimMany or
  *  renewMany) has returned `n` times, then for one turn of the event loop, so the runner's own continuation of that call
- *  has run. It waits on the calls, never on time. */
-function told(store) {
+ *  has run. It waits on the calls, never on time.
+ *  Its reads of command rows wait for `readsAfter`: a runner reads its new claims' rows (one more store call, a round trip
+ *  on Postgres) before it holds them, so a test that opens the gate only once both runners' claims are back holds the
+ *  claim well after claimMany returned, as a slow store does, on any store. */
+function told(store, { readsAfter } = {}) {
   const counts = { claimMany: 0, renewMany: 0 };
   const waiting = [];
   const tell = (op) => {
@@ -29,7 +32,12 @@ function told(store) {
     }
   };
   return {
-    store: { ...store, runs: { ...store.runs, claimMany: after("claimMany", store.runs.claimMany) }, renewMany: after("renewMany", store.renewMany) },
+    store: {
+      ...store,
+      runs: { ...store.runs, claimMany: after("claimMany", store.runs.claimMany) },
+      renewMany: after("renewMany", store.renewMany),
+      commandsOf: async (cursors) => (await readsAfter, store.commandsOf(cursors)),
+    },
     count: (op) => counts[op],
     async returned(op, n) {
       while (counts[op] < n) await new Promise((resolve) => waiting.push(resolve));
@@ -52,8 +60,10 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
   const events = [];
   const onEvent = (event) => events.push(event);
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1_000_000 });
-  const a = told(observed(one, record));
-  const b = told(observed(two, record));
+  let readRows = () => {};
+  const readsAfter = new Promise((resolve) => (readRows = resolve));
+  const a = told(observed(one, record), { readsAfter });
+  const b = told(observed(two, record), { readsAfter });
   const runners = [
     startRunner({ store: a.store, createLoop: faux.createLoop, name: "runner-a", onEvent, ...TIMING }),
     startRunner({ store: b.store, createLoop: faux.createLoop, name: "runner-b", onEvent, ...TIMING }),
@@ -62,6 +72,7 @@ test("two runners, one queued run: exactly one claims it, and keeps it while it 
     // Each runner polls once as it starts: both ask, exactly one gets the run.
     await a.returned("claimMany", 1);
     await b.returned("claimMany", 1);
+    readRows();
     assert.deepEqual(record.claims.map(({ runId, epoch }) => [runId, epoch]), [["run-1", 1]], JSON.stringify(record.claims));
     const name = record.claims[0].runner;
     const [holder, other] = name === "runner-a" ? [a, b] : [b, a];
@@ -95,15 +106,18 @@ test("a runner that closes stops its loop where it can resume and releases the r
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
   const { server, runners: [one, two] } = await stores({ runners: 2 });
   const record = recorder();
+  let readRows = () => {};
+  const readsAfter = new Promise((resolve) => (readRows = resolve));
   const runners = [
-    startRunner({ store: observed(one, record), createLoop: faux.createLoop, name: "runner-a", ...timing }),
-    startRunner({ store: observed(two, record), createLoop: faux.createLoop, name: "runner-b", ...timing }),
+    startRunner({ store: told(observed(one, record), { readsAfter }).store, createLoop: faux.createLoop, name: "runner-a", ...timing }),
+    startRunner({ store: told(observed(two, record), { readsAfter }).store, createLoop: faux.createLoop, name: "runner-b", ...timing }),
   ];
   // Close is idempotent: the holder's is already done when this runs.
   t.after(() => Promise.all(runners.map((runner) => runner.close())));
   await queue(server, "run-1");
 
   const first = await until(() => record.claims[0], "a claim");
+  readRows();
   const holder = runners.find((runner) => runner.name === first.runner);
   const other = runners.find((runner) => runner !== holder);
   const leaseEnd = (await server.runs.get("run-1")).claimedUntil;
