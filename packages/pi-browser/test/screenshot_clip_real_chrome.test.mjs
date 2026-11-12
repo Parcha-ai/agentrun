@@ -2,14 +2,13 @@
 // read from the viewport as it is scrolled, and an element is scrolled into view first.
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 import zlib from "node:zlib";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { pageTools } from "../dist/index.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { scratchSync } from "./fixtures/scratch.mjs";
 
 /** The RGB of every pixel of an 8-bit PNG (colour type 2 or 6, no interlace). */
 function decodePng(bytes) {
@@ -49,7 +48,7 @@ const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: fals
 const same = (image, color) => { for (let y = 0; y < image.height; y += 7) for (let x = 0; x < image.width; x += 7) assert.deepEqual(image.pixel(x, y), color, `pixel ${x},${y}`); };
 
 test("a region of a real Chrome page is captured as its own pixels: a clip read from the viewport, an element scrolled into view first", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
-  const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "clip-chrome-"));
+  const root = scratchSync(t, "clip-chrome-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
   const signal = new AbortController().signal;
   let ref, driver;

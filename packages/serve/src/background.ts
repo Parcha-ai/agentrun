@@ -22,13 +22,12 @@
 // A child that leaves the command's group (its own setsid, a daemon) is not tracked: no call counts or signals it.
 // Only the box's end or its 24-hour lifetime ends it; the box's process limit only bounds how many there can be.
 //
-// The run's end ends them (endBackground, from the server's settle, before the box is pulled and destroyed): TERM to
-// each running group, KILL after 3 s, and an `ended` mark (with its display copy beside the log, in the run's files).
+// A run on a computer ends them through the computer (workspace/run-tools.ts, the kernel's endBackground): TERM to each
+// running group, KILL after 3 s, and an `ended` mark (with its display copy beside the log, in the run's files).
 import type { Context } from "@earendil-works/chord";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { BoxProvider } from "@parcha/pi-transport";
 import { BOX_WORK } from "./place.js";
 import { forModel } from "./result.js";
 
@@ -401,26 +400,3 @@ const bashList = defineTool({
 
 /** The background tools, each run on the environment its call gives (the box's, coding-tools.ts). */
 export const backgroundTools = (): ToolRegistration[] => [bashBackground, bashOutput, bashInput, bashSignal, bashList] as unknown as ToolRegistration[];
-
-/** The run's end: every background process still running in run `runId`'s box (found by `label`) is sent TERM, then
- *  KILL after 3 s, and marked as ended at the run's end, so its runner writes its exit code and its log is whole before
- *  the box is pulled and destroyed. How many it ended; a run with no box ends none. */
-export async function endBackground(boxes: BoxProvider, label: Record<string, string>, context: Context): Promise<number> {
-  const { finish } = await import("@parcha/pi-transport");
-  const listed = await boxes.list(label, context);
-  if (!listed.ok) throw listed.error;
-  let ended = 0;
-  for (const ref of listed.value) {
-    const attached = await boxes.attach(ref.id, context);
-    if (!attached.ok) throw attached.error;
-    if (!attached.value) continue;
-    const started = await attached.value.exec(["sh", "-c", SCRIPT, "agentrun-background", BOX_WORK, "end"], { timeoutMs: 20_000 }, context);
-    if (!started.ok) throw started.error;
-    const done = await finish(started.value);
-    if (!done.ok) throw done.error;
-    const said = new TextDecoder().decode(done.value.stdout).trim();
-    if (done.value.exitCode !== 0) throw new Error(`ending the box's background processes failed (exit code ${done.value.exitCode}): ${done.value.stderr.trim().slice(0, 300)}`);
-    ended += Number(/^ended (\d+)/.exec(said)?.[1] ?? 0);
-  }
-  return ended;
-}

@@ -50,23 +50,6 @@ export function hostLiveView(view: LiveView, redact: Redact): LiveView {
   return { ...view, pages: view.pages.map((page) => ({ ...page, url: page.url === null ? null : scrubPageUrl(page.url, redact), title: page.title === null ? null : redact(page.title) })) };
 }
 
-/** A fetch's final URL for the model: a query value or fragment stays only where the requested URL has it; userinfo never does. */
-export function scrubFetchedUrl(raw: string, requested: string, redact: Redact): string {
-  let url: URL, asked: URL;
-  try { url = new URL(raw); } catch { return redact(raw); }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return redact(raw);
-  try { asked = new URL(requested); } catch { return scrubPageUrl(raw, redact); }
-  const decoded = (text: string) => { try { return decodeURIComponent(text.replace(/\+/g, " ")); } catch { return text; } };
-  const pairsOf = (search: string) => search.slice(1).split("&").filter(Boolean).map((pair) => {
-    const at = pair.indexOf("=");
-    return at < 0 ? { pair, key: pair, value: "" } : { pair, key: pair.slice(0, at), value: pair.slice(at + 1) };
-  });
-  const sent = new Set(pairsOf(asked.search).map(({ key, value }) => `${decoded(key)}\0${decoded(value)}`));
-  const query = pairsOf(url.search).map(({ pair, key, value }) => (sent.has(`${decoded(key)}\0${decoded(value)}`) ? pair : `${key}=${REDACTED}`));
-  const fragment = url.hash && url.hash === asked.hash ? url.hash : "";
-  return redact(`${url.protocol}//${url.host}${url.pathname}${query.length ? `?${query.join("&")}` : ""}${fragment}`);
-}
-
 /** Every string inside `value`, object keys included, passed through `redact`. */
 export function redactDeep<T>(value: T, redact: Redact): T {
   if (typeof value === "string") return redact(value) as T;

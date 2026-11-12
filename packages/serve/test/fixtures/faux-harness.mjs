@@ -79,10 +79,6 @@ export function script(spec, session = {}) {
   // run's learned_workflow and a write, run in turn, then a closing answer.
   const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);
   if (beside) return [{ calls: [{ call: "learned_workflow", args: { name: beside[1], input: { question: beside[2] } } }, { call: "write", args: { path: "note.md", content: "noted" } }], usd: 0.001 }, { say: "Ran the learned workflow and wrote note.md.", usd: 0.001 }];
-  // "Use the learned workflow <name> on <question>, its result held until <file>.": the run's learned_workflow, whose
-  // result the harness tells only once <file> exists (as a CLI still recording it would); then an answer; then another.
-  const heldResult = /Use the learned workflow (\S+) on (.+?), its result held until (\S+)\./.exec(text);
-  if (heldResult) return [{ call: "learned_workflow", args: { name: heldResult[1], input: { question: heldResult[2] } }, usd: 0.001, resultWhen: heldResult[3] }, { say: "Answered after the approval.", usd: 0.001 }, { say: "Answered twice.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
@@ -264,6 +260,10 @@ export function script(spec, session = {}) {
   // A turn that waits as below, then a second turn that answers a chat sent while the first one worked.
   const chat = /Wait for (\S+), then answer the chat\./.exec(text)?.[1];
   if (chat) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(chat) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }, { end: true, usd: 0.001 }, { say: "Answered the chat.", usd: 0.001 }, { end: true, usd: 0.001 }];
+  // One answer whose request is admitted and held in flight until `<file>` exists, in this process (the faux adapter's
+  // `until` polls for it): the run works the while, and ends on its own once the file is there.
+  const answerOnce = /Answer once (\S+) exists\./.exec(text)?.[1];
+  if (answerOnce) return [{ say: "Answered.", usd: 0.002, until: answerOnce }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
   // A run's end read from its turn's end, not from its rows (turn-record.test.mjs).

@@ -4,7 +4,7 @@
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TimelineEvent } from "./timeline/index.js";
+import { CAPS, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
@@ -26,6 +26,7 @@ import {
   approvalOf,
   asksOf,
   answersOf,
+  activePauseOf,
   budgetOf,
   browserPending,
   type ComputerAsk,
@@ -38,6 +39,7 @@ import {
   WITHHELD_TITLE,
   costView,
   soFarOf,
+  usersOf,
   withAsks,
   withApprovalRows,
 } from "./run-view.js";
@@ -49,14 +51,14 @@ import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
-import { runCutValues, runErrorWordsOf } from "./run-cut.js";
+import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
 import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
-import { FINAL_STATES, type RunRow, type Store } from "./store/store.js";
+import { FINAL_STATES, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -79,7 +81,7 @@ export interface ViewDeps {
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
  *  review; a stopped run is a cancellation), as runs.ts's STATUS_OF mapped them. A running run reads its status from the
- *  journal. */
+ *  journal, and so does an agentic run a person stopped, which reads running (runReadState). */
 const STATUS_OF: Record<Exclude<RunReadState, "running">, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
 /** A run that has reached a last state (its view is its ended shape). */
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
@@ -93,8 +95,8 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: string }>>();
 const SERVED_KEPT = 32;
 function servedOnce(store: Store, runId: string, input: string, values: readonly string[]): string {
-  let served = servedByStore.get(store);
-  if (!served) servedByStore.set(store, (served = new Map()));
+  let served = servedByStore.get(store.origin);
+  if (!served) servedByStore.set(store.origin, (served = new Map()));
   const key = wholeAnswerFor(values).key;
   const last = served.get(runId);
   if (last && last.key === key && last.input === input) return last.out;
@@ -202,18 +204,37 @@ function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
-/** Reads the run from the store and builds the RunView the view functions read. */
+/** Reads the run from the store and builds the RunView the view functions read. Every read of the run (its row, launch,
+ *  journal, live tick and commands) is made in one snapshot of the store (Store.snapshot), so the view is of one moment: a
+ *  runner's commit that lands while it is built is in all of it or in none. What is read through the server's own handles
+ *  (the run's cut, which reads the agent's sign-ins, and the learning statuses of its folder) is read outside the snapshot,
+ *  before and after it: neither is part of the run's moment, and neither may wait on the snapshot's connection. */
 async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<StoreRun | undefined> {
+  // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
+  // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
+  // was handed (rowShown's choke point). The snapshot renders under it, so it is read first, and read again after: the cut
+  // only grows, so one that is the same after the snapshot holds every value saved before the rows were read (underCut
+  // builds again under a cut that grew meanwhile).
+  const cutOf = async () => {
+    const known = await store.runs.get(runId);
+    return known ? runCutValues(deps, store, runId, { runRow: known, launch: await launchOf(store, runId) }) : undefined;
+  };
+  if (!(await store.runs.get(runId))) return undefined;
+  const run = await underCut(async () => (await cutOf()) ?? "unreadable", (cut) => store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut)));
+  if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd };
+  // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
+  // currentLearning); its record stays as the merge wrote it.
+  return { ...run, learningEnd: currentLearning(run.shownEnd as Learning, await deps.statuses(run.row.agent)) as RunLearning };
+}
+
+/** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
+async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: RunLearning | null }) | undefined> {
   const context = BACKGROUND_CONTEXT;
   const row = await readRun(store, runId, context);
   if (!row) return undefined;
   const runRow = await store.runs.get(runId);
   if (!runRow) return undefined;
   const launch = await launchOf(store, runId);
-  // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
-  // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
-  // was handed (rowShown's choke point).
-  const cut = await runCutValues(deps, store, runId, { runRow, launch });
   const unshown = cut === "unreadable";
   const values = cut === "unreadable" ? [] : cut.values;
   const revision = await store.agents.revision(row.revision);
@@ -255,15 +276,11 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   const under = !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
   const sofar = ended ?? under;
   const shownEnd = sofar && withNotes(sofar, started, read);
-  // What it held for its owner's OK as it reads now, on its agent's folder's main (learning.ts currentLearning); its record
-  // stays as the merge wrote it.
-  const learningEnd = shownEnd && holdsForOk(shownEnd as Learning) && deps.statuses ? (currentLearning(shownEnd as Learning, await deps.statuses(row.agent)) as RunLearning) : shownEnd;
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = live && turns.open > 0;
   const progress = terminal || row.kind === "workflow" ? undefined : turns.progressAt();
   const lastProgressAt = progress === undefined ? null : iso(progress);
-
 
   // The tool-call approvals the run waits (or waited) on, from its journal: each call the gate parked for a person, and
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
@@ -276,13 +293,20 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
 
-  // The run's cap as it stands: its newest raise's (the agentrun.raise entries the runner's loop holds it to, adapter-loop
-  // capNow), else its launch's; a raise taken shows in the run's cost.cap_usd and its budget card, never the old cap.
+  // The run's cap as it stands, through the one reader the runner's gate reads too (capNowOf): a raise taken shows in the
+  // run's cost.cap_usd and its budget card, never the old cap.
   const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
-  const meta: RunViewMeta = { ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}), ...(Object.keys(answers).length ? { approvals: answers } : {}) };
+  // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
+  // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it.
+  const meta: RunViewMeta = {
+    ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}),
+    ...(Object.keys(answers).length ? { approvals: answers } : {}),
+    ...(stoppedByPerson(runRow, row.kind) ? { stopped_after: usersOf(rows) } : {}),
+  };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
   const budget = budgetOf(records.entries, { meta, rows, updatedAt: iso(updatedAtMs) });
+  const pause = activePauseOf(records.entries);
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
   const paused = pausedOf(runRow, records.entries);
@@ -318,8 +342,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     ...(row.importedFrom ? { imported: { source: row.importedFrom.source, session: row.importedFrom.session } } : {}),
     kind: row.kind,
     ...(outcome ? { outcome } : {}),
-    // The store's "stopped" state is a cancellation; its moment reads cancelled.
-    cancel: row.state === "stopped",
+    // A cancel is the run's outcome 'cancelled', never its state alone: a person's stop is stopped too, and is no cancel.
+    cancel: runRow.outcome === "cancelled",
     working,
     submitted,
     updatedAt: iso(updatedAtMs),
@@ -329,6 +353,8 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     // The cap pause's words, so the moment reads paused for a store budget park (the write half's raiseCap/sendMessage read
     // moment.paused/pausedWords); the file path's turns-based pausedAt gives nothing over the store.
     ...(budget?.kind === "budget" ? { pausedWords: budget.said } : {}),
+    // The park's own id: a raise's answer names the follow-up the runner sends for this pause (raiseFollowUpId).
+    ...(budget?.kind === "budget" && pause !== undefined ? { pause } : {}),
     meta,
   };
   // A completed workflow run's output, from its end (the workflow loop keeps it there, as main kept it on the run).
@@ -339,7 +365,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
+  return { row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -394,7 +420,19 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;
   const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
-  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : null;
+  // A run its cap ended once its cost passed it (spend_cap_reached) keeps the answer it paid for, as main kept it: the
+  // response that crossed the cap was answered and billed, so its text is the run's answer, cut as it came.
+  // Its answer is the newest answer row, else (a response cut at its length) the newest text it said; never the row's
+  // summary, which holds the cap's words.
+  const overCap = status === "failed" && overCapMessage(row.summary ?? null) !== undefined;
+  // A text the timeline cut at its cap is read whole from the journal and served as an answer row is (wholeAnswerFor).
+  const capRow = overCap && !unshown ? (run.rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL) ?? run.rows.findLast((r) => r.kind === "text_block" && r.agent_label !== LEARNING_LABEL)) : undefined;
+  let capAnswer = capRow?.text ?? null;
+  if (capRow?.kind === "text_block" && capAnswer !== null && (capAnswer.length >= CAPS.text || capAnswer.endsWith("...") || capAnswer === "[redacted]")) {
+    const whole = (await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })).find((r) => r.id === capRow.id)?.text;
+    if (typeof whole === "string") capAnswer = wholeAnswerFor(values).serve(whole);
+  }
+  const result = status === "completed" ? { output: servedOutput, final_answer: servedAnswer(finalAnswer) } : overCap ? { output: null, final_answer: servedAnswer(capAnswer) } : null;
   // A failed run's reason in the model's own words when the store holds them: the last model-error row's text (a provider's
   // refusal, rendered from its pi.assistant error entry), else the run row's summary (the runner's generic "gave no answer").
   // It reads as the run's Timeline error row does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain
@@ -465,6 +503,20 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
   };
 }
+
+/** A run's facts as its view states them, and none of its words: its kind, revision, agent, status and times, and whether
+ *  its output is withheld (`unshown`). What a read that serves its own parts (the graph) needs of the run: read off the
+ *  run as viewOverStore reads it, with nothing of it served, so nothing is redacted here. Undefined for an unknown run. */
+export async function factsOverStore(store: Store, runId: string, deps: ViewDeps): Promise<RunStated | undefined> {
+  const run = await storeRunOf(store, runId, deps);
+  if (!run) return undefined;
+  const { status } = statusOf(run.view, factsOf(run));
+  const endedAtMs = TERMINAL.has(status) ? (run.runRow.endedAt ?? run.runRow.startedAt) : null;
+  return { kind: run.row.kind, revision: run.row.revision, agentId: run.row.agent, status, createdAt: iso(run.runRow.startedAt), endedAt: endedAtMs === null ? null : iso(endedAtMs), unshown: run.unshown };
+}
+
+/** A run's facts as its view states them (factsOverStore): no word of it, so nothing in it is redacted. */
+export type RunStated = { readonly kind: string; readonly revision: string; readonly agentId: string; readonly status: string; readonly createdAt: string; readonly endedAt: string | null; readonly unshown: boolean };
 
 /** A run's live moment from the store (momentOf), for the one acceptance each act a run takes reads. A run no runner holds
  *  (ended, or running with no live claim) reads live false. */

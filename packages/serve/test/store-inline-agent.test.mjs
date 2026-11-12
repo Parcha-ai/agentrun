@@ -119,6 +119,7 @@ test("the agent an external reference maps to is read by that reference; none be
   const agent = await store.agents.byExternal("grep:expert:42");
   assert.deepEqual([agent?.id, agent?.externalRef], [run.agentId, "grep:expert:42"]);
   assert.equal(await store.agents.byExternal("grep:expert:43"), undefined);
+  assert.deepEqual([await store.agents.hasExternalVersion(run.agentId, "7"), await store.agents.hasExternalVersion(run.agentId, "8")], [true, false], "a version is stored once it has run");
 });
 
 test("a version's first use keeps its note on the revision; a reuse leaves it", async (t) => {
