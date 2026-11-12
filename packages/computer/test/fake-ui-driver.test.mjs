@@ -231,6 +231,54 @@ test("nav home on a fake phone settles on its home screen, and the app comes bac
 	await c.close();
 });
 
+test("an act aimed at an app (a saved state, or a target) that navigates away follows the window in front: its steps keep their results and its state is the new window's", async () => {
+	const c = await fakeUiConnection({ os: "android", kind: "android" });
+	for (const aimed of [(seen) => ({ state: seen.state }), () => ({ target: { app: APP, window: `${APP}#main` } })]) {
+		await c.client.call("apps.launch", { id: APP });
+		const seen = (await c.client.call("ui.observe", {})).value;
+		assert.equal(seen.app.id, APP);
+		const home = await c.client.call("ui.act", { ...aimed(seen), steps: [{ nav: "home" }], expect: { text: "nothing here", timeoutMs: 100 } });
+		assert.equal(home.ok, true, JSON.stringify(home));
+		assert.deepEqual(home.value.steps, [{ route: "semantic", verified: true }]);
+		assert.equal(home.value.expect, "unmet", "the expect polled the home screen, not the app behind it");
+		assert.equal((await c.client.call("ui.observe", { since: home.value.state })).value.app.id, "home", "the act's state is the home screen's");
+	}
+	await c.close();
+});
+
+test("a step other than nav that takes the act's window away (a key that leaves the app) runs nothing after it, keeps its result, and settles on the window in front", async () => {
+	class Leaving extends FakeUiDriver {
+		async run(step, context) {
+			return "key" in step && step.key === "f12" ? super.run({ nav: "home" }, context) : super.run(step, context);
+		}
+	}
+	const c = (await connectUi(new Leaving({ os: "android", kind: "android" }))).value;
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const left = await c.client.call("ui.act", { state: seen.state, steps: [{ key: "f12" }, { key: "a" }] });
+	assert.equal(left.ok, true, JSON.stringify(left));
+	assert.deepEqual(left.value.steps[0], { route: "semantic", verified: true });
+	assert.equal(left.value.steps[1].error?.kind, "stale");
+	assert.match(left.value.steps[1].error.message, /the window this act aimed at is gone since the step before/);
+	assert.equal(left.value.changed, true);
+	await c.close();
+});
+
+test("a scripted switch's checked flag is where its state starts: it shows checked, turns off, and on again", async () => {
+	const app = { id: "test.switch", name: "Switch", start: "a", size: [300, 200], screens: { a: { elements: [{ key: "wifi", role: "switch", name: "Wi-Fi", bounds: [10, 10, 80, 28], flags: ["checked"] }, { key: "name", role: "textbox", name: "Name", bounds: [10, 50, 200, 28], flags: ["focused"] }] } } };
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const flagsOf = async (name) => (await c.client.call("ui.observe", {})).value.nodes.find((node) => node.name === name).flags ?? [];
+	assert.deepEqual(await flagsOf("Wi-Fi"), ["checked"]);
+	assert.deepEqual(await flagsOf("Name"), ["focused"], "a scripted focus is the state's focus too");
+	const ref = (await c.client.call("ui.observe", {})).value.nodes.find((node) => node.name === "Wi-Fi").ref;
+	assert.equal((await c.client.call("ui.act", { steps: [{ set: ref, value: "off" }] })).ok, true);
+	assert.deepEqual(await flagsOf("Wi-Fi"), []);
+	assert.equal((await c.client.call("ui.act", { steps: [{ press: ref }] })).ok, true);
+	assert.deepEqual(await flagsOf("Wi-Fi"), ["checked"]);
+	await c.close();
+});
+
 test("the fixture's ui cases pass on a driver whose only input is the foreground route", { timeout: 60_000 }, async () => {
 	const report = await run(fakeUiProvider({ os: "android", kind: "android", features: { "ui.background": { off: "a phone has no posted input" } } }));
 	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);

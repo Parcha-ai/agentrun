@@ -25,6 +25,7 @@ import {
 	JSONRPC_CODES,
 	MAX_LINE_BYTES,
 	PROTOCOL_VERSION,
+	type UiFlag,
 	type UiImage,
 	type UiStep,
 	type UiTarget,
@@ -203,7 +204,19 @@ export class FakeUiDriver implements UiSource {
 		}
 		if (!this.#running.has(app.id)) {
 			const offset = 40 * this.#running.size;
-			this.#running.set(app.id, { screen: app.start, history: [], values: new Map(), checked: new Set(), animateUntil: 0, bounds: [100 + offset, 80 + offset, ...app.size], timers: new Set() });
+			// look() shows checked and focused from this state alone, never the script's flags: the state starts from them.
+			const scriptedWith = (flag: UiFlag) => Object.values(app.screens).flatMap((screen) => screen.elements.filter((element) => element.flags?.includes(flag)).map((element) => element.key));
+			const focus = app.screens[app.start]?.elements.find((element) => element.flags?.includes("focused"))?.key;
+			this.#running.set(app.id, {
+				screen: app.start,
+				history: [],
+				values: new Map(),
+				checked: new Set(scriptedWith("checked")),
+				...(focus === undefined ? {} : { focus }),
+				animateUntil: 0,
+				bounds: [100 + offset, 80 + offset, ...app.size],
+				timers: new Set(),
+			});
 		}
 		if (p.background !== true) this.#front = app.id;
 		return ok({});
@@ -217,12 +230,15 @@ export class FakeUiDriver implements UiSource {
 
 	async look(target: UiTarget | undefined): Promise<Result<UiView>> {
 		const id = target?.app ?? this.#front;
+		const touch = this.kind === "android" || this.kind === "ios";
+		// A phone reads only the app in front, as its accessibility dump does (phone-ui.ts): an app behind is not found.
+		const front = this.#front ?? "home";
+		if (touch && target?.app !== undefined && target.app !== front) return fail("not_found", `${target.app} is not in front on this phone (${front} is): launch it with apps.launch first`);
 		if (id === undefined || (id === "home" && this.#front === undefined)) {
 			if (target?.window !== undefined && target.window !== "home#main") return fail("not_found", `the home screen has no window ${target.window}; its window is home#main`);
 			// With no app in front a computer shows its home screen or desktop (after nav home, or terminating the app in
 			// front): a window to observe and settle on, as on a real one.
 			const [width, height] = [this.hello().screen?.width ?? 0, this.hello().screen?.height ?? 0];
-			const touch = this.kind === "android" || this.kind === "ios";
 			return ok({ app: { id: "home", name: touch ? "Home screen" : "Desktop" }, window: { id: "home#main", bounds: [0, 0, width, height] }, elements: [], frame: "home" });
 		}
 		const state = this.#running.get(id);
@@ -231,9 +247,10 @@ export class FakeUiDriver implements UiSource {
 		const windowId = `${id}#main`;
 		if (target?.window !== undefined && target.window !== windowId) return fail("not_found", `${id} has no window ${target.window}; its window is ${windowId}`);
 		const screen = app.screens[state.screen];
-		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, ...element }) => {
+		// Checked and focused are the state's alone (seeded from the script at launch): the scripted flags never show through.
+		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, flags: scriptedFlags, ...element }) => {
 			const value = state.values.get(element.key) ?? element.value;
-			const flags = [...(element.flags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
+			const flags = [...(scriptedFlags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
 			return { ...element, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
 		});
 		const between = Date.now() < state.animateUntil;

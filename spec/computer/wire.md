@@ -224,6 +224,11 @@ The result:
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition.
+- **An act follows the app a step leaves for.** A `state` or `target` aims the act at its app's window. After a `nav`
+  step, the act follows the window in front: the steps after it, the settle, the expect and the answered `state` are
+  that window's. When any other step (a key, a tap that opens another app) takes the aimed window away, the step after
+  it is refused `stale` and runs nothing, and the act settles on the window in front. Either way the steps that ran
+  keep their results.
 - **Nothing silent.** A feature that is off is refused with its reason, in words. A step a route cannot reach is
   refused, never sent to the wrong place.
 - **One at a time.** A connection's ui calls run in order; one act's steps never interleave with another's.

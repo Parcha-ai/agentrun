@@ -526,11 +526,26 @@ export class UiEngine {
 		const first = await this.#see(target, signal);
 		if (!first.ok) return first;
 		let view = first.value;
+		// Where the looks after a step aim. A step that ran may have changed the app in front: a nav (home, back, recents)
+		// hands the act to whatever is in front, and when any other step (a key, a tap that opens another app) takes the
+		// target's window away, the act runs nothing more and settles on the window in front. Either way the steps
+		// that ran keep their results.
+		let aim = target;
+		const after = async (): Promise<Result<UiView> | "gone"> => {
+			const looked = await this.#see(aim, signal);
+			if (looked.ok || looked.error.code !== "not_found" || aim === undefined) return looked;
+			aim = undefined;
+			return "gone";
+		};
 		const steps: UiStepResult[] = [];
 		for (const [index, step] of params.steps.entries()) {
 			if (signal.aborted) return aborted("ui.act");
 			if (index > 0) {
-				const looked = await this.#see(target, signal);
+				const looked = await after();
+				if (looked === "gone") {
+					steps.push({ error: { kind: "stale", message: "the window this act aimed at is gone since the step before (it went to another app): observe again" } });
+					break;
+				}
 				if (!looked.ok) return looked;
 				view = looked.value;
 			}
@@ -549,8 +564,13 @@ export class UiEngine {
 				break;
 			}
 			steps.push(ran.value);
+			if ("nav" in step) aim = undefined;
 		}
-		const settled = await this.#settle(target, signal);
+		let settled = await this.#settle(aim, signal);
+		if (!settled.ok && settled.error.code === "not_found" && aim !== undefined && steps.some((one) => !("error" in one))) {
+			aim = undefined;
+			settled = await this.#settle(aim, signal);
+		}
 		if (!settled.ok) return settled;
 		let last = settled.value;
 		let met: "met" | "unmet" | undefined;
@@ -569,13 +589,14 @@ export class UiEngine {
 				}
 				await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
 				if (signal.aborted) return aborted("ui.act");
-				const looked = await this.#see(target, signal);
+				const looked = await after();
+				if (looked === "gone") continue;
 				if (!looked.ok) return looked;
 				last = looked.value;
 			}
 			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
 			if (last !== settled.value) {
-				const calm = await this.#settle(target, signal);
+				const calm = await this.#settle(aim, signal);
 				if (!calm.ok) return calm;
 				last = calm.value;
 			}
