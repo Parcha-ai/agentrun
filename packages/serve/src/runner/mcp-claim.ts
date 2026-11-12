@@ -16,6 +16,11 @@
 // (signedOut), a refresh that got no answer (silent), an address the check refuses (blocked). A runner never starts
 // without the seal key (seal-key.ts bootSealKey), so a claim always has one.
 //
+// A per_run server keeps no credential: the run's caller hands one with the run or a message (mcp_auth), sealed in the
+// run's launch row for the run's life (store/seal.ts sealRunMcpAuth) and erased by the write that ends it. Each fresh()
+// opens it again, so a message's new credential reaches the run's next model request; a run handed none gets its calls
+// refused unsent (UNUSABLE.perRunMissing).
+//
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
 // only when it provably never left: a refused or unmade connection, an address check out of time; one request that left
@@ -41,7 +46,7 @@ import { type GithubAppAccess, type GithubTimer, githubTokens } from "./mcp-gith
 import { ClaimRefused } from "./loop-contract.js";
 import { REFRESH_MARGIN_MS, UNKNOWN_EXPIRY_MS, UNUSABLE } from "../mcp-probe.js";
 import { tokenLeftOf } from "../mcp-probe.js";
-import { openMcpCredential, sealMcpCredential, type McpCredential } from "../store/seal.js";
+import { openMcpCredential, openRunMcpAuth, sealMcpCredential, type McpCredential, type RunMcpAuth } from "../store/seal.js";
 import { type Claim, Fenced, MCP_REFRESH_CALL_MS, type McpServerRow, type Store } from "../store/index.js";
 
 /** Whether two sealed credentials are the same bytes (none equals none). */
@@ -217,6 +222,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // A GitHub App's server keeps no credential: its token is minted for this run (awaited, so the claim is confirmed
     // after it), kept fresh mid-run, and never stored.
     if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
+    // A per_run server keeps none either: its credential is the one the run's caller handed it (mcp_auth), sealed in the
+    // run's launch, read again at every fresh() so a message's new one reaches the run's next request.
+    if (row.auth === "per_run") return entry(await perRun(name, row.url)), { awaited: false };
     if (row.sealed === null) return entry({}), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
     const opened = openMcpCredential(sealKey, row);
@@ -315,8 +323,23 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     return { awaited: true };
   };
 
+  /** The run's handed MCP credentials, opened from its launch: read once per fresh() (perRunRead), not once per server. */
+  let perRunRead: Promise<RunMcpAuth | undefined> | undefined;
+  /** A per_run server's headers for this run, from its launch; or why there are none. Only for the origin its url had
+   *  when they were handed: a server moved since gets none. */
+  const perRun = async (name: string, url: string): Promise<{ headers?: Record<string, string>; unopened?: string }> => {
+    perRunRead ??= store.runs.launch(claim.runId).then((launch) => openRunMcpAuth(sealKey, claim.runId, launch.sealed));
+    const handed = await perRunRead;
+    if (handed === undefined) return { unopened: UNUSABLE.damaged };
+    const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
+    if (!given) return { unopened: UNUSABLE.perRunMissing };
+    if (given.origin !== new URL(url).origin) return { unopened: UNUSABLE.damaged };
+    return { headers: { ...given.headers } };
+  };
+
   const fresh = async () => {
     if (!pin || released) return;
+    perRunRead = undefined;
     let awaited = false;
     for (const [name, pinned] of Object.entries(pin)) if ((await open(name, pinned.url)).awaited) awaited = true;
     // A refresh waited on: the claim may have moved on meanwhile; never start (or go on with) a loop it no longer holds.
