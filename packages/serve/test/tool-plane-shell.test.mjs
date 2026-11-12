@@ -24,7 +24,7 @@ const local = Object.fromEntries(SHELL.map((name) => [name, name === "bash" ? un
 
 // The Archil settings' PUT is a secret write (archil-routes.ts): the client sends it from the owner's session.
 SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/workspace\/archil$/ });
-const ARCHIL = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
+const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
 
 async function serve(t) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
