@@ -11,7 +11,7 @@
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { beforeRequestOf, type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { BeforeRequest, HostTool, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
@@ -48,12 +48,14 @@ import { runTools, type ToolResults, withKindTools } from "../workspace/run-tool
 import { copyRunFiles } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
-import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { join } from "node:path";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
-import { entriesOf } from "./loop.js";
+import { agentEntriesOf } from "./loop.js";
+import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
+import { wireName } from "../catalog.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
@@ -62,7 +64,7 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import type { ComputerSetting } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerReadyWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -166,7 +168,8 @@ export interface AdapterSpecDeps {
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
  *  overhead its provider adds; the output ceiling is the route's when it carries one, else none. */
 export function capModelOf(route: ModelRoute): CapModel {
-  const cost: RouteCost | undefined = route.cost;
+  // A model serve has no price for carries placeholder zeros: the cap reads it as unknown (null), never as $0.
+  const cost: RouteCost | undefined = route.unpriced ? undefined : route.cost;
   const price = cost
     ? {
         input: cost.input,
@@ -180,6 +183,12 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
 }
 
+/** The key of a subagent tier's route in a run's tier routes and proxies (a key of its own, never a learned workflow's
+ *  tier: those nodes keep their own route and fallback). */
+const SUBAGENT_ROUTE = "subagent-";
+const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
+const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
+
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
  *  the workflow loop). */
 type RevisionBody = {
@@ -191,6 +200,8 @@ type RevisionBody = {
   readonly skills?: Record<string, unknown>;
   /** The revision's own model ("provider/model-id"), absent for the host's. */
   readonly model?: string;
+  /** The model of each of its tiers it names (a subagent's: runner/subagent.ts), absent for the host's tier model. */
+  readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>;
 };
 
 /** What the runner routes a claimed run on: the launch's model as its start pinned it, sent as pinned, with the
@@ -367,7 +378,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -397,7 +408,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
   // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.
-  const tierRoutes = new Map<Tier, ModelRoute>();
+  const tierRoutes = new Map<string, ModelRoute>();
   // The run's pi-native extensions, in the root agent through the pi adapter (PiAdapterOptions.extensions), which installs
   // them in the claim's registry and offers each tool once:
   // - ask_person is pi's own tool (tools.ts): a run granted it carries its native extension, so pi runs it as its own tool
@@ -407,10 +418,37 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
   const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
+  // pi-native tools in the session's own extension (PiAdapterOptions.tools): the subagent tool, pushed below.
+  const piTools: ToolRegistration[] = [];
+  // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
+  // host's for the tier (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), each on a route of its own (its proxy on the session's
+  // booking, adapters/pi.ts tiers). A tier with neither is the agent's own model, as a learned workflow's node of it runs
+  // on the run's. A tier no route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
+  // provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's model): so
+  // its route reads every model key the server holds (savedModelKeys). Those reach the tier's proxy alone, as its
+  // credential, never the run's tools (toolEnv).
+  // Each is in tierRoutes under its own key (subagentRoute: never a learned workflow's tier, whose nodes keep their own
+  // routes and fallback), on a proxy of its own that names that key on each request, so the cap prices a child's
+  // requests as that route books them.
+  const tierWhy = new Map<SubagentTier, string>();
+  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+    const savedKeys = await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
+    holdClaimed(cut, savedKeys);
+    const tierEnv = withModelKeys(deps.env, { ...savedKeys, ...toolEnv });
+    for (const tier of SUBAGENT_TIERS) {
+      if (body.modelTiers?.[tier] === undefined && tierModelOf(tierEnv, tier) === undefined) continue;
+      try {
+        tierRoutes.set(subagentRoute(tier), await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
+      } catch (error) {
+        tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
+      }
+    }
+  }
   const adapter = piAdapter({
     run,
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
     extensions: native,
+    tools: piTools,
     model: route.model,
     provider: route.provider,
     redact: cut,
@@ -440,7 +478,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     capUsd: () => launch.maxCostUsd,
     modelOf: (id, by) => {
       if (by === undefined) return id === route.model ? capModel : undefined;
-      const tierRoute = tierRoutes.get(by as Tier);
+      const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
     ...(launch.capMode === "strict" ? { mode: "strict" as const } : {}),
@@ -526,7 +564,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const handTools = tools.hostTools(withKindTools(granted, tools), results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
+  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp)).map((tool) => answersCut(tool, cut));
@@ -542,6 +580,29 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   const system = [environmentLine(), instructions, guidance].filter((line): line is string => Boolean(line));
+
+  // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
+  // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
+  // agent's own or one of the tiers resolved above.
+  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+    const browserNames = native.filter((extension) => extension.name !== "ask_person").flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
+    piTools.push(subagentTool({
+      granted,
+      sessionNames: (catalog) => (catalog === BROWSER_TOOL ? browserNames : [wireName(catalog)]),
+      tier: (tier) => {
+        const why = tierWhy.get(tier);
+        if (why !== undefined) return { why };
+        // A tier with no model of its own (no model_tiers, no AGENT_MODEL_<TIER>): the agent's own model.
+        const at = tierRoutes.get(subagentRoute(tier));
+        if (!at) return { ref: { provider: PORT_PROVIDER, modelId: route.model } };
+        // A capped run never sends a request it cannot price: an unpriced tier refuses the call, and the run goes on.
+        if (at.unpriced && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
+        return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
+      },
+      preamble: environmentLine(),
+      ...(revision.body.maxToolCalls !== undefined ? { toolCalls: revision.body.maxToolCalls } : {}),
+    }));
+  }
 
   // The level pi thinks at: the launch's effort (the run's own, else its revision's, else the host's), every level pi's
   // agent takes; none, pi's default.
@@ -605,7 +666,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The end's metrics and cost, from the run's journal, as the old per-run end path read them (metrics.ts runMetrics =
     // runs.ts storedMetrics/costOf). A pi run adds its effort, no model (metrics.ts).
     endPatch: async () => {
-      const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
+      // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
+      const entries = await agentEntriesOf(deps.journal(claim), context);
       const { metrics, costUsd } = runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}) });
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time) and its decisions (a learned
       // workflow's decision nodes, LS-07), booked on the run's one ledger (each on its cap, in its own session, not on the

@@ -998,6 +998,15 @@ export interface Store {
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;
+  /** The store this one reads from: itself, but for the store a snapshot hands its callback, which is a new object at each
+   *  snapshot and gives the store it was taken of. What a reader keeps per store (a served answer's cache) is kept by this. */
+  readonly origin: Store;
+  /** `read` against this store as it stood at one moment: every read it makes sees one snapshot (one read-only transaction),
+   *  so a write that lands meanwhile, a runner's commit among them, is in all of its reads or in none. The store it is given
+   *  only reads. On SQLite the transaction holds this process's one connection until `read` settles, so `read` awaits the
+   *  store it is given and nothing else: never this store (that waits for the snapshot, which waits for it), and no
+   *  network or disk. Its deadline is the transaction's (StoreDeadline). */
+  snapshot<T>(read: (store: Store) => Promise<T>): Promise<T>;
   /** A run's journal opened for reading only (JournalReads): the server's reads of a run, which hold no claim. Its reads
    *  alone, never a commit; a read never fences, so it needs no claim. A run with no journal yet reads as empty. */
   readJournal(runId: string): JournalReads;

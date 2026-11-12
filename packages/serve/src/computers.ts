@@ -6,6 +6,8 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { checkGpu, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { KEY_TABLE, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
 import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
@@ -51,6 +53,45 @@ export interface ProviderEntry {
   readonly capabilities: readonly KindCapabilities[];
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
+  /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
+   *  (`${platform}-${arch}`; absent, every one), as its descriptor declares it: the phone's adb. Absent: none. */
+  readonly hostCommand?: HostCommand;
+}
+
+/** A provider's host command, as the kind registry's entry names it. */
+export type HostCommand = { readonly command: string; readonly from: string; readonly builds?: readonly string[] };
+
+const ARCH_NAMES: Readonly<Record<string, string>> = { x64: "x86-64", arm64: "arm64" };
+const PLATFORM_NAMES: Readonly<Record<string, string>> = { linux: "Linux", darwin: "macOS", win32: "Windows" };
+
+/** Why a provider whose host command is not on this machine's PATH cannot run here, in words that say how to fix it,
+ *  as the server says Docker's (docker-daemon.ts). On a machine the command has no build for (adb on arm64 Linux: AgentRun's
+ *  arm64 image has none either), they say which machine it needs, not how to install it. */
+export function hostCommandWhy(label: string, { command, from, builds }: HostCommand, platform: string = process.platform, arch: string = process.arch): string {
+  if (!builds || builds.includes(`${platform}-${arch}`)) return `${command} isn't installed on this server (no ${command} command on PATH): install ${from}, then restart AgentRun`;
+  const name = (one: string): string => ARCH_NAMES[one] ?? one;
+  const others = builds.filter((one) => one.startsWith(`${platform}-`)).map((one) => name(one.slice(platform.length + 1)));
+  const needs = others.length ? `an ${others.join(" or ")} server` : `a server where ${from} runs (${builds.join(", ")})`;
+  return `this server's image has no ${command} for ${name(arch)} (${from} has no ${PLATFORM_NAMES[platform] ?? platform} build for ${name(arch)}): ${label} needs ${needs}`;
+}
+
+/** Each provider whose host command is not on `path` (the server's PATH at its start), by its id, with hostCommandWhy's
+ *  words: what Settings → Computers, a run's start and the claim say for it. A command is there when a folder of `path`
+ *  holds an executable file of its name. */
+export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "label" | "hostCommand">[], path: string | undefined, platform: string = process.platform, arch: string = process.arch): Readonly<Record<string, string>> {
+  // On Windows a program is its name with an executable extension (platform-tools installs adb.exe).
+  const named = (command: string): string[] => (platform === "win32" ? [command, ...[".exe", ".cmd", ".bat"].map((extension) => `${command}${extension}`)] : [command]);
+  const found = (command: string): boolean =>
+    (path ?? "").split(delimiter).some((folder) =>
+      folder !== "" && named(command).some((file) => {
+        try {
+          accessSync(join(folder, file), constants.X_OK);
+          return statSync(join(folder, file)).isFile();
+        } catch {
+          return false;
+        }
+      }));
+  return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !found(provider.hostCommand.command) ? [[provider.id, hostCommandWhy(provider.label, provider.hostCommand, platform, arch)]] : [])));
 }
 
 /** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
@@ -80,6 +121,9 @@ export interface ComputerRoutesOptions {
   /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings row), so turning
    *  Archil on or off takes effect without building the routes again. */
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
+  /** Why this machine cannot run a provider's computers, by its id (hostCommandRefusals at the server's start): the
+   *  provider is not ready, and a claim of it is refused, in these words. Absent: every provider can run here. */
+  readonly hostWhy?: Readonly<Record<string, string>>;
   /** The server's environment: a variable named as a provider's key overrides the saved one (source "env"). */
   readonly env?: KeyEnv;
   /** Whether a provider that binds a folder of this machine (Docker) answers here now, or why not (the server's daemon
@@ -183,8 +227,9 @@ const local = (provider: ProviderEntry): boolean => provider.mounts.includes("bi
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
  *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
-  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {}, answers = daemonUp } = options;
+  const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {}, answers = daemonUp, hostWhy = {} } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
+  const hostOf = (provider: ProviderEntry): string | undefined => (Object.hasOwn(hostWhy, provider.id) ? hostWhy[provider.id] : undefined);
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
   /** Why a computer of `kind` on `provider` can't be had for its daemon (a provider that binds a folder of this machine,
    *  `said` its answer, in folder `mode`): none answering is the one wording (docker-daemon.ts noDockerWords); else its
@@ -211,7 +256,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const providers = serving.map((provider): ProviderView => {
           const missing = missingKeys(provider, saved);
           const daemon = daemons.get(provider.id);
-          const why = modeRefusal(kind, provider, mode) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? (missing.length ? keysWhy(provider, missing) : undefined);
+          const why = modeRefusal(kind, provider, mode) ?? (daemon ? daemonWhy(kind, daemon, mode) : undefined) ?? hostOf(provider) ?? (missing.length ? keysWhy(provider, missing) : undefined);
           // The images an agent's computer.image may name for this kind: those of its configurations that serve it.
           const images = imagesOf(provider.capabilities.filter((one) => kinds.servingRefusals(one, kind).length === 0), provider.defaultImage?.[kind]);
           const network = networkWords(provider.network);
@@ -273,7 +318,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
    *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
    *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), have its daemon answer where it binds
-   *  a folder of this machine (Docker), and have every required key saved; a key refusal names the route that saves them. */
+   *  a folder of this machine (Docker), find what it runs on this machine (hostWhy's words), and have every required key
+   *  saved; a key refusal names the route that saves them. */
   async function claimRefusal(computer: ComputerSetting): Promise<string | undefined> {
     if (computer.kind === "none") return undefined;
     const provider = providerOf(computer.provider);
@@ -283,7 +329,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
     const mode = await modeNow();
-    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined);
+    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined) ?? hostOf(provider);
     if (refused) return refused;
     const missing = missingKeys(provider, new Set([...(await sealedKeyNames(store)), ...provider.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]));
     return missing.length ? keysWhy(provider, missing, true) : undefined;
