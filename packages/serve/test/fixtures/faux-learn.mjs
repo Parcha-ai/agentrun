@@ -6,6 +6,9 @@
 // - `Learn once: <JSON>`: the same, less the files the run's `# Learned` names already, in the index or a note's heading
 //   (a later run of the agent adds none);
 // - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
+// A user message that starts "Review: " is a reviewer's word on the run's answer: the end-of-run turn answers it as a note,
+// `reviewed.md`, its body the review's words. A later end-of-run turn of the same run (a follow-up's: its prompt says it
+// looked back before) answers that note alone.
 // On pi, "Fail the job." has the job's turn fail (the model's error), and the end-of-run turn is answered all the same.
 // A user message "Remember for next time: <text>" is what a person asks the agent to keep: on pi the job turn writes it
 // to `.learning/notes.txt` first and says it saved it (what models do), and the end-of-run turn, which reads the whole
@@ -60,8 +63,15 @@ const remembered = (users) => {
   const said = users.map((text) => /Remember for next time: (.+)/.exec(text)?.[1]).filter(Boolean);
   return said.length ? [["remembered.md", `---\nname: What the user asked to keep\ndescription: The user's standing request\ntype: user\n---\n${said.join("\n")}\n`]] : [];
 };
-/** The end-of-run turn's whole answer, from the instructions in `system` and the conversation's user messages. */
-const reflection = (system, users) => /^Answer: (".*")$/m.exec(system)?.[1] ? JSON.parse(/^Answer: (".*")$/m.exec(system)[1]) : answerWith([...planned(system), ...remembered(users)]);
+/** A reviewer's word on the run's answer, in `users` (the user messages' texts): a message that starts "Review: ", the
+ *  note the end-of-run turn gives for it (one, the newest review's). */
+const reviewed = (users) => {
+  const review = users.findLast((text) => text.startsWith("Review: "));
+  return review ? [["reviewed.md", note("What the reviewer said", "The reviewer's answer for a case like this one", `${review.slice("Review: ".length)}\n`)]] : [];
+};
+/** The end-of-run turn's whole answer, from the instructions in `system` and the conversation's user messages. A later
+ *  look-back of the same run (its prompt says it looked back before: a follow-up's) keeps only what a review taught. */
+const reflection = (system, users, later = false) => /^Answer: (".*")$/m.exec(system)?.[1] ? JSON.parse(/^Answer: (".*")$/m.exec(system)[1]) : answerWith(later ? reviewed(users) : [...planned(system), ...remembered(users), ...reviewed(users)]);
 
 const answerOf = (system) => (/Say your prompt\./.test(system) ? system : "Job answer.");
 /** The paths the instructions in `system` have the job read before it answers. */
@@ -100,6 +110,9 @@ function grade(prompt, faux) {
   }
   return verdictOf(rules, files, faux);
 }
+
+/** A later look-back of the same run (learn/reflect.ts reflectPrompt `later`): its prompt says it looked back before. */
+const LATER = /^You looked back on this run before\./m;
 
 /** How many times the grader was asked each prompt (the host asks again, with the same prompt, an answer it could not read). */
 const ASKS = new Map();
@@ -178,7 +191,7 @@ export default function reply(context, faux) {
     if (/Reflect slowly\./.test(system)) return slow(faux, 60_000, "Too late.");
     // "Reflect by writing first.": the end-of-run turn tries to write a note as a file first, then answers.
     if (/Reflect by writing first\./.test(system) && done === 0) return faux.message(faux.toolCall("write", { path: ".learning/written.md", content: "A note as a file.\n" }), { stopReason: "toolUse" });
-    return faux.message(reflection(system, users));
+    return faux.message(reflection(system, users, LATER.test(last)));
   })();
 }
 
