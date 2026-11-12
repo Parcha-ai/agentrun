@@ -132,7 +132,7 @@ public final class Phoned implements Wire.Handler {
 			case "apps.list":
 				return appsList();
 			case "apps.launch":
-				return launch(params);
+				return launch(params, cancel);
 			case "apps.terminate":
 				device.apps().terminate(appId(params));
 				return Json.obj();
@@ -165,12 +165,14 @@ public final class Phoned implements Wire.Handler {
 		return Json.obj("apps", apps, "foreground", device.apps().foreground());
 	}
 
-	private Map<String, Object> launch(Params p) {
+	/** Starts the app, and answers once it has a window on the screen (UiDriver.launched). */
+	private Map<String, Object> launch(Params p, Wire.Cancel cancel) throws InterruptedException {
 		String id = appId(p);
 		String url = p.str("url", null);
 		if (url != null && !URL.matcher(url).matches()) throw RpcError.invalid("url is not a URL (scheme:rest, no spaces)");
 		if (p.bool("background", false)) throw RpcError.unsupported("apps.launch: this phone does not offer apps.background: " + APPS_BACKGROUND_OFF);
 		device.apps().launch(id, url);
+		ui.launched(id, cancel);
 		return Json.obj();
 	}
 }

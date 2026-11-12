@@ -339,32 +339,70 @@ final class UiTest {
 		eq(FakeDevice.LAUNCHER, map(phone.call("apps.list", "{}")).get("foreground"));
 	}
 
-	static void testANamedAppInFrontIsWaitedForAndOneNotThereIsNamedAtOnce() throws Exception {
+	static void testLaunchAnswersOnceTheAppsWindowIsOnTheScreenAndStill() throws Exception {
 		Check.Phone phone = new Check.Phone();
-		String target = "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}";
-		// As on a phone: apps.list names the launched app before its window reaches the tree. A look waits for it.
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		// As on a phone: the task is in front before the window reaches the tree, and the window then animates in.
 		phone.device.windowLagMs = 400;
-		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
-		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
+		phone.device.openAnimationMs = 300;
 		long before = phone.device.clock().now();
-		Map<String, Object> seen = phone.call("ui.observe", target);
-		eq("UI fixture", map(seen.get("window")).get("title"));
-		yes(phone.device.clock().now() - before >= 400, "the look waited for the window");
-		// An app not in front is not_found at once, and the words name what the tree shows.
-		before = phone.device.clock().now();
-		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.CHROME + "\"}}"));
-		eq(before, phone.device.clock().now());
-		yes(missing.contains(FakeDevice.CHROME + " has no window on the screen (the accessibility tree shows window 30 application \"UI fixture\" of " + FakeDevice.FIXTURE + ")"), missing);
-		// One in front whose window never comes is waited for APP_WINDOW_MS, then not_found in its own words.
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		long took = phone.device.clock().now() - before;
+		yes(took >= 700 && took < 1000, "apps.launch waited for the window and its animation: " + took + " ms");
+		// A look right after finds the window in place, and an act of no steps on it changes nothing.
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + "}");
+		eq("[110,440,320,320]", Json.write(map(seen.get("window")).get("bounds")));
+		Map<String, Object> still = phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"text\":\"No such text\",\"timeoutMs\":300}}");
+		eq("unmet", still.get("expect"));
+		eq(false, still.get("changed"));
+		// An app whose window never comes: a timeout after LAUNCH_WINDOW_MS, in words that name what the tree shows.
 		phone.device.windowLagMs = 60_000;
-		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
 		before = phone.device.clock().now();
-		String late = refuses("not_found", () -> phone.call("ui.act", "{\"target\":{\"app\":\"" + FakeDevice.SETTINGS + "\"},\"steps\":[{\"nav\":\"back\"}]}"));
+		String late = refuses("timeout", () -> phone.call("apps.launch", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}"));
 		long waited = phone.device.clock().now() - before;
-		yes(waited >= UiDriver.APP_WINDOW_MS && waited < UiDriver.APP_WINDOW_MS + 200, "waited " + waited + " ms");
-		yes(late.contains(FakeDevice.SETTINGS + " is in front, but its window did not reach the accessibility tree within 3000 ms (the accessibility tree shows window 30"), late);
+		yes(waited >= UiDriver.LAUNCH_WINDOW_MS && waited < UiDriver.LAUNCH_WINDOW_MS + 200, "waited " + waited + " ms");
+		yes(late.contains("apps.launch: " + FakeDevice.SETTINGS + " opened no window within 10000 ms (the accessibility tree shows window 30 application \"UI fixture\" of " + FakeDevice.FIXTURE + ")"), late);
 		// A terminate takes the launch that has not shown yet with it.
 		phone.call("apps.terminate", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
 		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
+	}
+
+	static void testAppsLaunchWithTheTreeOffWaitsForTheAppInFront() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.device.features.put("ui.tree", "UiAutomation is held by another client");
+		phone.device.windowLagMs = 400;
+		long before = phone.device.clock().now();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		yes(phone.device.clock().now() - before < 100, "the task is in front at once");
+		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
+	}
+
+	static void testObserveIsImmediateAndItsNotFoundNamesTheWindowsThere() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		// The task in front, its window not on the screen yet (apps.launch would wait; the phone's own launch does not).
+		phone.device.windowLagMs = 400;
+		phone.device.apps().launch(FakeDevice.FIXTURE, null);
+		long before = phone.device.clock().now();
+		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}"));
+		eq(before, phone.device.clock().now());
+		yes(missing.equals(FakeDevice.FIXTURE + " has no window on the screen (the accessibility tree shows window 10 application \"Settings\" of " + FakeDevice.SETTINGS + "): open it with apps.launch first"), missing);
+	}
+
+	static void testAWindowSitsWhereItsElementsAreThoughTheServicePutsItElsewhere() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		// The accessibility service puts the window 1000 px lower than its elements, its screen and its input are.
+		phone.device.windowSkewY = 1000;
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String target = "\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}";
+		Map<String, Object> seen = phone.call("ui.observe", "{" + target + ",\"image\":{\"maxEdge\":256}}");
+		eq("[110,440,320,320]", Json.write(map(seen.get("window")).get("bounds")));
+		yes(seen.get("image") != null, "the window's image, cut from the screen at the window");
+		Map<String, Object> canvas = null;
+		for (Object n : list(seen, "nodes")) if ("canvas".equals(map(n).get("id"))) canvas = map(n);
+		eq("[16,180,200,100]", Json.write(canvas.get("bounds")));
+		// A point read from the state lands on the canvas: window points to screen pixels in the elements' space.
+		Map<String, Object> clicked = phone.call("ui.act", "{" + target + ",\"state\":\"" + seen.get("state") + "\",\"foreground\":true,\"steps\":[{\"click\":[116,230]}]}");
+		eq(Json.obj("route", "foreground", "verified", true), step(clicked, 0));
+		eq("1", phone.device.canvas.state);
 	}
 }

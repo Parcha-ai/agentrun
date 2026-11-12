@@ -86,6 +86,18 @@ public final class FakeDevice implements Device {
 	public long windowLagMs;
 	/** The app launched whose window has not shown yet, or null. */
 	private String starting;
+	/**
+	 * How long a launched app's window takes to animate in once it shows, as on a phone: its elements start OPEN_SHIFT
+	 * pixels low and move into place in steps over this long, a frame each. 0 shows them in place.
+	 */
+	public long openAnimationMs;
+	static final int OPEN_SHIFT = 48;
+	static final long OPEN_STEP_MS = 50;
+	/**
+	 * Where the accessibility service puts windows, against their elements: this many pixels lower, as a cloud phone
+	 * reported (a window's bounds in another space from its elements, its screen and its input). 0 agrees.
+	 */
+	public int windowSkewY;
 
 	public FakeNode list;
 	public FakeNode network;
@@ -123,6 +135,8 @@ public final class FakeDevice implements Device {
 		public Rect bounds;
 		public boolean active = true;
 		public FakeNode root;
+		/** How far below its elements the accessibility service reports it (FakeDevice.windowSkewY). */
+		int skewY;
 
 		public FakeWindow(int id, String title, Rect bounds, FakeNode root) {
 			this.id = id;
@@ -148,7 +162,7 @@ public final class FakeDevice implements Device {
 
 		@Override
 		public Rect bounds() {
-			return bounds;
+			return skewY == 0 ? bounds : new Rect(bounds.left, bounds.top + skewY, bounds.right, bounds.bottom + skewY);
 		}
 
 		@Override
@@ -196,8 +210,28 @@ public final class FakeDevice implements Device {
 		later.clear();
 		starting = null;
 		root.pkg(pkg);
-		windows.add(new FakeWindow(id, title, bounds, root));
+		FakeWindow w = new FakeWindow(id, title, bounds, root);
+		w.skewY = windowSkewY;
+		windows.add(w);
 		changed();
+	}
+
+	/** The window in front animates in (openAnimationMs): its elements start low and step into place. */
+	private synchronized void animateIn() {
+		if (openAnimationMs <= 0 || windows.isEmpty()) return;
+		FakeNode root = windows.get(0).root;
+		long steps = Math.max(1, openAnimationMs / OPEN_STEP_MS);
+		root.shift(OPEN_SHIFT);
+		int moved = 0;
+		for (long i = 1; i <= steps; i++) {
+			int to = (int) (OPEN_SHIFT * i / steps);
+			int by = to - moved;
+			moved = to;
+			after(i * OPEN_STEP_MS, () -> {
+				root.shift(-by);
+				changed();
+			});
+		}
 	}
 
 	private synchronized String front() {
@@ -681,6 +715,7 @@ public final class FakeDevice implements Device {
 				Runnable opens = () -> {
 					if (id.equals(CHROME)) chrome(url);
 					else open(id);
+					animateIn();
 				};
 				synchronized (FakeDevice.this) {
 					if (windowLagMs <= 0) {

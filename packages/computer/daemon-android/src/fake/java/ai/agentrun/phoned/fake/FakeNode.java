@@ -105,6 +105,12 @@ public final class FakeNode implements AxNode {
 		return this;
 	}
 
+	/** It and everything under it move down by dy pixels (up when negative), as a window animating in moves them. */
+	public void shift(int dy) {
+		bounds = new Rect(bounds.left, bounds.top + dy, bounds.right, bounds.bottom + dy);
+		for (FakeNode c : children) c.shift(dy);
+	}
+
 	/** It and everything under it leave the screen. */
 	public void gone() {
 		alive = false;

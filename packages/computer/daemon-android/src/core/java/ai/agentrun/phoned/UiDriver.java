@@ -38,10 +38,10 @@ public final class UiDriver {
 	static final int REPLY_ROOM = 16 * 1024;
 	/** How long a drag takes when it names no ms, and a scroll's swipe at least. */
 	static final long DRAG_MS = 300;
-	/** How long a call waits for the window of a named app that is in front (see start). */
-	static final long APP_WINDOW_MS = 3_000;
+	/** How long apps.launch waits for the app's window (see launched). */
+	static final long LAUNCH_WINDOW_MS = 10_000;
 	/** How often it looks for that window. */
-	static final long APP_WINDOW_POLL_MS = 50;
+	static final long LAUNCH_POLL_MS = 50;
 	/** The windows a not_found names, at most. */
 	static final int WINDOWS_NAMED = 6;
 
@@ -94,8 +94,8 @@ public final class UiDriver {
 
 		Look(Device.AxWindow window, boolean full) {
 			this.window = window;
-			this.bounds = window.bounds();
 			this.root = window.root();
+			this.bounds = boundsOf(window, root);
 			String pkg = root == null ? null : root.packageName();
 			this.app = pkg == null ? "" : pkg;
 			this.frame = new Outline.Frame(bounds.left, bounds.top, device.display().scale);
@@ -113,7 +113,7 @@ public final class UiDriver {
 
 	// --- ui.observe ------------------------------------------------------------------------------------------------
 
-	public Map<String, Object> observe(Params p, Wire.Cancel cancel) throws InterruptedException {
+	public Map<String, Object> observe(Params p, Wire.Cancel cancel) {
 		p.only("target", "full", "image", "since");
 		Target target = target(p);
 		boolean full = p.bool("full", false);
@@ -128,7 +128,7 @@ public final class UiDriver {
 		synchronized (hands) {
 			cancel.check();
 			Device.Accessibility a11y = device.accessibility();
-			Look look = new Look(start(a11y, target, cancel), full);
+			Look look = new Look(window(a11y, target), full);
 			Map<String, Object> image = maxEdge > 0 ? shots.image(look.bounds, maxEdge) : null;
 			cancel.check();
 			State before = since == null ? null : states.get(since);
@@ -212,35 +212,52 @@ public final class UiDriver {
 	}
 
 	/**
-	 * The window a look or an act starts from. On a phone an app's task is in front a few hundred ms before its window
-	 * reaches the accessibility tree, so apps.list can already name an app that ui.observe finds no window of. A named
-	 * app that is in front is waited for, up to APP_WINDOW_MS; one that is not is not_found at once.
+	 * Where a window sits, in the space of its elements, the screen's shots and the phone's input: its root's bounds.
+	 * The window's own bounds from the accessibility service can lie in another space (a cloud phone gave y 1616 px on a
+	 * 1280 px screen whose elements and taps were right), so they stand in only when there is no root to read.
 	 */
-	Device.AxWindow start(Device.Accessibility a11y, Target target, Wire.Cancel cancel) throws InterruptedException {
-		try {
-			return window(a11y, target);
-		} catch (RpcError e) {
-			if (!"not_found".equals(e.kind) || target.app == null || target.window != null || !inFront(target.app)) throw e;
-		}
-		Device.Clock clock = device.clock();
-		long begun = clock.now();
-		for (;;) {
-			cancel.check();
-			clock.sleep(APP_WINDOW_POLL_MS);
-			List<Device.AxWindow> windows = a11y.windows();
-			for (Device.AxWindow w : windows) if (target.app.equals(appOf(w))) return w;
-			if (clock.now() - begun >= APP_WINDOW_MS) {
-				throw RpcError.notFound(target.app + " is in front, but its window did not reach the accessibility tree within "
-						+ APP_WINDOW_MS + " ms (" + shown(windows) + ")");
-			}
-		}
+	static Rect boundsOf(Device.AxWindow window, AxNode root) {
+		Rect rooted = root == null ? null : root.bounds();
+		return rooted != null && !rooted.empty() ? rooted : window.bounds();
 	}
 
-	private boolean inFront(String app) {
-		try {
-			return app.equals(device.apps().foreground());
-		} catch (RuntimeException e) {
-			return false;
+	static Rect boundsOf(Device.AxWindow window) {
+		return boundsOf(window, window.root());
+	}
+
+	/**
+	 * apps.launch answers once the app has a window on the screen (the protocol's rule), so a look right after it finds
+	 * one. On a phone the app's task is in front a few hundred ms before its window reaches the accessibility tree, and
+	 * the window then animates in: this waits for a window of the app, then for the screen to settle, up to
+	 * LAUNCH_WINDOW_MS in all, and is a timeout in words past it. With the tree off, the app's task in front is the sign.
+	 */
+	public void launched(String app, Wire.Cancel cancel) throws InterruptedException {
+		Device.Clock clock = device.clock();
+		long begun = clock.now();
+		if (off("ui.tree") != null) {
+			for (;;) {
+				if (app.equals(device.apps().foreground())) return;
+				if (clock.now() - begun >= LAUNCH_WINDOW_MS) {
+					throw RpcError.timeout("apps.launch: " + app + " did not come to the front within " + LAUNCH_WINDOW_MS + " ms");
+				}
+				cancel.check();
+				clock.sleep(LAUNCH_POLL_MS);
+			}
+		}
+		Device.Accessibility a11y = device.accessibility();
+		for (;;) {
+			List<Device.AxWindow> windows = a11y.windows();
+			for (Device.AxWindow w : windows) {
+				if (!app.equals(appOf(w))) continue;
+				long left = LAUNCH_WINDOW_MS - (clock.now() - begun);
+				if (left > 0) Settle.quiet(a11y, clock, w.id(), Math.min(left, MAX_SETTLE_MS), cancel);
+				return;
+			}
+			if (clock.now() - begun >= LAUNCH_WINDOW_MS) {
+				throw RpcError.timeout("apps.launch: " + app + " opened no window within " + LAUNCH_WINDOW_MS + " ms (" + shown(windows) + ")");
+			}
+			cancel.check();
+			clock.sleep(LAUNCH_POLL_MS);
 		}
 	}
 
@@ -416,7 +433,7 @@ public final class UiDriver {
 			// The state's app, not its window: an activity the steps open is a new window of the same app.
 			if (target.app == null && target.window == null && held != null && !held.app.isEmpty()) target.app = held.app;
 			Device.Accessibility a11y = device.accessibility();
-			String first = new Look(start(a11y, target, cancel), false).fingerprint();
+			String first = new Look(window(a11y, target), false).fingerprint();
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
 			for (Step s : steps) {
@@ -549,7 +566,8 @@ public final class UiDriver {
 		Device.Clock clock = device.clock();
 		try {
 			Device.AxWindow window = window(a11y, target);
-			Outline.Frame frame = new Outline.Frame(window.bounds().left, window.bounds().top, device.display().scale);
+			Rect where = boundsOf(window);
+			Outline.Frame frame = new Outline.Frame(where.left, where.top, device.display().scale);
 			AxNode node = s.ref == null ? null : resolve(s.ref);
 			if (s.point != null) checkPoint(s.point, stateId, held, window, frame);
 			Sign sign = new Sign(a11y, target, window, cancel);
@@ -772,7 +790,7 @@ public final class UiDriver {
 		String at = "(" + p[0] + ", " + p[1] + ")";
 		if (held == null) throw new Refused("stale", "state " + stateId + " is no longer held: observe again, and read the point from the new state");
 		if (held.windowId != window.id()) throw new Refused("stale", "the window of state " + stateId + " is no longer the one in front: observe again");
-		Rect now = window.bounds();
+		Rect now = boundsOf(window);
 		if (now.width() != held.windowBounds.width() || now.height() != held.windowBounds.height()) {
 			throw new Refused("stale", "the window changed size since state " + stateId + ", so " + at + " may not land on what it showed: observe again");
 		}

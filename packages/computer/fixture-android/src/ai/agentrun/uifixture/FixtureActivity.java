@@ -12,6 +12,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
@@ -53,10 +54,14 @@ public final class FixtureActivity extends Activity {
 		setFinishOnTouchOutside(false);
 		// A plain background: the dialog theme's own is inset, which would pad the window past its size.
 		getWindow().setBackgroundDrawable(new ColorDrawable(Color.WHITE));
-		getWindow().setLayout(px(SIZE), px(SIZE));
+		// No keyboard opens over the window on its own: the Name field may take focus at launch, and the window stays still.
+		getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
 		home = homePage();
 		second = secondPage();
 		showHome();
+		// After the first setContentView: installing the decor sets a floating window's layout to wrap its content,
+		// which would size the window to the elements (316 by 280 points) and not SIZE by SIZE.
+		getWindow().setLayout(px(SIZE), px(SIZE));
 	}
 
 	@Override
