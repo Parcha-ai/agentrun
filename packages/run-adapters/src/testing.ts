@@ -53,11 +53,10 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  this request still streams (after its first call's text, before that call), so two of its requests are in flight.
  *  `sideFirst`: one admitted before this request, then `say` streamed before this request is admitted: text of the
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
- *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). `resultWhen`: a call's
- *  result is told (its tool_end) only once this file exists, as a harness still recording it would. */
+ *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
 /** `onRefused: "next"`: a request its host refuses (its admission throws) is not the turn's end: the client goes on to its
  *  next action, as a CLI whose request the proxy refused sends another. */
-export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string }; resultWhen?: string };
+export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -86,13 +85,17 @@ export type FauxAction =
   | ({ cut: true } & FauxRequest)
   /** A paid request leaves and holds unanswered until the turn is stopped: the stop cuts it, and its cost (what had
    *  streamed) is still booked, as a provider bills a response cut short. */
-  | { cutBooked: true; usd?: number | null };
+  | { cutBooked: true; usd?: number | null }
+  /** The model answers with this text through a route that never reaches the session's port (a CLI sending past its
+   *  model proxy): its text shows, and nothing is admitted or booked. */
+  | { unbooked: string };
 
 /** `note`: a note its host had for the request (ModelPort.note, the spend cap's wrap-up), as a real adapter's model proxy
  *  would add it to the body: filed with its text, for a test to see. */
 /** `answered`: a request whose reply asks for calls came back (its `until` let go), so its calls are the model's to run.
- *  `said`: a call's own text (its `say`) was streamed, so a recovered turn never says it again. */
-export const FAUX_RECORDS = { request: "faux.request", answered: "faux.answered", said: "faux.said", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
+ *  `said`: a call's own text (its `say`) was streamed, so a recovered turn never says it again. `unbooked`: an answer
+ *  that booked no request (FauxAction `unbooked`), its script place kept. */
+export const FAUX_RECORDS = { request: "faux.request", unbooked: "faux.unbooked", answered: "faux.answered", said: "faux.said", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result", note: "faux.note" } as const;
 
 export interface FauxOptions {
   /** The session's model replies, in order, by its spec: one action per paid request. `cwd`: the session's working
@@ -147,10 +150,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const proxy: ModelProxy | undefined = options.proxy ? await startModelProxy({ ...options.proxy.options, hooks: io.models as never }, randomBytes(32).toString("base64url")) : undefined;
       io.signal.addEventListener("abort", () => void proxy?.close(), { once: true });
       const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
-      // The script's place: one past its last request's (each faux.request keeps its action's index), never the count of
-      // them, since an action refused with `onRefused: "next"` is skipped with no record.
+      // The script's place: one past its last request's (each faux.request keeps its action's index, as each faux.unbooked
+      // does for an answer that booked none), never the count of them, since an action refused with `onRefused: "next"` is
+      // skipped with no record.
       let cursor = records.reduce((next, r) => {
-        const index = r.kind === FAUX_RECORDS.request ? (r.data as { index?: unknown } | null)?.index : undefined;
+        const index = r.kind === FAUX_RECORDS.request || r.kind === FAUX_RECORDS.unbooked ? (r.data as { index?: unknown } | null)?.index : undefined;
         return typeof index === "number" && index + 1 > next ? index + 1 : next;
       }, 0);
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
@@ -176,12 +180,11 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       // its calls runs on the recovery: the turn goes on with the script's next request, as a cut request's always has.
       const begun = new Set(records.filter((r) => r.kind === FAUX_RECORDS.call || r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
       const answered = new Set(records.filter((r) => r.kind === FAUX_RECORDS.answered).map((r) => (r.data as { index: number }).index));
-      // Each keeps its action's resultWhen: its outcome is told only once that file exists, as on its first try; and its own
-      // text (`say`) unless it was said already (FAUX_RECORDS.said: the call that parked said its text before its gate).
-      const resultWhenOf = (action: FauxAction | undefined): string | undefined => (action && "resultWhen" in action && typeof action.resultWhen === "string" ? action.resultWhen : undefined);
+      // Each keeps its own text (`say`) unless it was said already (FAUX_RECORDS.said: the call that parked said its text
+      // before its gate).
       const saidAlready = new Set(records.filter((r) => r.kind === FAUX_RECORDS.said).map((r) => (r.data as { callId: string }).callId));
       let dangling = state === "open_turn" && answered.has(cursor - 1)
-        ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)).map(({ say, ...call }) => ({ ...call, ...(say && !saidAlready.has(call.callId) ? { say } : {}), resultWhen: resultWhenOf(script[cursor - 1]) }))
+        ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)).map(({ say, ...call }) => ({ ...call, ...(say && !saidAlready.has(call.callId) ? { say } : {}) }))
         : [];
       /** What the session has been sent, as a model would be prompted with it. */
       const prompt = records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { text: string }).text);
@@ -207,8 +210,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       });
       /** One call of the model's: the host's gate first, before anything of it is written (a deny is its answer, in the
        *  gate's words, recorded so it is never asked again; a park holds the turn until it is stopped), then its intent,
-       *  the tool, and its outcome. `resultWhen`: its outcome is told only once that file exists. */
-      const runCall = async (name: string, args: unknown, callId: string, signal: AbortSignal, resultWhen?: string) => {
+       *  the tool, and its outcome. */
+      const runCall = async (name: string, args: unknown, callId: string, signal: AbortSignal) => {
         const tool = tools.get(name);
         const refused = tool && io.gate ? await askGate((call) => io.gate!(call), { callId, tool: name, args: (args ?? {}) as Record<string, unknown> }, signal) : undefined;
         if (refused) return void (await append(FAUX_RECORDS.result, { callId, isError: true, refused: true }));
@@ -216,7 +219,6 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         io.onEvent({ type: "tool_start", callId, name, args });
         const result = tool ? await tool.call(args, { callId, signal }).catch((error: Error) => ({ text: error.message, isError: true })) : { text: `unknown tool ${name}`, isError: true };
         if (tool) stats.calls.push(name);
-        if (resultWhen) await untilExists(resultWhen, signal);
         await append(FAUX_RECORDS.result, { callId, isError: result.isError === true });
         io.onEvent({ type: "tool_end", callId, name, isError: result.isError === true });
       };
@@ -230,15 +232,22 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         const signal = AbortSignal.any([io.signal, (turnSignal = new AbortController()).signal]);
         try {
           // A recovered turn: the calls its last request left dangling run first, then the model goes on.
-          for (const { name, args, callId, say, resultWhen } of dangling.splice(0)) {
+          for (const { name, args, callId, say } of dangling.splice(0)) {
             if (say) await saying(callId, say);
-            await runCall(name, args, callId, signal, resultWhen);
+            await runCall(name, args, callId, signal);
           }
           for (;;) {
             const action = script[cursor];
             if (!action) return await end("completed");
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
+            if ("unbooked" in action) {
+              // Its place kept in a record of its own (no faux.request: no model request was booked), so a session opened
+              // again goes on past it, never answers it twice.
+              await append(FAUX_RECORDS.unbooked, { index: cursor++ });
+              io.onEvent({ type: "text", delta: action.unbooked });
+              continue;
+            }
             // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
             const measured = "inputTokensMax" in action && typeof action.inputTokensMax === "number" ? action.inputTokensMax : Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8");
             // On the session's model: the proxy's, when it has one (the host's own requests go there on that model too).
@@ -312,7 +321,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                   const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
                   await io.models.afterRequest({ input: 10, output: 5, usd: action.sideDuring.usd }, side || undefined);
                 }
-                await runCall(name, args, callId, signal, resultWhenOf(action));
+                await runCall(name, args, callId, signal);
               }
               if (bookAfter) await book();
             }

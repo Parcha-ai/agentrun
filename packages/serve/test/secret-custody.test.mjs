@@ -13,7 +13,10 @@ import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
-import { BOX_KEYS } from "../dist/boxes.js";
+import { BOX_KEYS } from "../dist/place-offers.js";
+import { toolKeysOverStore } from "../dist/tool-keys-store.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { agent, answerFlow, client, FAUX, flowAgent, follow, linkHarnesses, printed, responsesEndpoint, runDir, scratch } from "./support.mjs";
@@ -388,7 +391,7 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   assert.deepEqual(await held(agentic({ harness: "claude-agent" }), OPENROUTER), ["OPENROUTER_API_KEY"], "claude-agent on OpenRouter's key alone: OpenRouter's");
   assert.deepEqual(await held(agentic({ harness: "codex" }), OPENROUTER), ["OPENROUTER_API_KEY"], "codex on OpenRouter's key alone: OpenRouter's");
   assert.deepEqual(await held(agentic({ harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5" }), { ...OPENROUTER, ANTHROPIC_API_KEY: "set" }), ["OPENROUTER_API_KEY"], "a model named on OpenRouter, beside Anthropic's key: OpenRouter's");
-  assert.deepEqual(await held(agentic({ harness: "codex", model: "openrouter/openai/gpt-6-sol" }), { ...OPENROUTER, OPENAI_API_KEY: "set" }), ["OPENROUTER_API_KEY"], "codex on a model named on OpenRouter, beside OpenAI's key: OpenRouter's");
+  assert.deepEqual(await held(agentic({ harness: "codex", model: "openrouter/openai/gpt-6.1-sol" }), { ...OPENROUTER, OPENAI_API_KEY: "set" }), ["OPENROUTER_API_KEY"], "codex on a model named on OpenRouter, beside OpenAI's key: OpenRouter's");
   assert.deepEqual(await held(agentic(), OPENROUTER), ["OPENROUTER_API_KEY"], "a pi run on the default OpenRouter's key gives");
   // A workflow: the host's model of each tier its model nodes and `llm` calls use.
   const flow = answerFlow();

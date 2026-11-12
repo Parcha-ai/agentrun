@@ -1,15 +1,14 @@
 // `metadata` is the host's field on every node: any JSON object, checked only for being an object,
 // carried verbatim through desugaring, dry runs, runs and the author's candidate loop, included in
 // the document digest, and never read. These tests pin that contract against the shared corpus.
+import { candidatePolicyErrors } from '../dist/author.js';
+import { WORKFLOW_NODE_KINDS } from '../dist/vocabulary.js';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  validateWorkflow, runWorkflow, dryRunWorkflow, desugarWorkflow, workflowSha256, applyHostOutputTypes, authorWorkflow,
-  renderAuthorContract, renderAuthorHostAddendum, candidatePolicyErrors, WORKFLOW_NODE_KINDS, HOST_NODE_FIELDS, NODE_FIELDS,
-} from "../dist/index.js";
+import { validateWorkflow, runWorkflow, dryRunWorkflow, desugarWorkflow, workflowSha256, applyHostOutputTypes, authorWorkflow, renderAuthorContract, renderAuthorHostAddendum, HOST_NODE_FIELDS, NODE_FIELDS } from "../dist/index.js";
 import { loadCases } from "./lean-conformance-harness.mjs";
 
 const MARK = (path) => ({ preset: "default", origin: path, nested: { list: [1, "two", null, { deep: true }], n: 3.5 }, empty: {} });

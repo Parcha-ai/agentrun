@@ -110,6 +110,11 @@ export type BrowserExtensionHandle = {
   close(): Promise<void>;
   /** How many conversations the extension still holds in-memory state for: a repeat guard, an idle timer or a queued call. */
   retained(): number;
+  /** Keeps session `tag` from its idle release while the run waits for its person's answer (the host bounds that wait):
+   *  an idle window that ends meanwhile releases nothing. The returned function lets it go, once; when the last keep on
+   *  the tag goes, its idle window starts again from then. Releases for any other reason (the tool, a close, its end)
+   *  are not held. */
+  keepForPerson(tag: string): () => void;
 };
 
 export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./durable/store.js";
@@ -170,6 +175,8 @@ type Custody<D extends PageDriver> = Readers<D> & {
   idle: IdleTracker<ConversationId>;
   /** The poll of each session an idle release kept for a person (#1098), by tag: stopped when the session is released. */
   leaving: Map<string, () => void>;
+  /** Sessions kept from an idle release while the run waits for its person's answer (keepForPerson), by tag: how many keeps. */
+  waiting: Map<string, number>;
   guards: Map<number, RepeatGuard>;
   /** By tag; an entry ends when the store confirms the session released. */
   owned: Map<string, Owned>;
@@ -357,7 +364,6 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const spec = sessionSpec(config, tag, overrides);
   const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
   if (unsupported) throw new BrowserFailureError(unsupported);
-  // The vault may name a context or profile for the provider; the record stored below is made from the spec WITHOUT it, so no context id reaches the store.
   const plan = await planRestore(c.vault, config.vault, provider, spec);
   const record = newSessionRecord({ plane: scope.plane, tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
   const row = rowOf(scope.cid, record);
@@ -402,8 +408,6 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const live: SessionRecord = { ...record, state: "live", resourceId: ref.id };
   try {
     const driver = await connect(c, scope, provider, ref, plan.afterAttach, plan.vaulted, plan.holdBack);
-    // A context made for this session is given to the vault now, so a restart that loses the provider's memory of it still finds it.
-    if (plan.fresh) await c.held.capture(ref.tag);
     await emit(c, scope.cid, config.label, live, "launched", provider);
     return { record: live, driver };
   } catch (error) { throw failure(error, scope, c.redact); }
@@ -735,6 +739,9 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
       const state = await tx.doc(c.Sessions, conversation.id);
       const record = still() ? currentRecord(state, PLANE) : null;
       if (!record || !releasable(record, reason)) return [];
+      // A run waiting for its person's answer keeps the session from an idle release; letting the keep go starts the idle
+      // window again (keepForPerson).
+      if (reason === "idle" && c.waiting.has(record.tag)) return [];
       // A person driving or watching the session through the live view keeps it from an idle release (#1098); it is
       // released one idle window after they leave.
       kept.gate = reason === "idle" ? personOn(c.options.gates ?? drivingGates, record.tag) : null;
@@ -888,7 +895,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   });
 
   const c: Custody<D> = {
-    ...readers, name, Sessions, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), guards: new Map(), owned, failed: false, stops: new Map(), ending: null, opened: null, incarnation: randomUUID(),
+    ...readers, name, Sessions, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, waiting: new Map(), serial: keyedSerializer(), guards: new Map(), owned, failed: false, stops: new Map(), ending: null, opened: null, incarnation: randomUUID(),
     idle: idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(c, cid, fired, idleMs).catch(() => undefined) }),
   };
   // Every browser tool is a model call on its session's driving gate: refused while a person drives the live view, and the viewer's input is held while it runs. The host's own
@@ -936,5 +943,19 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       c.owned.clear();
     },
     retained: () => new Set<number>([...c.guards.keys(), ...c.idle.keys(), ...c.serial.keys().map((key) => Number(key.slice(0, key.indexOf(":"))))]).size,
+    keepForPerson(tag) {
+      c.waiting.set(tag, (c.waiting.get(tag) ?? 0) + 1);
+      let kept = true;
+      return () => {
+        if (!kept) return;
+        kept = false;
+        const left = (c.waiting.get(tag) ?? 1) - 1;
+        if (left > 0) { c.waiting.set(tag, left); return; }
+        c.waiting.delete(tag);
+        // The idle window starts again from now, for a session still owned here.
+        const cid = c.owned.get(tag)?.cid;
+        if (cid !== undefined && c.idle.keys().includes(cid)) c.idle.activity(cid, 0);
+      };
+    },
   };
 }

@@ -79,10 +79,6 @@ export function script(spec, session = {}) {
   // run's learned_workflow and a write, run in turn, then a closing answer.
   const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);
   if (beside) return [{ calls: [{ call: "learned_workflow", args: { name: beside[1], input: { question: beside[2] } } }, { call: "write", args: { path: "note.md", content: "noted" } }], usd: 0.001 }, { say: "Ran the learned workflow and wrote note.md.", usd: 0.001 }];
-  // "Use the learned workflow <name> on <question>, its result held until <file>.": the run's learned_workflow, whose
-  // result the harness tells only once <file> exists (as a CLI still recording it would); then an answer; then another.
-  const heldResult = /Use the learned workflow (\S+) on (.+?), its result held until (\S+)\./.exec(text);
-  if (heldResult) return [{ call: "learned_workflow", args: { name: heldResult[1], input: { question: heldResult[2] } }, usd: 0.001, resultWhen: heldResult[3] }, { say: "Answered after the approval.", usd: 0.001 }, { say: "Answered twice.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>.": the run's learned_workflow, then a closing answer.
   const learned = /Use the learned workflow (\S+) on (.+?)\./.exec(text);
   if (learned) return [{ call: "learned_workflow", args: { name: learned[1], input: { question: learned[2] } }, usd: 0.001 }, { say: "Ran the learned workflow.", usd: 0.001 }];
@@ -95,6 +91,8 @@ export function script(spec, session = {}) {
   }
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   // One answer that asks for two tools, as a model writing two files in one turn does, then the closing answer.
+  // A CLI whose model requests go past the session's model proxy (a route the booking never sees): it answers, booking none.
+  if (/Answer past the proxy\./.test(text)) return [{ unbooked: "Answered past the proxy." }];
   if (/Write two files in one answer\./.test(text)) return [{ calls: [{ call: "write", args: { path: "a.md", content: "alpha" } }, { call: "write", args: { path: "b.md", content: "beta" } }], usd: 0.001 }, { say: "Wrote a.md and b.md.", usd: 0.002 }];
   // Codex's shape: a request that only says something (its tool call is the harness's own, which the host never
   // sees), then the host's tool, then the answer.

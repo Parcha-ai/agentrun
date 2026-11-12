@@ -280,6 +280,12 @@ export async function triggerStore(of) {
 /** A server for test `t`, stopped after it, before its scratch directory goes. On the real models (`faux: undefined`) its
  *  data holds Claude Code and Codex as the first-use installs put them (linkHarnesses; `harnesses: { cli, codex }` to vary
  *  them); `harnesses` says so for any server, `false` for none. */
+/** The in-process runner's model retry (AdapterSpecDeps.modelRetry): MODEL_RETRY's attempts 1ms apart, and no pi-ai retry
+ *  inside an attempt, so a run whose provider fails on purpose (a 5xx, a refused connection) fails in moments, not after
+ *  MODEL_RETRY's two and a half minutes. adapter-pi-retry-booking.test.mjs tests the retry itself. A test passes
+ *  `modelRetry` for its own. */
+const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1, maxAgentDelayMs: 1 }, stream: { maxRetries: 0 } };
+
 /** Starts an in-process runner beside a test's server on the same data directory, with its own store handle (role runner),
  *  so a run the server starts is claimed and run as the CLI start's server-and-runner runs it. Its loop is the runner's
  *  dispatch (dispatch.ts): each claim's launch picks its harness loop — pi on the kernel's adapter loop with the run's pi
@@ -291,7 +297,7 @@ export async function triggerStore(of) {
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -338,7 +344,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
   let runner;
   let beats = 0;
   try {
-    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
+    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
@@ -348,7 +354,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubMcpOri
       memory: runnerMemory(store),
       onBeat: () => void beats++,
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
-      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. The
+      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its
+      // GitHub site (githubWeb, the runner's alone): where a run's pull request is checked out from (pr-checkout.ts). The
       // locks of a test's fake registry, the server's harnessLocks seam: a claim's first-use install takes the same.
       createLoop: (deps) => {
         const loop = createLoop(deps);
@@ -688,6 +695,11 @@ export async function whenFree(send) {
     await new Promise((resolve) => setTimeout(resolve, error.retry_after_ms ?? 500));
   }
 }
+
+/** `api` (a serve's client), each call sent again through whenFree while the store answers home_busy: what a test uses to
+ *  make an agent or start a run, so the store's contention with another write (a runner's commit, a CLI's install) is
+ *  never its red. A test that means to read home_busy itself calls `api`, never this. */
+export const retried = (api) => (...args) => whenFree(() => api(...args));
 
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
  *  once its page is final, any other status on the first page that leaves no change behind it. */

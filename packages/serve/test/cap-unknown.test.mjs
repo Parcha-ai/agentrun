@@ -14,6 +14,8 @@ import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, runMetricsOf, timelineOf, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { CAP_REFUSED_FIELD, capBefore, capModels, capToolSpend, HELD_FIELD, HELD_USD, metersIn, spentIn, streamedBytes } from "../dist/cap.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { runEntries } from "../dist/store-reads/journal.js";
 import { agent, follow, letGo, runDir, serve } from "./support.mjs";
 
 const UNKNOWN = /^spend_cap_reached: .*spent is unknown.*out of budget/;
@@ -344,7 +346,7 @@ test("after a crash, the cut request's held worst case is spent: the next reques
     const next = (await capModels(models, cap, spent)).streamSimple(outputOnly, context);
     assert.equal(sent.length, sends, `a cap of $${cap}`);
     if (sends) sent[0].end({ total: 0 });
-    else assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+    else assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
     await next.result();
   }
 });
@@ -358,7 +360,7 @@ test("the spend a reopened run reads is the full amount, never the timeline's to
   const { models, sent } = fakeModels();
   const next = (await capModels(models, 0.001 + 0.0000002, spent)).streamSimple(outputOnly, context);
   assert.equal(sent.length, 0, "not sent: $0.0000004 spent and $0.001 held pass the cap");
-  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0010002 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0010002 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });
 
 test("pi under a cap: a request stopped before its end whose stream and the 1,024-token allowance pass its limit counts at the worst case the cap held for it, which it hands its marks; the next goes while that leaves room, and is refused once it does not", async () => {
@@ -378,7 +380,7 @@ test("pi under a cap: a request stopped before its end whose stream and the 1,02
   assert.deepEqual(options, [0.001, 0.001], "each request carries what the cap held for it to its marks");
   const third = capped.streamSimple(outputOnly, context);
   assert.equal(sent.length, 2, "with $0.002 counted, $0.001 more passes $0.0025");
-  assert.match((await third.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0025 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+  assert.match((await third.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0025 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });
 
 /** Requests the test ends itself, each recorded with the options it went with: `end(stopReason, text, total)` streams
@@ -654,7 +656,7 @@ test("pi under a cap: a summary that fails with no answer counts at the worst ca
   await settle();
   const next = capped.streamSimple(outputOnly, context);
   assert.equal(sent.length, 0, "$0.001 counted and $0.001 more passes $0.0015");
-  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });
 
 test("pi under a cap: a refused request's own start mark is written before its error ends the request, and a mark that fails still ends it", async () => {
@@ -742,6 +744,22 @@ const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const finished = async (api, runId) => (await follow(api, runId, ["completed", "failed", "cancelled"]), view(api, runId));
 /** The same, or the run paused at its cap (input_required, pending budget). */
 const pausedOrEnded = async (api, runId) => (await follow(api, runId, ["input_required", "completed", "failed", "cancelled"]), view(api, runId));
+/** The run once it has paused or ended past a pause of kind `past` it was answered at: a run just answered still reads
+ *  that pause until its runner takes the answer. */
+async function pausedPast(api, runId, past) {
+  for (const end = Date.now() + 60_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    const run = await view(api, runId);
+    if (["input_required", "completed", "failed", "cancelled"].includes(run.status) && run.pending?.kind !== past) return run;
+    assert.ok(Date.now() < end, `the run went on past its ${past}: ${JSON.stringify(run)}`);
+  }
+}
+/** Once run `runId`'s claim is let go (its row names no runner), as a paused run's is at its park. */
+async function releasedOf(store, runId) {
+  for (let i = 0; (await store.runs.get(runId))?.runner !== null; i++) {
+    assert.ok(i < 300, "the run's claim was let go");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 const PAUSED = ["input_required", "waiting", null, "budget"];
 const pausedState = (run) => [run.status, run.state, run.error, run.pending?.kind];
 /** A run under a cap of `cap` whose turn is stopped while its first request is in flight, once it reads stopped. */
@@ -808,9 +826,8 @@ test.skip("QA 7.4: a pi run under a $1 cap, stopped while its clamped request is
   assert.ok(Math.abs(spent - (0.1024 + run.cost.so_far_usd)) < 1e-6, `the store says the stop's $0.1024 and the follow-up's cost: $${spent}, so far $${run.cost.so_far_usd}`);
 });
 
-// SKIP (follow-up #2080): a capped pi run refused for room pauses on the person's question first, not at its cap, on the runner.
-test.skip("a capped pi run refused for room with no stop pauses at its cap: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
-  const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
+test("a capped pi run refused for room with no stop pauses at its cap: its cost stays the known total it spent, and the refused request counts as no request", async (t) => {
+  const { api, store } = await serve(t, { faux: OUTPUT_PRICED });
   // A probe: one paid request (asking the person), to learn what one costs.
   assert.equal((await api("POST", "/agents", agent("probe", { tools: ["ask_person"] }))).status, 201);
   const probe = (await api("POST", "/agents/probe/runs", { input: { content: "Pick a region." } })).body.run_id;
@@ -823,17 +840,15 @@ test.skip("a capped pi run refused for room with no stop pauses at its cap: its 
   const runId = (await api("POST", "/agents/plain/runs", { input: { content: "Pick a region." }, max_cost_usd: (1_024 * 100) / 1e6 + first / 2 })).body.run_id;
   await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "eu" })).body.mode, "answer");
-  const run = await pausedOrEnded(api, runId);
+  // Its next pause, past the question it answered: the answer is taken once the run reads as no longer asking.
+  const run = await pausedPast(api, runId, "question");
   assert.deepEqual(pausedState(run), PAUSED, JSON.stringify(run));
   assert.equal(run.cost.usd, first, "the known total, never null");
-  // Paused, its process is let go: its store is read once that process has exited (it marks itself released before
-  // it closes the store).
-  await letGo(data, runId);
-  const db = new DatabaseSync(storeFileOf(data, runId), { readOnly: true });
-  const entries = db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(row.record));
-  db.close();
-  const isRefusalMark = (entry) => entry.kind === REQUEST_STARTED && entry.data?.capRefused === true;
-  assert.equal(entries.filter(isRefusalMark).length, 1, "the refusal has its own start mark");
+  // Its journal, from the one store, once its claim is let go at the pause.
+  await releasedOf(store, runId);
+  const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+  // On the runner the model proxy refuses the request before it is sent, and the run's pause at its cap records it: one.
+  assert.equal(entries.filter((entry) => entry.kind === "agentrun.budget").length, 1, "the refusal is the run's one pause at its cap");
   const asWritten = meterOf(entries);
   assert.deepEqual([asWritten.usage.usd, asWritten.usage.requests, asWritten.requests], [first, 1, 1], "the ask alone: the refused request was never sent");
 });

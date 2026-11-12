@@ -14,8 +14,7 @@ import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
 import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
-import type { ImageState } from "./box-image.js";
-import { banner, boxImageLine } from "./print.js";
+import { banner } from "./print.js";
 import type { LearningMode } from "./learning.js";
 import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
 import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
@@ -80,8 +79,9 @@ published port, or a proxy's URL), and the link printed uses it; with none, Rend
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
-timeline, messages, stop, cancel, kill and cap raise, its files and uploads, capabilities, health and usage. Every other
-address (the page, sign-in, setup, settings, MCP, triggers and their hooks, agents) is a 404, and there are no accounts.
+timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
+and usage. Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
+is a 404, and there are no accounts.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
@@ -321,18 +321,6 @@ try {
   process.exit(2);
 }
 const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
-// The Docker box image's first build said in words, as it starts and as it ends (print.ts boxImageLine); a line told
-// before the banner is printed waits for it.
-let imageSaid = false;
-let bannered = false;
-const early: string[] = [];
-const onBoxImage = (state: ImageState) => {
-  const line = boxImageLine(state, imageSaid);
-  if (line === undefined) return;
-  imageSaid = true;
-  if (bannered) console.log(line);
-  else early.push(line);
-};
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
@@ -340,7 +328,6 @@ let serveOptions: ServeOptions;
 const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 try {
   serve = await startServe(serveOptions = {
-    onBoxImage,
     // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
     // platform starts it again, rather than answer 503 for as long as it runs.
     onStoreLost: (error) => {
@@ -389,8 +376,6 @@ for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token:
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
-bannered = true;
-for (const line of early.splice(0)) console.log(line);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
 // API-only: there is no console, so nothing to open.

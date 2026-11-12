@@ -15,7 +15,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type ConversationId, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, type ConversationRetryPolicy, type ConversationStreamOptions, createRegistry, defineDoc, type EntryId, Harness, LiveDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
@@ -185,6 +185,8 @@ type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
  *  hold can no longer stand (the cap refused more of the person's time, or what it kept is gone), and the run parks. */
 export interface PersonWait {
   readonly lapsed: Promise<string>;
+  /** The run parked on this hold's lapse (not a lapse the answer's placement overrode): the host records why it let go. */
+  confirmed?(): void;
   drop(): void;
 }
 
@@ -265,10 +267,24 @@ export interface RunLedger {
   flush(): Promise<void>;
 }
 
+/** pi's retry of a model request that failed in a way it retries (a provider's 429, overload or 5xx, a dropped connection,
+ *  a stream cut mid-answer): up to 8 more attempts, 2s doubling to at most 30s apart (about two and a half minutes in all),
+ *  so a provider's capacity outage of a minute or two is waited out, not the run's end. Each wait is the harness's own
+ *  durable sleep; a subagent's conversation runs on the same settings. */
+export const MODEL_RETRY: ConversationRetryPolicy = { enabled: true, maxRetries: 8, baseDelayMs: 2_000, maxAgentDelayMs: 30_000 };
+/** pi-ai's retries inside one attempt, of a request the provider refused before any output (a 429 or a 5xx, through the
+ *  session's proxy, which passes on its retry-after): after the wait the provider asked for, up to 30s, else its own short
+ *  backoff. Each is a new request through the proxy, judged by the cap and booked as any other: a refusal books nothing. */
+export const MODEL_STREAM: ConversationStreamOptions = { maxRetries: 2, maxRetryDelayMs: 30_000 };
+
 export interface AdapterLoopOptions {
   /** How many times pi restarts a call's task cut off without progress before it ends it (restart_limit); finite.
    *  Default DEFAULT_RESTART_LIMIT. */
   readonly restartLimit?: number;
+  /** pi's retry of a model request that failed retryably. Default MODEL_RETRY. */
+  readonly retry?: ConversationRetryPolicy;
+  /** pi-ai's retries inside one attempt. Default MODEL_STREAM. */
+  readonly stream?: ConversationStreamOptions;
   /** The gate's clock (epoch ms): when an ask was asked and answered, and when a wait in the claim on the person's answer
    *  started. Default Date.now. */
   readonly now?: () => number;
@@ -611,6 +627,8 @@ export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => Adapt
 
 function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions, deps: LoopDeps): Loop {
   const restartLimit = options.restartLimit ?? DEFAULT_RESTART_LIMIT;
+  const retry = options.retry ?? MODEL_RETRY;
+  const stream = options.stream ?? MODEL_STREAM;
   const now = options.now ?? Date.now;
   /** The gate's clock as main's card says a time: ISO. */
   const isoNow = () => new Date(now()).toISOString();
@@ -1044,7 +1062,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: { restartLimit }, onReport: () => {},
+          models: () => models, registry, settings: { restartLimit, retry, stream }, onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {
@@ -2140,6 +2158,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
+        if (value === "lapsed") for (const hold of waitHolds) hold.confirmed?.();
         endWait(mine);
         resolve(value);
       };

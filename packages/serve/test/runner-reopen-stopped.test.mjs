@@ -24,7 +24,7 @@ const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore, momentOverStore } = await import("../dist/store-view.js");
 const { message } = await import("../dist/runs-over-store.js");
 const { emptyState, STOPPED_BY_YOU, translate } = await import("../dist/live/translate.js");
-const { timelineReducer } = await import("@parcha/pi-durable-agent/timeline");
+const { timelineReducer } = await import("../dist/timeline/index.js");
 const { computerHold } = await import("../dist/workspace/computer-hold.js");
 after(closeOpenSessions);
 

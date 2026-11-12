@@ -730,6 +730,12 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet, in one statement, so of two processes that race the first
    *  wins; the value saved under it after (this one, or the one there before). */
   putIfAbsent(key: string, value: unknown): Promise<unknown>;
+  /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
+   *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
+   *  when the row changed since or is gone. */
+  replaceIf(key: string, was: unknown, value: unknown): Promise<boolean>;
+  /** The key's row goes only while it still holds `was`, in one statement: true when it went. */
+  removeIf(key: string, was: unknown): Promise<boolean>;
   /** The key's row goes; a key with no row is left as it is. */
   remove(key: string): Promise<void>;
   /** Every setting, by key. */
@@ -796,6 +802,10 @@ export interface ComputerLedger {
   list(provider: string): Promise<ComputerLedgerRow[]>;
   /** The session's row goes. */
   remove(provider: string, sessionId: string): Promise<void>;
+  /** Replaces the session's `labels` and `detail` only while its row still holds `was`'s, in one statement (a
+   *  compare-and-set, so two writers that read one row never both write it): true when it was replaced; false, with
+   *  nothing written, when the row changed since or is gone. */
+  swap(provider: string, sessionId: string, was: { readonly labels: Readonly<Record<string, string>>; readonly detail: Readonly<Record<string, unknown>> }, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -1165,15 +1175,30 @@ export type ConstraintRule = "check" | "unique" | "foreign_key" | "not_null";
 
 /** A row the store's constraints refuse (a duplicate id or name, a revision of an unknown agent, a bad kind). When the
  *  database said which rule refused it, `rule`; for a duplicate, `unique`: the table and the columns whose values were
- *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. */
+ *  taken already (a primary key's or a UNIQUE's), so a caller tells "the name is taken" from any other refusal. `index`:
+ *  the unique index (or constraint) the database named, when it named one: an index on an expression (one answer per
+ *  approval, schema.ts ONE_ANSWER_INDEX) has no plain columns to name, only its name. */
 export class StoreConstraint extends Error {
   readonly rule?: ConstraintRule;
   readonly unique?: { readonly table: string; readonly columns: readonly string[] };
-  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] } } = {}) {
+  readonly index?: string;
+  constructor(message: string, details: { rule?: ConstraintRule; unique?: { table: string; columns: readonly string[] }; index?: string } = {}) {
     super(message);
     this.name = "StoreConstraint";
     if (details.rule) this.rule = details.rule;
     if (details.unique) this.unique = details.unique;
+    if (details.index) this.index = details.index;
+  }
+}
+
+/** An approve or deny command refused because its approval is answered already: an unrefused answer naming it was
+ *  written first (the one-answer index, schema.ts ONE_ANSWER_INDEX), so this one lost. Both stores raise it from that
+ *  index's unique violation alone, at the command's insert; any other refusal stays a plain StoreConstraint. Its caller
+ *  reads the answer that won: approve's 409 already_answered, or nothing to do. */
+export class AnswerTaken extends StoreConstraint {
+  constructor(message: string, index: string) {
+    super(message, { rule: "unique", index });
+    this.name = "AnswerTaken";
   }
 }
 

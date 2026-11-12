@@ -33,7 +33,7 @@ const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-s
 const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [STAND_IN], env: { FAKE_CODEX_MODEL: "remote" } }) };
 /** The default models on OpenRouter alone, as capabilities name them and as each is sent. */
 const CLAUDE_OR_MODEL = "anthropic/claude-sonnet-5.5";
-const CODEX_OR_MODEL = "openai/gpt-6-sol";
+const CODEX_OR_MODEL = "openai/gpt-6.1-sol";
 /** The id claude-agent's adapter puts on the wire for CLAUDE_OR_MODEL: Anthropic's native one. */
 const CLAUDE_OR_WIRE = "claude-sonnet-5-5";
 /** Every answer's usage: 1000 tokens in, 100 out, none cached. */
@@ -211,7 +211,7 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
 }
 
 /** pi's default on OpenRouter alone (capabilities' `provider/model-id`): undefined until it is set. */
-const PI_OR_DEFAULT = "openrouter/openai/gpt-6-sol";
+const PI_OR_DEFAULT = "openrouter/openai/gpt-6.1-sol";
 
 test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);

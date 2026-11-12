@@ -1,3 +1,4 @@
+import { WorkflowInputInvalidError } from '../dist/workflow.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -5,7 +6,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dryRunWorkflow, runWorkflow, WorkflowInputInvalidError } from '../dist/index.js';
+import { dryRunWorkflow, runWorkflow } from '../dist/index.js';
 import { supportTriage } from '../dist/demo.js';
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));

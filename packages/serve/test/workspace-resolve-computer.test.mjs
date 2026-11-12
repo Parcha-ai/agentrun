@@ -42,8 +42,10 @@ function claim(root, saved = SAVED) {
       launched.push([entry.id, spec]);
       if (spec.kind === "browser") return { id: "browserbase", groups: ["cdp"], browser: { provider: "browserbase", maxLifetimeS: 600, open: async () => "b1", find: async () => [], url: async () => "wss://connect.browserbase.test/b1?signingKey=SECRET", close: async () => {} }, release: async () => void launched.push(["released", "b1"]) };
       const computer = fakeComputer(root);
-      const groups = entry.capabilities.find((one) => (spec.kind === "phone" ? one.kind === "android" : spec.kind === "desktop" ? one.kind === "desktop" : one.kind === "linux")).groups;
-      return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, release: async () => void launched.push(["released", computer.id]) };
+      const kind = spec.kind === "phone" ? "android" : spec.kind === "desktop" ? "desktop" : "linux";
+      const groups = entry.capabilities.find((one) => one.kind === kind).groups;
+      const hello = { protocol: "0.2", version: "0", os: kind === "android" ? "android" : "linux", kind, arch: "amd64", groups };
+      return { id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups, hello, release: async () => void launched.push(["released", computer.id]) };
     },
   };
 }
@@ -133,13 +135,15 @@ test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's fol
   assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "V100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
     refused: `A Daytona sandbox can't have this agent's GPUs: gpu.type "V100" is not one this provider offers: H100. ${pick}`,
   });
-  // daytona-gpu takes no mount, and Mode 2's folder is an Archil mount: refused in words, as Modal's is.
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Daytona sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
-  });
-  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), {
-    refused: `A Modal sandbox can't have this agent's GPUs: a GPU computer here takes no archil mount: it is not proven on this provider's GPU computers yet; ask for a GPU computer without a mount, or a mount without a GPU. ${pick}`,
-  });
+  // No GPU computer mounts Mode 2's Archil folder yet (no FUSE): refused in words that say why and what to use instead.
+  // Each provider's own reason, from its descriptor.
+  const noFolder = (label) =>
+    ({
+      Daytona: "A Daytona GPU computer can't mount this run's folder: Daytona's GPU runtime gives it no /dev/fuse. Use a GPU computer from the library, or this sandbox without a GPU.",
+      Modal: "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.",
+    })[label];
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Daytona") });
+  assert.deepEqual(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS), { refused: noFolder("Modal") });
   assert.match((await resolve({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }, 1, scratch(), SAVED, KINDS)).refused, /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
   const root = scratch();
   const side = claim(root);
@@ -178,6 +182,16 @@ test("start: a computer that cannot be had fails as computer_unavailable, in the
   const side = { keysOf: async () => SAVED.e2b, launch: async () => { throw new Error("E2B answered 503: no capacity"); } };
   const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
   await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B answered 503: no capacity");
+});
+
+test("start: a desktop launched with no hello is refused and released: its ports are filled from what it said at connect", async () => {
+  const root = scratch();
+  const computer = fakeComputer(root);
+  const released = [];
+  const side = { keysOf: async () => SAVED.e2b, launch: async () => ({ id: computer.id, client: computer.client, readBack: () => computer.readBack(), groups: ["screen"], release: async () => void released.push(computer.id) }) };
+  const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
+  await assert.rejects(resolved.start({ workspace: localWorkspace(root), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: it gave no hello");
+  assert.deepEqual(released, [computer.id]);
 });
 
 test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {

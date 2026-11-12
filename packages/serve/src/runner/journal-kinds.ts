@@ -78,6 +78,11 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** A workflow run's model node's execution, as the runner kept it before running it (workflow-spec.ts onModelNode):
+   *  `{ path, tier?, model }`, its execution path, the tier it asked for (absent for none) and the model id the run's route
+   *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
+   *  call nor a message. */
+  nodeModel: "agentrun.node.model",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
@@ -292,8 +297,9 @@ export interface EndData {
   /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
    *  (a person's stop: the turn is over, not the run) or 'cancelled' (stopEnd). */
   readonly outcome?: "completed" | "escalated" | "stopped" | "cancelled";
-  /** What the run cost, as its end knows it. */
-  readonly costUsd?: number;
+  /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
+   *  follow-up's end). Absent: the stored cost is left as it is. */
+  readonly costUsd?: number | null;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it
