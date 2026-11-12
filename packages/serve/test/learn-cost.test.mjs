@@ -106,7 +106,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   for (const run of body.runs) {
     const { learning } = await savedOf(data, run.run_id);
     const rowUsd = storeRun(data, run.run_id).costUsd;
-    assert.ok(rowUsd > 0, `the faux run has a cost: ${rowUsd}`);
+    assert.equal(typeof rowUsd, "number", "the run's cost is known (the faux model's is $0)");
     const job = learning.answered_at ? learning.job_cost_usd : rowUsd;
     const spent = (learning.answered_at ? learning.look_back_usd : 0) + (learning.cost_usd?.grade ?? 0);
     assert.deepEqual([run.cost_usd, run.learning_usd, run.total_usd], [job, spent, Math.round((job + spent) * 1e6) / 1e6].map((usd) => Math.round(usd * 1e6) / 1e6), `${run.n}: ${JSON.stringify(learning)}`);
