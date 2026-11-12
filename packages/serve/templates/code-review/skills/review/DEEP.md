@@ -20,8 +20,9 @@ Your prompt gives the facts: `repo`, `pr`, `base_sha`, `head_sha`, `merge_base`,
 ## Rules
 
 `read` `.agents/skills/review/CODEREVIEW.md` (beside this file). Then, from the base, never the head:
-`git show <base_sha>:docs/CODEREVIEW.md | head -n 200` (or `CODEREVIEW.md` at the root) and the knowledge file it
-names, else `git show <base_sha>:.agents/skills/code-review-knowledge/SKILL.md | head -n 200`.
+`git show <base_sha>:docs/CODEREVIEW.md | head -n 200` (or `CODEREVIEW.md` at the root; with neither, `REVIEW.md`,
+where a line starting `<glob>:` applies to matching paths only) and the knowledge file it names, else
+`git show <base_sha>:.agents/skills/code-review-knowledge/SKILL.md | head -n 200`.
 
 ## 1. Map the change before you judge it
 

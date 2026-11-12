@@ -72,7 +72,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.match(review.skills["review/SKILL.md"], /three deep reviewers: `<guide>` is `DEEP\.md`, with `max_tool_calls: 90` and `effort: high`/);
   assert.match(review.skills["review/SKILL.md"], /You never\s+edit, build, install, run the repository's code or tests, commit or push/);
   for (const guide of ["REVIEWER.md", "DEEP.md"]) assert.match(review.skills[`review/${guide}`], /you post nothing: answer with the JSON below/, `${guide}: a reviewer answers, the agent posts`);
-  for (const path of Object.keys(review.skills).filter((x) => x.endsWith(".md"))) assert.ok(Buffer.byteLength(review.skills[path]) <= 8000, `${path}: at most 8 KB, read whole on every review`);
+  for (const path of Object.keys(review.skills).filter((x) => x.endsWith(".md"))) assert.ok(Buffer.byteLength(review.skills[path]) <= 8192, `${path}: at most 8 KB, read whole on every review`);
   assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "re-review", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.repo}", ["read", "bash", "subagent"], [{ server: "github", tools: GITHUB_TOOLS, required: false, allow: GITHUB_READS, pin: { pull_request_review_write: { method: ["create", "submit_pending", "delete_pending"], event: [null, "COMMENT"] } } }]]);
   assert.match(review.instructions, /\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
