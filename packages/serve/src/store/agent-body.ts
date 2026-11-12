@@ -1,4 +1,4 @@
-// The agent body validator (the P4 fold of pi-durable-agent's agent-store.ts bodyOf, with kinds.ts's canonical JSON): what
+// The agent body validator (with canonical JSON): what
 // a revision's stored body may be, checked before anything is written, so a refusal makes no agent and no revision. It is
 // the one check the control plane runs over a revision's body, kept with the store (A) it writes into. The body keeps a
 // skill path to its text's SHA-256 (two revisions with the same files are one body); the texts ride beside it on the

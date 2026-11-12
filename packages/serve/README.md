@@ -284,15 +284,16 @@ when it does and 1 when it does not, and 2 when no name is given. Name a runner 
 
 ## Sandbox
 
-A sandbox agent's `bash` runs in a box, a machine apart from this server: today a Docker container made for each run,
-which binds the run's `work/` and nothing else, or a Daytona sandbox, which gets a copy of it. Neither holds a key. A
-Docker box on Linux reaches the package registries and GitHub through a proxy, and nothing else; a Daytona box reaches
-them through Daytona's domain list. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
+with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
+runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
+set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
+and GitHub through a proxy, and nothing else; a Daytona or Modal box is made with no network when a host list is set, and
+capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which [boxes](#boxes) it has; [a run in a Docker
-box](#a-run-in-a-docker-box) is what the container gets, and [a run in a Daytona box](#a-run-in-a-daytona-box) what a
-Daytona sandbox gets;
-[the box's image](#the-boxs-image) is what it starts from. [Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
+box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
+[Sandbox in 60 seconds](#sandbox-in-60-seconds) is all of it
 end to end. The [published image](#in-the-published-image) hosts Docker boxes through the host's Docker socket.
 
 ### Place
@@ -540,90 +541,6 @@ where `bash`'s setting came from:
 - The run's end ends them: before its box is copied back and destroyed, the server sends each running group `TERM`,
   then `KILL` after 3 s, and marks each with `ended` beside its log, which stays in the run's files; the server's log says
   `background_ended` with how many. A follow-up's box starts with none running, and its ids go on from the last.
-
-### A run in a Daytona box
-
-With `AGENTRUN_BOXES=daytona` and `DAYTONA_API_KEY`, a run whose place is `{"mode": "sandbox", "box": "daytona"}` gets one
-Daytona sandbox, made on its first `read`, `write`, `edit` or `bash` call, with the same tools, path rules, environment,
-`bash` and labels as a Docker box. What differs (its `read`, `write` and `edit` run in the sandbox, as its `bash` does,
-since nothing binds `work/` there):
-
-- The key is this server's alone. The server makes, copies to and from, and destroys the sandbox itself. The run's
-  process holds no key: it reaches its sandbox only through the server's box relay, on loopback, which takes a call for
-  a run only with that run's own door token (`DIR/disk/agents/<agent>/runs/<id>/door-token`, handed to that run's process alone) and adds
-  the key to the calls a run's tools make of their own sandbox (a read of it, and its toolbox's programs and files). It
-  refuses every other call (a create, a listing, a stop, a delete, another run's sandbox or token, any other host), and
-  it never follows a redirect, nor does the server's own Daytona client: a redirect would carry the key.
-- It reaches the hosts `AGENTRUN_BOX_ALLOW` names, and no other: Daytona's domain list (`domainAllowList`), which
-  Daytona's egress proxy enforces. Unset or empty, the list is the package registries and GitHub: `pypi.org`,
-  `files.pythonhosted.org`, `registry.npmjs.org`, `registry.yarnpkg.com`, `github.com` and `codeload.github.com`. A
-  comma list of hosts (a `*.` wildcard allowed, at most 100) replaces it, so to add one, copy this list and extend it.
-  `AGENTRUN_BOX_ALLOW=none` blocks its network (`networkBlockAll`), as before the list. `*`, an IP address, a CIDR, a
-  port or a URL refuses the start. Capabilities show the hosts in `places.allow`, and the box's `network` (`allowlist` or
-  `none`) in its `places.boxes` entry. Daytona's proxy re-signs each TLS connection with Daytona's own CA, which the
-  sandbox's environment names to pip, npm, git and curl (`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO`,
-  `CURL_CA_BUNDLE`, `SSL_CERT_FILE`).
-- A sandbox whose own read does not carry the list it was asked for is deleted. Daytona takes a domain list on its tier 3
-  and 4 only: where it keeps none, or refuses it, the server makes the run's box again with its network blocked, never
-  open, and makes every later Daytona box that way until it starts again. The log says so once, with Daytona's own
-  words (`event=box_network box=daytona network=none refused=<code> message="…"`), and capabilities show the box's
-  `network` as `none` with its `network_reason`. A box the server finds is kept when it has no network, or the list the
-  setting names now (the same hosts, in any order, as Daytona reads them back); any other (a wider or narrower list, a
-  list when the setting is `none`) is destroyed and made again, so a changed list holds for a run's box after a restart.
-- A sandbox Daytona does not report blocked, when blocked was asked, is deleted, and the tool call fails saying so. An
-  organization on Daytona's tier 1 or 2 keeps its own network policy, which a sandbox cannot override, so a run there
-  gets no Daytona box unless that policy blocks it.
-- A sandbox cannot bind `work/`. The server copies `work/` into it at `/workspace` when it makes it, and
-  copies what changed back at each turn's end (a read of the run's files waits for that copy) and once more before the
-  run's end is recorded. Daytona's answer is never trusted: the copy back writes regular files and directories only,
-  never a link and nothing outside `work/`, and a file this server changed since the last copy stays as this server
-  has it. A file the box removed is removed here too. What the server files in `work/` during the run (monid's long
-  answers) is copied into the sandbox as well. The copy's mark is `box-sync.json` beside the run, which the server alone
-  writes; the run's process notes each file it copied in, in `box-mirrored.jsonl` beside it, and a copy back counts
-  those as held by both sides, so an edit the box makes to one comes back.
-- The sandbox is destroyed after the last copy back, and only once that copy is whole: when the run ends, and when it
-  is archived (a copy that fails at an archive keeps the sandbox for the run's end). A copy that fails at the run's end
-  is tried again, and the end waits for it. One that stops for good (an archive the server cannot read, or a limit a copy
-  that brought nothing reached) keeps the sandbox, says so in the log (`event=box_kept` with its id), and lets the run
-  end with what did come back. A start pulls a run it finds waiting for the person, and copies back, then destroys, the
-  sandbox of every run that has ended or is archived. One whose copy fails is kept for the next start.
-- A kept sandbox has Daytona's auto-delete turned off (a sandbox is made with auto-delete at 0, which deletes it as it
-  stops) and is set to stop after 15 minutes without activity, so once stopped it costs its disk alone (3 GiB on
-  Daytona's default snapshot, at Daytona's storage price) and no compute; its files stay. The next start wakes it, copies
-  back again, and destroys it once that copy is whole; else its 24-hour lifetime ends it. To remove one sooner, delete
-  the sandbox in Daytona's dashboard or API: it carries the labels `agentrun.box=run` and `agentrun.run=<run id>`.
-- A run's sandbox that Daytona stopped, paused (a sandbox class that pauses when idle, while the run waits for its
-  person) or archived (a stopped one it moved away) is started again, an archived one restored, when the server next
-  needs it: for the run's next tool call, a copy back, or the start's sweep. One still stopping, pausing or archiving
-  is waited for (a minute at most) first. It is never replaced by a new one, so
-  what only it holds stays.
-- The sandbox is Daytona's default snapshot, made as its user, with `sudo -n` making `/workspace`.
-
-### A run in a Modal sandbox
-
-With `modal` listed in `AGENTRUN_BOXES`, its token set and its SDK installed, a run whose place is
-`{"mode": "sandbox", "box": "modal"}` gets one Modal sandbox, made on its first `read`, `write`, `edit` or `bash` call. It
-is Modal's default sandbox runtime (gVisor), not a virtual machine: the server does not ask Modal for its VM runtime. It works like a
-[Daytona box](#a-run-in-a-daytona-box): the same tools, path rules, environment and labels, and its `read`, `write` and
-`edit` run in the sandbox too. What differs:
-
-- The token and the SDK's client are this server's alone. The server makes the sandbox, copies `work/` into it at
-  `/workspace`, copies what changed back at each turn's end and once more before the run's end is recorded,
-  and ends it after that last copy, at the run's end, a cancel included, and at an archive. The copy rules (no link,
-  nothing outside `work/`, a file this server changed stays as it has it) are Daytona's.
-- The run's process holds no token. Its calls to its sandbox go through the server's box relay, on loopback, with that
-  run's own door token. The relay makes only the calls a run's tools make of their own sandbox, with the server's
-  client: finding it, reading its state and tags, and starting a program in it with that program's input, output and
-  exit. It refuses everything else: a create, a listing, an end, a tag change, or another run's sandbox or program.
-- It has no network, whatever `AGENTRUN_BOX_ALLOW` names. The provider takes a domain list when a sandbox is made, but
-  its SDK cannot read a sandbox's list back, so this server cannot check that a box holds the list it asked for (as it
-  does for Daytona). Each box is made with its network blocked, never with the provider's open default. Capabilities
-  show the box's `network` as `none`, with `network_reason`, unless the setting is `none`.
-- A sandbox that is gone (it ended, or its lifetime ran out) is made again on the run's next tool call and seeded
-  with the run's `work/`. The call that met the gone box fails, saying so.
-- A Modal sandbox is the size Modal makes it, which the provider bills for while the box lives: `AGENTRUN_BOX_CPUS`,
-  `AGENTRUN_BOX_MEMORY` and `AGENTRUN_BOX_PIDS` size Docker computers only. Its lifetime is 24 hours, as every box's is.
-- A start copies back, then ends, the sandbox of every run that has ended or is archived.
 
 ### The box's image
 
@@ -2254,9 +2171,9 @@ alone: a model of any other provider runs as it does without it. `codex` and `op
 to serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
 `OPENROUTER_API_KEY` is set, runs through OpenRouter (`https://openrouter.ai/api`, the key as a bearer token):
 claude-agent on its Messages endpoint, with Anthropic's own id on the wire (OpenRouter takes it: its Claude Code guide
-says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
-`openrouter/openai/gpt-6-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
-claude-agent and `openai/gpt-6-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
+says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6.1-sol`). On that key alone the defaults are
+`openrouter/openai/gpt-6.1-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
+claude-agent and `openai/gpt-6.1-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
 set. A model named `openrouter/<vendor>/<model>` (pi's name for it) goes through OpenRouter on every harness. An endpoint
 the host names never gets OpenRouter's key: `ANTHROPIC_BASE_URL` without `ANTHROPIC_API_KEY` is refused. A model with more
 than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming the form to use. A provider
@@ -2647,7 +2564,7 @@ path that is not a `.md` file at the top, a bad name, front matter out of shape 
 naming a note that is not active, more than 8 notes superseded, more than 8 new notes or a note over 4068 bytes (4096,
 less the 28 the server's own `origin` and `status` lines may take once it merges the note), an
 index past 200 lines, hidden characters, and text shaped like a secret or holding one of the server's own secrets (the
-launcher's, the keys and tokens in its environment, its API and door tokens, each webhook trigger's signing secret as it
+launcher's, the keys and tokens in its environment, its API token, each webhook trigger's signing secret as it
 is now), in a note or its name. A cap leaves out the items past it, in the order the answer gave them, and the run's
 learning names what was left out. The whole answer is refused when it holds a secret or a hidden character (no item of
 it is trusted), when it writes a path outside the folder or deletes a file, when a text is not UTF-8, when the index
@@ -2826,7 +2743,7 @@ Who can approve: the owner, signed in with their password. No token approves, th
 
 `POST .../learning/files/{file}/approve` (and `.../restore`, which puts a retired item back into every run) takes the console's password session, sent from this server's own origin with
 a JSON body as every page write is. Any token is 403: the server's own (what scripts and the MCP endpoint's tools
-carry), a run's door token, and a token sent beside the session. So is every request on a server with accounts off
+carry) and a token sent beside the session. So is every request on a server with accounts off
 (`AGENTRUN_ACCOUNTS=0`), whose page cookie any token holder can mint. With no credential it is 401, as every route.
 `capabilities.learning.approve` is true only for the owner's session; every other caller reads `approve: false` with
 `approve_needs: "password"`. A note that is not pending is 400; a stale ETag is 412, none 428. The approval is one host
@@ -3014,7 +2931,8 @@ no cap fixes, its error), as a person who has never seen a model request reads t
 least $0.03, and this run's cap is $0.01. Raise the cap to at least $0.03 to continue.", and once a run has spent:
 "Not sent: this run has spent $0.45 of its $0.50 cap, and the next step needs at least $0.03. Raise the cap to at least
 $0.48 to continue." What was spent, and what steps still running hold (named when it is a cent or more), read to the
-nearest cent ($0.0237416 reads $0.02); the exact amounts are `pending.spent_usd`. The cap to raise to is what was
+nearest cent ($0.0237416 reads $0.02); a spend above $0 that rounds to $0 reads "less than a cent" ("this run has spent
+less than a cent of its $0.105 cap"), never "$0"; the exact amounts are `pending.spent_usd`. The cap to raise to is what was
 spent, what steps still running hold, and the next step's least, rounded up to the cent so that it is enough. The words
 name no model. The refusal's timeline row is an `error` row with
 `paused: true`: the request was not sent and the run waits on a raise, so it reads as a pause, never as a failure. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's
@@ -3148,13 +3066,13 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 - An import (`agentrun-serve import`, and setup's import) cuts secrets out of everything it writes: the values of the
   environment's key-shaped variables and the keys saved on this server, the secrets this server made and keeps (its API
-  token, its door token, its sign-in secret, and its webhook's signing secret when the seal key opens it; when it does
+  token, its sign-in secret, and its webhook's signing secret when the seal key opens it; when it does
   not, the CLI's import says so once, on stderr, and goes on), and the keys [secretlint](https://github.com/secretlint/secretlint)'s
   recommended rules find in what it reads (Anthropic, OpenAI, GitHub, Slack and Stripe keys, AWS secret keys beside their
   name, private keys, database URLs with a password, and more). Each becomes `[redacted]`, and the import says how many
   distinct values it removed. Known key formats are removed. Other secrets in your session history, like passwords in
-  config files, are imported as they are. So are a key-shaped value this server did not make (a `whsec_` secret from
-  another service) and a run's own door token.
+  config files, are imported as they are. So is a key-shaped value this server did not make (a `whsec_` secret from
+  another service).
 - The decision keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`, `OPENROUTER_API_KEY` as Jev's or OpenRouter's) are never in
   a run's environment or files: a run's process gets on a pipe of their own only those it needs, for its decision
   providers ([decision workflows](#decision-workflows)) and its web tools: Jev's (by its route) for a node that names Jev

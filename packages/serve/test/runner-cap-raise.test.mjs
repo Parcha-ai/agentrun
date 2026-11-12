@@ -88,7 +88,9 @@ test("two raises of a parked run at once bring it back once: one claim, one loop
   // 2 is the park's release; one more claim makes 3.
   assert.deepEqual(record.claims.map((claim) => claim.epoch), [1, 3], "claimed once more, not twice");
   assert.equal(faux.loops.length, 2, "one loop resumes it");
-  assert.deepEqual(faux.loops[1].received.map((command) => command.id), [one.id, two.id], "both raises reach that loop, in order");
+  // Sent at once, either raise can commit first (on Postgres they do both ways): the loop reads them in the store's
+  // order, which is id order, not the order Promise.all was handed them.
+  assert.deepEqual(faux.loops[1].received.map((command) => command.id), [one.id, two.id].sort((a, b) => a - b), "both raises reach that loop once, in the store's order");
   for (const id of [one.id, two.id]) assert.ok((await commandRow(server, "run-1", id)).takenAt !== null, `raise ${id} taken once`);
 });
 

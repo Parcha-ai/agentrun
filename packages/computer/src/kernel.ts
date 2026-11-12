@@ -1,6 +1,5 @@
-// Kernel as a computer of kind browser: each computer is a Kernel browser, over Kernel's REST API with fetch (no SDK),
-// or through a KernelRequest a host gives (pi-browser's own). Labels ride the browser's own tags; attach and list find a
-// browser by them; connect hands over its cdp_ws_url, which a driver dials; stream is its browser_live_view_url. Both
+// Kernel as a computer of kind browser: each computer is a Kernel browser, over Kernel's REST API with fetch (no SDK). Labels
+// ride the browser's own tags; attach and list find a browser by them; connect hands over its cdp_ws_url, which a driver dials; stream is its browser_live_view_url. Both
 // URLs are secrets: they stay in memory and never reach a ref, a list, an error's words or a report.
 //
 // Calls: POST /browsers (create, with timeout_seconds and tags), GET /browsers/{id} (read; 404 or deleted_at once
@@ -112,7 +111,7 @@ export interface KernelBrowser {
 /**
  * One Kernel request, never retried: a create sent twice would be a second paid browser. It answers 404 as a reply,
  * and throws on any other failure, with the HTTP status as `status`; the provider returns that as a result whose hidden
- * cause is the thrown error, so a host that gave its own request rethrows its own error.
+ * cause is the thrown error.
  */
 export type KernelRequest = (method: string, route: string, init?: RestInit) => Promise<RestReply>;
 
@@ -127,19 +126,13 @@ const callName = (route: string) => route.replace(/\/browsers\/[^/?]+/, "/browse
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
 export interface KernelProviderOptions {
-	/** With apiUrl and fetch, the REST request is built from it; required unless request is given. */
+	/** With apiUrl and fetch, the REST request is built from it. */
 	apiKey?: string;
 	/** Kernel's API; default KERNEL_BASE_URL in env (a server behind a gateway that fronts it), else Kernel's own. */
 	apiUrl?: string;
 	/** The host's own variables its descriptor declares (hostEnv): KERNEL_BASE_URL alone. */
 	env?: Readonly<Record<string, string | undefined>>;
 	fetch?: typeof fetch;
-	/** One Kernel request, a host's own; default the REST one. */
-	request?: KernelRequest;
-	/** Where the signed CDP URLs are held; default a Map of this provider's own. */
-	urls?: UrlStore;
-	/** Where the live views' URLs are held; default a Map of this provider's own. */
-	liveUrls?: UrlStore;
 	confirm?: ReleaseConfirm;
 	sleep?: (ms: number) => Promise<void>;
 }
@@ -162,12 +155,12 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
 
-	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, request, urls, liveUrls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
-		if (request === undefined && (typeof apiKey !== "string" || apiKey === "")) throw new Error("set options.apiKey to a Kernel API key, or options.request to a host's own Kernel request: the provider reads no environment");
+	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Kernel API key: the provider reads no environment");
 		const api = apiUrl || env.KERNEL_BASE_URL?.trim() || undefined;
-		this.#request = request ?? kernelRest({ apiKey: apiKey as string, ...(api ? { apiUrl: api } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
-		this.#urls = urls ?? memoryUrls();
-		this.#live = liveUrls ?? memoryUrls();
+		this.#request = kernelRest({ apiKey, ...(api ? { apiUrl: api } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
+		this.#urls = memoryUrls();
+		this.#live = memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
 	}
@@ -497,8 +490,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 }
 
 /**
- * The provider, built from its options alone, the key included (options.apiKey, or options.api / options.request, a
- * host's own transport); it reads no environment, and throws in words when the key is missing, never echoing one.
+ * The provider, built from its options alone, the key included (options.apiKey); it reads no environment, and throws in words when the key is missing, never echoing one.
  */
 export function create(options: KernelProviderOptions): KernelProvider {
 	return new KernelProvider(options ?? ({} as KernelProviderOptions));

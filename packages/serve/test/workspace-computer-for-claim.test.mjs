@@ -138,6 +138,7 @@ test("a desktop opens one proxied live view under the claim with its hold, and o
   const { record, run } = await claim({ kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: ["screen", "input.pointer", "input.keys"], view });
   const answer = await run();
   assert.equal(answer.computer.kind, "desktop");
+  assert.deepEqual(answer.computer.hello, { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["screen", "input.pointer", "input.keys"] }, "the run's computer carries the hello it was connected with, for its ports");
   assert.equal(record.created[0].mount, undefined, "E2B mounts nothing in Mode 1");
   assert.deepEqual(record.options[0].slice(0, 2), ["e2b", { apiKey: "ek-test" }], "made with its key, by the option it fills");
   assert.deepEqual(view.opened, [{ kind: "desktop", input: "desktop", tag: "c1", claim: { runId: "run-1", epoch: 3 }, sealKey: true, hold: "function", watched: true }], "one view, tagged with the computer's ref id, fed by the provider's watch");

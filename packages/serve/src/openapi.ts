@@ -27,7 +27,7 @@ import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signa
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, PAYLOAD_KEPT_BYTES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT } from "./validate.js";
-import { GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
+import { COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
 import { BROWSER_VENDOR_IDS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
@@ -812,6 +812,8 @@ const GITHUB_CONNECTION = closed({ connected: { const: true }, app_id: { type: "
 const GITHUB_STATUS = { oneOf: [closed({ connected: { const: false } }, "No GitHub App is connected to this server: Connect GitHub in Settings."), GITHUB_CONNECTION] };
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
+/** template-computer/1: a package's computer preference list, and what this server would pick of it. */
+const TEMPLATE_COMPUTER_MARK = { "x-agentrun-serve": "template-computer/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
 const TEMPLATE_PARAMETER = closedWith({ type: { enum: [...PARAMETER_TYPES] }, required: { type: "boolean" }, description: { type: "string" } }, { pattern: { type: "string", description: "A regular expression (Unicode) a string's value matches." }, enum: { type: "array", minItems: 1, items: { type: ["string", "number", "boolean"] }, description: "The values it may take, a closed set (a form shows a choice); never beside a pattern." }, format: { enum: ["cron", "timezone"], description: "What a string's value is, for a form to ask for it as such: `cron`, a schedule's cron line (a schedule picker); `timezone`, an IANA time zone. The value is the same text either way." }, default: { type: ["string", "number", "boolean"], description: "Its value when apply leaves it out (of its type; never on a required one). A parameter that sets a schedule's cron or timezone has one, and the package's own schedule is checked with it." } });
 const TEMPLATE = closed({
@@ -829,6 +831,19 @@ const TEMPLATE = closed({
   tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
   checkout: { enum: ["pull_request", null], description: "What the server checks out in each run's folder before its first turn, set as the agent definition's `checkout` at apply: `pull_request`, the pull request the run's GitHub event names, at its head, in `repo/`, fetched with a read-only token the agent never holds. Null: none." },
   tool_policy: { type: ["object", "null"], additionalProperties: false, required: ["bash"], properties: { bash: BASH_POLICY }, description: "A policy by tool, bash's alone: apply writes it as the tool's policy in the agent's tool_settings, so the tool gate refuses any command it does not allow, whatever bash's permission. Null: none.", "x-agentrun-serve": "bash-policy/1" },
+  computer: { type: ["array", "null"], items: { enum: [...COMPUTER_ENTRIES] }, description: "The computers it prefers, in order: `shell`, a computer that gives the agent a shell here (Docker's sandbox, or Archil's serverless exec on the runner in Mode 2); `none`, no shell. Apply takes the first this server meets now and writes it as the agent's `computer`; with `none`, the shell tools in `tools` are not granted, said in a `computer` warning. Null: where this server puts a new agent.", ...TEMPLATE_COMPUTER_MARK },
+  computer_here: {
+    type: ["object", "null"], additionalProperties: false, required: ["entry", "computer", "shell", "dropped", "note"],
+    properties: {
+      entry: { enum: [...COMPUTER_ENTRIES, null], description: "The entry an apply here would take now; null: none is met, and an apply is refused (409)." },
+      computer: { type: ["object", "null"], additionalProperties: false, required: ["kind"], properties: { kind: { type: "string" }, provider: { type: "string" } }, description: "The agent's `computer` it would be saved with." },
+      shell: { type: ["string", "null"], description: "Its shell, in words; null: no shell." },
+      dropped: { type: "array", items: { type: "string" }, description: "The shell tools in `tools` it would not grant: that computer does not run them." },
+      note: { type: ["string", "null"], description: "What an apply here would say of it: the `computer` warning (a fallback, or a tool dropped), or the refusal." },
+    },
+    description: "What this server would pick of `computer` now: its readiness, read on each listing. Null: the package names no list.",
+    ...TEMPLATE_COMPUTER_MARK,
+  },
   mcp: {
     type: "array",
     items: closed({
@@ -2542,7 +2557,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   definition.required = definition.required.filter((field) => !DEFINITION_INPUT_OPTIONAL.includes(field));
   const definitionRead = schemas.Definition as Json & { required: string[] };
   definitionRead.required = definitionRead.required.filter((field) => !DEFINITION_OPTIONAL.includes(field));
-  // A row's usage: the contract's shape, on more rows here than the usage row (pi-durable-agent's timeline, BROWSER_CHARGE).
+  // A row's usage: the contract's shape, on more rows here than the usage row (timeline/, BROWSER_CHARGE).
   const timelineRow = schemas.TimelineRow as Json & { properties: Record<string, Json> };
   timelineRow.properties.usage = { ...timelineRow.properties.usage, "x-agentrun-serve-note": "On the `usage` row, the run's cost so far. On a paid tool's charge row (a `phase` row, \"Tool cost: monid charged $0.0030 for monid.run\", `tool_name` the tool, `tool_use_id` the call), that charge alone. On a browser call's `tool_use` row (`tool_name` one of the browser's tools: snapshot, run, browser_read, ...), the browser session time booked under that call: what the session ran since its last charge, and, on the session's last call, its release's charge topped up to the provider's minimum. A browser charge has no row of its own. A charge booked after the row was served (a release after the answer) is served as a change of that row, with the same `id` and its new `usage`. `requests` is 0 on every row but the usage row; `usd` is null once a charge on the row has no price, with `so_far_usd` and `unpriced` saying what is known. The run's cost counts each charge once, wherever it shows: summing every row's `usage` but the usage row's gives what its paid tools charged." };
   // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
