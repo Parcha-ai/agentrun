@@ -1,70 +1,44 @@
 # Tune a template on your own code
 
-> **The loop:** build a graded set, hold some out, grade blind, change one thing at a time, lock it in with evals.
-> It's how we got `code-review` to
-> [1.6x the real bugs Greptile caught, for 18 cents a review](../case-studies/code-review.md).
-
-Code review is the example here. The same loop works for `kyb`, `inbound-lead` or any template you write.
+This is how we got `code-review` to [catch 1.6x the real bugs Greptile did](../case-studies/code-review.md). Code
+review is the example, but it works for any template.
 
 ## 1. Apply it
 
-In the console: **Templates → Apply → code-review**. Pick the repo, tick the GitHub tools. It sets up its own PR
+In the console, **Templates → Apply → code-review**. Pick the repo and tick the GitHub tools. It sets up its own PR
 trigger and posts comment-only reviews. It needs a box (Docker, on by default) for its read-only shell.
 
-Or from code:
+## 2. Tell it about your repo
 
-```sh
-curl -X POST "$AGENTRUN_BASE_URL/templates/code-review/apply" \
-  -H "Authorization: Bearer $AGENTRUN_API_KEY" -H "Content-Type: application/json" \
-  -d '{"parameters": {"repo": "your-org/your-repo"}}'
-```
+- `docs/CODEREVIEW.md`: what matters, what to never flag. Every reviewer reads it.
+- `.agents/skills/code-review-knowledge/SKILL.md`: rules by path, like "anything under `billing/` must...".
+- `"learning": true`: it keeps notes from every review.
 
-Any model works. We used particle-1: cheap, and sharp once it has a shell.
+That alone gets you most of the way.
 
-## 2. Teach it your repo
+## 3. Build a test set
 
-Three files, no loop needed:
-
-- `docs/CODEREVIEW.md`: what matters here, what never to flag. Every reviewer reads it.
-- `.agents/skills/code-review-knowledge/SKILL.md`: rules by path ("anything under `billing/` must...").
-- `"learning": true` on the agent: it keeps notes from every review.
-
-## 3. Build a graded set
-
-- Take 30 to 70 merged PRs.
-- For each: what your current reviewer said, plus any bug later traced back to it.
-- **Hold out the newest 20 to 30.** Don't look at them while tuning. They're your final score.
+Grab 30 to 70 merged PRs, with what your current reviewer said and any bug later traced back to each one. Put the
+newest 20 or 30 aside and don't touch them until the end.
 
 ## 4. Grade blind
 
-- A strong model labels every finding real, nit or wrong, without knowing who wrote it.
-- Pool every real bug from every reviewer into one answer key.
-- Credit your old reviewer the same way: wherever it found the same bug.
+Have a strong model mark every finding real, nit or wrong without knowing who wrote it. Put every real bug anyone found
+into one answer key, and credit every reviewer the same way, your old one included.
 
-## 5. Track four numbers
+Watch four numbers: bugs caught, serious bugs caught, wrong findings, cost. A review that timed out counts as zero.
 
-- Recall: how much of the answer key it caught.
-- Serious-bug recall: same, for P0 and P1. The one that matters most.
-- Wrong rate: how many findings were wrong.
-- Cost per review.
+## 5. Change one thing at a time
 
-A review that timed out counts as zero. One slow runner made a good version of ours look 15 points worse.
+Keep a change only if serious bugs caught holds up. What moved ours: the mix of reviewers, what the parent is allowed
+to drop, effort per reviewer, and the `CODEREVIEW.md`.
 
-## 6. Change one thing at a time
+## 6. Lock it in
 
-Keep a change only if serious-bug recall holds and the wrong rate stays under your bar. What moved ours:
-
-- The mix of reviewers. 5 quick plus 3 deep beat 8 of either.
-- What the parent may drop. Only what the code contradicts.
-- Effort and tool-call budgets per reviewer.
-- Your `CODEREVIEW.md`.
-
-## 7. Lock it in
-
-Every PR that taught you something becomes an eval case in `evals/<case>/`. Then one command catches a regression:
+Turn every PR that taught you something into an eval case under `evals/`, then run:
 
 ```sh
 npx @parcha/agentrun template eval ./my-code-review
 ```
 
-[Template packages](../../packages/serve/templates/README.md) has the case format.
+[Template packages](../../packages/serve/templates/README.md) has the format.
