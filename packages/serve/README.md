@@ -180,7 +180,7 @@ line. A store whose secrets were sealed with another key refuses to start, and t
 sealed secrets, so a lost key is not replaced: recreating the container with the same key opens the store as before.
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
-`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
+`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 24.22.3 and Debian 13
 (trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
@@ -751,17 +751,72 @@ computer is made with the GPUs asked.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
+**An agent's own computer.** `computer: {"kind": "desktop", "provider": "orgo", "persistent": true}` gives the agent
+one computer that it keeps between runs, instead of a fresh one for each run:
+
+- Its first run makes it. Each run's end detaches it rather than deleting it (an Orgo Linux desktop is suspended, with
+  its memory and disk). The agent's next run attaches it again, with what was on it.
+- The run's timeline says which happened. If the computer was deleted outside this server, the next run makes a new
+  one and says so.
+- One run at a time. A run that finds the computer held by another run that is still going is refused at its start,
+  naming that run.
+- Only where the provider keeps one for the kind and image (`GET /v2/computers`: the provider's `persistent`); anything
+  else is 422. A computer that mounts the run's folder can't be kept, so a persistent computer never mounts it.
+- `GET /v2/agents/{agent_id}` shows it as `own_computer`: its provider, id and name, and whether a run holds it, it is
+  detached, or it is being deleted.
+- Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
+- The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
+  account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
   it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
-- **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
-  (and an exec image pinned by digest, if you want one other than serve's default), and the account key,
-  `ARCHIL_API_KEY`; `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by
-  digest (git 2.47), because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An
-  image you name needs git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
-  mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
+  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
+  `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
+  because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts
+  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
+  it cannot mount the disk.
+
+**Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
+it, never when the agent is made, in the account key's region, named `agentrun-<server id>-i-<agent id>` (an id with
+characters Archil doesn't take, or past 46 of them, is `h-` with its first 21 safe characters and 24 hex digits of its
+SHA-256, so no agent's disk name is another's); making it is
+idempotent by that name, and `GET /v2/agents/{agent_id}/archil` says which disk it is. A run's mount credential is minted
+on its run's disk, so Archil refuses that token on every other disk: a run of one agent can't mount another agent's
+files. This is the default, and it is enough for one owner: this server has no roles, and everything on it is its
+owner's.
+
+- **Isolating tenants.** A run's start may name another disk: `"archil_disk": {"disk_id": "dsk-…"}` on
+  `POST /v2/agents/{agent_id}/runs` or `POST /v2/runs` (an agent given inline). The run then keeps its folder there, and
+  its token is minted there, so a system that runs one agent for many customers (one expert, say) names a disk per
+  customer. That disk is the caller's: agentrun never makes, renames or removes it. It takes the id Archil returned when
+  the disk was made (`dsk-…`; Archil's API addresses disks by id, not owner/name), never a key or a region. The server
+  reads the disk at Archil before the run is made: a disk in another region than the account key's, or none of that id,
+  is a 422 naming the region, and no run is made; the claim reads it again, for a disk removed in between. The run's
+  launch keeps the disk it used, and whether it was the launch's or the agent's, so every claim, revoke and reclaim of
+  that run acts on that one disk, after a restart too. Any disk in the key's region may be named, by design: this
+  server has one owner, and a backend that launches runs for its customers is a trusted caller. Isolation comes from a
+  disk per boundary.
+- **The plan's disk limit.** Archil's free plan allows 5 disks per region. When Archil refuses to make an agent's disk
+  for its plan's limit, the run fails in words ("your Archil plan allows 5 disks; upgrade or delete an agent"); no run
+  falls back to a shared disk.
+- **Removing an agent's disk.** This server archives agents and never deletes one, and an archive keeps everything,
+  its disk included. `DELETE /v2/agents/{agent_id}/archil` deletes the agent's own disk at Archil (its runs' folders,
+  its home and its learning with it) and frees a disk of the plan, once no live run of any agent is on it (a run of
+  another agent may name it in `archil_disk`). The agent must be archived, unless its source manages it: an inline
+  run's agent is never archived here, and its caller decides when it is done. The disk is marked as being removed
+  before the live runs are counted: from then a new run of the agent on it is `409 agent_not_runnable`, and a run
+  launched just before is refused at its claim, so no run starts on a disk being deleted. A refusal leaves the disk the
+  agent's. It never touches a disk a run's launch named.
+- **Before you upgrade.** In Archil mode, an agent's files from before this release stay on the old server disk at
+  Archil; the agent starts on a new disk of its own. `diskId` is no longer a setting: there is no server-wide disk, and
+  no agent falls back to one.
+- **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
+  path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
@@ -1227,6 +1282,19 @@ and on the timeline, with the cap's words). A take-over and an ask on the same s
 and the ask expires, the agent told the cap's words. When the
 browser comes back, what was held up front goes, and the time the person had stays held, at the provider's price, until
 the session's next charge books it: take-overs given back with no browser call between them still meet the cap.
+
+**The run waits for you, its browser kept.** When the agent asks the person a question (`ask_person`) with its browser open,
+the run waits for the answer with that browser kept open for them: its page, the live view and Take over stay there. The
+browser's own idle release (a few minutes with no browser call) doesn't apply while it waits. It is kept for the person's
+window, `AGENTRUN_BROWSER_PERSON_WAIT_MIN` (whole minutes, 1 to 360; 15 by default), the same setting that bounds a
+take-over with no input and an agent's hand-over ask (above, 15 minutes each by default), so the three never drift apart.
+The window's session time is held under the run's cap first, at the provider's price, like a take-over's: while the run
+waits, its cost grows by the browser's session time only, never by model time, and with no room under the cap the run
+parks at once. An answer inside the window goes back to the agent on the same page. At the window's end the run parks and
+the browser is released ("The browser was released after 15 min waiting for you" on the timeline, and the Screen tab says
+so, with when, until a browser opens again), so its billing stops there. An answer after that goes on with a new
+browser, opened at the agent's next browser call. A browser its provider ends before the answer says so too ("The browser
+session ended while the run waited for you"). A provider's own session timeout still applies: keep the window under it.
 
 **The agent asks.** The agent may ask the owner to do something in its browser (`browser_request_handoff`: an instruction
 and how it will know it is done, such as signing in). Its person's time is held the same way first; with no room no ask is
@@ -1987,7 +2055,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
 | `POST /files`, `PUT /files/{id}`, `GET /files`, `GET` and `DELETE /files/{id}` | [Uploads](#uploads): a file sent in one call (`POST /v2/files?path=...`, its bytes the body), or reserved and then sent (`PUT /v2/files/{id}`); the server's uploads listed, read and deleted. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
-| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the learning ledger and the runs this server holds ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -2016,6 +2084,7 @@ serves these routes alone:
 - a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
   `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
@@ -2625,7 +2694,7 @@ characters and no time) says how it went: `seeded`, then
 `reflecting` during the turn and until what it answered is checked, `proposed` while it is graded, and `merged`, or
 `dropped` with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`,
 `reflect_timeout`, `reflect_failed`, `empty`, `unparsed`, `propose_failed`, `checker`, `grader`, `grade_failed`; a run
-record or ledger line with any other reason is not counted). It is `null` for a
+record with any other reason is not counted). It is `null` for a
 run that does not learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a
 workflow's or an imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2
 notes.", "Looking back on this run…", "Checking 1 new note…", "Learned: Check units (replaces 1 older note)", "Learned:
@@ -2649,17 +2718,9 @@ notes its merge added, once `merged`; and `pending`, `[{file, name}]`, the notes
 `merged`, never among `learned`. A name and a file are cut of the server's secrets as they are now, a file holding one
 `[redacted]`. Whether a run applied a note is not measured: `given` and `read` say what it had and what it opened. Each
 note on the agent's learning view and notes page counts its runs of each, `runs: {given, read}`, over the runs the server
-knows (held ones from memory, ended ones from the learning ledger).
+knows, read from the store.
 
-Each run's learning end is written once to the learning ledger, `DATA/learning-usage.jsonl`, one line `{run, agent,
-state, reason, at, cost, tokens, seed_notes, given, read, answered_at, job_cost_usd, look_back_usd}` (`cost` and
-`tokens` the grade's, null when unknown, 0 when nothing was graded; `seed_notes` how many notes the run started from;
-`given` and `read` the files of the notes it was given and read, each absent when there are none; once it looked back,
-`answered_at` and `job_cost_usd`, when its job's answer was final and what it had cost then; `look_back_usd` what
-looking back cost, 0 when it did not), after its `serve.json` holds it; a server that went between the two writes it at
-its next start. A run's notes are the one part that moves after its end (a follow-up reads another note): a line
-`{run, agent, notes: true, given, read}` then says them anew, the latest one winning, and counts neither the run nor its
-costs again. `GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
+`GET /stats` counts the runs that tried to learn under `learning`, over its `from`, `to` and
 `agent`, from the store (each run's kept learning and its learning run's journal; `in_progress` while a proposal waits
 for its grade), never opening a run's files; the `learning` meter on `GET /usage` reads each run's grade from the same.
 
@@ -2693,13 +2754,12 @@ with the token, an archived agent's too:
 - `GET /agents/{agent_id}/learning`: `main`'s head, `MEMORY.md` as `index`, the first 50 notes (active first, then
   newest first) and the first 20 changes on `main` (newest first, each `by: {run}` from its `Run-Id` trailer or
   `{user: true}`, with its commit, time, reason and files), and how the agent's runs that tried to learn fared
-  (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the learning ledger and the
-  runs the server holds, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
+  (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them: from the store, never a run's files; and `impact` (`learning/2`), what learning changed: the agent's completed
   runs that started from at least one active note against those that started before its first note (the earlier of its
   first merge and the start of its first run that started from a note, so a person's first note counts), each side's
   `runs`; `median_duration_s`, the time to the answer (the run's start to its job's end, before it looks back);
   `median_cost_usd`, the job's own cost without its look-back, over the `cost_runs` whose cost is known; and
-  `median_learning_usd`, what learning itself cost a run (its look-back and its grade). From the same rows and ledger;
+  `median_learning_usd`, what learning itself cost a run (its look-back and its grade). From the same rows;
   null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty pages and `impact: null`.
   `GET .../learning/notes?cursor=&limit=&status=` and `GET .../learning/log?cursor=&limit=` page on, up to 200 at a
   time; a cursor reads the same commit its first page did.
@@ -3204,7 +3264,7 @@ carries no cost at all, as from a provider that does not price the model. The te
 ## Test
 
 ```sh
-npm run build -w @parcha/agentrun-dsl -w @parcha/agentrun-pi -w @parcha/pi-durable-agent -w @parcha/agentrun-serve
+npm run build
 npm test -w @parcha/agentrun-serve
 ```
 

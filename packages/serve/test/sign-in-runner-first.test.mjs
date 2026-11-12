@@ -234,7 +234,8 @@ test("the made sign-in's sessions open on its profile with save on, and their re
   const conversation = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, tools: binding.tools }, init: async (tx, id) => { for (const write of lifecycle.onConversation) await write(tx, Number(id)); } });
   for (const settle of lifecycle.beforeResume) await settle(harness);
   await (await conversation.submit({ type: "input", content: "Browse." }, ctx)).wait(ctx);
-  assert.deepEqual(r.lines("profile").map(({ name, save }) => ({ name, save })), [{ name: "default", save: true }], "its session opened on the profile, saving");
+  const [handed] = r.lines("sign-in");
+  assert.deepEqual(r.lines("profile").map(({ pointer, save }) => ({ pointer, save })), [{ pointer: handed.ref, save: true }], "its session opened on the agent's sign-in, saving");
   for (const stop of lifecycle.beforeRelease) await stop(harness);
   assert.ok((await signIns.signInViews(r.store, KEY, "agent-c"))[0]?.verified_at, "its release verified the sign-in");
 });

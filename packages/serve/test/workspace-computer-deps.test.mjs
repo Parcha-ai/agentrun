@@ -97,7 +97,9 @@ async function desktopOn(provider) {
   await putSealedKey(store, sealKey, "ORGO_WORKSPACE_ID", "ws-orgo-1");
   const record = { created: [], released: [], loaded: [] };
   // The provider builder's load (providerFor in production): what the server-side provider call is given.
-  const load = async (id, options) => (record.loaded.push([id, structuredClone(options)]), fakeDesktop(root, record));
+  // A provider whose descriptor declares a ledger (Orgo's, its agents' computers) is given the store's: functions, left
+  // out of the copy kept here.
+  const load = async (id, { ledger, ...options }) => (record.loaded.push([id, structuredClone(options), typeof ledger?.put]), fakeDesktop(root, record));
   // On the computer package's own registry (the composer's default), whose entries carry each provider's default image.
   const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, load });
   // As the spec builders call it: the composer's deps, then the claim's own.

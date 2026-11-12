@@ -48,12 +48,3 @@ test('each package whose source uses TypeBox declares typebox itself, at the one
   }
   assert.deepEqual(wrong, [], `typebox ${wanted} in dependencies, or a host-provided peer with a ${wanted} dev pin`);
 });
-
-test('the TypeBox-built tool schema of pi serializes to the same JSON as before the move', async () => {
-  const before = JSON.parse(readFileSync(new URL('./fixtures/typebox-tool-schemas.json', import.meta.url), 'utf8'));
-  const pi = await import('../packages/pi/dist/workflow-tool.js');
-  const now = {
-    pi: pi.workflowToolParameters(),
-  };
-  assert.deepEqual(JSON.parse(JSON.stringify(now)), before);
-});

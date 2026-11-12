@@ -219,8 +219,7 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
 });
 
-// SKIP (follow-up #2080): a learned node's request is not routed or booked as before on the runner
-test.skip("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000 }, async (t) => {
+test("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   // Sonnet's prices, as grown() bills its requests: the gateway's model is the session's, the node's and the harness's.
@@ -229,7 +228,7 @@ test.skip("R10 (guard) the harness's next request after a node request on the sa
   const ownHeld = async (runId) => (await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === undefined).map((entry) => entry.heldUsd);
   const plain = await ran(api, data, "grown-plain", "codex", { fields: { max_cost_usd: 5 }, ask: "Grow three requests." });
   const beside = await ran(api, data, "grown-beside", "codex", { fields: { max_cost_usd: 5 }, ask: "Grow three requests, the second running the learned workflow answer on What is six times seven." });
-  assert.equal(learnedResult(beside.rows)?.tool_status, "success", JSON.stringify(learnedResult(beside.rows)));
+  assert.equal(learnedResult(beside.rows)?.tool_status, "success", JSON.stringify({ status: beside.view.status, error: beside.view.error, pending: beside.view.pending, tools: beside.rows.filter((row) => row.kind === "tool_call" || row.kind === "tool_result").map((row) => [row.kind, row.tool_name, row.tool_status, row.summary]) }));
   const [a, b] = [await ownHeld(plain.runId), await ownHeld(beside.runId)];
   assert.equal(a.length >= 3 && b.length >= 3, true, JSON.stringify({ a, b }));
   assert.ok(Math.abs(a[2] - b[2]) < 1e-9, `the third request held as it is with no node before it: ${b[2]} against ${a[2]}`);

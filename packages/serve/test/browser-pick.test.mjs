@@ -71,10 +71,11 @@ test("a run's plane names its browser from the server's keys, set or saved; a la
 });
 
 test("the browser lists browser_downloads only on a vendor that keeps a session's downloads: Browserbase does, Kernel does not; upload is listed on both", async (t) => {
-  const { kernelProvider } = await import("@parcha/pi-browser/providers/kernel");
-  const { browserbaseProvider } = await import("@parcha/pi-browser/providers/browserbase");
-  assert.equal(kernelProvider({ env: {} }).downloads, undefined, "Kernel's provider has no downloads");
-  assert.equal(typeof browserbaseProvider({ env: {} }).downloads, "object", "Browserbase's has");
+  // The run's browser is a computer provider of the registry (browser-computer.ts): its downloads member is what keeps them.
+  const { BrowserbaseProvider } = await import("@parcha/agentrun-computer/browserbase");
+  const { KernelProvider } = await import("@parcha/agentrun-computer/kernel");
+  assert.equal(new KernelProvider({ apiKey: "k" }).downloads, undefined, "Kernel's provider has no downloads");
+  assert.equal(typeof new BrowserbaseProvider({ apiKey: "k" }).downloads, "object", "Browserbase's has");
   const work = await scratch(t);
   const toolsOf = async (vendor) => {
     const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }) };

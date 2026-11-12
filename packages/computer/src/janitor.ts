@@ -10,10 +10,11 @@ export interface SweepOptions {
 	/** The time to compare deadlines with; default now. */
 	now?: Date;
 	/**
-	 * Whether an agent is gone, by its id: the caller's answer (serve's agents). An agent's computer whose owner is gone
-	 * is deleted; without this, no agent counts as gone.
+	 * Whether an owner is gone, by the owner the computer carries (its agent, and its server when it names one): the
+	 * caller's answer (serve's: its own agent that no longer exists; another server's owner is never gone to it). An
+	 * agent's computer whose owner is gone is deleted; without this, no owner counts as gone.
 	 */
-	ownerGone?: (agent: string) => boolean | Promise<boolean>;
+	ownerGone?: (owner: ComputerOwner) => boolean | Promise<boolean>;
 	signal?: AbortSignal;
 }
 
@@ -51,8 +52,8 @@ function tenureOf(info: Pick<ComputerInfo, "labels" | "owned" | "owner">, persis
 }
 
 /** Whether an agent's computer ends: its owner is gone, or it has been detached for longer than its idle TTL. */
-async function ownerEnds(info: ComputerInfo, owner: { agent: string; idleTtlMs?: number }, at: number, ownerGone: SweepOptions["ownerGone"]): Promise<boolean> {
-	if (ownerGone !== undefined && (await ownerGone(owner.agent)) === true) return true;
+async function ownerEnds(info: ComputerInfo, owner: ComputerOwner, at: number, ownerGone: SweepOptions["ownerGone"]): Promise<boolean> {
+	if (ownerGone !== undefined && (await ownerGone(owner)) === true) return true;
 	const since = info.detachedAt instanceof Date ? info.detachedAt.getTime() : Number.NaN;
 	return owner.idleTtlMs !== undefined && !Number.isNaN(since) && at - since >= owner.idleTtlMs;
 }

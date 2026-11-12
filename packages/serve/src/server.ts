@@ -24,7 +24,7 @@ import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
-import { HOME_HOST_OWNED, RUN_META, SETUP_LOST } from "./files.js";
+import { HOME_HOST_OWNED, SETUP_LOST } from "./files.js";
 import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { checkedPath, decodedPath, homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
@@ -49,6 +49,7 @@ import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveRest, liveViewer, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers, viewerLink } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView } from "./computer-view.js";
+import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { knownToolCostOf, redactorOf, type RunMoment, type State, type Status, toolCostOf } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore, WAITS_ON_A_PERSON } from "./runs-over-store.js";
@@ -118,7 +119,7 @@ import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, type RunTrigger, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
@@ -127,13 +128,14 @@ import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { archilRoute, createArchilRoutes } from "./archil-routes.js";
+import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
+import { agentDiskOf, ARCHIL_DISK_ID, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
-import { agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, runFolder, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runFolder, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -221,6 +223,9 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
+   *  (a launch's disk read, the settings' test, an agent's disk removed). */
+  archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
@@ -399,6 +404,9 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/sign-ins\/([^/]+)$/, name: "forgetSignIn" },
+  // The agent's Archil disk (archil-routes.ts): read, and removed for an archived agent.
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/archil$/, name: "getAgentArchil" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/archil$/, name: "deleteAgentArchil" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files$/, name: "listHomeFiles" },
@@ -621,7 +629,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
-    runtimes: ["pi-durable-disk"],
+    /** What runs a run here (the contract's `runtimes`, informational): this server's runners, over its one store. */
+    runtimes: ["runner"],
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
     harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
@@ -666,8 +675,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       /** The browser a run's `browser` tool drives: the vendor it resolves to under the server's settings when the tool is
-       *  available here (tools[]), Browserbase's or Kernel's, else none. */
-      browser: browser?.available ? ((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS] === "kernel" ? "kernel" : "browserbase") : "none",
+       *  available here (tools[]), a browser provider's id (tool-plane.ts BROWSER_VENDOR_IDS), else none. */
+      browser: browser?.available ? ((resolved) => (BROWSER_VENDOR_IDS.includes(resolved ?? "") ? resolved! : "browserbase"))((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS]) : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
@@ -1075,7 +1084,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
   };
-  const archil = createArchilRoutes({ store, sealKey, env: process.env });
+  const archil = createArchilRoutes({ store, sealKey, env: process.env, ...(options.archilControl ? { control: options.archilControl } : {}) });
   /** Where a run of `revision` has its shell (shellOf): its computer setting as the claim reads it (computer-for-claim.ts
    *  settingOf), else its place's computer, else the place its run would resolve to (fallbackPlace). The agent's tool
    *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
@@ -1188,6 +1197,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
     files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
+    // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
+    // A disk the body names is read at Archil once, before the run is made (archil-routes.ts checkLaunchDisk): one that is
+    // not there or not in the key's region is a 422 here, and Mode 1 is too. An agent whose disk is being removed
+    // (archil-routes.ts removeAgentDisk) starts no run on it: 409 until the removal is done.
+    launchDiskOf: async (agentId, named) => {
+      if (named !== undefined) {
+        await archil.checkLaunchDisk(named);
+        return { diskId: named, kind: "launch" };
+      }
+      if (!(await inArchilMode(store))) return undefined;
+      const own = await agentDiskOf(store, agentId);
+      if (own?.removing) throw new ApiError("agent_not_runnable", `The agent ${agentId}'s Archil disk ${own.diskId} is being removed (DELETE /v2/agents/${agentId}/archil): start the run once that is done, and it gets a new disk.`);
+      return own ? { diskId: own.diskId, kind: "agent" } : undefined;
+    },
     workflowTitle,
     serverSecrets,
     toolSettings: () => settings.get(),
@@ -1548,10 +1571,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** An agent view's extra fields (agents-store agentView): its saved sign-ins, its learning count, and its run counts.
    *  The run counts read the store's runs (store-reads/runs.ts listRuns): `count` is every run the agent has, `live` those
    *  still running (runReadState 'running': queued, running or parked), the same numbers the file-backed view showed. */
-  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number } }> => {
+  const agentExtra = async (entry: AgentEntry): Promise<{ signIns: object[]; learning?: { pending: number }; runs: { count: number; live: number }; ownComputer: Record<string, unknown> | null }> => {
     const learning = await learningOfAgent(entry);
     const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
-    return { signIns: await signIns.view(entry.agent.id), ...(learning ? { learning } : {}), runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length } };
+    return {
+      signIns: await signIns.view(entry.agent.id),
+      ...(learning ? { learning } : {}),
+      runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
+      // The agent's own computer (a persistent setting), as this server records it: the view's own_computer.
+      ownComputer: agentComputerView(await agentComputerOf(store, entry.agent.id)),
+    };
+  };
+  /** Deletes an agent's own computer once the agent has no use for it (archived, persistent turned off, another provider
+   *  or image: workspace/agent-computer.ts), after the write that made it so, in the background: a vendor's delete can
+   *  take minutes. Until the provider has deleted it, the agent's view shows it deleting, with why where a delete failed. */
+  const reconcileComputer = (agentId: string): void => {
+    void reconcileAgentComputer(store, agentId, (provider, image) => computersOf().providerFor(provider, image))
+      .then((done) => (done ? log?.(logLine("agent_computer", { agent: agentId, ...("deleted" in done ? { deleted: done.deleted } : { failed: done.failed }) })) : undefined))
+      .catch((error: unknown) => log?.(logLine("agent_computer", { agent: agentId, failed: error instanceof Error ? error.message : String(error) })));
   };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
@@ -1984,7 +2021,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk"]);
+    if (body.archil_disk !== undefined) {
+      const disk = body.archil_disk;
+      const extra = isObject(disk) ? Object.keys(disk).filter((key) => key !== "disk_id") : [];
+      if (!isObject(disk) || typeof disk.disk_id !== "string" || !ARCHIL_DISK_ID.test(disk.disk_id)) issues.push({ field: "archil_disk.disk_id", reason: "wrong_type", message: "archil_disk is { disk_id }: the disk id Archil returned when the disk was made (dsk- and 16 hex digits; Archil's API addresses disks by id, not owner/name), in this server's Archil region" });
+      else if (extra.length) issues.push({ field: `archil_disk.${extra[0]}`, reason: "not_allowed", message: "archil_disk names a disk by its id alone: its region is this server's Archil key's, and no key is ever sent with a run", fix: `Remove ${extra.map((key) => `archil_disk.${key}`).join(" and ")}.` });
+    }
     if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
     if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
     if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -2115,23 +2158,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
   // again. A run whose journal cannot be read leaves it all tokens.
   const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
-  // Each ended run's spend so far as it saved it at its end (serve.json's cost_so_far: every conversation's charges and
-  // its decisions' receipts, which its root store alone does not hold), kept as its meters are; undefined when it saved
-  // none (a run whose cost is known, or one ended before the figure was kept).
-  const endedSoFar = new Map<string, number | undefined>();
-  const savedSoFarOf = (row: { id: string; endedAt?: string | null }) => {
-    const key = `${row.id} ${row.endedAt}`;
-    if (!endedSoFar.has(key)) {
-      // TODO(E3/store-reads): a run's kept so-far cost comes from the store (its row/journal), not a per-run RUN_META file
-      // (runStorePath is gone). Undefined until the usage route reads it over the store.
-      let usd: number | undefined;
-      {
-        usd = undefined;
-      }
-      endedSoFar.set(key, usd);
-    }
-    return endedSoFar.get(key);
-  };
   const metersOf = async (row: { id: string; endedAt?: string | null }) => {
     const key = `${row.id} ${row.endedAt}`;
     let meters = endedMeters.get(key);
@@ -2189,7 +2215,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A run whose cost is unknown still spent what is known of it (so_far: each meter's known dollars): that is in the
       // total and its lines, and the run is counted unpriced, so a total is never below a line of its own and reads as
       // the lower bound unpriced_runs says it is.
-      const soFar = usd !== null || !read ? 0 : (savedSoFarOf(row) ?? read.known.tokens + read.known.browser + read.known.others);
+      const soFar = usd !== null || !read ? 0 : read.known.tokens + read.known.browser + read.known.others;
       const meters = group === "meter" && usd !== 0 ? read : undefined;
       if (meters && meters.browser.usd !== 0) browserSeconds = browserSeconds === null || meters.browser.seconds === null ? null : browserSeconds + meters.browser.seconds;
       // Its parts of the lines (usage-lines.ts): an unknown one counts the run unpriced there and adds what is known of it.
@@ -2579,6 +2605,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        reconcileComputer(id);
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -2599,6 +2626,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
+        reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "archiveAgent":
@@ -2611,8 +2639,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // which would turn its triggers off with no reason and leave the answer empty. Both answer the triggers off for
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
+        // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
+        if (found.name === "archiveAgent") reconcileComputer(id);
         const entry = await needAgent(id);
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
+      }
+      case "getAgentArchil":
+      case "deleteAgentArchil": {
+        // The agent's Archil disk (archil-routes.ts): its rules are the handler's; the dispatch reads the agent (archived, or
+        // managed by its source) and how to count the live runs on a disk.
+        const entry = await needAgent(id);
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        const agent = { id, archived: entry.agent.archivedAt != null, external: entry.agent.externalRef !== null, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
+        return send(res, 200, await archilRoute(archil, found.name, { agent, signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "forgetSignIn": {
         await needAgent(id);
@@ -2733,6 +2773,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => computerOf(kept, env, family),
           hold: () => hold,
+          // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
+          // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
+          // For an ended run, nothing, and its row goes.
+          ended: () => screenWaitEnded(store.settings, run.id, run.terminal),
         });
         if (family === "browser") return send(res, 200, view.state === "live" ? { state: "live", viewer: view.viewer } : view.state === "none" ? { state: "none" } : { state: "off", reason: view.why }, { "cache-control": "no-store" });
         return send(res, 200, view, { "cache-control": "no-store" });

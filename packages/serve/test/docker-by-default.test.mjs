@@ -59,14 +59,18 @@ const until = async (done, what, ms = 30_000) => {
   }
 };
 
-// SKIP (follow-up #2080): the default Docker box's run ends failed on the runner instead of writing out.txt in the box.
+// SKIP (follow-up #2080): on the runner the Docker box is a computer (computerd in a container the computer package
+// makes), which this fake docker cannot stand in for: it answers the image's arch with its version, refuses the image's
+// stdin recipe, and answers `docker info` in the probe's format, not JSON; and the computer package's own fake
+// (docker-host-fake.mjs) answers the daemon's hello and no file call, so no bash runs. The demo needs a fake that serves
+// computerd's file and exec calls, or a real Docker (the computer package's docker suite has one in CI).
 test.skip("demo through the API: with AGENTRUN_BOXES not set and Docker answering, docker is on by default; a new agent is saved in the Docker box with bash, and its run writes out.txt there", { timeout: 120_000 }, async (t) => {
   const docker = await fakeDocker(t, undefined);
   const server = await serve(t, { faux: PROBE });
   const { api } = server;
   const places = await placesOf(api);
   assert.equal(dockerOf(places).available, true, JSON.stringify(dockerOf(places)));
-  assert.ok(["ready", "preparing"].includes(dockerOf(places).state));
+  assert.equal(dockerOf(places).state, "ready");
   assert.deepEqual(places.default_place, DOCKER);
   assert.equal("default_reason" in places, false);
   assert.ok(server.boxesLine.startsWith(ON_BY_DEFAULT), server.boxesLine);

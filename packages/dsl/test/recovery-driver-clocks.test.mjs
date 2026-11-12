@@ -1,9 +1,10 @@
 // The driver's clocks and a failed map's finished items: a poll window and a wait are absolute and survive a resume,
 // and what a map finished before one item failed is kept for the host and answered again at a later open.
+import { frozenEffectId } from '../dist/recovery/frozen-snapshot.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore, recoveryBound, frozenEffectId } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, recoveryBound } from '@parcha/agentrun-dsl/recovery';
 
 const SCHEMAS = { Out: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }, Status: { type: 'object', required: ['status'], properties: { status: { type: 'string' } } }, Any: { type: 'object' } };
 const doc = (steps) => ({ v: 2, name: 'clocks', schemas: SCHEMAS, output: { schemaId: 'Out', path: 'final' }, root: { node: 'chain', steps: [...steps, { node: 'code', label: 'finish', code: '() => ({ final: { ok: true } })' }] } });

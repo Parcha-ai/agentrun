@@ -30,7 +30,7 @@ import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT }
 import { COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { BROWSER_VENDOR_IDS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
@@ -295,6 +295,8 @@ const MCP_NAME = { name: "name", in: "path", required: true, description: "The s
 const MCP_FAILED = {
   "424": { description: "`upstream_failed`: the MCP server could not be reached, did not answer within 15 s (30 s for the whole listing), answered 5xx or more than 4 MiB at once, or failed to list its tools. `details.status` holds its HTTP status when it answered one.", content: { "application/json": { schema: ref("schemas/Error") } } },
 };
+/** What a preview's tool list is (#84): the server's offer, listed with this credential, never what the credential may do. */
+export const MCP_PREVIEW_SCOPE = "The tools are what the server offers, not what this credential allows: a read-only token still lists its write tools. A call the credential can't make is refused by the MCP server when a run makes it.";
 const MCP_CONNECTS = "Connects with the official MCP SDK client: `server/discover` (2026-07-28) first, a 2025-era server by its `initialize`; then `tools/list`, every page. No redirect is followed: a 3xx is 422 input_invalid (field `url`, reason `redirect`, naming where it points), so a credential goes only where it is sent. A server that asks for a credential (401 or 403) is 422 `auth_required`, `details.auth` `oauth` when it names protected-resource metadata (its WWW-Authenticate or `/.well-known/oauth-protected-resource`), else `bearer`; a URL whose answers hold no JSON-RPC reply is 422 `not_mcp`; a server listing more than 500 tools, or more than 1 MiB of them (names, descriptions, schemas), is 422 input_invalid (field `url`, reason `too_many_tools` or `tools_too_large`), the listing stopped at that page; any other failure is 424.";
 /** A tool's permission (tool-gate.ts). */
 const PERMISSION = {
@@ -640,6 +642,10 @@ const COMPUTER_PROVIDER = closedWith({
   gpu: { ...COMPUTER_PROVIDER_GPU, description: "A sandbox provider's GPUs, where it declares them: the choices an agent's `computer.gpu` names." },
   network: { type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on an open network is open (\"an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply\"), except where AGENTRUN_BOX_ALLOW is none and the computer needs a network, which this server refuses (\"needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none\"; the provider is then not ready, and its runs are refused). Absent where the allow-list applies (Docker), or where it depends on the image a provider's configurations name." },
   images: { type: "array", items: { type: "string" }, description: "The images the provider offers for the kind, as an agent's `computer.image` names them (Orgo's desktop: `linux`, `windows`); the kind's default first when it is one of them. Absent when it offers none to choose." },
+  persistent: {
+    ...closedWith({}, { images: { type: "array", items: { type: "string" }, description: "Of `images`, the ones whose computer an agent can keep. Absent when the provider offers no images to choose." } }),
+    description: "Present where an agent's computer of this kind can be kept between its runs (`computer.persistent: true`): its provider keeps one for an agent (Orgo's Linux desktop, which its suspend keeps with its memory). Absent where none can.",
+  },
 });
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
@@ -678,13 +684,20 @@ const RUN_COMPUTER = {
 };
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
-  on: { type: "boolean", description: "Whether Mode 2 is on: run folders on this Archil disk. Off, they are on this server's own disk (Mode 1)." },
+  on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
-  diskId: { type: "string" },
-  region: { type: "string" },
-  s3Url: { type: "string", format: "uri" },
+  region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
+  s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
+});
+/** archil/1: GET and DELETE /agents/{agent_id}/archil's answer (archil-routes.ts agentView). */
+const AGENT_ARCHIL_VIEW = closed({
+  on: { type: "boolean", description: "Whether this server is in Archil mode (Mode 2). Off, no agent has a disk here." },
+  archil_disk: {
+    oneOf: [closed({ disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$" } }), { type: "null" }],
+    description: "The agent's own disk, which agentrun made for it (named `agentrun-<server id>-i-<agent id>`): null until its first run that uses it (a run whose launch names no `archil_disk`), when it is made.",
+  },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
@@ -1148,7 +1161,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: ref("schemas/RunCreateInline") } } },
       responses: {
         "202": { description: "The run, accepted, as POST /agents/{agent_id}/runs answers it. Follow it on its timeline.", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Run") } } },
-        ...errors(400, 401, 409, 422, 429, 500),
+        ...errors(400, 401, 409, 422, 429, 500, 503),
       },
       "x-agentrun-serve": "inlineagent/1",
     },
@@ -1259,7 +1272,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The live view of the run's computer, one family for every kind (`browser`, `desktop`, `phone`: the run's agent's computer). `live` with `viewer`, a link on this server (`/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`) to open, or frame, in the console, while a viewer is open; `none` when the run has a computer but no session is up (or it ended); `off` when there is no computer here (its agent has none, or its computer resolves unavailable here), with `why` in plain words. `kind` is the run's computer, on every answer but `off`. `hold` says who drives now: `agent`; `pending`, the person's Take over waits for the agent's step; `person`. The viewer watches until its Take over, then drives until its Hand back, both in the viewer's own bar: outside a hold the run drops its input. The token is in the link's fragment alone, never in a request line, a Referer or a log; the viewer's page sends it once, in its WebSocket hello. It opens that one session's view, and drives it once taken over: it dies with the computer (its release), the run's end, or the owner's sign-out (the socket closes), and a second viewer of the same session is refused (viewer_in_use). The viewer's page is served under the link's path with `frame-ancestors 'self'`, and its WebSocket is taken only from this server's own origin (or its public address, AGENTRUN_PUBLIC_URL) with the owner's cookie. It takes the owner's password session in the console: never a token, which a run's process, an MCP client or a script may hold (403); no credential is 401. The vendors' own live-view links never leave the run's process.",
       parameters: [ref("parameters/RunId")],
       responses: {
-        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closed({ state: { const: "none" }, kind: RUN_COMPUTER_KIND, hold: COMPUTER_HOLD }), closed({ state: { const: "live" }, kind: RUN_COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
+        "200": json({ oneOf: [closedWith({ state: { const: "off" }, hold: COMPUTER_HOLD }, { why: { type: "string", description: "Why there is no computer view here, in plain words." } }), closedWith({ state: { const: "none" }, kind: RUN_COMPUTER_KIND, hold: COMPUTER_HOLD }, { ended: { type: "object", additionalProperties: false, required: ["at", "why"], description: "A going run's browser let go while the run waited for its person (its window, AGENTRUN_BROWSER_PERSON_WAIT_MIN, ran out, the cap ended it, or its provider ended the session), with none opened since: the Timeline row's words and when. The next browser call, once the run goes on, opens a new one.", properties: { at: { type: "string", format: "date-time" }, why: { type: "string" } } } }), closed({ state: { const: "live" }, kind: RUN_COMPUTER_KIND, viewer: { type: "string", description: "The viewer's link on this server, `/v2/runs/{run_id}/computer/live/v/<id>#t=<token>`: its token in the fragment alone." }, hold: COMPUTER_HOLD })] }, "The run's live view, none open, or no computer here."),
         ...errors(401, 403, 404, 429, 500),
       },
       "x-agentrun-serve": "computer/1",
@@ -1335,16 +1348,16 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/workspace/archil": {
     get: {
-      operationId: "getWorkspaceArchil", tags: ["local"], summary: "Whether run folders are on an Archil disk (Mode 2), its settings, and whether its keys are saved",
+      operationId: "getWorkspaceArchil", tags: ["local"], summary: "Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved",
       responses: { "200": json(ARCHIL_VIEW, "The Archil settings, never a key."), ...errors(401, 429, 500) },
       ...ARCHIL_MARK,
     },
     put: {
-      operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on this Archil disk",
-      description: "Replaces the Archil settings (the disk, its region and S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the disk, region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
+      operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
+      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
-        content: { "application/json": { schema: closedWith({ diskId: { type: "string", minLength: 1 }, region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
@@ -1354,16 +1367,36 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 off: run folders on this server's own disk",
-      description: "Removes the Archil settings. Its saved keys are kept, for turning it on again.",
+      description: "Removes the Archil settings. Its saved keys, and each agent's disk, are kept, for turning it on again.",
       responses: { "200": json(ARCHIL_VIEW, "The Archil settings, off."), ...errors(401, 429, 500) },
       ...ARCHIL_MARK,
     },
   },
   "/workspace/archil/test": {
     post: {
-      operationId: "testWorkspaceArchil", tags: ["local"], summary: "Test the Archil disk with its saved account key",
-      description: "One listing of the disk's root through its file API, with the saved account key. ok, or why in plain words: Archil is off, the key is not saved, Archil refused it, no such disk, or Archil was not reached. Never a key.",
+      operationId: "testWorkspaceArchil", tags: ["local"], summary: "Test the Archil account key at its region's control plane",
+      description: "One listing of the account's disks at the region's control plane, with the saved account key. ok, or why in plain words: Archil is off, the key is not saved, Archil refused it, or Archil was not reached. Never a key.",
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+  },
+  "/agents/{agent_id}/archil": {
+    get: {
+      operationId: "getAgentArchil", tags: ["agents"], summary: "The agent's own Archil disk, once its first run made it",
+      description: "In Archil mode each agent has its own disk, made on its first run whose launch names no `archil_disk` (never at the agent's creation), in the account key's region, named `agentrun-<server id>-i-<agent id>`. Null before that, and in Mode 1. A disk a run's launch names is the caller's (a disk per customer) and is never shown here.",
+      parameters: [ref("parameters/AgentId")],
+      responses: { "200": json(AGENT_ARCHIL_VIEW, "The agent's disk, or none yet."), ...errors(401, 404, 429, 500) },
+      ...ARCHIL_MARK,
+    },
+    delete: {
+      operationId: "deleteAgentArchil", tags: ["agents"], summary: "Remove an agent's own Archil disk, and everything on it",
+      description: "For an archived agent, or an agent its source manages (an inline run's agent, which is never archived here), with no live run of any agent on its disk (a run of another agent may name it in `archil_disk`): its own disk is deleted at Archil (DELETE /api/disks/{id}), with its runs' folders, its home and its learning, and forgotten; the agent's next run would make a new, empty one. This frees a disk of the Archil plan's limit. The disk is marked as being removed before its live runs are counted: meanwhile a new run of the agent on it is 409 agent_not_runnable, and a run launched just before is refused at its claim. A disk a run's launch named is never touched. 412 precondition_failed for an agent of this server not archived, or a live run on the disk (the disk is the agent's again); 424 upstream_failed when Archil does not remove it (nothing is forgotten). Answers the agent's disk now (none) and what was removed.",
+      parameters: [ref("parameters/AgentId")],
+      responses: {
+        "200": json({ ...AGENT_ARCHIL_VIEW, required: [...AGENT_ARCHIL_VIEW.required, "removed"], properties: { ...AGENT_ARCHIL_VIEW.properties, removed: { oneOf: [closed({ disk_id: { type: "string" } }), { type: "null" }], description: "The disk deleted at Archil, or null when the agent had none." } } }, "The agent's disk removed, or none to remove."),
+        ...errors(401, 404, 412, 429, 500, 503),
+        "424": { description: "`upstream_failed`: Archil did not remove the agent's disk (refused, or not reached); nothing is forgotten.", content: { "application/json": { schema: ref("schemas/Error") } } },
+      },
       ...ARCHIL_MARK,
     },
   },
@@ -1428,9 +1461,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers/preview": {
     post: {
       operationId: "previewMcpServer", tags: ["local"], summary: "Connect to a remote MCP server and list its tools, storing nothing",
-      description: `\`{url, auth}\`, or \`{name}\` for a saved server with its sealed credential (422 when it does not open). ${MCP_CONNECTS}`,
+      description: `\`{url, auth}\`, or \`{name}\` for a saved server with its sealed credential (422 when it does not open). ${MCP_CONNECTS} ${MCP_PREVIEW_SCOPE}`,
       requestBody: { required: true, content: { "application/json": { schema: { oneOf: [{ type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH } }, { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string" } } }] } } } },
-      responses: { "200": json(MCP_PREVIEW, "What the server offers."), ...errors(400, 401, 404, 409, 415, 422, 429, 500), ...MCP_FAILED },
+      responses: { "200": json(MCP_PREVIEW, `What the server offers. ${MCP_PREVIEW_SCOPE}`), ...errors(400, 401, 404, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -1924,7 +1957,7 @@ const RUN_PLACE: Json = {
     { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
     { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
   ],
-  description: "Where the run executes, as its start resolved it: its revision's place, else runner. In a sandbox place the agent's bash runs in the box, which binds only the run's work/ and has no network and no key; read, write and edit run in the box too, or on this server's copy of that work/ where the box binds it and this server holds directory handles (Docker on Linux), following no link. Its loop, its log and every key stay on the server. The Modal sandbox (box `modal`, Modal's default gVisor runtime, not a VM) never has a network: Modal takes a host list, but this server cannot read a sandbox's list back to check that it holds, so each is made blocked, and capabilities.places.boxes says so in its network_reason (unless AGENTRUN_BOX_ALLOW is none).",
+  description: "Where the run executes, as its start resolved it: its revision's place, else runner. A sandbox place on a box is a sandbox computer of that provider, which the run's runner starts and releases: the agent's file and shell tools run in it, with the run's folder mounted, and no key. Its loop, its log and every key stay on the server. A Docker computer reaches the hosts in capabilities.places.allow through its egress proxy; a Daytona or Modal computer has no network (capabilities.places.boxes says so in its network_reason).",
   "x-agentrun-serve": "place/1",
 };
 /** capmode/1: how a run's cap prices a request's input. */
@@ -1951,7 +1984,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     ...SO_FAR,
     overshoot_bound_usd: { type: "number", minimum: 0, description: "Set when the run has a cap: the most its model requests in flight could cost beyond what its cap holds them at, when one misses the cache (`cap_mode` expected: each one's input uncached less its input expected, rounded up to a millionth). 0 with none in flight, under strict, and for a request priced with nothing cached. The cap never lets output pass it, so this is all a run can go over its cap by.", "x-agentrun-serve": "capmode/1" },
   },
-  RunCreate: { cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` } },
+  RunCreate: {
+    cap_mode: { ...CAP_MODE, description: `${CAP_MODE.description as string} Absent: the agent's (its definition's \`cap_mode\`), else expected. 422 not_allowed for a run with no cap.` },
+    archil_disk: {
+      type: "object", additionalProperties: false, required: ["disk_id"],
+      properties: { disk_id: { type: "string", pattern: "^dsk-[0-9a-f]{16}$", description: "The disk id Archil returned when the disk was made (`dsk-` and 16 hex digits): Archil's API addresses disks by id, not by owner/name. In this server's Archil region (the account key's)." } },
+      description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. It is read at Archil before the run is made: none of that id, or one in another region than the account key's, is 422 at `archil_disk.disk_id` in words naming the region, and no run is made (503 when Archil can't be asked). The claim reads it again, so a disk removed in between fails the run in the same words. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1, or with no account key saved.",
+      "x-agentrun-serve": "archil/1",
+    },
+  },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
@@ -2065,7 +2106,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
         { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
       ],
-      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent on a create of an agentic revision, the place this server gives a new agent (capabilities.places.default_place): the Docker box where this server has docker, ready or preparing, written on the revision so an answer shows it, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools (a list it names, an empty one included, is kept as named); where docker is unavailable, or the definition names a tool a box refuses (browser), none, as before. A revision saved with no place runs where this server's capabilities.places.default_place says at each run (the Docker box where docker is available or preparing now, else the runner); a workflow, and one that names a tool a box refuses, on the runner. A revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash` or a background tool (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`); a workflow revision's place is runner or none (a sandbox place is 422).",
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent on a create of an agentic revision, the place this server gives a new agent (capabilities.places.default_place): the Docker box where this server has docker, written on the revision so an answer shows it, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools (a list it names, an empty one included, is kept as named); where docker is unavailable, or the definition names a tool a box refuses (browser), none, as before. A revision saved with no place runs where this server's capabilities.places.default_place says at each run (the Docker box where docker is available now, else the runner); a workflow, and one that names a tool a box refuses, on the runner. A revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash` or a background tool (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`); a workflow revision's place is runner or none (a sandbox place is 422).",
       "x-agentrun-serve": "place/1",
     },
     computer: {
@@ -2075,8 +2116,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         provider: { type: "string", description: "The provider that serves the kind, from GET /computers. Absent for `none`." },
         image: { type: "string", minLength: 1, description: "The image the computer starts from: one the provider offers for the kind (GET /computers lists them as the provider's `images`), such as Orgo's `windows` desktop. Absent, the kind's default. One the provider does not offer saves with a warning naming the ones it does, and its runs are refused at their start in the same words. Absent for `none`." },
         gpu: COMPUTER_GPU,
+        persistent: { type: "boolean", description: "Whether the agent keeps its own computer between runs: true makes one at its first run, detaches it (not deletes it) at each run's end, and attaches it again at the next, with what was on it; false or absent, a fresh computer for each run. Only where the provider keeps one for the kind and image (GET /computers: the provider's `persistent`), else 422 not_allowed; never one that mounts the run's folder. One run at a time: a run that finds the computer held by another run still going is refused at its start, naming that run. Archiving the agent, turning this off, or a setting on another provider or image deletes the computer (GET /agents/{agent_id}'s `own_computer` shows it)." },
       },
-      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, and a sandbox's GPUs. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
+      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, and whether the agent keeps it between runs. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
@@ -2115,6 +2157,26 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       },
       "x-agentrun-serve": "serve/1",
     },
+    own_computer: {
+      oneOf: [
+        {
+          ...closedWith({
+            provider: { type: "string", description: "The provider it lives on, as `computer.provider` names it." },
+            id: { type: "string", description: "The vendor's id of the computer." },
+            name: { type: "string", description: "Its name at the vendor." },
+            state: { enum: ["held", "detached", "deleting"], description: "`held`: a run has it now (`run_id`); `detached`: kept between runs (an Orgo Linux desktop suspended, its memory and disk kept); `deleting`: the agent no longer has a use for it (archived, `computer.persistent` off, or another provider or image) and it is being deleted, or a delete failed (`why`)." },
+            since: { type: "string", format: "date-time", description: "When it took this state." },
+          }, {
+            image: { type: "string", description: "The image of the provider's configuration it was made from." },
+            run_id: { type: "string", description: "The run that holds it, while held." },
+            why: { type: "string", description: "Why a delete has not happened yet, in the provider's words: the server tries again at the agent's next edit, and the janitor deletes it once its owner is gone." },
+          }),
+        },
+        { type: "null" },
+      ],
+      description: "The agent's own computer, kept between its runs where its `computer.persistent` is true: what this server records of it. Null when it has none (no persistent setting, or no run has made one yet).",
+      "x-agentrun-serve": "computer/1",
+    },
     warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as a create (POST /agents) or a commit (PUT .../definition) answers it, the same shape apply's warnings take. Absent from every other answer (GET and list never send it).", "x-agentrun-serve": "warnings/1" },
   },
   Capabilities: {
@@ -2133,9 +2195,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["modes", "boxes", "allow"],
       properties: {
         modes: { type: "array", items: { enum: [...PLACE_MODES] } },
-        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`; `preparing`, available while the server builds (or pulls) the Docker box's image at its start (a sandbox run's first box waits for it, with a timeline row); `unavailable`, with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable, or what a preparing one waits for. Docker is set up by default (AGENTRUN_BOXES not set), so docker's reason says first, in plain words, what is wrong on this machine, then what to do (`Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`); every other box AGENTRUN_BOXES does not list says the setting that lists it." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker box through its egress proxy, on Linux with a daemon of that machine's own; a program that skips the proxy has no route; a Daytona box through Daytona's domain list, whose proxy re-signs TLS with Daytona's CA), or `none`. A Docker box's `none` comes with `network_reason`, and so does a Daytona box's when Daytona could not keep a list here (a tier that takes none); neither has one when AGENTRUN_BOX_ALLOW is `none`.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own, naming what the server found: a Docker in a VM, a daemon on another machine, docker info that did not answer; or a Daytona that could not keep its domain list.", "x-agentrun-serve": "place/2" }, host_addresses: { type: "array", items: { type: "string" }, description: "Docker's alone, for a server in a container of its Docker's (compose.yaml) under an allow-list: the Docker host's own IP addresses its computers' egress proxy refuses as the host's, the union of what the server read through Docker's socket at its start (the host's interfaces, and host.docker.internal's on Docker Desktop or OrbStack) and AGENTRUN_DOCKER_HOST_ADDRESSES. Absent on a host, where the proxy reads the host's own." } } } },
+        boxes: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available", "state"], properties: { id: { enum: [...BOX_IDS] }, available: { type: "boolean" }, state: { enum: [...BOX_STATES], description: "`ready`, or `unavailable` with the `reason`." }, reason: { type: "string", description: "Why the box is unavailable. Docker is set up by default (AGENTRUN_BOXES not set), so docker's reason says first, in plain words, what is wrong on this machine, then what to do (`Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`); every other box AGENTRUN_BOXES does not list says the setting that lists it." }, network: { enum: [...BOX_NETWORKS], description: "What an available box reaches: `allowlist`, the hosts in `allow`, and nothing else (a Docker computer through its egress proxy; a program that skips the proxy has no route), or `none`. A Daytona or Modal box is always `none`, with `network_reason`: its computer is never made with a host list. A Docker box's `none` comes with `network_reason` too.", "x-agentrun-serve": "place/2" }, network_reason: { type: "string", description: "Why an available box has no network for a cause of its own: AGENTRUN_BOX_ALLOW is none (Docker), or the box's computer is never made with a host list (Daytona, Modal).", "x-agentrun-serve": "place/2" }, host_addresses: { type: "array", items: { type: "string" }, description: "Docker's alone, for a server in a container of its Docker's (compose.yaml) under an allow-list: the Docker host's own IP addresses its computers' egress proxy refuses as the host's, the union of what the server read through Docker's socket at its start (the host's interfaces, and host.docker.internal's on Docker Desktop or OrbStack) and AGENTRUN_DOCKER_HOST_ADDRESSES. Absent on a host, where the proxy reads the host's own." } } } },
       },
-      description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready, preparing or unavailable, and when not, why) and the hosts a box may reach.",
+      description: "The places a revision may name, this host's default, each box (whether this server has it, its state: ready or unavailable, and when not, why) and the hosts a box may reach.",
       "x-agentrun-serve": "place/1",
     },
     harnesses: {
@@ -2204,7 +2266,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
         { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
       ],
-      description: "The place a NEW agentic agent that names none is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, ready or preparing (its first run waits for the image, with a timeline row), with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; else the runner, with `default_reason`. It is also where an agentic revision saved with no place runs, resolved at each run: a workflow, and a revision that names a tool a box refuses, run on the runner. (It replaces `places.default`, which said `runner`.)",
+      description: "The place a NEW agentic agent that names none is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; else the runner, with `default_reason`. It is also where an agentic revision saved with no place runs, resolved at each run: a workflow, and a revision that names a tool a box refuses, run on the runner. (It replaces `places.default`, which said `runner`.)",
       "x-agentrun-serve": "place/4",
     },
     default_reason: { type: "string", description: "Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`, such as `Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`, or, with AGENTRUN_BOXES set to a list without docker, empty or `none`, the setting that turns it on.", "x-agentrun-serve": "place/3" },
@@ -2585,14 +2647,15 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     modelsSource["x-agentrun-serve"] = "models/2";
     fields.push(...sourcesAdded.map((value) => `Capabilities.models.source.${value}`));
   }
-  // browser/1: the browser tool runs on Browserbase or Kernel, picked per server and per agent (tool-plane.ts), so
-  // capabilities' `features.browser` names Kernel's where the server's settings resolve to it, which the contract's enum
-  // (browserbase, chrome, none) lacks.
+  // browser/1: the browser tool runs on the computer registry's browser providers (Browserbase, Kernel), picked per
+  // server and per agent (tool-plane.ts), so capabilities' `features.browser` names the one the server's settings resolve
+  // to, which the contract's enum (browserbase, chrome, none) may lack.
   const browser = ((schemas.Features as Json).properties as Record<string, Json>).browser as Json & { enum?: string[] };
-  if (Array.isArray(browser.enum) && !browser.enum.includes("kernel")) {
-    browser.enum = [...browser.enum, "kernel"];
+  const lacking = Array.isArray(browser.enum) ? BROWSER_VENDOR_IDS.filter((id) => !browser.enum!.includes(id)) : [];
+  if (lacking.length > 0) {
+    browser.enum = [...browser.enum!, ...lacking];
     browser["x-agentrun-serve"] = "browser/1";
-    fields.push("Features.browser.kernel");
+    fields.push(...lacking.map((id) => `Features.browser.${id}`));
   }
   // signins/1: a saved sign-in whose pointer does not open under this server's seal key (sign-ins-store.ts) reads `unreadable`,
   // which the contract's SignIn.state (ready, held) lacks.

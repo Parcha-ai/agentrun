@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { putSealedKey } from "../dist/server-keys.js";
 import { archilClaim, archilWorkspace, computerForClaim } from "../dist/workspace/index.js";
-import { archilControlFake } from "./archil-control-fake.mjs";
+import { agentDiskStore, archilControlFake } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { readBackOf } from "./fixtures/archil-readback.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -18,7 +18,7 @@ import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS } from "./workspace-kinds-fixture.mjs";
 
 const SENTINEL = `sentinel-archil-mount-token-${randomBytes(12).toString("hex")}`;
-const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+const SETTINGS = { diskId: "dsk-00000000000fa4e0", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 
 /** Every file under `dir` whose bytes hold `needle`, by path. */
 function filesHolding(dir, needle) {
@@ -62,6 +62,8 @@ async function mountedRun(t, { existing = [] } = {}) {
   const controller = new AbortController();
   const claim = await archilClaim({
     settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk,
+    // The run's agent's disk, as its launch record names it (run-disk.ts): no Archil call resolves it.
+    run: { agentId: "a", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("a", SETTINGS.diskId) },
     mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: control.baseUrl },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-1/work", { region: SETTINGS.region, mountToken: () => claim.token() });
