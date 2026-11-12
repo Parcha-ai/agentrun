@@ -584,6 +584,8 @@ export function startRunner(options: RunnerOptions): Runner {
         for (const row of await store.commands(claim.runId, 0)) {
           if (row.refused === reason) emit({ type: "refused", runId: claim.runId, commandId: row.id, reason });
         }
+        // The run's end (a normal completion among them) leaves no browser-released message behind for a follow-up (browser-wait-ended.ts).
+        if (store.settings) await clearWaitEnded(store.settings, claim.runId).catch(() => undefined);
       }
       await store.flush();
       // A loop that ended interrupted with no stop asked of it (its Session closed itself) is released with a backoff that
