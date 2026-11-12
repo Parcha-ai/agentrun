@@ -113,6 +113,8 @@ export interface BrowserSpec {
 export interface BrowserFeatures {
 	/** "wall-clock": the vendor ends a session lifetimeMs after create; "inactivity": that long after its last connection closes. */
 	timeout: "wall-clock" | "inactivity";
+	/** The shortest lifetimeMs a session takes (Kernel's shortest idle timeout); absent, any above 0. */
+	minLifetimeMs?: number;
 	/** settleMs: how long after a saving session ends the vendor may still be writing the profile back. */
 	profiles?: { settleMs: number };
 	stealth?: true;

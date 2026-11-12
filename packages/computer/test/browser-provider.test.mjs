@@ -73,7 +73,7 @@ const VENDORS = {
 			groups: ["cdp", "stream"],
 			maxLifetimeMs: 72 * HOUR,
 			release: ["delete"],
-			browser: { timeout: "inactivity", profiles: { settleMs: 0 }, headless: true },
+			browser: { timeout: "inactivity", minLifetimeMs: 10_000, profiles: { settleMs: 0 }, headless: true },
 		},
 		held: (fake, id) => fake.browsers.get(id).tags,
 		heldLabels: { "agentrun.run": "run-1", job: "j-42" },

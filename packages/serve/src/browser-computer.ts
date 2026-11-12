@@ -23,7 +23,7 @@
 // custody ends a create it refused at once.
 import type { AttachTarget, BrowserProvider, LeaseRef, ProviderCaps, RemoteFile, ResourceStatus, SessionSpec } from "@parcha/pi-browser";
 import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@parcha/pi-browser";
-import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, PROVIDERS, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { KEY_TABLE, providerOptions } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
@@ -148,8 +148,10 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
         ...(pointer ? { profile: { pointer, save: profile!.save } } : {}),
       };
       // The vendor ends a session at its lifetime from create (wall-clock) or after that long with no client
-      // (inactivity): custody's session timeout for the one, its idle release for the other.
-      const lifetimeS = features.timeout === "inactivity" ? spec.idleTimeoutS : spec.maxLifetimeS;
+      // (inactivity): custody's session timeout for the one, its idle release for the other (the session timeout where
+      // idle release is off, 0). Never below the vendor's shortest (Kernel's 10 s), which it would refuse.
+      const asked = features.timeout === "inactivity" && spec.idleTimeoutS > 0 ? spec.idleTimeoutS : spec.maxLifetimeS;
+      const lifetimeS = Math.max(asked, Math.ceil((features.minLifetimeMs ?? 0) / 1000));
       let id: string;
       try {
         id = await computer.open(spec.tag, lifetimeS, session, signal);
@@ -234,22 +236,27 @@ export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Pro
   const keys = Object.fromEntries((KEY_TABLE.keys[vendor] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
   const options = providerOptions(vendor, keys);
   if (!options.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${options.error.message}.`));
-  // A server behind a browser gateway names its API address (BROWSERBASE_BASE_URL, KERNEL_BASE_URL): the key checks and the
-  // sign-in creation already use it, so the browser's sessions do too.
-  const gateway = vendor === "browserbase" ? env.BROWSERBASE_BASE_URL : vendor === "kernel" ? env.KERNEL_BASE_URL : undefined;
-  const apiUrl = typeof gateway === "string" && gateway.trim() !== "" ? { apiUrl: gateway.trim().replace(/\/+$/, "") } : {};
-  // Behind either Browserbase gateway the gateway's injected key names the project: none is sent (as sign-in creation does).
-  const behindGateway = vendor === "browserbase" && Boolean(env.BROWSERBASE_BASE_URL || env.BROWSERBASE_CONNECT_BASE_URL);
-  const { projectId: _project, ...rest } = options.options as Record<string, unknown>;
-  return providerFor(vendor as never, { ...(behindGateway ? rest : options.options as object), ...apiUrl } as never);
+  // The server's own variables the provider's descriptor says it reads (hostEnv: the gateway a server behind one reaches
+  // the vendor through), as the claim's providers get them (workspace/computer-deps.ts): the key checks and the sign-in
+  // creation already go through that gateway, so the browser's sessions do too.
+  const names = PROVIDERS.find((one) => one.id === vendor)?.hostEnv;
+  const hostEnv = names ? { env: Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]]))) } : {};
+  return providerFor(vendor as never, { ...(options.options as object), ...hostEnv } as never);
 }
 
 /** The run's browser sessions of a lower claim epoch released, as a computer's are when a claim starts it (the janitor's
  *  releaseOlder): a runner that died after the vendor made a session and before its id was kept left one this claim's
- *  labels would never find. */
-export async function releaseOlderBrowsers(provider: ComputerProvider, run: { readonly runId: string; readonly epoch: number }, signal?: AbortSignal): Promise<void> {
+ *  labels would never find. One that ended may have been saving to the run's sign-in, and this process holds no saver
+ *  for it, so when any was ended the provider's settle time is waited out before the plane's browser opens a session. */
+export async function releaseOlderBrowsers(
+  provider: ComputerProvider,
+  run: { readonly runId: string; readonly epoch: number },
+  { signal, sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) }: { readonly signal?: AbortSignal; readonly sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
   const older = await releaseOlder(provider, run.runId, run.epoch, signal ? { signal } : {});
   if (!older.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${older.error.message}.`));
+  const settleMs = provider.capabilities().browser?.profiles?.settleMs ?? 0;
+  if (settleMs > 0 && older.value.released.length + older.value.detached.length > 0) await sleep(settleMs);
 }
 
 /** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with

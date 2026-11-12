@@ -26,7 +26,7 @@ test("a browser provider declares its sessions' features in capabilities().brows
 	const kn = await kernel(fakeKernel());
 	const local = new (await import("../dist/local-chrome.js")).LocalBrowserProvider({ executablePath: "/bin/true", root: "/tmp/agentrun-browser-session-test" });
 	assert.deepEqual(bb.capabilities().browser, { timeout: "wall-clock", stealth: true, profiles: { settleMs: 5_000 }, downloads: { path: "downloads" } });
-	assert.deepEqual(kn.capabilities().browser, { timeout: "inactivity", profiles: { settleMs: 0 }, headless: true });
+	assert.deepEqual(kn.capabilities().browser, { timeout: "inactivity", minLifetimeMs: 10_000, profiles: { settleMs: 0 }, headless: true }, "Kernel's shortest idle timeout is 10 s");
 	assert.deepEqual(local.capabilities().browser, { timeout: "wall-clock" }, "Local Chrome's sessions end at their deadline and take a viewport alone");
 	assert.ok(isBrowserProvider(bb) && isBrowserProvider(kn) && isBrowserProvider(local));
 	assert.equal(typeof bb.profiles?.create, "function");
@@ -83,6 +83,21 @@ test("Browserbase: spec.browser rides its create body as browserSettings", async
 	// A create that asks no browser options sends the body as before.
 	value(await a.create(spec()), "a plain create");
 	assert.equal(fake.only("POST", "/v1/sessions")[2].body.browserSettings, undefined);
+});
+
+test("behind a gateway (hostEnv) each provider calls it, and Browserbase sends no project: the gateway's key names it", async () => {
+	const { BrowserbaseProvider } = await import("../dist/browserbase.js");
+	const { KernelProvider } = await import("../dist/kernel.js");
+	const bbFake = fakeBrowserbase();
+	const bb = new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, projectId: "proj_fake", env: { BROWSERBASE_BASE_URL: ` ${BROWSERBASE_URL} ` }, fetch: bbFake.fetch, sleep: noSleep });
+	assert.deepEqual(bbFake.contexts.get(value(await bb.profiles.create(), "a context through the gateway")), { projectId: null });
+	const connectOnly = fakeBrowserbase();
+	const proxied = new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, projectId: "proj_fake", env: { BROWSERBASE_CONNECT_BASE_URL: "https://proxy.example/ws" }, fetch: connectOnly.fetch, sleep: noSleep });
+	assert.deepEqual(connectOnly.contexts.get(value(await proxied.profiles.create(), "a context behind the socket gateway")), { projectId: null });
+	const knFake = fakeKernel();
+	const kn = new KernelProvider({ apiKey: KERNEL_KEY, env: { KERNEL_BASE_URL: KERNEL_URL }, fetch: knFake.fetch, sleep: noSleep });
+	value(await kn.profiles.create(), "a profile through the gateway");
+	assert.equal(knFake.only("POST", "/profiles").length, 1);
 });
 
 test("Browserbase: profiles are contexts; a pointer is in no error's words", async () => {

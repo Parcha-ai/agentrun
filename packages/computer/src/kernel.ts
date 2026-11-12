@@ -129,7 +129,10 @@ const text = (value: unknown) => (typeof value === "string" ? value.trim() : "")
 export interface KernelProviderOptions {
 	/** With apiUrl and fetch, the REST request is built from it; required unless request is given. */
 	apiKey?: string;
+	/** Kernel's API; default KERNEL_BASE_URL in env (a server behind a gateway that fronts it), else Kernel's own. */
 	apiUrl?: string;
+	/** The host's own variables its descriptor declares (hostEnv): KERNEL_BASE_URL alone. */
+	env?: Readonly<Record<string, string | undefined>>;
 	fetch?: typeof fetch;
 	/** One Kernel request, a host's own; default the REST one. */
 	request?: KernelRequest;
@@ -146,7 +149,7 @@ const refOf = (id: string): ComputerRef => ({ id, name: id });
 const statusOf = (error: unknown) => (error as { status?: unknown } | null)?.status;
 
 /** What a Kernel browser offers beyond the protocol, a fresh copy each time. */
-const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", profiles: { settleMs: 0 }, headless: true });
+const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", minLifetimeMs: KERNEL_MIN_LIFETIME_MS, profiles: { settleMs: 0 }, headless: true });
 
 /** Computers that are Kernel browsers. */
 export class KernelProvider implements ComputerProvider, BrowserComputerProvider {
@@ -159,9 +162,10 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
 
-	constructor({ apiKey, apiUrl, fetch: fetcher, request, urls, liveUrls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
+	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, request, urls, liveUrls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
 		if (request === undefined && (typeof apiKey !== "string" || apiKey === "")) throw new Error("set options.apiKey to a Kernel API key, or options.request to a host's own Kernel request: the provider reads no environment");
-		this.#request = request ?? kernelRest({ apiKey: apiKey as string, ...(apiUrl ? { apiUrl } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
+		const api = apiUrl || env.KERNEL_BASE_URL?.trim() || undefined;
+		this.#request = request ?? kernelRest({ apiKey: apiKey as string, ...(api ? { apiUrl: api } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
 		this.#urls = urls ?? memoryUrls();
 		this.#live = liveUrls ?? memoryUrls();
 		this.#confirm = confirm;

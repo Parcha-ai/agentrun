@@ -110,6 +110,15 @@ test("an inactivity vendor gets custody's idle release as its lifetime; a featur
   assert.equal(provider.downloads, undefined, "a provider that keeps no downloads lists none");
 });
 
+test("an inactivity vendor's lifetime is never below its shortest, and with idle release off (0) it is the session timeout", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand({ timeout: "inactivity", minLifetimeMs: 10_000 });
+  const provider = claimBrowserProvider(planeBrowser(s.provider, RUN));
+  await provider.create({ ...SPEC, idleTimeoutS: 3 }, signal());
+  await provider.create({ ...SPEC, tag: "ar-run-1-2", idleTimeoutS: 0 }, signal());
+  assert.deepEqual(s.calls.filter((c) => c.op === "create").map((c) => c.spec.lifetimeMs), [10_000, 1_800_000]);
+});
+
 test("a provider that keeps downloads lists and reads them through the protocol", async (t) => {
   t.after(resetBrowserComputerHoldings);
   const files = [{ name: "a.txt", sizeBytes: 2, modifiedAt: null }];
@@ -177,8 +186,21 @@ test("a session a dead claim left (a lower epoch's labels) is released when the 
   t.after(resetBrowserComputerHoldings);
   const s = stand(ALL);
   const lost = await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
-  await releaseOlderBrowsers(s.provider, RUN);
+  const slept = [];
+  await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
   assert.deepEqual(s.calls.filter((call) => call.op === "release").map((call) => call.id), [lost.id]);
+  assert.deepEqual(slept, [], "a provider that writes no profile back after a session is not waited for");
+});
+
+test("after it ends a dead claim's session, the plane waits out the provider's settle time, so the next session reads what that one saved", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand({ ...ALL, profiles: { settleMs: 5_000 } });
+  const slept = [];
+  await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
+  assert.deepEqual(slept, [], "nothing ended, nothing waited");
+  await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
+  await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
+  assert.deepEqual(slept, [5_000]);
 });
 
 test("a Browserbase connect URL moves onto the credential proxy, its signing query kept; another host's is left alone", () => {

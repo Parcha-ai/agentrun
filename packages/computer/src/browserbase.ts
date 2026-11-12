@@ -259,9 +259,16 @@ export const BROWSERBASE_DOWNLOADS_PATH = "downloads";
 export interface BrowserbaseProviderOptions {
 	/** With apiUrl and fetch, the REST api is built from it; required unless api is given. */
 	apiKey?: string;
-	/** Named in every create and release; a key behind a credential proxy names none. */
+	/** Named in every create and release; none behind a gateway (env), whose key names the project. */
 	projectId?: string;
+	/** Browserbase's API; default BROWSERBASE_BASE_URL in env (a gateway that fronts it), else Browserbase's own. */
 	apiUrl?: string;
+	/**
+	 * The host's own variables its descriptor declares (hostEnv): BROWSERBASE_BASE_URL, a gateway that fronts the API, and
+	 * BROWSERBASE_CONNECT_BASE_URL, one that fronts the sessions' sockets. Behind either, the gateway's key names the
+	 * project, so no projectId is sent.
+	 */
+	env?: Readonly<Record<string, string | undefined>>;
 	fetch?: typeof fetch;
 	/** The calls, a host's own (pi-browser's SDK client); default the REST api. */
 	api?: BrowserbaseApi;
@@ -295,10 +302,13 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
 
-	constructor({ apiKey, projectId, apiUrl, fetch: fetcher, api, urls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
+	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, api, urls, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
 		if (api === undefined && (typeof apiKey !== "string" || apiKey === "")) throw new Error("set options.apiKey to a Browserbase API key, or options.api to a host's own Browserbase calls: the provider reads no environment");
-		this.#projectId = projectId || undefined;
-		this.#api = api ?? browserbaseRest({ apiKey: apiKey as string, ...(apiUrl ? { apiUrl } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
+		const gateway = env.BROWSERBASE_BASE_URL?.trim() || undefined;
+		const behindGateway = Boolean(gateway || env.BROWSERBASE_CONNECT_BASE_URL?.trim());
+		this.#projectId = behindGateway ? undefined : projectId || undefined;
+		const base = apiUrl || gateway;
+		this.#api = api ?? browserbaseRest({ apiKey: apiKey as string, ...(base ? { apiUrl: base } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
 		this.#urls = urls ?? memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
