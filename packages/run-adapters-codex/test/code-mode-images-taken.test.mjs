@@ -73,9 +73,11 @@ test("the model's own call of a computer tool gets its words and its image; a sc
   assert.equal(bridge.extras.size, 0);
 });
 
-test("a script's nested call of a tool with no value gets its words and its images, as data: URLs", () => {
+test("a script's nested call of a tool with no value gets its words and a line that its images were not sent, never their base64", () => {
   const answer = { contentItems: [{ type: 'inputText', text: 'frame.png: image/png' }], success: true };
-  assert.deepEqual(scriptAnswer(answer, { images: [{ mimeType: 'image/png', data: PNG }] }).contentItems, [answer.contentItems[0], { type: 'inputImage', imageUrl: `data:image/png;base64,${PNG}` }]);
+  const held = scriptAnswer(answer, { images: [{ mimeType: 'image/png', data: PNG }] });
+  assert.deepEqual(held.contentItems, [answer.contentItems[0], { type: 'inputText', text: "1 image it returned was not sent: in code mode a tool's image reaches the script only as text." }]);
+  assert.ok(!JSON.stringify(held).includes(PNG));
   assert.equal(scriptAnswer(answer, undefined), answer);
   const failed = { contentItems: [{ type: 'inputText', text: 'refused' }], success: false };
   assert.equal(scriptAnswer(failed, { structured: { steps: [] } }), failed, "a failure answers its words");

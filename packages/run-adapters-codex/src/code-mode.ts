@@ -125,13 +125,23 @@ export function withImageData(value: unknown, images: readonly Image[]): unknown
   return fill(value);
 }
 
+/** A nested call's answer from a tool with no value: its items, then a line saying how many images the tool returned,
+ *  which are not sent (Codex gives a script an image as its data: URL in the result's text, so a script that prints the
+ *  result would send the model the base64 as words); an answer of any other shape, or no images, as it is. */
+export function withImagesHeld(answer: unknown, images: readonly unknown[] | undefined): unknown {
+  const items = (answer as { contentItems?: unknown } | null)?.contentItems;
+  if (!images?.length || !Array.isArray(items)) return answer;
+  const count = images.length;
+  return { ...(answer as object), contentItems: [...items, { type: "inputText", text: `${count} image${count === 1 ? "" : "s"} it returned ${count === 1 ? "was" : "were"} not sent: in code mode a tool's image reaches the script only as text.` }] };
+}
+
 /** A code-mode script's nested call's answer. A tool with a value (a computer tool's) answers the value as JSON text,
- *  its images' data back in it, so the script reads it with JSON.parse and holds each image whole; any other tool
- *  answers its items with its images after them (`withImages`), which Codex gives the script as data: URLs. A failed
+ *  its images' data back in it, so the script reads it with JSON.parse and holds each image whole, to compute on or
+ *  pass on; any other tool answers its words and a line on its images, which are not sent (`withImagesHeld`). A failed
  *  call's answer, or one of any other shape, as it is. */
 export function scriptAnswer(answer: unknown, extras: { images?: readonly Image[]; structured?: unknown } | undefined): unknown {
   const shaped = answer as { contentItems?: unknown; success?: unknown } | null;
-  if (extras?.structured === undefined || !Array.isArray(shaped?.contentItems) || shaped.success === false) return withImages(answer, extras?.images);
+  if (extras?.structured === undefined || !Array.isArray(shaped?.contentItems) || shaped.success === false) return withImagesHeld(answer, extras?.images);
   return { ...shaped, contentItems: [{ type: "inputText", text: JSON.stringify(withImageData(extras.structured, extras.images ?? [])) }] };
 }
 
