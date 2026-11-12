@@ -406,7 +406,7 @@ The real-Chrome suites (`stagehand_real_chrome`, `cdp_local_chrome`, `effects-ch
 `readme_example`) skip with a typed reason where no Chrome can load Stagehand's extension, and fail instead under
 `AGENTRUN_REQUIRE_LOCAL_CHROME=1`, which CI sets. The crash matrix (`test/custody.test.mjs`) SIGKILLs a child process at each
 cut point of a session's life against the shared fake and reopens the run's SQLite file. The wire checks (`test/wire/`) plant
-sentinel credentials in a fake provider and scan every byte a run produced. The suites run on Node 22 and 24.
+sentinel credentials in a fake provider and scan every byte a run produced. The suites run on Node 24.22.3, the minimum the package supports.
 
 Apache-2.0. Copyright 2026 Parcha Labs, Inc. `NOTICE` records the Stagehand (MIT) code this package copies: the Chrome launch
 flags and the vendored facade.
