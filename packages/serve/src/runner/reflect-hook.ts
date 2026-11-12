@@ -144,7 +144,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
     if (checked.state === "dropped" && checked.reason === "unparsed") {
       const left = deadlineMs - (now() - started);
-      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      const again = left > 0 ? await input.ask(reflectAgain(checked.detail, ...(workflows === false ? [false as const] : [])), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
       if (again && "ended" in again) {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);

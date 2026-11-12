@@ -12,7 +12,7 @@ import { answerFlow } from "./support.mjs";
 import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { definitionIssues } = await import("../dist/validate.js");
-const { reflectPrompt } = await import("../dist/learn/reflect.js");
+const { reflectAgain, reflectPrompt } = await import("../dist/learn/reflect.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 
 const AGENT = "agent-1";
@@ -35,6 +35,9 @@ test("a notes run's end-of-run turn asks for no workflow draft: no workflow bloc
   assert.doesNotMatch(notes, /````workflow|workflow DSL|as a workflow draft named/, notes);
   assert.match(notes, /Keep no workflow draft/);
   assert.match(notes, /````skill find-policies/, "a skill is still asked for");
+  assert.match(reflectAgain("bad", false), /every note and skill block/);
+  assert.doesNotMatch(reflectAgain("bad", false), /workflow/);
+  assert.match(reflectAgain("bad"), /note, skill and workflow block/);
 });
 
 test("pi: a notes run on the runner is given no learned_workflow, though its agent learned an active workflow", async (t) => {

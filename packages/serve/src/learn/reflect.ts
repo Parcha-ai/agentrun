@@ -166,8 +166,8 @@ const draftAsk = (names: readonly string[]): string => {
 
 /** The end-of-run turn asked again, once, when the parser refused its answer: why, in the parser's own words (`detail`,
  *  parseReflection's), and the whole answer again in the format. */
-export function reflectAgain(detail: string): string {
-  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every note, skill and workflow block in it, and nothing else.`;
+export function reflectAgain(detail: string, workflows?: false): string {
+  return `Your answer could not be read: ${detail}. Give the whole answer again in the format asked for above, every ${workflows === false ? "note and skill" : "note, skill and workflow"} block in it, and nothing else.`;
 }
 
 /** The end-of-run turn asked again, once, when the checks left a workflow draft out because its dry run failed: which
