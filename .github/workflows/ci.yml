@@ -59,9 +59,6 @@ jobs:
           go-version-file: packages/computer/daemon/go.mod
           cache: false
       - run: npm run build:daemon -w @parcha/agentrun-computer
-      # And phoned, the phone's driver, dist/phoned.jar: javac and d8 on the image's JDK 17 and Android SDK (android-35,
-      # build-tools 35.0.0, packages/computer/scripts/android-sdk.mjs). A runner without them fails here in one sentence.
-      - run: npm run build:phoned -w @parcha/agentrun-computer
       - name: Pack what the build wrote
         run: node scripts/ci-build-output.mjs pack "$RUNNER_TEMP/build"
       - uses: actions/upload-artifact@v4
@@ -393,9 +390,11 @@ jobs:
       - run: npm run test:chrome -w @parcha/pi-browser
 
   phoned:
-    # phoned, the phone's driver (packages/computer/daemon-android): its JVM tests, then the phone harness and the
-    # conformance suite's phone kind against its real core over a scripted phone (npm run test:phoned), on the image's
-    # JDK 17. Not part of the verify gate.
+    # phoned, the phone's driver (packages/computer/daemon-android), on a toolchain this job sets up itself (Temurin 17
+    # and the pinned Android SDK zips, .github/actions/android-toolchain), so nothing gated depends on it: its build,
+    # dist/phoned.jar, checked (a dex jar stamped with the package version), then its JVM tests, the phone harness and
+    # the conformance suite's phone kind against its real core over a scripted phone (npm run test:phoned). Not part
+    # of the verify gate.
     needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -413,6 +412,9 @@ jobs:
           path: ${{ runner.temp }}/build
       - name: The build job's output, for this tree and this Node
         run: node scripts/ci-build-output.mjs unpack "$RUNNER_TEMP/build"
+      - uses: ./.github/actions/android-toolchain
+      - run: npm run build:phoned -w @parcha/agentrun-computer
+      - run: npm run check:phoned -w @parcha/agentrun-computer
       - run: npm run test:phoned -w @parcha/agentrun-computer
 
   console-e2e:

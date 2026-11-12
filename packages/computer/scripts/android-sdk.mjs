@@ -6,9 +6,11 @@ import { delimiter, join, sep } from "node:path";
 
 /**
  * The Android SDK both build with: the platform they compile against and the build tools whose d8 makes their dex
- * (and aapt2, zipalign and apksigner the fixture's APK), both shipped by GitHub's ubuntu-24.04 and macos-15 runner
- * images, and minApi, the oldest Android they run on (11). phoned's jar bytes follow the build tools: another d8 makes
- * another sha256.
+ * (and aapt2, zipalign and apksigner the fixture's APK), and minApi, the oldest Android they run on (11). phoned's jar
+ * bytes follow the build tools: another d8 makes another sha256. phoned needs only android.jar,
+ * core-for-system-modules.jar and d8.jar, which the server image's android stage (packages/serve/docker/Dockerfile) and
+ * CI's android-toolchain action (.github/actions/android-toolchain) take from Google's zips pinned by sha256; change
+ * a pin here and there together.
  */
 export const ANDROID = { platform: 35, buildTools: "35.0.0", minApi: 30 };
 

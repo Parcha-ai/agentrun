@@ -19,13 +19,17 @@ are adapted from scrcpy; `NOTICE-scrcpy.md` lists each file.
 Plain Java 17, no Gradle. `npm run build:phoned` compiles against the pinned platform's own `java.base` and
 `android.jar`, so a `java.*` call a phone lacks fails at build time, then runs d8 with `--min-api 30`: phoned runs on
 Android 11 and later, and a call newer than that needs a `Build.VERSION.SDK_INT` check. The pin is `ANDROID` in
-`scripts/android-sdk.mjs`, shared with the ui fixture's build: `platforms;android-35` and `build-tools;35.0.0`, which
-GitHub's ubuntu-24.04 and macos-15 runner images ship. It needs:
+`scripts/android-sdk.mjs`, shared with the ui fixture's build: `platforms;android-35` and `build-tools;35.0.0`. It
+needs:
 
-- a JDK 17 or newer: `JAVA_HOME_17_X64`, `JAVA_HOME_17_arm64` (the runner images'), `JAVA_HOME`, else `PATH`;
-- an Android SDK (`ANDROID_HOME` or `ANDROID_SDK_ROOT`) with that platform and those build tools.
+- a JDK 17 or newer: `JAVA_HOME_17_X64`, `JAVA_HOME_17_arm64` (what `actions/setup-java` sets), `JAVA_HOME`, else
+  `PATH`;
+- an Android SDK (`ANDROID_HOME` or `ANDROID_SDK_ROOT`) with that platform and those build tools. phoned reads three
+  files of it, `android.jar`, `core-for-system-modules.jar` and `d8.jar`, which the server image's build stage and
+  CI's `phoned` job (`.github/actions/android-toolchain`) take from Google's zips pinned by sha256.
 
-When one is missing the build stops with one sentence naming it and where it looked.
+When one is missing the build stops with one sentence naming it and where it looked. `npm run check:phoned` then
+checks the jar where it was built: a dex jar stamped with this package's version, or one sentence and exit 1.
 
 The jar is reproducible for a given pin: the same sources, version and build tools give the same bytes. Another
 build-tools version's d8 writes other bytes, so moving the pin changes the jar's sha256 (a frozen live run pins it).

@@ -91,7 +91,11 @@ test("the build stage builds phoned after the daemon, with a digest-pinned JDK 1
   const at = (text) => build.indexOf(text);
   const phoned = at("JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer");
   assert.ok(phoned > at("npm run build:daemon"), "phoned builds after the daemon");
-  assert.ok(at("test -f packages/computer/dist/phoned.jar") > phoned, "the build fails without the jar");
+  assert.ok(at("npm run check:phoned -w @parcha/agentrun-computer") > phoned, "the build fails without phoned's dex jar, stamped with the package version");
+  // CI's phoned job lays out the same SDK files from the same zips: one pair of pins.
+  const action = await readFile(join(ROOT, ".github/actions/android-toolchain/action.yml"), "utf8");
+  const pins = (text) => [...new Set(text.match(/\b[0-9a-f]{64}\b/g))].sort();
+  assert.deepEqual(pins(action), pins(stage.split("\n").filter((line) => line.startsWith("ADD ")).join("\n")), "the action's zips are the Dockerfile's");
 });
 
 test("the build stage builds the console before the server, so the server's dist carries it, and keeps none of its sources", async () => {

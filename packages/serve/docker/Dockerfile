@@ -63,7 +63,7 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
  && test -x packages/computer/dist/computerd-linux-amd64 && test -x packages/computer/dist/computerd-linux-arm64 \
  && rm -rf /tmp/go-build /tmp/go \
  && JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer \
- && test -f packages/computer/dist/phoned.jar \
+ && npm run check:phoned -w @parcha/agentrun-computer \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
       node_modules/@openai/codex node_modules/@openai/codex-* node_modules/.bin/codex \
