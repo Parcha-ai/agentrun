@@ -79,7 +79,12 @@ export interface OpenRequest {
 export interface Backend {
 	readonly id: string;
 	open(request: OpenRequest): Promise<WireResult<Episode>>;
+	/** Asked once before a bench run claims any computer: throws when the backend can't serve a bench at all. */
+	preflight?(signal: AbortSignal): Promise<void>;
 }
+
+/** An error no retry mends (serve lacks a route): thrown by a backend with `fatal: true`, it stops the bench run. */
+const isFatal = (error: unknown) => (error as { fatal?: boolean } | undefined)?.fatal === true;
 
 export type Outcome = "pass" | "fail" | "budget" | "infra" | "refused";
 
@@ -191,11 +196,18 @@ export async function resolveFinds(wire: Wire, params: JsonObject, signal?: Abor
 	return { ok: true, value: { ...params, steps: resolved, ...(params.state === undefined && typeof seen.state === "string" ? { state: seen.state } : {}) } };
 }
 
-/** Why a ui.act's answer means its steps did not all happen, or undefined when they did. */
-function actShortfall(value: unknown): string | undefined {
-	const v = (value ?? {}) as { steps?: { error?: { kind?: string; message?: string } }[]; expect?: string };
-	const refused = (v.steps ?? []).findIndex((one) => one.error !== undefined);
-	if (refused >= 0) return `its step ${refused + 1} was refused: ${v.steps?.[refused]?.error?.kind}: ${v.steps?.[refused]?.error?.message}`;
+/**
+ * Why a ui.act's answer means its steps did not all happen, or undefined when they did. A step counts only when it
+ * answers verified: true (a readback saw its effect); verified: false is unconfirmed, so a setup or an oracle that
+ * relies on it has not done its job.
+ */
+export function actShortfall(value: unknown): string | undefined {
+	const v = (value ?? {}) as { steps?: { route?: string; verified?: boolean; error?: { kind?: string; message?: string } }[]; expect?: string };
+	const steps = v.steps ?? [];
+	const refused = steps.findIndex((one) => one.error !== undefined);
+	if (refused >= 0) return `its step ${refused + 1} was refused: ${steps[refused]?.error?.kind}: ${steps[refused]?.error?.message}`;
+	const unverified = steps.findIndex((one) => one.verified !== true);
+	if (unverified >= 0) return `its step ${unverified + 1} ran by the ${steps[unverified]?.route ?? "unknown"} route but was not verified (no readback saw its effect)`;
 	if (v.expect === "unmet") return "its expect did not hold in time";
 	return undefined;
 }
@@ -380,6 +392,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 				agent = failed ? { outcome: "error", message: `oracle: ${failed}` } : { outcome: "done" };
 			} else agent = { outcome: "done" };
 		} catch (error) {
+			if (isFatal(error)) throw error;
 			agent = spent ? { outcome: "budget", message: (error as Error).message } : { outcome: "infra", message: `the agent's driver threw: ${(error as Error).message}` };
 		} finally {
 			clearTimeout(wall);
@@ -418,7 +431,10 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 			const teardownFailed = await runCalls(tapped("teardown"), resolved.teardown, AbortSignal.timeout(120_000)).catch((error: Error) => error.message);
 			if (teardownFailed) record.entry(ENTRY.cleanup, { teardown: teardownFailed });
 		}
-		await episode.release().catch((error: Error) => record.entry(ENTRY.cleanup, { release: error.message }));
+		await episode.release().catch((error: Error) => {
+			record.entry(ENTRY.cleanup, { release: error.message });
+			if (isFatal(error)) throw error;
+		});
 	}
 }
 
@@ -502,6 +518,7 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 	const signal = options.signal ?? new AbortController().signal;
 	const ids = options.arms.map((arm) => arm.id);
 	if (new Set(ids).size !== ids.length) throw new Error("two arms have the same id");
+	await options.backend.preflight?.(signal);
 	options.store.write(
 		"bench.json",
 		`${JSON.stringify(
@@ -525,14 +542,21 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 	const results: Result[] = [];
 	const retries = options.retries ?? 2;
 	let next = 0;
+	let fatal: unknown;
 	const worker = async () => {
-		while (next < jobs.length && !signal.aborted) {
+		while (next < jobs.length && !signal.aborted && fatal === undefined) {
 			const job = jobs[next++] as (typeof jobs)[number];
 			const resolved = resolveTask(job.task, job.seed);
 			for (let n = 1; n <= retries + 1; n += 1) {
-				const result = await attempt(options, bench, resolved, job.arm, n, signal).catch(
-					(error: Error): Result => ({ bench, run: "-", task: job.task.spec.id, version: job.task.spec.version, sha256: job.task.sha256, split: job.task.spec.split, seed: job.seed, arm: job.arm.id, attempt: n, outcome: "infra", scored: false, rerun: false, why: `the runner threw: ${error.message}`, steps: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 }),
-				);
+				const result = await attempt(options, bench, resolved, job.arm, n, signal).catch((error: Error): Result | undefined => {
+					if (isFatal(error)) {
+						fatal ??= error;
+						return undefined;
+					}
+					return { bench, run: "-", task: job.task.spec.id, version: job.task.spec.version, sha256: job.task.sha256, split: job.task.spec.split, seed: job.seed, arm: job.arm.id, attempt: n, outcome: "infra", scored: false, rerun: false, why: `the runner threw: ${error.message}`, steps: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 };
+				});
+				// A fatal error stops this worker, and the others before their next job.
+				if (!result) return;
 				const again = result.outcome === "infra" && n <= retries && !signal.aborted;
 				const kept = { ...result, rerun: again };
 				results.push(kept);
@@ -543,5 +567,6 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 		}
 	};
 	await Promise.all(Array.from({ length: Math.max(1, options.parallel ?? 1) }, worker));
+	if (fatal !== undefined) throw fatal;
 	return results;
 }

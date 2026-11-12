@@ -170,20 +170,24 @@ serve that keeps them. The files they touch are held (`packages/serve/src/openap
 `workspace/resolve-computer.ts`, `workspace/computer-for-claim.ts` and the generated clients), so they are a change for
 serve's owner:
 
-1. `POST /agents/{agent_id}/runs` takes `hold: "bench"` and `max_tool_calls`: the run claims its computer and holds it,
-   `computer.state` `held`, and does not start its agent; `POST /runs/{run_id}/start` starts it.
+1. `POST /agents/{agent_id}/runs` takes `hold: "bench"`, `max_tool_calls` and `labels`: the run claims its computer and
+   holds it, `computer.state` `held`, and does not start its agent; `POST /runs/{run_id}/start` starts it.
 2. `POST /runs/{run_id}/computer/call` `{method, params}` answers `{ok, value}` or `{ok: false, error}`: the bench's
    channel to a held run's computer, for every group the computer has (exec on a phone included, which the agent is not
    given), journalled as the bench's.
-3. The computer stays held after the run ends until `POST /runs/{run_id}/computer/release` (404 once released), or a
-   hold timeout; a release of a run whose agent never started ends the run.
+3. The computer stays held after the run ends until `POST /runs/{run_id}/computer/release` (404 `not_found` once
+   released, a message other than "no route"), or a hold timeout; a release of a run whose agent never started ends the
+   run.
 4. serve journals each of the agent's computer calls as `agentrun.computer.step`, in the shape of this package's
    `Step`, readable as `GET /runs/{run_id}/journal?kind=...&after=` `{entries, has_more, next_after}`.
 5. `GET /runs/{run_id}` answers `computer {state, provider, agent_groups, why}`, `cost {usd}`, `answer` (the text of
    the agent's last turn) and `error {code}`; a platform failure's code is one of `computer_unavailable`,
    `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`.
 
-Until serve has them, `--backend serve` stops at its first request that serve doesn't answer as above.
+Until serve has them, `--backend serve` stops before it claims any computer, with one error that names each route serve
+lacks (a 404 "no route" or a 405), the body fields it keeps none of (a 422 `not_allowed`), and the item above that asks
+for it. It asks once, of an agent and a run nobody has, so the asking claims nothing. A route that goes missing later
+stops the bench at the first episode that needs it, its computer released where serve can.
 
 ## Live runs
 

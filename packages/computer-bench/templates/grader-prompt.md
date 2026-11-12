@@ -14,8 +14,9 @@ real work. Be exact, not generous.
 - **The end state:** the front app's accessibility tree after the agent stopped, and the last three screenshots (the
   last is the end state; earlier ones show how it got there).
 - **The agent's last steps:** each protocol call it made, with its route (semantic: pressed through the accessibility
-  tree; background or foreground: synthesized input; page: through a browser's DevTools), whether the driver verified
-  it, whether the screen changed, and errors (stale means the element or the screen moved under it).
+  tree; background or foreground: synthesized input; page: through a browser's DevTools), how many of its steps the
+  driver verified (a readback saw the effect; an unverified step is unconfirmed, never evidence that it worked), whether
+  the screen changed, and errors (stale means the element or the screen moved under it).
 - **The agent's end:** how its run ended (done, out of budget, error), its final answer if the task asked for one, its
   cost and step count.
 

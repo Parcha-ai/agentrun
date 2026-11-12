@@ -17,11 +17,11 @@ const tasks = (...ids) => {
 };
 
 /** Each episode on a fresh fake ui driver, over its real line stream; `drivers` collects them. */
-function driverBackend(agents, drivers = []) {
+function driverBackend(agents, drivers = [], options = {}) {
 	return fakeBackend({
 		agents,
 		connect: async () => {
-			const connection = await fakeUiConnection({ quietMs: 20 });
+			const connection = await fakeUiConnection({ quietMs: 20, ...options });
 			drivers.push(connection.driver);
 			return { wire: connection.client, close: connection.close };
 		},
@@ -132,4 +132,29 @@ test("an oracle act whose find matches nothing, or whose step is refused, or who
 		assert.equal(proof.solved, "fails", proof.task);
 		assert.ok(proof.wrong.includes("the oracle did not run to its end"), proof.task);
 	}
+});
+
+test("an oracle step that ran but answered verified false is unconfirmed, never a pass; verified true is", async () => {
+	const [task] = tasks("fixture.wifi");
+	// The canvas takes foreground input only. On a driver that can't tell (blindBackground, as on a Mac), a click without
+	// foreground goes the background route, lands nowhere and answers verified false; with foreground it lands and its
+	// count reads it back.
+	const canvas = (id, foreground) => ({
+		...task,
+		spec: {
+			...task.spec,
+			id,
+			oracle: [
+				{ method: "ui.act", params: { target: { app: FIXTURE_APP }, steps: [{ click: { find: { name: { equals: "Canvas" } } } }], ...(foreground ? { foreground: true } : {}) } },
+				{ method: "ui.act", params: { target: { app: FIXTURE_APP }, steps: [{ set: { find: { role: "switch", name: { equals: "Wi-Fi" } } }, value: "on" }] } },
+			],
+		},
+	});
+	const out = tmp();
+	const proofs = await verifySuite({ tasks: [canvas("fixture.blind", false), canvas("fixture.seen", true)], seeds: [1], backend: driverBackend({}, [], { blindBackground: true }), nullStore: new Store(join(out, "null")), oracleStore: new Store(join(out, "oracle")) });
+	const blind = proofs.find((p) => p.task === "fixture.blind");
+	assert.equal(blind.solved, "fails");
+	assert.match(blind.why ?? "", /ui\.act: its step 1 ran by the background route but was not verified/);
+	const seen = proofs.find((p) => p.task === "fixture.seen");
+	assert.equal(seen.solved, "passes", seen.why);
 });

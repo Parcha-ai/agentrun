@@ -238,7 +238,9 @@ main(process.argv.slice(2)).then(
 			process.exitCode = 2;
 			return;
 		}
-		process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+		// A fatal error (serve lacks a route) says all it means in its message; a stack would bury it.
+		const fatal = (error as { fatal?: boolean }).fatal === true;
+		process.stderr.write(`${error instanceof Error ? (fatal ? error.message : (error.stack ?? error.message)) : String(error)}\n`);
 		process.exitCode = 1;
 	},
 );
