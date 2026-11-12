@@ -18,12 +18,16 @@ test("a failed run takes no follow-up, and archiving closes a completed one: an 
   const closed = await api("POST", `/runs/${archived.run_id}/messages`, { content: "x" });
   assert.deepEqual([closed.status, closed.body.error.code], [409, "not_continuable"]);
   assert.match(closed.body.error.message, /archived/);
+  assert.deepEqual(closed.body.error.details, { reason: "archived", archived: "run" });
+  assert.deepEqual(closed.body.error.next_action, { type: "request", method: "POST", path: `/runs/${archived.run_id}/unarchive`, caller_supplies: [] });
   const ofAgent = await startRun(api, "solo", "What is six times seven?");
   await follow(api, ofAgent.run_id, ["completed"]);
   assert.equal((await api("POST", "/agents/solo/archive")).status, 200);
   const agentClosed = await api("POST", `/runs/${ofAgent.run_id}/messages`, { content: "x" });
   assert.deepEqual([agentClosed.status, agentClosed.body.error.code], [409, "not_continuable"]);
   assert.match(agentClosed.body.error.message, /agent is archived/, "the refusal says the run's agent is archived");
+  assert.deepEqual(agentClosed.body.error.details, { reason: "archived", archived: "agent" });
+  assert.deepEqual(agentClosed.body.error.next_action, { type: "request", method: "POST", path: "/agents/solo/unarchive", caller_supplies: [] });
   for (const id of [archived.run_id, ofAgent.run_id]) assert.equal(storeRun(data, id).state, "completed", "a refused follow-up opens nothing");
 });
 
