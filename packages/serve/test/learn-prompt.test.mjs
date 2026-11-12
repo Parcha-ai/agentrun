@@ -146,3 +146,16 @@ test("what a note says is the checker's to judge: a parsed answer's notes go to 
   const checked = checkProposal({ base: baseOf(), changes: parsed.notes.map(({ file, text }) => added(file, text)) });
   assert.deepEqual(checked.problems.map((p) => [p.rule, p.path]), [["outside", "../outside.md"], ["note", "ok.md"]], "the index is the host's, and ignored");
 });
+
+test("a run with decision providers is told a workflow draft may use judge, pick and sift nodes on its decision provider; a run with none (or only a denied one) keeps the ban, and neither may use a code node", () => {
+  const ban = "no judge, pick or sift node";
+  const none = reflectPrompt({ dir: DIR, active: 0, tools: ["read"] }).replace(/\s+/g, " ");
+  assert.ok(none.includes(ban), "no decisions: the ban stays");
+  assert.ok(reflectPrompt({ dir: DIR, active: 0, tools: ["read"], decisions: { providers: {}, default: "jev" } }).replace(/\s+/g, " ").includes(ban), "decisions with no provider: the ban stays");
+  assert.ok(reflectPrompt({ dir: DIR, active: 0, decisions: { providers: { jev: {} }, default: "jev", gated: { jev: "deny" } } }).replace(/\s+/g, " ").includes(ban), "its only provider denied: the ban stays");
+  for (const decisions of [{ providers: { jev: {} }, default: "jev" }, { providers: { jev: {} }, default: "jev", gated: { jev: "ask" } }]) {
+    const allowed = reflectPrompt({ dir: DIR, active: 0, tools: ["read"], decisions }).replace(/\s+/g, " ");
+    assert.ok(!allowed.includes(ban), allowed);
+    assert.match(allowed, /may use judge \(.+\), pick \(.+\) and sift \(.+\) nodes, which run on this run's decision provider under its cap and tool policy; no code node, no shell or executor call\./);
+  }
+});
