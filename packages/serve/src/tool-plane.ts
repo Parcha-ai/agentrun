@@ -54,7 +54,7 @@ export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-key
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
-export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
+export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "subagent", "pdf_pages", "llm"];
 /** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
  *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
  *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */

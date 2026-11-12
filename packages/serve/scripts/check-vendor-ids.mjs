@@ -20,11 +20,9 @@ import ts from "typescript";
  */
 export const BASELINE = {
 	// S7, DEL-03: the old box stack (pi-transport's Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
-	"boxes.ts": { ids: { docker: 6, daytona: 7, modal: 1 }, why: "DEL-03 (S7): the old box stack" },
-	"place.ts": { ids: { docker: 4, daytona: 2 }, why: "DEL-03 (S7): the old box stack's places" },
-	"box-egress-vm.ts": { ids: { kernel: 2 }, why: "a false positive: the OS's kernel (vmDocker's `kernel` option), not the provider" },
-	"box-settings.ts": { ids: { kernel: 1 }, why: "a false positive: the OS's kernel (vmDocker's `kernel` option, passed on), not the provider" },
-	"server.ts": { ids: { docker: 9, daytona: 3, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },
+	"place.ts": { ids: { docker: 4, daytona: 1, modal: 1 }, why: "DEL-03 (S7): the old box stack's places" },
+	"place-offers.ts": { ids: { docker: 7, daytona: 5, modal: 4 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
+	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },
 	// The browser plane's default vendor, Browserbase (a run kept from before the pick, or a plane that names none); its
 	// vendors are the registry's browser providers that need a key. `kernel` in tool-plane.ts is web_fetch's guarded
 	// fetch, not the provider.
