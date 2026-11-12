@@ -84,6 +84,7 @@
     "build": "tsc -p tsconfig.json",
     "build:daemon": "node scripts/build-daemon.mjs",
     "build:phoned": "node scripts/build-phoned.mjs",
+    "build:ui-fixture": "node scripts/build-ui-fixture.mjs",
     "test:phoned": "node scripts/build-phoned.mjs --test && node scripts/build-phoned.mjs --fake && node --test test/phoned/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",

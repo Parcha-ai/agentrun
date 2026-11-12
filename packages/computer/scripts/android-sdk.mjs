@@ -2,7 +2,7 @@
 // for both, and one sentence when something is missing, naming it and where it was looked for. Never a silent skip.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { delimiter, join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
 
 /**
  * The Android SDK both build with: the platform they compile against and the build tools whose d8 makes their dex
@@ -63,10 +63,13 @@ export function run(script, tool, args, options = {}) {
 }
 
 /**
- * The pinned SDK's files: the platform's android.jar and core-for-system-modules.jar, and a build tool by name (d8,
- * aapt2, zipalign, apksigner). Each is checked before it is given.
+ * The pinned SDK's files: the platform's android.jar and core-for-system-modules.jar, a build tool by name (d8, aapt,
+ * aapt2, zipalign, apksigner), each checked before it is given, and env, the environment to run the build tools in:
+ * d8 and apksigner are scripts that run `java` from PATH, so the JDK found above comes first there.
  */
 export function androidSdk(script) {
+	const javaBin = dirname(jdk(script, "java"));
+	const env = { ...process.env, PATH: [javaBin, process.env.PATH].filter(Boolean).join(delimiter) };
 	const needs = `platforms;android-${ANDROID.platform} and build-tools;${ANDROID.buildTools}`;
 	const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 	if (!sdk) fail(script, `it needs an Android SDK with ${needs}, and neither $ANDROID_HOME nor $ANDROID_SDK_ROOT is set.`);
@@ -79,6 +82,7 @@ export function androidSdk(script) {
 	const windows = process.platform === "win32";
 	const scripts = new Set(["d8", "apksigner"]);
 	return {
+		env,
 		androidJar: need(join(platform, "android.jar"), platformPkg),
 		systemModules: need(join(platform, "core-for-system-modules.jar"), platformPkg),
 		tool: (name) => need(join(sdk, "build-tools", ANDROID.buildTools, windows ? (scripts.has(name) ? `${name}.bat` : `${name}.exe`) : name), `build-tools;${ANDROID.buildTools}`),

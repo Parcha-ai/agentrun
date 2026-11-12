@@ -81,7 +81,7 @@ const dist = join(root, "dist");
 mkdirSync(dist, { recursive: true });
 const out = join(dist, "phoned.jar");
 rmSync(out, { force: true });
-run(d8, ["--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", out, ...files(classes, ".class")]);
+run(d8, ["--release", "--min-api", String(ANDROID.minApi), "--lib", sdk.androidJar, "--output", out, ...files(classes, ".class")], { env: sdk.env });
 // build/ is git-ignored, so CI's build output would carry its megabytes of Android's java.base to every test job.
 rmSync(build, { recursive: true, force: true });
 console.log(`${SCRIPT}: ${out} (${statSync(out).size} bytes, ${version})`);
