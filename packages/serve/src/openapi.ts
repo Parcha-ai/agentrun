@@ -10,7 +10,8 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
-import { HELD_CALL_MS, HOLD_MAX_MINUTES, HOLD_MINUTES, PROTOCOL_METHODS } from "./computer-held.js";
+import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
+import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES } from "./learning.js";
@@ -1278,8 +1279,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/runs/{run_id}/computer/call": {
     post: {
-      operationId: "callRunComputer", tags: ["runs"], summary: "Send a held run's computer one protocol call",
-      description: `One call of the computer protocol (spec/computer) on the computer a run holds (\`hold: true\`), before its agent starts, while it runs, or after it ended and before the release. The answer is the computer's, verbatim: \`{ok: true, value}\` or \`{ok: false, error: {code, message, data?}}\`, the method's result or error as the protocol defines it. A row the run's runner applies, one at a time; each call starts the hold's \`hold_minutes\` again, and a call runs ${HELD_CALL_MS / 1000} seconds at most. \`method\` is one of the protocol's methods (422 otherwise). 404 for a run that holds no computer; 409 \`computer_not_live\` when it is not up yet or was let go; 503 when no runner took the row in time. The owner's: the server's token or the owner's session. A run never holds the server's token, so its agent drives its computer through its own tools alone.`,
+      operationId: "callRunComputer", tags: ["runs"], summary: "Send a run's computer one protocol call",
+      description: `One call of the computer protocol (spec/computer) on a running run's computer: a sandbox, a desktop or a phone. A run that holds its computer (\`hold: true\`) takes calls before its agent starts, while it runs, and after it ended until the release; each call starts the hold's \`hold_minutes\` again. The answer is the computer's, verbatim: \`{ok: true, value}\` or \`{ok: false, error: {code, message, data?}}\`, the method's result or error as the protocol defines it. A row the run's runner answers, behind the owner's take-over as the agent's calls are: while a person holds the desktop or phone, the call waits for the hand-back. A call runs ${CALL_MS / 1000} seconds at most, its wait included (then \`{ok: false, error: {code: "timeout"}}\`). The run's record keeps each call's method, outcome and time, never its params or its answer's bytes. \`method\` is one of the protocol's methods (422 otherwise). 404 for no such run; 409 \`computer_not_live\` when the run is not running, has no computer that takes calls, or let its computer go; 503 when no runner took the row in time. The owner's: the server's token or the owner's session. A run never holds the server's token, so its agent drives its computer through its own tools alone.`,
       parameters: [ref("parameters/RunId")],
       requestBody: {
         required: true,
@@ -1294,7 +1295,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         }, "The computer's answer."),
         ...errors(401, 404, 409, 422, 429, 500, 503),
       },
-      "x-agentrun-serve": "held/1",
+      "x-agentrun-serve": "channel/1",
     },
   },
   "/runs/{run_id}/computer/release": {
@@ -2126,6 +2127,31 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: { type: "object", additionalProperties: false, required: ["label", "kind", "status", "duration_ms"], properties: { label: { type: "string" }, kind: { type: "string", description: "The node's kind, as the workflow DSL names it (`extract`, `agent`, `call`, ...)." }, status: { type: "string", description: "How the node ended: `ok`, `failed` or `escalated`. Why a node failed is never shown: its text may hold part of a secret." }, duration_ms: { type: "number" }, model: { type: "string", description: "A model node's (agent, decide, extract, report): the model it ran on, as the run's model route names it. Absent on a call node." }, tier: { type: "string", description: "The tier the model node named (`fast`, `strong`); absent for none, which runs on the run's own model." } } },
       description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. Absent on every other row.",
       "x-agentrun-serve": "learnednodes/1",
+    },
+    computer_calls: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false, required: ["method", "ok", "ms"],
+        properties: {
+          method: { type: "string", description: "The computer protocol method (spec/computer)." },
+          ok: { type: "boolean" },
+          ms: { type: "number" },
+          code: { type: "string", description: "The error's code, when the call failed." },
+          steps: {
+            type: "array",
+            items: { type: "object", additionalProperties: false, required: ["do"], properties: { do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." }, route: { type: "string", description: "The route it ran by." }, verified: { type: "boolean", description: "Whether a readback showed it took." }, error: { type: "string", description: "The kind of error that refused it." } } },
+            description: "A ui.act call's steps, in order.",
+          },
+          expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
+        },
+      },
+      description: "On a tool call's `tool_result` row alone: each computer protocol call the tool made, in order, at most 200. Never a param's value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      "x-agentrun-serve": "computercalls/1",
+    },
+    computer_calls_dropped: {
+      type: "integer",
+      description: "On a `tool_result` row whose call made more than 200 computer calls: how many past the 200 its record left out. Absent otherwise.",
+      "x-agentrun-serve": "computercalls/1",
     },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),

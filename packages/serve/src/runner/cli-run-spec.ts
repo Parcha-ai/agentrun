@@ -64,6 +64,7 @@ import { journalEntries } from "./journal-reader.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { heldSpecOf } from "./held-run.js";
+import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
 import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
@@ -289,7 +290,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
-  const heldComputer = heldSpecOf(launch, computer.computer);
+  const loopComputer = loopComputerOf(computer.computer, computer.held);
+  const heldComputer = heldSpecOf(launch, loopComputer);
 
   // The CLI works in the run's scratch folder on this machine (its working directory), its own files (home, state, the
   // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
@@ -550,8 +552,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
-    // The run's desktop or phone and the person's hold on it, as the claim made them (as the pi spec gives them).
-    ...(computer.held ? { computer: computer.held } : {}),
+    // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
+    ...(loopComputer ? { computer: loopComputer } : {}),
     workRoot: root,
     // Where the CLI works (its working directory, the run's folder to its file tools): what its absolute paths are read
     // against on the run's rows.
