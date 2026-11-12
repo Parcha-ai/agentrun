@@ -2,11 +2,13 @@
 // every input event it gets as one JSON line in a file the case reads over files. On a desktop it is computerd-fixture,
 // a test-only static binary: a 200x200 override-redirect window at (0, 0) in four known colors, which grabs focus. On
 // Android it is a small APK that logs touches and its own launch to its files directory and shows a button with a fixed
-// id. This file is their contract: the binary and the APK come with the PRs that first run them.
+// id. This file is their contract: the binary and the APK come with the PRs that first run them. On a Windows desktop it
+// is a PowerShell script this package carries (windows-fixture.ts), the same window, started detached with Start-Process.
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "../files.js";
 import type { Button, Group, Point, Rect } from "../protocol.js";
 import type { CaseContext } from "./types.js";
+import { WINDOWS_FIXTURE } from "./windows-fixture.js";
 
 /** The desktop fixture's window, in screenshot pixels. */
 export const FIXTURE_WINDOW: Rect = [0, 0, 200, 200];
@@ -87,7 +89,26 @@ async function ready(t: CaseContext, events: () => Promise<FixtureEvent[]>, what
  * the fixture's stop as soon as it is launched, before it logs ready, so a fixture that never does is stopped too.
  */
 export async function startFixture(t: CaseContext, path: string, launched: (stop: () => Promise<void>) => void): Promise<StartedFixture> {
-	const { kind } = t.provider.capabilities();
+	const { kind, os } = t.provider.capabilities();
+	if (kind === "desktop" && os === "windows") {
+		// No processes on a Windows desktop Orgo's API answers: the script is started detached with Start-Process (its
+		// file and its log as one argument list) and stopped by the pid its ready line logs.
+		needs(t, ["exec", "files"], "the Windows desktop fixture");
+		const dir = await t.dir();
+		const script = `${dir}\\agentrun-fixture.ps1`;
+		const log = `${dir}\\events.jsonl`;
+		t.ok(await writeFile(t.client, script, Buffer.from(WINDOWS_FIXTURE, "utf8"), { signal: t.signal }), `files.write of the fixture to ${script}`);
+		const started = await t.exec(["Start-Process", "powershell.exe", `-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "${script}" "${log}"`]);
+		t.equal(started.exitCode, 0, `Start-Process of the fixture (stderr ${JSON.stringify(started.err.trim())})`);
+		const events = () => logOf(t, log);
+		const stop = async () => {
+			const ready = (await events().catch(() => [] as FixtureEvent[])).find((e) => e.event === "ready") as { pid?: unknown } | undefined;
+			if (Number.isSafeInteger(ready?.pid)) await t.client.call("exec.run", { argv: ["taskkill.exe", "/PID", String(ready?.pid), "/F"], timeoutMs: 30_000 });
+		};
+		launched(stop);
+		await ready(t, events, "the Windows desktop fixture");
+		return { bounds: FIXTURE_WINDOW, events, stop };
+	}
 	if (kind === "desktop") {
 		needs(t, ["exec", "files", "processes"], "the desktop fixture");
 		const dir = await t.dir();

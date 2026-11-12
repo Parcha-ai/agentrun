@@ -15,9 +15,10 @@
 // label key of letters, digits and dots alone, so no label key holds an "_" and the mapping is one to one; a value with
 // ' or \ is refused too, since list's query quotes it.
 import { readFileSync } from "node:fs";
+import { BROWSERBASE } from "./descriptors/browserbase.js";
+import { BROWSER_IMAGE } from "./descriptors/shared.js";
 import {
 	cdpUrlProblem,
-	BROWSER_IMAGE,
 	type BrowserStream,
 	browserClient,
 	browserHello,
@@ -41,29 +42,33 @@ import {
 	releaseConfirmed,
 	restCall,
 	type UrlStore,
-	vendorFail,
+	causedFail,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import type {
-	AttachedComputer,
-	CallContext,
-	ComputerCapabilities,
-	ComputerConnection,
-	ComputerInfo,
-	ComputerProvider,
-	ComputerRef,
-	ComputerSpec,
-	CreatedComputer,
-	NetworkForm,
-	NetworkPolicy,
-	NetworkSpec,
-	Refusal,
+import {
+	type AttachedComputer,
+	type CallContext,
+	type ComputerCapabilities,
+	type ComputerConnection,
+	type ComputerInfo,
+	type ComputerProvider,
+	type ComputerRef,
+	type ComputerSpec,
+	type CreatedComputer,
+	type NetworkPolicy,
+	type NetworkSpec,
+	type Refusal,
+	type ReleaseHow,
+	runLifetimeMs,
 } from "./provider.js";
-import { fail, ok, type Result } from "./result.js";
+import { failFor, ok, type Result, vendorFail } from "./result.js";
 import { connectionError } from "./test-connection.js";
+
+/** This module's failures: one with code vendor names Browserbase. */
+const fail = failFor("browserbase");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const NAME = "Browserbase";
@@ -105,12 +110,10 @@ export function browserbaseLabelsProblem(labels: unknown): string | undefined {
 }
 
 /** A browser takes no mount. */
-export const MOUNT: readonly MountKind[] = [];
-/** The network a Browserbase browser runs on: Browserbase's own, open; it cannot be closed or narrowed. */
-export const NETWORK: readonly NetworkForm[] = ["open"];
+export const MOUNT: readonly MountKind[] = BROWSERBASE.mounts;
 
-/** The one configuration it offers, the kind registry's entry (kinds.ts): a browser with a CDP target and a live view. */
-export const CAPABILITIES: readonly KindCapabilities[] = [{ kind: "browser", groups: ["cdp", "stream"] }];
+/** The one configuration it offers, its descriptor's: a browser with a CDP target and a live view. */
+export const CAPABILITIES: readonly KindCapabilities[] = BROWSERBASE.capabilities;
 
 /** A session as Browserbase answers it; only what the provider reads. */
 export interface BrowserbaseSession {
@@ -239,7 +242,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		return {
 			kind: "browser",
 			lifetime: "vendor",
-			network: [...NETWORK],
+			network: [...BROWSERBASE.network],
 			isolation: "vm",
 			os: "linux",
 			daemon: "none",
@@ -271,7 +274,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
 		const body = {
 			...settings,
-			timeout: Math.ceil(spec.lifetimeMs / 1000),
+			timeout: Math.ceil(runLifetimeMs(spec) / 1000),
 			keepAlive: true,
 			userMetadata: toMetadata(written),
 			...(this.#projectId ? { projectId: this.#projectId } : {}),
@@ -283,16 +286,16 @@ export class BrowserbaseProvider implements ComputerProvider {
 			const failed = vendorFailure("browserbase", NAME, "POST /v1/sessions", error);
 			if (failed.ok || !createUncertain(error)) return failed;
 			// The session may have been made though its answer never came: found by its create label, never made again.
-			return vendorFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed));
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "browserbase");
 		}
 		if (idProblem(made?.id, NAME) !== undefined) {
-			return fail("browserbase", `Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(written)}`);
 		}
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
 			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
 			const released = await this.release(refOf(made), "delete");
-			return fail("browserbase", `Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
@@ -429,7 +432,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 		}
 		// Whatever held it (create, a read, a host's url store), a URL a driver would dial is wss: on Browserbase's own domain.
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
-		if (unusable !== undefined) return fail("browserbase", `the Browserbase session ${id} is not handed over: ${unusable}`);
+		if (unusable !== undefined) return vendorFail("browserbase",`the Browserbase session ${id} is not handed over: ${unusable}`);
 		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
@@ -437,7 +440,7 @@ export class BrowserbaseProvider implements ComputerProvider {
 	}
 
 	/** Asks Browserbase to release the session and waits until it reads as ended; one already ended or unknown is released. */
-	async release(ref: ComputerRef, how: "stop" | "delete", { signal }: CallContext = {}): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (how !== "delete") return fail("refused", `a Browserbase session is released with "delete"; it cannot be stopped and kept, so ${String(how)} is refused and the session is left as it is`);
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);

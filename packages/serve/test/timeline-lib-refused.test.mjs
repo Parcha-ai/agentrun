@@ -47,6 +47,21 @@ test("the model proxy's refusal of a request for the run's cap shows no Model re
   assert.deepEqual(usageOf([user("go"), started(), priced("one"), proxyRefused(CAP_BODY)])?.usage, usageOf([user("go"), started(), priced("one")])?.usage, "the refused request is no request and no cost");
 });
 
+// The same refusal through pi-ai's Messages client (the runner's pi route speaks Messages to the session's proxy): it
+// writes `<api> API error (400): <the body>`, the proxy's fields at its top.
+const messagesRefused = (body, api = "agentrun-session") => assistant([], 0, { stopReason: "error", errorMessage: `${api} API error (400): ${JSON.stringify(body)}`, usage: { input: 0, output: 0, cost: { total: 0 } } });
+
+test("the proxy's cap refusal through pi-ai's Messages client is no request either: no Model request failed row, no request, no cost", () => {
+  const rows = rowsOf([user("go"), started(), messagesRefused(CAP_BODY)]);
+  assert.deepEqual(failedRows(rows).map((row) => row.summary), [], JSON.stringify(rows.map((row) => [row.kind, row.summary])));
+  assert.equal(usageOf([user("go"), messagesRefused(CAP_BODY)])?.usage?.requests ?? 0, 0, "the refused request is no request");
+  assert.deepEqual(usageOf([user("go"), started(), priced("one"), messagesRefused(CAP_BODY)])?.usage, usageOf([user("go"), started(), priced("one")])?.usage, "and adds none after one that was sent");
+  // A provider named with a slash (a route's own name) is the same refusal: its body says whose it is.
+  assert.deepEqual(failedRows(rowsOf([user("go"), started(), messagesRefused(CAP_BODY, "openrouter/anthropic")])), [], "any provider name");
+  const provider = rowsOf([user("go"), started(), messagesRefused({ type: "invalid_request_error", message: "messages: roles must alternate" })]);
+  assert.equal(failedRows(provider).length, 1, "a provider's own error in that form keeps its row");
+});
+
 test("a provider's own 400, and a proxy refusal with no cap code, keep their Model request failed row", () => {
   const provider = rowsOf([user("go"), started(), proxyRefused({ type: "invalid_request_error", message: "messages: roles must alternate" })]);
   assert.equal(failedRows(provider).length, 1, JSON.stringify(provider.map((row) => [row.kind, row.summary])));

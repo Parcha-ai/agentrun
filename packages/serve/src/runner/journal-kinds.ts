@@ -156,6 +156,9 @@ export interface BudgetData {
   readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number; readonly bound_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
+  /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
+   *  run's pause. */
+  readonly node?: string | null;
 }
 
 export interface CallStartData {
@@ -286,8 +289,9 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
 export interface EndData {
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
-  /** How an ended run ended, set only for an escalation (the store's RunOutcome). */
-  readonly outcome?: "completed" | "escalated";
+  /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
+   *  (a person's stop: the turn is over, not the run) or 'cancelled' (stopEnd). */
+  readonly outcome?: "completed" | "escalated" | "stopped" | "cancelled";
   /** What the run cost, as its end knows it. */
   readonly costUsd?: number;
   /** The run's metrics (the old StoredMetrics JSON). */

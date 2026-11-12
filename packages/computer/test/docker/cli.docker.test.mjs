@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { conformanceCases, DockerProvider, GROUPS } from "../../dist/index.js";
+import { DockerProvider } from "../../dist/docker.js";
+import { conformanceCases, GROUPS } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const CLI = fileURLToPath(new URL("../../dist/conformance/cli.js", import.meta.url));
