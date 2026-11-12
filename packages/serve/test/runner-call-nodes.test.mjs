@@ -202,7 +202,6 @@ const boundedCall = (word, maxTokens) => ({
   root: { node: "call", label: "call-0", via: "tool", tool: "llm", args: { prompt: `${word}: say ok.`, maxTokens }, out: "Llm", as: "c0", deadline_s: 120 },
 });
 
-// SKIP (follow-up #2432): a paid web_search call node on Parallel is not booked as one charge row on the run's ledger
 test("a paid web_search call node on Parallel: its search sent once, and booked once on the run's ledger at Parallel's fee", async (t) => {
   globalThis.fauxParallelSearches = 0;
   const workflow = {

@@ -318,7 +318,6 @@ test("a workflow's model node naming web_search, its revision listing no tools, 
   assert.deepEqual(await ran(), { web_search: "exa-keyless" }, "keyless Exa picked: keyless, the key held or not");
 });
 
-// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
 test("a run keeps the tools its first launch resolved: a PUT between its launches changes the next run's, never its own", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
   const files = { parallel: join(dir, "parallel.jsonl"), web: join(dir, "dialled.txt") };

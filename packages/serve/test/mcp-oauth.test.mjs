@@ -719,9 +719,7 @@ for (const harness of ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent
   });
 }
 
-// The same runs' view: a CLI run's final answer is its record's last model message. Skipped (E2v3: CLI run view over the
-// store) while the switch's run view renders only pi's entries (store-reads/journal.ts runTimeline: timelineOf, not the
-// loop's CLI record); they flip by name when it lands.
+// The same runs' view: a CLI run's final answer is its record's last model message.
 for (const harness of [...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex"]) {
   test(`${harness}: a sign-in whose refresh is refused at launch: the run view's final answer says to sign in again`, { timeout: 240_000 }, async (t) => {
     const { last, view } = await refusedAtLaunch(t, harness);

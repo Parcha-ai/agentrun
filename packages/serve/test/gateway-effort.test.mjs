@@ -37,7 +37,6 @@ function assertLevels(runs, read, what) {
   for (const level of LEVELS) assert.equal(runs[level].run.status, "completed", `${level}: ${JSON.stringify(runs[level].run.error)}`);
 }
 
-// SKIP (follow-up #2080): a pi run's effort (low, medium, high) does not reach its Responses request; reasoning.effort is always none on the runner.
 test("pi: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 120_000 }, async (t) => {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
