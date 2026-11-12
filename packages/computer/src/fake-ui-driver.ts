@@ -308,7 +308,7 @@ export class FakeUiDriver implements UiSource {
 			return { route, verified: true };
 		};
 		const target = scripted(element?.key);
-		if (target !== undefined && disabled(target)) return fail("invalid", `${target.name ?? "the element"} is disabled`);
+		if (target !== undefined && disabled(target)) return fail("refused", `${target.name ?? "the element"} is disabled: a step on it does nothing, so none ran`);
 		if ("press" in step || ("perform" in step && step.action === target?.actions?.[0])) {
 			if (target?.route === "foreground") {
 				const route = pointer(target);
@@ -323,15 +323,17 @@ export class FakeUiDriver implements UiSource {
 		}
 		if ("set" in step) {
 			const scriptedTarget = target as FakeElement;
-			if (scriptedTarget.role === "switch" || scriptedTarget.role === "checkbox") {
-				if (step.value !== "on" && step.value !== "off") return fail("invalid", `a ${scriptedTarget.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
-				if (step.value === "on") state.checked.add(scriptedTarget.key);
-				else state.checked.delete(scriptedTarget.key);
-				return ok({ route: "semantic", verified: true });
-			}
-			if (scriptedTarget.role !== "textbox" && scriptedTarget.role !== "searchbox") return fail("unsupported", `a ${scriptedTarget.role} has no value to set`);
-			state.values.set(scriptedTarget.key, step.value);
-			return ok({ route: "semantic", verified: true });
+			const toggle = scriptedTarget.role === "switch" || scriptedTarget.role === "checkbox";
+			if (toggle && step.value !== "on" && step.value !== "off") return fail("invalid", `a ${scriptedTarget.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
+			if (!toggle && scriptedTarget.role !== "textbox" && scriptedTarget.role !== "searchbox") return fail("unsupported", `a ${scriptedTarget.role} has no value to set`);
+			// A view that takes real input only is set by real input, as a press is: never by the semantic route.
+			const via: Result<UiRun["route"]> = scriptedTarget.route === "foreground" ? pointer(scriptedTarget) : ok("semantic");
+			if (!via.ok) return via;
+			if (!takes(scriptedTarget, via.value)) return ok({ route: via.value, verified: false });
+			if (toggle && step.value === "on") state.checked.add(scriptedTarget.key);
+			else if (toggle) state.checked.delete(scriptedTarget.key);
+			else state.values.set(scriptedTarget.key, step.value);
+			return ok({ route: via.value, verified: true });
 		}
 		if ("click" in step) {
 			// A point lands on what the app draws there, whether or not the view carries its elements (ui.tree off).

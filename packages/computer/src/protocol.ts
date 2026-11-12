@@ -906,7 +906,9 @@ export type DaemonErrorKind =
 	| "not_dir"
 	| "is_dir"
 	/** A ref whose element is gone, or a point whose window moved or redrew under it since its state. */
-	| "stale";
+	| "stale"
+	/** The call exists, but this value or state is not one it serves: a step on a disabled control. */
+	| "refused";
 
 export const JSONRPC_CODES = {
 	parse: -32700,

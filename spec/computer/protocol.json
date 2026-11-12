@@ -82,6 +82,7 @@
     "limit",
     "not_dir",
     "not_found",
+    "refused",
     "stale",
     "timeout",
     "unsupported"

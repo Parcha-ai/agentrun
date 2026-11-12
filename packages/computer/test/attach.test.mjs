@@ -195,7 +195,7 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	}
 	const old = await dial(hub, pairedFor(mac), new Old());
 	assert.equal(old.serve.closed.code, ATTACH_CLOSE.protocol);
-	assert.match(old.accepted.error.message, /speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(Computerd: its menu's Check for Updates/);
+	assert.match(old.accepted.error.message, /speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
 	assert.equal(redials(old.serve.closed.code), false, "a driver of another protocol stops dialing until it is updated");
 	assert.equal(hub.online("c-1"), false);
 });
@@ -239,6 +239,38 @@ test("a hello with no protocol or version is closed with protocol and the update
 	assert.equal(blank.accepted.ok, false);
 	assert.equal(blank.serve.closed.code, ATTACH_CLOSE.protocol);
 	assert.match(blank.accepted.error.message, /answered hello without its protocol and version: update the driver on Test Mac/);
+	// A hello of this protocol without a field serve reads is refused at the door, never met later as a throw.
+	class NoGroups extends FakeUiDriver {
+		hello() {
+			const { groups: _groups, arch: _arch, ...rest } = super.hello();
+			return rest;
+		}
+	}
+	const thin = await dial(hub, pairedFor(mac), new NoGroups());
+	assert.equal(thin.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(thin.accepted.error.message, /answered a protocol 0\.2 hello without arch, groups: update the driver on Test Mac \(the download is on the console's Computers page\)/);
+	assert.equal(hub.online("c-1"), false);
+});
+
+test("a driver that answers pings but never hello is closed idle once the hello wait ends, saying so", async () => {
+	const hub = new AttachHub({ helloMs: 50 });
+	class Mute extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "hello") return new Promise(() => {});
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const driver = new Mute();
+	const paired = pairedFor(driver);
+	const [serve, computer] = socketPair();
+	serveUiSocket(driver, computer);
+	const accepted = await hub.accept(paired, serve);
+	assert.equal(accepted.error?.code, "timeout");
+	assert.match(accepted.error.message, /did not answer hello within 0\.05 s/);
+	assert.equal(serve.closed.code, ATTACH_CLOSE.idle);
+	assert.equal(redials(ATTACH_CLOSE.idle), true, "it dials again on its own schedule");
+	assert.equal(hub.online(paired.id), false);
+	driver.close();
 });
 
 test("a driver updated within the protocol is accepted, and the provider's version and groups follow its live hello", async () => {
@@ -270,13 +302,15 @@ test("one run holds an attached computer; offline refuses create; release never 
 	assert.equal(offline.error.code, "gone");
 	assert.match(offline.error.message, /is not attached now/);
 	const { serve } = await dial(hub, paired, driver);
-	assert.equal((await provider.create(spec)).ok, true);
+	const held = (await provider.create(spec)).value;
+	assert.match(held.id, new RegExp(`^${paired.id}\\.[0-9a-f]{16}$`), "the run's ref names its hold");
 	const second = await provider.create({ ...spec, labels: { run: "b" } });
 	assert.equal(second.error.code, "refused");
-	assert.deepEqual((await provider.list({ run: "a" })).value.map((one) => one.ref.id), [paired.id]);
+	assert.deepEqual((await provider.list({ run: "a" })).value.map((one) => one.ref.id), [held.id]);
 	assert.deepEqual((await provider.list({ run: "b" })).value, []);
-	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "stop")).error.code, "unsupported");
-	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).ok, true);
+	assert.equal((await provider.release(held, "stop")).error.code, "unsupported");
+	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).error.code, "invalid", "release names a hold, never the computer");
+	assert.equal((await provider.release(held, "delete")).ok, true);
 	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).ok, true, "released, another run may hold it");
 	hub.revoke(paired.id, "the owner removed this computer");
 	assert.equal(serve.closed.code, ATTACH_CLOSE.unauthorized);
@@ -298,17 +332,22 @@ test("a run's release closes its connections: their calls in flight are cancelle
 		assert.match(refused.error.message, /a person's own machine on its own network, which a run cannot block or limit/);
 	}
 	assert.equal((await provider.network({ id: paired.id, name: paired.name }, "none")).error.code, "refused");
-	assert.equal((await provider.create(spec)).ok, true);
-	const first = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	const a = (await provider.create(spec)).value;
+	const first = (await provider.connect(a)).value;
 	await first.client.call("apps.launch", { id: APP });
 	const waiting = first.client.call("ui.act", { steps: [], expect: { text: "never", timeoutMs: 30_000 } });
 	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).ok, true);
+	assert.equal((await provider.release(a, "delete")).ok, true);
 	assert.equal((await waiting).error.code, "aborted", "the released run's call in flight is cancelled");
 	assert.equal((await first.client.call("ping", {})).error.code, "gone", "and its later calls are refused");
-	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).ok, true);
-	const second = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	assert.equal((await provider.connect(a)).error?.code, "gone", "and it cannot connect again under its ended hold");
+	const b = (await provider.create({ ...spec, labels: { run: "b" } })).value;
+	const second = (await provider.connect(b)).value;
 	assert.equal((await second.client.call("ping", {})).ok, true, "the next run's connection works over the same socket");
+	assert.equal((await provider.release(a, "delete")).ok, true, "a late release of the ended hold answers ok");
+	assert.equal((await second.client.call("ping", {})).ok, true, "and ends nothing of the next run's");
+	assert.deepEqual(hub.claimed(paired.id), { run: "b" });
+	assert.equal((await provider.attach({ id: a.id })).error?.code, "gone");
 	driver.close();
 });
 
@@ -319,11 +358,11 @@ test("a run's hold on an attached computer ends at its lifetime, released or not
 	const provider = attachedProvider(paired, hub);
 	const { serve } = await dial(hub, paired, driver);
 	const spec = { image: "attached", lifetimeMs: 80, network: "open", labels: { run: "a" } };
-	assert.equal((await provider.create(spec)).ok, true);
+	const a = (await provider.create(spec)).value;
 	const [held] = (await provider.list({ run: "a" })).value;
 	assert.ok(held.deadline instanceof Date && held.deadline.getTime() > Date.now(), "the hold reports its deadline");
-	assert.ok((await provider.attach({ id: paired.id })).value.spec.deadline instanceof Date);
-	const run = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	assert.ok((await provider.attach({ id: a.id })).value.spec.deadline instanceof Date);
+	const run = (await provider.connect(a)).value;
 	assert.equal((await run.client.call("ping", {})).ok, true);
 	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).error?.code, "refused", "held until its deadline");
 	await new Promise((resolve) => setTimeout(resolve, 150));
@@ -331,8 +370,11 @@ test("a run's hold on an attached computer ends at its lifetime, released or not
 	assert.equal(hub.claimed(paired.id), undefined);
 	assert.equal(hub.online(paired.id), true, "the person's machine stays attached");
 	assert.equal(serve.closed, undefined);
-	assert.equal((await provider.create({ ...spec, labels: { run: "b" }, lifetimeMs: 60_000 })).ok, true, "the next run claims it");
-	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).ok, true);
+	const b = (await provider.create({ ...spec, labels: { run: "b" }, lifetimeMs: 60_000 })).value;
+	assert.ok(b, "the next run claims it");
+	assert.equal((await provider.release(a, "delete")).ok, true, "run a's late release, after its deadline");
+	assert.deepEqual(hub.claimed(paired.id), { run: "b" }, "leaves run b's hold");
+	assert.equal((await provider.release(b, "delete")).ok, true);
 	const agent = await provider.create({ image: "attached", network: "open", labels: { agent: "x" }, owner: { agent: "x" } });
 	assert.equal(agent.ok, true, JSON.stringify(agent));
 	assert.equal(hub.deadline(paired.id), undefined, "an agent's hold has no deadline");

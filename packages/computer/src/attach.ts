@@ -3,6 +3,7 @@
 // with the token it got by pairing, and the same JSON-RPC messages travel as text frames, one message per frame. Serve
 // is the caller: it sends hello first, then the run's calls. The AttachHub keeps one live connection per paired
 // computer; attachedProvider hands that computer to a run as a provider, one run at a time.
+import { randomUUID } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
 import { type ComputerClient, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
@@ -16,6 +17,8 @@ export const ATTACH_SUBPROTOCOL = `agentrun.computer.${PROTOCOL_VERSION}`;
 export const ATTACH_HEARTBEAT_MS = 20_000;
 /** A side that hears nothing, not even a pong, for this long closes the socket with ATTACH_CLOSE.idle. */
 export const ATTACH_IDLE_MS = 60_000;
+/** Serve waits this long for a new socket's hello answer; a socket whose driver pings but never answers is closed idle. */
+export const ATTACH_HELLO_MS = 10_000;
 /** A pairing code lives this long, and is good once. */
 export const PAIRING_CODE_TTL_MS = 10 * 60_000;
 /** Eight characters a person reads off a screen and types, with no 0, O, 1 or I: "K7PD-W3QX". */
@@ -36,7 +39,7 @@ export const ATTACH_CLOSE = {
 	mismatch: 4400,
 	/** The token is unknown or was revoked: pair again. */
 	unauthorized: 4401,
-	/** Nothing heard for ATTACH_IDLE_MS. */
+	/** Nothing heard for ATTACH_IDLE_MS, or no answer to serve's hello within ATTACH_HELLO_MS. */
 	idle: 4408,
 	/** The same computer dialed again; the older socket is closed. */
 	replaced: 4409,
@@ -139,13 +142,26 @@ function laterProtocol(a: string, b: string): boolean {
  * replace it the way a provider replaces a copied daemon.
  */
 export function helloMismatch(paired: PairedComputer, hello: HelloResult): { code: number; message: string } | undefined {
+	// Serve names no OS and no driver app: one way to update, in the same words for every computer.
+	const update = `update the driver on ${paired.name} (the download is on the console's Computers page)`;
 	const said = hello as Partial<Record<keyof HelloResult, unknown>> | null;
 	if (typeof said !== "object" || said === null || typeof said.protocol !== "string" || typeof said.version !== "string") {
-		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver answered hello without its protocol and version: update the driver on ${paired.name} (Computerd: its menu's Check for Updates, or the download on the console's Computers page)` };
+		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver answered hello without its protocol and version: ${update}` };
 	}
 	if (hello.protocol !== PROTOCOL_VERSION) {
-		const newer = laterProtocol(hello.protocol, PROTOCOL_VERSION) ?"the server is older: it is updated by whoever runs it" : `update the driver on ${paired.name} (Computerd: its menu's Check for Updates, or the download on the console's Computers page)`;
+		const newer = laterProtocol(hello.protocol, PROTOCOL_VERSION) ? "the server is older: it is updated by whoever runs it" : update;
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: ${newer}` };
+	}
+	// Every field serve reads off a live hello (the provider's capabilities, the kind check): one missing is refused
+	// here, never met later as a throw.
+	const missing = [
+		...(typeof said.os === "string" ? [] : ["os"]),
+		...(typeof said.kind === "string" ? [] : ["kind"]),
+		...(typeof said.arch === "string" ? [] : ["arch"]),
+		...(Array.isArray(said.groups) && said.groups.every((group) => typeof group === "string") ? [] : ["groups"]),
+	];
+	if (missing.length > 0) {
+		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} answered a protocol ${PROTOCOL_VERSION} hello without ${missing.join(", ")}: ${update}` };
 	}
 	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
 		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
@@ -168,14 +184,20 @@ interface Live {
  */
 export class AttachHub {
 	readonly #live = new Map<string, Live>();
-	/** The run holding each computer: its labels, and its deadline with the timer that ends the hold there. */
-	readonly #claims = new Map<string, { labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout> }>();
+	/** The run holding each computer: the hold's own token, its labels, and its deadline with the timer that ends it. */
+	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout> }>();
 	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
 	readonly #pending = new Map<string, Set<AttachSocket>>();
 	/** Each computer's connections given out, by the function that closes one. */
 	readonly #given = new Map<string, Set<() => void>>();
 	/** The dials taken so far, in order, across every computer: a dial's number is taken before its hello is awaited. */
 	#dials = 0;
+	/** How long a new socket's hello may take (ATTACH_HELLO_MS; shorter in tests). */
+	readonly #helloMs: number;
+
+	constructor({ helloMs = ATTACH_HELLO_MS }: { helloMs?: number } = {}) {
+		this.#helloMs = helloMs;
+	}
 
 	/**
 	 * Takes a computer's new socket: calls hello on it, and keeps it when the hello is what the computer paired as. The
@@ -196,13 +218,19 @@ export class AttachHub {
 			closed = true;
 			if (mine !== undefined && this.#live.get(paired.id) === mine) this.#live.delete(paired.id);
 		});
-		const hello = await client.call("hello", { client: "agentrun-serve" });
+		// Bounded: a driver that answers pings but never hello would otherwise hold a socket open forever.
+		const hello = await client.call("hello", { client: "agentrun-serve" }, { signal: AbortSignal.timeout(this.#helloMs) });
 		const revoked = !pending.delete(socket);
 		if (pending.size === 0 && this.#pending.get(paired.id) === pending) this.#pending.delete(paired.id);
 		if (revoked) {
 			const why = `${paired.name} was removed while it said hello`;
 			socket.close(ATTACH_CLOSE.unauthorized, why);
 			return fail("refused", why);
+		}
+		if (!hello.ok && hello.error.code === "aborted") {
+			const why = `${paired.name}'s driver did not answer hello within ${this.#helloMs / 1000} s`;
+			socket.close(ATTACH_CLOSE.idle, why);
+			return fail("timeout", why);
 		}
 		if (!hello.ok) {
 			socket.close(ATTACH_CLOSE.going, `hello failed: ${hello.error.message}`);
@@ -282,15 +310,16 @@ export class AttachHub {
 	/**
 	 * Holds the computer for a run, with the run's labels, until its deadline (an agent's hold has none): there the hold
 	 * ends as a release does, closing the run's connections, and the person's machine runs on. False when another run
-	 * holds it.
+	 * holds it. The hold's token names this hold and no later one: unclaim with it never ends another run's.
 	 */
-	claim(id: string, labels: Record<string, string>, deadline?: Date): boolean {
+	claim(id: string, labels: Record<string, string>, deadline?: Date): string | undefined {
 		this.#expire(id);
-		if (this.#claims.has(id)) return false;
-		const timer = deadline === undefined ? undefined : setTimeout(() => this.unclaim(id), Math.max(0, deadline.getTime() - Date.now()));
+		if (this.#claims.has(id)) return undefined;
+		const hold = randomUUID().replaceAll("-", "").slice(0, 16);
+		const timer = deadline === undefined ? undefined : setTimeout(() => this.unclaim(id, hold), Math.max(0, deadline.getTime() - Date.now()));
 		timer?.unref?.();
-		this.#claims.set(id, { labels: { ...labels }, ...(deadline === undefined ? {} : { deadline, timer }) });
-		return true;
+		this.#claims.set(id, { hold, labels: { ...labels }, ...(deadline === undefined ? {} : { deadline, timer }) });
+		return hold;
 	}
 
 	/** The labels of the run that holds the computer, or undefined. */
@@ -299,23 +328,35 @@ export class AttachHub {
 		return this.#claims.get(id)?.labels;
 	}
 
+	/** The token of the hold on the computer now, or undefined. */
+	hold(id: string): string | undefined {
+		this.#expire(id);
+		return this.#claims.get(id)?.hold;
+	}
+
 	/** The deadline of the run that holds the computer, or undefined (no hold, or an agent's). */
 	deadline(id: string): Date | undefined {
 		this.#expire(id);
 		return this.#claims.get(id)?.deadline;
 	}
 
-	/** Ends the run's hold, and closes the connections it was given. */
-	unclaim(id: string): void {
-		clearTimeout(this.#claims.get(id)?.timer);
+	/**
+	 * Ends the hold named by its token, and closes the connections it was given. A token of a hold already ended (a late
+	 * release, after the deadline gave the computer to another run) ends nothing: false.
+	 */
+	unclaim(id: string, hold: string): boolean {
+		const held = this.#claims.get(id);
+		if (held === undefined || held.hold !== hold) return false;
+		clearTimeout(held.timer);
 		this.#claims.delete(id);
 		this.#closeGiven(id);
+		return true;
 	}
 
 	/** A hold past its deadline ends at once, whether or not its timer has run yet. */
 	#expire(id: string): void {
-		const deadline = this.#claims.get(id)?.deadline;
-		if (deadline !== undefined && deadline.getTime() <= Date.now()) this.unclaim(id);
+		const held = this.#claims.get(id);
+		if (held?.deadline !== undefined && held.deadline.getTime() <= Date.now()) this.unclaim(id, held.hold);
 	}
 
 	/** Ends a computer's attachment: its token was revoked, or the computer was removed. */
@@ -352,7 +393,22 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 		release: ["delete"],
 	});
 	const ref: ComputerRef = { id: paired.id, name: paired.name };
-	const mine = (asked: { id: string }) => asked.id === paired.id;
+	// A run's ref names its hold, `<computer id>.<hold token>`, so a call under a hold that ended (released, or at its
+	// deadline) never acts on the next run's: release ends only its own hold, connect and attach refuse a stale one.
+	const holdRef = (hold: string): ComputerRef => ({ id: `${paired.id}.${hold}`, name: paired.name });
+	const heldRef = () => {
+		const hold = hub.hold(paired.id);
+		return hold === undefined ? ref : holdRef(hold);
+	};
+	/** The computer itself, a hold (with whether it is the hold now), or undefined for another provider's id. */
+	const named = (asked: { id: string }): { hold?: string; current: boolean } | undefined => {
+		if (asked.id === paired.id) return { current: true };
+		if (!asked.id.startsWith(`${paired.id}.`)) return undefined;
+		const hold = asked.id.slice(paired.id.length + 1);
+		return { hold, current: hub.hold(paired.id) === hold };
+	};
+	const mine = (asked: { id: string }) => named(asked) !== undefined;
+	const ended = () => fail("gone", `this run's hold on ${paired.name} has ended (released, or at its deadline): another run may hold it now`);
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
 	const offline = () => fail("gone", `${paired.name} is not attached now: open its driver, which dials this server`);
 	const holds = (labels: Record<string, string>, wanted: Record<string, string>) => Object.entries(wanted).every(([key, value]) => labels[key] === value);
@@ -378,19 +434,24 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (!hub.online(paired.id)) return offline();
 			// A run's hold ends at its lifetime, released or not: a run that never releases cannot keep the machine from the next.
 			const deadline = spec.owner === undefined ? new Date(Date.now() + runLifetimeMs(spec)) : undefined;
-			if (!hub.claim(paired.id, spec.labels ?? {}, deadline)) return fail("refused", `${paired.name} is held by another run: one run at a time`);
-			return ok({ ...ref, notes: ["an attached computer is a person's own machine: release ends the run's hold on it, and deletes nothing"] });
+			const hold = hub.claim(paired.id, spec.labels ?? {}, deadline);
+			if (hold === undefined) return fail("refused", `${paired.name} is held by another run: one run at a time`);
+			return ok({ ...holdRef(hold), notes: ["an attached computer is a person's own machine: release ends the run's hold on it, and deletes nothing"] });
 		},
 		async attach(asked) {
-			const found = "id" in asked ? mine(asked) : holds({ ...paired.labels, ...hub.claimed(paired.id) }, asked.labels);
-			if (!found) return unknown("id" in asked ? asked.id : JSON.stringify(asked.labels));
+			if ("id" in asked) {
+				const which = named(asked);
+				if (which === undefined) return unknown(asked.id);
+				if (!which.current) return ended();
+			} else if (!holds({ ...paired.labels, ...hub.claimed(paired.id) }, asked.labels)) return unknown(JSON.stringify(asked.labels));
 			const deadline = hub.deadline(paired.id);
-			return ok({ ...ref, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind, ...(deadline === undefined ? {} : { deadline }) } });
+			const found = "id" in asked ? { id: asked.id, name: paired.name } : heldRef();
+			return ok({ ...found, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind, ...(deadline === undefined ? {} : { deadline }) } });
 		},
 		async list(labels) {
 			const have = { ...paired.labels, ...hub.claimed(paired.id) };
 			if (!holds(have, labels)) return ok([]);
-			return ok([{ ref, labels: have, deadline: hub.deadline(paired.id), state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" } }]);
+			return ok([{ ref: heldRef(), labels: have, deadline: hub.deadline(paired.id), state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" } }]);
 		},
 		async network(asked, policy) {
 			if (!mine(asked)) return unknown(asked.id);
@@ -398,14 +459,19 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			return ok({ other: "the machine's own network" });
 		},
 		async connect(asked) {
-			if (!mine(asked)) return unknown(asked.id);
+			const which = named(asked);
+			if (which === undefined) return unknown(asked.id);
+			if (!which.current) return ended();
 			const connection = hub.connection(paired.id);
 			return connection === undefined ? offline() : ok(connection);
 		},
 		async release(asked, how) {
-			if (!mine(asked)) return unknown(asked.id);
+			const which = named(asked);
+			if (which === undefined) return unknown(asked.id);
 			if (how === "stop") return fail("unsupported", `${paired.name} is a person's own machine: a run releases its hold, and never stops it`);
-			hub.unclaim(paired.id);
+			if (which.hold === undefined) return fail("invalid", `release names the run's hold on ${paired.name}, the ref create gave (${paired.id}.<hold>), never the computer itself`);
+			// A hold already ended is released already: the hold on the computer now, if any, is another run's and stays.
+			hub.unclaim(paired.id, which.hold);
 			return ok(undefined);
 		},
 	};

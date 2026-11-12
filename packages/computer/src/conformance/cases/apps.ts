@@ -145,6 +145,11 @@ export const appsCases: Case[] = [
 		group: "ui",
 		needs: ["ui"],
 		async run(t) {
+			// With both off, ui.observe is refused by design (wire.md): there is no shape to read, so the case skips in the
+			// words hello gives for each.
+			const imageOff = featureOff(t.hello.features ?? {}, "ui.image");
+			const bothOff = treeOff(t);
+			if (bothOff !== undefined && imageOff !== undefined) return t.skip(`ui.observe has nothing to show on this computer: ${bothOff}, and ${imageOff}`);
 			// What to observe: the ui fixture where the computer has it installed (it needs no exec, files or processes,
 			// which a ui driver need not offer); else Settings on a phone with no fixture file; else the input fixture.
 			const listed = t.hello.groups.includes("apps") ? await t.call("apps.list", {}) : undefined;

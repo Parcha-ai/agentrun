@@ -112,7 +112,7 @@ const ACTIONABLE: ReadonlySet<UiRole> = new Set<UiRole>(["button", "link", "text
 /** Room a reply keeps for everything but its nodes and image: the envelope and the other fields. */
 const REPLY_ROOM = 16 * 1024;
 /** The kinds a step's refusal carries; any other failure of a source fails the whole call. */
-const STEP_KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>(["not_found", "invalid", "timeout", "denied", "limit", "unsupported", "stale"]);
+const STEP_KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>(["not_found", "invalid", "timeout", "denied", "limit", "unsupported", "stale", "refused"]);
 
 type StepName = "press" | "set" | "perform" | "click" | "type" | "key" | "nav" | "scroll" | "drag";
 /** Each step's fields: its name first. */
@@ -529,8 +529,9 @@ export class UiEngine {
 		// Where the looks after a step aim. A step that ran may have changed the app in front: a nav (home, back, recents)
 		// hands the act to whatever is in front, and when any other step (a key, a tap that opens another app) takes the
 		// target's window away, the act runs nothing more and settles on the window in front. Either way the steps
-		// that ran keep their results.
-		let aim = target;
+		// that ran keep their results. An act with neither target nor state is bound to the app it began on, so a step
+		// that opens another app never lets a later step reach that one: only a nav hands the act on.
+		let aim: UiTarget | undefined = target ?? { app: first.value.app.id };
 		const after = async (): Promise<Result<UiView> | "gone"> => {
 			const looked = await this.#see(aim, signal);
 			if (looked.ok || looked.error.code !== "not_found" || aim === undefined) return looked;

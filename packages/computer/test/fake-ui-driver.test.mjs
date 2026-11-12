@@ -261,6 +261,13 @@ test("a step other than nav that takes the act's window away (a key that leaves 
 	assert.equal(left.value.steps[1].error?.kind, "stale");
 	assert.match(left.value.steps[1].error.message, /the window this act aimed at is gone since the step before/);
 	assert.equal(left.value.changed, true);
+	// With neither state nor target, the act is bound to the app it began on: the step after one that leaves it is
+	// refused, never run in whatever is in front now.
+	await c.client.call("apps.launch", { id: APP });
+	const bare = await c.client.call("ui.act", { steps: [{ key: "f12" }, { type: "1234" }] });
+	assert.equal(bare.ok, true, JSON.stringify(bare));
+	assert.deepEqual(bare.value.steps[0], { route: "semantic", verified: true });
+	assert.equal(bare.value.steps[1].error?.kind, "stale", JSON.stringify(bare.value.steps));
 	await c.close();
 });
 
@@ -270,7 +277,7 @@ test("a disabled control takes no effect by any route: its ref is refused, a cli
 	await c.client.call("apps.launch", { id: app.id });
 	const seen = (await c.client.call("ui.observe", {})).value;
 	const ref = seen.nodes[0].ref;
-	assert.equal((await c.client.call("ui.act", { steps: [{ press: ref }] })).value.steps[0].error?.kind, "invalid");
+	assert.equal((await c.client.call("ui.act", { steps: [{ press: ref }] })).value.steps[0].error?.kind, "refused");
 	const clicked = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [20, 20] }] });
 	assert.equal(clicked.value.steps[0].verified, false, JSON.stringify(clicked));
 	assert.deepEqual((await c.client.call("ui.observe", {})).value.nodes[0].flags, ["disabled"], "not checked");
@@ -292,6 +299,33 @@ test("blind background input reaches no field or key effect that takes foregroun
 	assert.deepEqual(real.value.steps.map((one) => one.route), ["foreground", "foreground"], JSON.stringify(real));
 	assert.equal((await c.client.call("ui.observe", {})).value.nodes[0].name, "Done", "real input typed and entered");
 	await c.close();
+});
+
+test("a set honors the element's route as a press does: a foreground-only control is never set by the semantic route", async () => {
+	const app = { id: "test.fg", name: "Fg", start: "a", size: [300, 200], screens: { a: { elements: [{ key: "pin", role: "textbox", name: "PIN", bounds: [10, 10, 200, 28], route: "foreground" }, { key: "lock", role: "switch", name: "Lock", bounds: [10, 50, 80, 28], route: "foreground" }] } } };
+	const strict = await fakeUiConnection({ apps: [app] });
+	await strict.client.call("apps.launch", { id: app.id });
+	const [pin, lock] = (await strict.client.call("ui.observe", {})).value.nodes.map((node) => node.ref);
+	const denied = await strict.client.call("ui.act", { steps: [{ set: pin, value: "1234" }] });
+	assert.equal(denied.value.steps[0].error?.kind, "denied", JSON.stringify(denied));
+	const allowed = await strict.client.call("ui.act", { foreground: true, steps: [{ set: pin, value: "1234" }, { set: lock, value: "on" }] });
+	assert.deepEqual(allowed.value.steps, [{ route: "foreground", verified: true }, { route: "foreground", verified: true }]);
+	await strict.close();
+	const blind = await fakeUiConnection({ apps: [app], blindBackground: true });
+	await blind.client.call("apps.launch", { id: app.id });
+	const refs = (await blind.client.call("ui.observe", {})).value.nodes.map((node) => node.ref);
+	const posted = await blind.client.call("ui.act", { steps: [{ set: refs[0], value: "1234" }, { set: refs[1], value: "on" }] });
+	assert.deepEqual(posted.value.steps, [{ route: "background", verified: false }, { route: "background", verified: false }]);
+	const after = (await blind.client.call("ui.observe", {})).value.nodes;
+	assert.equal(after[0].value, undefined, "posted input reached no field");
+	assert.equal(after[1].flags, undefined, "nor the switch");
+	await blind.close();
+});
+
+test("ui.observe-shape skips, in hello's words, a computer with both ui.tree and ui.image off", async () => {
+	const report = await run(fakeUiProvider({ features: { "ui.tree": { off: "this driver reads no tree" }, "ui.image": { off: "this driver takes no images" } } }), ["ui.observe-shape"]);
+	assert.equal(statuses(report)["ui.observe-shape"], "skip", reasonOf(report, "ui.observe-shape"));
+	assert.match(reasonOf(report, "ui.observe-shape"), /this driver reads no tree, and .*this driver takes no images/);
 });
 
 test("the fake ui provider keeps a computer's network (none or open, never an allowlist) and ends a computer at its deadline", async () => {

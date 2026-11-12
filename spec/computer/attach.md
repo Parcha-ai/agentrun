@@ -93,9 +93,10 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 - **The protocol version must be the server's.** The subprotocol a driver asks for, and the `protocol` in its `hello`,
   name the protocol version it speaks. A driver of another version is refused: at the upgrade when the subprotocol
   differs, else at `hello`, with close code `4426` and words that say what to do. An older driver gets "update the
-  driver on Ada's MacBook Pro (Computerd: its menu's Check for Updates, or the download on the console's Computers
-  page)". A newer driver than the server gets "the server is older: it is updated by whoever runs it". The app shows
-  these words and stops dialing until it is updated, then dials again on its own.
+  driver on Ada's MacBook Pro (the download is on the console's Computers page)": the server names no OS and no
+  driver app, so the words read the same for every computer, and a driver may add its own way to update when it
+  shows them. A newer driver than the server gets "the server is older: it is updated by whoever runs it". The app
+  shows these words and stops dialing until it is updated, then dials again on its own.
 - **Within one protocol version, any build is accepted.** A newer or older patch of the driver (0.2.0, 0.2.3) is the
   same wire. The server records the build each `hello` names and shows it on the Computers page.
 - **The daemon version check does not apply.** A copied `computerd` must be exactly the provider's version, because
@@ -111,6 +112,10 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 - Each side sends a WebSocket ping every 20 s (`ATTACH_HEARTBEAT_MS`) and answers the other's pings. These are
   WebSocket control frames, not JSON-RPC, so the wire is unchanged and a NAT keeps the path open.
 - A side that hears nothing for 60 s (`ATTACH_IDLE_MS`), not a message and not a pong, closes the socket with `4408`.
+- The server waits 10 s (`ATTACH_HELLO_MS`) for a new socket's `hello` answer. A driver that answers pings but not
+  `hello` is closed with `4408`, saying so, and dials again on its own schedule.
+- A `hello` without a field the server reads (`protocol`, `version`, `os`, `kind`, `arch`, `groups`) is closed
+  with `4426`, naming the fields: the driver is updated, and dials again once it is.
 - A computer has one socket. When the same computer dials again (its network changed and the old socket is half dead),
   the server keeps the new socket and closes the old one with `4409`. New means dialed later, whichever `hello`
   answers first: a socket whose `hello` ends after a socket dialed later went live is closed with `4409` too.
@@ -158,6 +163,10 @@ The server maps an attached computer to a provider so a run takes it like any ot
   `stop` is refused. A person's machine is never made, stopped or deleted by a run. A run's hold ends at its
   `lifetimeMs`, released or not: there it ends as a release does (the run's connections close, the next run may
   claim) and the machine runs on. An agent's hold (`owner`) has no deadline.
+- **A run's ref names its hold.** `create` answers `<computer id>.<hold>`, a ref of this hold and no later one.
+  `release` with it ends only that hold: once the hold has ended, a late release ends nothing, and the hold on the
+  computer now (another run's) stays. `connect` and `attach` with an ended hold's ref are refused `gone`. `release`
+  of the computer's own id is `invalid`.
 - **A run's connection outlives a redial.** Its calls go over the socket that is live when each is made: while the
   computer is away they fail `gone`. A new socket is a new session whose refs, states and handles are its own, and an
   old one could name something else there: the first call after a redial is refused `gone` without running, saying

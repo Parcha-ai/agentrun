@@ -49,6 +49,8 @@ const ROLES: Array<[RegExp, UiRole]> = [
  */
 const EDITABLE = /(EditText|AutoCompleteTextView)$/;
 const SEARCH_VIEW = /(^|\.)SearchView$/;
+/** A list whose rows the platform recycles: a row's place in it says nothing of what the row is. */
+const LIST = /(^|\.)(RecyclerView|ListView|GridView)$/;
 /** A field whose text equals its hint: the hint's length, which a set erases though observe shows no value. */
 const hintLength = new WeakMap<UiElement, number>();
 
@@ -71,6 +73,8 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 	const openClasses: string[] = [];
 	const texts = new Map<string, string[]>();
 	const shows = new Map<string, string[]>();
+	/** Each field inside a list's row, by its key: that row's key. */
+	const rowOf = new Map<string, string>();
 	const pt =(px: number) => Math.round(px / scale);
 	let app: string | undefined;
 	for (const tag of xml.matchAll(/<(\/?)node\b([^>]*?)(\/?)>/g)) {
@@ -113,7 +117,13 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		const element: UiElement = {
 			key,
 			role,
-			...(editable ? { ...(label === undefined ? {} : { name: label }), ...(text === undefined ? {} : { value: text }) } : (label ?? text) === undefined ? {} : { name: (label ?? text) as string }),
+			// A field's label names it and its text is its value. Anything else is named by its label, else its text, and a
+			// text other than the label it also shows is its desc: both are on the screen, and an expect meets either.
+			...(editable
+				? { ...(label === undefined ? {} : { name: label }), ...(text === undefined ? {} : { value: text }) }
+				: (label ?? text) === undefined
+					? {}
+					: { name: (label ?? text) as string, ...(label !== undefined && text !== undefined && text !== label ? { desc: text } : {}) }),
 			...(attrs["resource-id"] ? { id: attrs["resource-id"] } : {}),
 			bounds: [pt(x1), pt(y1), Math.max(0, pt(x2) - pt(x1)), Math.max(0, pt(y2) - pt(y1))],
 			...(parent === undefined ? {} : { parent: parent.key }),
@@ -122,6 +132,10 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		};
 		elements.push(element);
 		if (hint !== undefined && attrs.text === hint) hintLength.set(element, [...hint].length);
+		// A field in a list's row: the row (the element right under the list) whose content keys it, below.
+		const list = openClasses.findLastIndex((one) => LIST.test(one));
+		const row = list < 0 ? undefined : open[list + 1];
+		if (editable && row !== undefined) rowOf.set(key, row.key);
 		// Every text is also a text of each element above it, for the rows that have none of their own.
 		// A password field's text never names a row above it: its label may, its text may not.
 		const said = bool("password") ? label : (text ?? label);
@@ -140,10 +154,17 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 	// uiautomator gives no element identity, only a place in the tree, which a list hands to the next row as it scrolls.
 	// So a key is the app's, and a tappable element's (not a field's) also holds what it shows, a field's text aside: a
 	// row that now shows other content is another element, and its old ref goes stale instead of tapping the new row.
+	// A field in a list's row is keyed by what its row shows (fields' text aside, so typing keeps it): a recycled row's
+	// field is another element, and its old ref goes stale instead of typing into the new row.
 	// Anything else, a list or a label among them, keeps its key while its content changes.
 	const tappable = (element: UiElement) =>
 		element.role !== "textbox" && element.role !== "searchbox" && (element.actions ?? []).some((action) => action === "ACTION_CLICK" || action === "ACTION_LONG_CLICK");
-	const shown = (element: UiElement) => (tappable(element) ? `|${[element.name, ...(shows.get(element.key) ?? [])].filter(Boolean).join(", ")}` : "");
+	const byKey = new Map(elements.map((element) => [element.key, element]));
+	const shown = (element: UiElement) => {
+		if (tappable(element)) return `|${[element.name, element.desc, ...(shows.get(element.key) ?? [])].filter(Boolean).join(", ")}`;
+		const row = byKey.get(rowOf.get(element.key) ?? "");
+		return row === undefined ? "" : `|${[element.name, row.name, row.desc, ...(shows.get(row.key) ?? [])].filter(Boolean).join(", ")}`;
+	};
 	const rekeyed = new Map(elements.map((element) => [element.key, `${id}|${element.key}${shown(element)}`]));
 	for (const element of elements) {
 		if (element.name !== undefined || element.role !== "button") continue;
@@ -189,6 +210,9 @@ export class AdbUiSource implements UiSource {
 
 	async run(step: UiStep, { element, foreground }: UiStepContext, signal: AbortSignal): Promise<Result<UiRun>> {
 		if (!foreground) return fail("denied", "this phone takes input only as the phone's own (the foreground route), and this call does not allow it: pass foreground: true");
+		// A disabled control takes no tap, so a set or a type into it would put its text in whatever field has the focus:
+		// any step on one by its ref is refused, with nothing sent.
+		if (element?.flags?.includes("disabled")) return fail("refused", `${element.name ?? "the element"} is disabled on this phone: a step on it would act on whatever has the focus instead, so nothing was sent`);
 		const scale = this.phone.scale();
 		const px = ([x, y]: Point): [number, number] => [Math.round(x * scale), Math.round(y * scale)];
 		const at = (target: Point | string | undefined) => px(Array.isArray(target) ? (target as Point) : centre((element as UiElement).bounds));
