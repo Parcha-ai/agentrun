@@ -229,10 +229,14 @@ const publishedAt = (previous, file) => file === 'CHANGELOG.md' || !previous.hel
  *  the root, as any name with no changelog of its own does). */
 const anyPackage = { has: () => true, *[Symbol.iterator]() {} };
 
-/** Whether `lines` hold `bullet` in `version`'s section. */
+/** Whether `version`'s section of `lines` holds `bullet` as a whole entry of its own: its lines from a line's start, and no
+ *  indented line of the entry after them. A nested line under another entry, or the start of a longer entry, is not it. */
 function sectionHolds(lines, version, bullet) {
   const at = lines.findIndex(line => isVersionHeading(line, version));
-  return at >= 0 && `${lines.slice(at + 1, sectionEnd(lines, at)).join('\n')}\n`.includes(`${bullet}\n`);
+  if (at < 0) return false;
+  const section = lines.slice(at + 1, sectionEnd(lines, at));
+  const want = bullet.split('\n');
+  return section.some((line, index) => want.every((part, offset) => section[index + offset] === part) && !/^\s+\S/.test(section[index + want.length] ?? ''));
 }
 
 /**
@@ -295,20 +299,29 @@ export async function fold(root, version, date, options = {}) {
       current.add(fragment);
       continue;
     }
+    // The tag's text decides only the changelogs that release published and that are published now: their sections say what each
+    // release published. A changelog held now has no sections (its bullets join Unreleased, which the check reads against the
+    // fragments this change deleted, in their own text), and one held at the tag ships the fragment in this release: for both, the
+    // fragment as it is now decides, as for any other.
     const then = tagged(fragment.file, was);
     for (const file of await filesOf(then)) {
-      if (publishedAt(previous, file)) { targets.get(file).before.push(then); shipped.add(then); }
-      else { targets.get(file).now.push(fragment); current.add(fragment); }
+      if (publishedAt(previous, file) && !await heldChangelog(root, file)) { targets.get(file).before.push(then); shipped.add(then); }
+    }
+    for (const file of await filesOf(fragment)) {
+      const heldNow = await heldChangelog(root, file);
+      if (heldNow) { targets.get(file)[publishedAt(previous, file) ? 'before' : 'now'].push(fragment); (publishedAt(previous, file) ? shipped : current).add(fragment); }
+      else if (!publishedAt(previous, file)) { targets.get(file).now.push(fragment); current.add(fragment); }
     }
   }
   // One the tag carried and a pull request deleted since (its only package retired, say) shipped all the same: its bullet goes into
   // that release's section too, unless that section already holds it, as it does once this release's fold has taken it (the release
-  // workflow's fold at this release's tag sees every fragment of the previous tag deleted).
+  // workflow's fold at this release's tag sees every fragment of the previous tag deleted). Never into a changelog held now: it has
+  // no release sections, and its Unreleased takes only fragments this change deletes.
   for (const [file, text] of previous?.carried ?? []) {
     if (text === null || fragments.some(fragment => fragment.file === file)) continue;
     const then = tagged(file, text);
     for (const target of await filesOf(then)) {
-      if (!publishedAt(previous, target)) continue;
+      if (!publishedAt(previous, target) || await heldChangelog(root, target)) continue;
       if (sectionHolds((await readFile(join(root, target), 'utf8')).split('\n'), previous.version, bulletOf(then.body))) continue;
       targets.get(target).before.push(then); shipped.add(then);
     }
@@ -316,7 +329,7 @@ export async function fold(root, version, date, options = {}) {
   let previousDate;
   if (shipped.size) {
     previousDate = sectionDate(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), previous.version);
-    assert.ok(previousDate, `CHANGELOG.md has no dated section for ${previous.version}, whose tag ${previous.tag} carried ${[...shipped].map(fragment => fragment.file).sort().join(', ')}`);
+    assert.ok(previousDate, `CHANGELOG.md has no dated section for ${previous.version}, whose tag ${previous.tag} carried ${[...new Set([...shipped].map(fragment => fragment.file))].sort().join(', ')}`);
   }
   // Every new text is built before anything is written, and a failed write puts the changelogs and fragments back, so a retry
   // never appends a bullet twice.
@@ -361,7 +374,7 @@ export async function fold(root, version, date, options = {}) {
     throw error;
   }
   const changed = writes.map(write => write.file);
-  return { folded: fragments.length, files: changed, shipped: [...shipped].map(fragment => fragment.file).sort(), previous: shipped.size ? previous.version : null };
+  return { folded: fragments.length, files: changed, shipped: [...new Set([...shipped].map(fragment => fragment.file))].sort(), previous: shipped.size ? previous.version : null };
 }
 
 /** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped,

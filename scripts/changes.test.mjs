@@ -389,6 +389,41 @@ test('a fragment deleted after its tag, its package retired with it, still goes 
   assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), kernelAfter);
 }));
 
+test('a package published at the tag and held now: its deleted fragment is restored nowhere, and its edited one joins Unreleased as it is now, so the check passes and a second fold adds nothing', () => repo(async (root, git) => {
+  const transportLog = '# Changelog\n\n## Unreleased\n';
+  await mkdir(join(root, 'packages/pi-transport'));
+  await writeFile(join(root, 'packages/pi-transport/package.json'), JSON.stringify({ name: '@parcha/pi-transport' }));
+  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), transportLog);
+  await taggedWithLateFragments(root, git, async () => {
+    await writeFile(join(root, 'changes/c-transport-gone.md'), fragment('@parcha/pi-transport', 'fix', 'Transport gone.'));
+    await writeFile(join(root, 'changes/d-transport-edit.md'), fragment('@parcha/pi-transport', 'fix', 'Transport edit.'));
+  });
+  await writeFile(join(root, 'packages/pi-transport/package.json'), JSON.stringify({ name: '@parcha/pi-transport', private: true }));
+  await rm(join(root, 'changes/c-transport-gone.md'));
+  await writeFile(join(root, 'changes/d-transport-edit.md'), fragment('@parcha/pi-transport', 'fix', 'Transport edited.'));
+  await commitAll(git, 'the transport held, one of its fragments deleted and one edited');
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  const transportAfter = `${transportLog}\n- Transport edited.\n`;
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), transportAfter);
+  assert.deepEqual(await unreleasedEdits(root, base.trim()), { fold: true, edited: [] }, 'the release pull request passes the check');
+  await commitAll(git, 'the release pull request');
+  await git('tag', 'v0.1.0-beta.14');
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), transportAfter, 'the fold at the tag adds nothing');
+}));
+
+test("a deleted fragment's bullet is held by its section only as a whole entry of its own, never as a nested line or the start of a longer entry", () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  const kernelLog = '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Other.\n  - Late vision.\n- Late vision.\n  And more of another entry.\n';
+  await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), kernelLog);
+  await rm(join(root, 'changes/b-late-vision.md'));
+  await commitAll(git, 'the kernel section holds look-alikes, and the fragment is deleted');
+  const result = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual(result.shipped, ['a-late.md', 'b-late-vision.md']);
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), `${kernelLog}- Late.\n- Late vision.\n`);
+}));
+
 test('a late fragment whose release has no dated section in the root changelog is refused, and nothing is written', () => repo(async (root, git) => {
   await taggedWithLateFragments(root, git);
   await writeFile(join(root, 'CHANGELOG.md'), rootLog);
