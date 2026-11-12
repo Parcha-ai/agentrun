@@ -110,4 +110,17 @@ describe("AgentEditor, what the agent learns: notes and skills, or workflows too
     expect(editBody(agentOf({ learning: true }), e.saves[0], "").definition.learning).toBe("notes");
     expect(createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [], learning: "notes" }).definition.learning).toBe("notes");
   });
+  it("choosing another kind and then the saved one again saves learning as it was, not a removed field", async () => {
+    for (const saved of [true, "notes"] as const) {
+      const e = mount(agentOf({ learning: saved }), caps("on"));
+      const other = saved === true ? /^Notes and skills only/ : /^Notes, skills and workflows/;
+      const same = saved === true ? /^Notes, skills and workflows/ : /^Notes and skills only/;
+      await e.click(choice(e.host, other)!);
+      await e.click(choice(e.host, same)!);
+      // Back on what was saved there is nothing to save: no Save button, and were one pressed the edit is no change.
+      expect([...e.host.querySelectorAll("button")].some((b) => /^(Save revision|Create)$/.test(b.textContent ?? ""))).toBe(false);
+      expect(editBody(agentOf({ learning: saved }), { learning: saved }, "").unchanged).toBe(true);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+  });
 });

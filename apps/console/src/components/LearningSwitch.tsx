@@ -34,7 +34,9 @@ export function LearningField({ fields, onFields, saved, server, error, warning 
   const value = fields.learning ?? saved;
   const on = value === true || value === "notes";
   // A value equal to the saved one is no change of the form's, so choosing back what was saved makes no new revision.
-  const pick = (next: boolean | "notes") => onFields({ learning: next === saved || (next === false && saved === undefined) ? undefined : next });
+  // Back to a saved true or "notes" is sent as that value (an undefined key would read as removing the field); off on an
+  // agent that never said stays undefined, saying nothing.
+  const pick = (next: boolean | "notes") => onFields({ learning: next === false && saved === undefined ? undefined : next });
   return (
     <div>
       <div className="mb-2"><span className="caps text-small font-semibold">Learning</span></div>
