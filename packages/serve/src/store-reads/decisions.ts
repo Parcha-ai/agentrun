@@ -4,7 +4,7 @@
 // `agentrun.decisions.count` and the family rows in order. graph-view's ended-run path reads them this way instead of the
 // run's file.
 import type { Context } from "@earendil-works/chord";
-import { decisionKey } from "@parcha/agentrun-pi/durable";
+import { decisionKey } from "../workflow/decisions.js";
 import type { JournalReads, Store } from "../store/store.js";
 
 type Address = Parameters<JournalReads["findDocument"]>[0];

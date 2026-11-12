@@ -7,7 +7,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
-import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agentFolderOf } from "../dist/files.js";
@@ -18,13 +17,11 @@ import { REPLAY } from "../dist/host-tools.js";
 import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
-import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const GUARD = new URL("./fixtures/net-guard.mjs", import.meta.url).pathname;
-/** The owner's sign-in phrase on a test server with accounts (no real secret). */
-const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const ASK = "Use the learned workflow answer on What is six times seven.";
 const DESCRIPTION = "Answers a question as a number; use when the person asks for the answer";
 /** A learned workflow's two files, as the merge keeps them: its workflow.json and its README.md (`extra` front matter). */
@@ -423,53 +420,6 @@ test("on pi, learned_workflow set to deny for the agent is refused by the gate i
   assert.match(JSON.stringify(result), /Permission denied: learned_workflow is set to deny for this agent/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "no node ran");
 });
-
-// The owner's allow can land while the harness is still recording the parked call's result (Claude Code writes it before
-// it reads the next answer). The parked call stays the turn's to end: its result interrupts the turn, and no request of
-// the harness's own leaves after the allow; the approved call's node is the one request that does.
-for (const harness of ["codex", "claude-agent"]) {
-  test(`on ${harness}, an allow that lands before the parked call's result is in still ends the parked turn: interrupted, with no request of the harness's own after the allow until the resume's turn`, { timeout: 180_000, skip: "no runnable form here: the in-process faux CLI harness asks no gate (run-adapters testing.ts), so it never parks; the real adapters cannot hold a call's result" }, async (t) => {
-    const held = join(await scratch(t), "result-held");
-    const ask = `Use the learned workflow answer on What is six times seven, its result held until ${held}.`;
-    const gw = await startFauxGateway({ call: submitsAnswer });
-    t.after(() => gw.close());
-    const key = ["not-a-secret", "gateway"].join("-");
-    if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
-    else withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
-    const server = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, faux: undefined });
-    const { api, data } = server;
-    const origin = `http://127.0.0.1:${server.port}`;
-    const setup = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: SIGN_IN_PHRASE } });
-    assert.equal(setup.status, 201, setup.text);
-    const cookie = cookieOf(setup);
-    const id = `held-${harness}`;
-    assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, tools: [], tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }))).status, 201);
-    await folderWith(data, id, flowFiles("answer", answerFlow()));
-    const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask } });
-    assert.equal(started.status, 202, JSON.stringify(started.body));
-    const runId = started.body.run_id;
-    // The call is parked and asks the owner while its result is still held: the allow lands before it.
-    // The gate names the parked call by the call, its tool and its arguments (tool-gate.ts); the run reads as working
-    // while the harness is still recording the call's result, and the allow is taken as soon as the server knows the ask.
-    const pendingId = `ap_${createHash("sha256").update(JSON.stringify([`run:${runId}:0`, LEARNED_WORKFLOW_TOOL, { name: "answer", input: { question: "What is six times seven" } }])).digest("hex").slice(0, 16)}`;
-    let answered;
-    for (const deadline = Date.now() + 60_000; (answered = await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${pendingId}`, headers: { "content-type": "application/json", cookie, origin }, body: { decision: "allow" } })).status === 404; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `the call asks the owner: ${answered.text}`);
-    assert.equal(answered.status, 204, answered.text);
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "working", "the allow landed while the parked turn was still recording its call's result");
-    // The approved call runs (its node's request reaches the gateway), and only then does the harness tell its result.
-    for (const deadline = Date.now() + 60_000; !gw.requests.some((request) => submitsAnswer(request)); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, "the approved call's node is sent");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    writeFileSync(held, "");
-    await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
-    // The parked turn: its one request (the call), then its end, interrupted on the call's result, never going on after
-    // the allow; the resume's turn answers.
-    const seq = (await entriesOf({ data }, runId, ["agentrun.request_started", "adapter.turn_end"]));
-    const firstEnd = seq.findIndex((entry) => entry.kind === "adapter.turn_end");
-    const parkedTurn = seq.slice(0, firstEnd).filter((entry) => entry.host === undefined).length;
-    assert.deepEqual([parkedTurn, seq[firstEnd]?.status, seq[firstEnd]?.answer ?? null], [1, "interrupted", null], `the parked turn went on after the allow: ${JSON.stringify(seq.map((entry) => [entry.kind, entry.host ?? entry.status ?? ""]))}`);
-  });
-}
 
 /** A learned workflow of one call node on `tool`, or that node inside a composed workflow node (`nested`). */
 const callFlow = (tool, nested = false) => {

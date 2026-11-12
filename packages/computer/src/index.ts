@@ -103,14 +103,17 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 export {
 	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,
 	DAYTONA_DEFAULT_SNAPSHOT,
 	DAYTONA_GPU_SNAPSHOT,
+	type DaytonaGpuSnapshot,
 	DESCRIPTORS,
+	daytonaGpu,
+	daytonaGpuSnapshot,
 	DOCKER,
 	E2B,
 	E2B_BASE_TEMPLATE,

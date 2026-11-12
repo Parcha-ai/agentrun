@@ -304,6 +304,35 @@ function fenced(claim: Claim, sql: string, params: readonly SqliteValue[]): Stat
   return { sql, params, expect: { kind: "fenced", runId: claim.runId, epoch: claim.epoch } };
 }
 
+/** `connection` as one read-only snapshot: every read goes through `tx`, a write is refused, and a transaction opened
+ *  inside it is the snapshot itself (Store.snapshot). */
+function snapshotOf(connection: StoreConnection, tx: Tx): StoreConnection {
+  return {
+    dialect: connection.dialect,
+    where: connection.where,
+    get: (sql, ...params) => tx.get(sql, ...params),
+    all: (sql, ...params) => tx.all(sql, ...params),
+    write: () => Promise.reject(new Error("a store snapshot only reads")),
+    // A transaction inside the snapshot reads through the same handle, and refuses what writes (SQLite's deferred BEGIN is
+    // not read-only, so the refusal is here, as Postgres's read-only transaction makes it).
+    transaction: (callback) => callback(readOnly(tx)),
+    close: () => Promise.resolve(),
+  };
+}
+
+function readOnly(tx: Tx): Tx {
+  const refuse = () => Promise.reject(new Error("a store snapshot only reads"));
+  return {
+    dialect: tx.dialect,
+    get: (sql, ...params) => tx.get(sql, ...params),
+    all: (sql, ...params) => tx.all(sql, ...params),
+    exec: refuse,
+    run: refuse,
+    runCounted: refuse,
+    step: refuse,
+  };
+}
+
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
 export function storeOver(connection: StoreConnection, now: () => number): Store {
@@ -330,6 +359,8 @@ class SqliteStore implements Store {
   readonly sealedSecrets: SealedSecrets;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** The store this one is a snapshot of, or itself (Store.origin). */
+  readonly origin: Store;
   /** Where this store's data is: its connection's (StoreConnection.where). */
   readonly where: string;
   /** The deadlines' clock now (fence.ts storeNow): the database's on Postgres, this store's clock bound on SQLite. */
@@ -343,9 +374,10 @@ class SqliteStore implements Store {
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
 
-  constructor(db: StoreConnection, now: () => number) {
+  constructor(db: StoreConnection, now: () => number, origin?: Store) {
     this.#db = db;
     this.#now = now;
+    this.origin = origin ?? this;
     this.where = db.where;
     const d = db.dialect;
     const clock = (): StoreNow => storeNow(d, now);
@@ -436,6 +468,7 @@ class SqliteStore implements Store {
         const row = await db.get<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE external_ref = ?`, ref);
         return row && agentOf(row);
       },
+      hasExternalVersion: async (agentId, version) => (await db.get<{ id: string }>("SELECT id FROM revisions WHERE agent_id = ? AND external_version = ?", agentId, version)) !== undefined,
       list: async ({ archived = false } = {}) =>
         (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"} ORDER BY created_at, id`)).map(agentOf),
       archive: async (id, archived, why) =>
@@ -1421,6 +1454,10 @@ class SqliteStore implements Store {
    *  readers of one run never share ids, since neither mints any. A run with no journal yet reads as empty. */
   readJournal(runId: string): JournalReads {
     return new RunStorage(this.#db, { runId, epoch: 0 }, this.#now);
+  }
+
+  async snapshot<T>(read: (store: Store) => Promise<T>): Promise<T> {
+    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.origin)), { read: true });
   }
 
   /** How many journals the store keeps (open, of a claim not released). */

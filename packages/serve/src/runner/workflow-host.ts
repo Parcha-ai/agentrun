@@ -11,7 +11,10 @@
 // per-run process's pause gate is gone: a cap hold parks the run through the loop (workflow-loop.ts), not a file gate.
 import type { Context } from "@earendil-works/chord";
 import type { Extension } from "@earendil-works/pi-durable";
-import { decisionRecovery, nodeRunner, taskScope, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
+import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task.js";
+import { decisionRecovery } from "../workflow/decision-recovery.js";
+import { nodeRunner } from "../workflow/node-runner.js";
+import { taskScope } from "../workflow/node.js";
 import { judgeFromProviders } from "@parcha/agentrun-dsl";
 import { withRecovery, workspaceFiles } from "@parcha/agentrun-dsl/recovery";
 
@@ -62,6 +65,9 @@ export interface WorkflowCap {
 export interface WorkflowHostDeps {
   /** A node's tier's model (byTier): app.ts's nodeAgent model. */
   readonly modelOf: (tier: NodeTier) => { readonly provider: string; readonly modelId: string };
+  /** Told as each model node's execution starts, before it runs: its execution path and the tier it asked for (the graph
+   *  keeps what each execution ran on). Absent: nothing told. */
+  readonly onModelNode?: (node: { readonly executionPath: string; readonly tier?: string }) => Promise<void>;
   /** The thinking level every node agent runs at. */
   readonly thinkingLevel?: unknown;
   /** The extensions every model node's agent shares (the coding extension and the gate), installed in the registry too. */
@@ -80,6 +86,9 @@ export interface WorkflowHostDeps {
   readonly flush: () => Promise<void>;
   /** The node log's node.start/node.end lines; absent: no log. */
   readonly log?: (line: Record<string, unknown>) => void;
+  /** Told each workflow step's start and end, by its label (the workflow's node.start/node.end): what a cap's pause reads
+   *  to name the node whose step it held (workflow-spec.ts openSteps). */
+  readonly steps?: { start(label: string): void; end(label: string): void };
   /** What a decision's receipt is shown as, as it is recorded (the live view); absent: not shown. */
   readonly onReceipt?: (receipt: Record<string, unknown>) => void;
   /** The run's spend cap over the adapters; absent: the workflow runs with no cap. */
@@ -87,6 +96,15 @@ export interface WorkflowHostDeps {
 }
 
 const identityCap: WorkflowCap = { node: (fn) => fn, effect: (fn) => fn, judge: (fn) => fn };
+
+/** `runNode` that tells `told` of each model node's execution (its path and tier) before it runs it. */
+function withModelNode<P extends { executionPath?: string; tier?: unknown }, R>(runNode: (params: P) => Promise<R>, told: WorkflowHostDeps["onModelNode"]): (params: P) => Promise<R> {
+  if (!told) return runNode;
+  return async (params) => {
+    if (typeof params.executionPath === "string") await told({ executionPath: params.executionPath, ...(typeof params.tier === "string" ? { tier: params.tier } : {}) });
+    return runNode(params);
+  };
+}
 
 /** The workflow task's host and the extensions to install before the Harness opens, as the per-run process built them.
  *  Pass the result to createWorkflowLoop's spec.build. */
@@ -107,7 +125,12 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
 
   /** The node log's starts and ends, from the workflow's events (app.ts onEvent). */
-  const onEvent = (event: { type: string; detail?: unknown; executionPath?: string }) => {
+  const onEvent = (event: { type: string; label?: string; detail?: unknown; executionPath?: string }) => {
+    // A nested `workflow` step stays open while its own steps run and sends no request itself: the steps open are the ones
+    // that can, so a pause inside it names its step, never nothing.
+    const enclosing = (event.detail as { kind?: unknown } | undefined)?.kind === "workflow";
+    if (typeof event.label === "string" && event.type === "node.start" && !enclosing) deps.steps?.start(event.label);
+    if (typeof event.label === "string" && event.type === "node.end" && !enclosing) deps.steps?.end(event.label);
     if (!deps.log || (event.type !== "node.start" && event.type !== "node.end") || typeof event.executionPath !== "string") return;
     const detail = (event.detail ?? {}) as { kind?: string; status?: string; duration_ms?: number; error?: unknown };
     deps.log({
@@ -125,7 +148,7 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
     run: ({ key, runtime, context, driver }: { key: string; runtime: unknown; context: Context; driver: unknown }) => {
       const decisions = decisionRecovery({ key, runtime: runtime as never, context });
       const recovered = withRecovery(driver as never, {
-        runNode: nodes.on(taskScope(runtime as never), context).runNode,
+        runNode: withModelNode(nodes.on(taskScope(runtime as never), context).runNode, deps.onModelNode),
         runEffect: deps.runEffect as never,
         // The judge the driver asks once it has admitted a request: the cap holds, sends and settles it there (admitted).
         ...(deps.decisionProviders ? { runJudge: admitted(judgeFromProviders({ ...deps.decisionProviders, loadImage: deps.loadImage } as never)) as never, decisionProviders: deps.decisionProviders as never } : {}),

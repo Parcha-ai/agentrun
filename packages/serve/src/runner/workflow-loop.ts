@@ -1,7 +1,7 @@
 // The workflow loop on the runner (design: "Runners carry many loops"; the lead's ruling, workflow agents keep running
 // after the cutover). A run of a workflow revision, which the runner claims like any run: this loop is its driver, so the
 // claim, the fence, a cancel and the end commit are its. The DSL's durable runner (workflow-run.ts
-// startWorkflowRevision over agentrun-pi's workflow task) runs the revision's workflow UNCHANGED — the same nodes,
+// startWorkflowRevision over the workflow task, workflow/task.ts) runs the revision's workflow UNCHANGED — the same nodes,
 // decisions, call tools and cap it ran with in the per-run process — on the run's journal in the one store (A,
 // deps.journal(claim)) in place of a per-run store file. The interpreter's host (model nodes on the run's models, call
 // nodes on the tool table, decisions, the cap) is built by the caller (WorkflowRunSpec.build), exactly as the per-run
@@ -22,7 +22,7 @@ import type { Context } from "@earendil-works/chord";
 import { createRegistry, type EntryRecord, type Extension, Harness, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
 import type { Workflow } from "@parcha/agentrun-dsl";
-import { createWorkflowExtension, type WorkflowTaskHost } from "@parcha/agentrun-pi/durable";
+import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task.js";
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
 import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
@@ -33,7 +33,9 @@ const CUT_STEP_MS = 2_000;
 
 /** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
  *  via the spec, so flat or tiered pricing is the cap's, not this loop's). */
-export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown };
+/** `node`: the label of the workflow node whose step the cap held (a model node's request, a call node's call, a
+ *  decision), which the run's pending budget names; absent when the step's node is not known. */
+export type CapRefusal = { readonly message: string; readonly forGood: boolean; readonly figures?: unknown; readonly node?: string };
 /** A raise's state as the cap's checkRaise reads it (the kernel cap's RaiseState). */
 export type RaiseState = { capUsd?: number; final?: boolean; pause?: string; lastRaise?: { to: number; pause?: string } };
 /** What the cap's checkRaise says (the kernel cap's RaiseCheck). */
@@ -392,7 +394,8 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parked = spec?.cap?.park(refusal);
     if (!parked) return { state: "interrupted" };
     if (parked.outcome === "failed") return await writeEnd(journal, BACKGROUND_CONTEXT, { state: "failed", summary: parked.error });
-    const budget: BudgetData = { pending: parked.pending, words: parked.words };
+    // A workflow's pause names the node whose step waits at the cap (null when it is not known), as its pending budget shows.
+    const budget: BudgetData = { pending: parked.pending, words: parked.words, node: refusal.node ?? null };
     await append(journal, BACKGROUND_CONTEXT, KINDS.budget, budget, { run: { state: "parked", summary: parked.words } });
     return { state: "parked" };
   }

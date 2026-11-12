@@ -5,6 +5,7 @@ import { Chip } from "@/components/ui/chip";
 import { Dialog } from "@/components/ui/dialog";
 import { type Answer, type Decision, type Effect, type Evidence, itemCounts, itemLabel, itemOutcome, markOf, ms, optionName, type Question, type Rule, type RunGraph, type Selection, usd, verdictOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
+import { kindWithModel } from "@/lib/nodeModel";
 import { nodesWord } from "@/lib/wfGraph";
 import { at, nodeMeta } from "@/lib/workflowDoc";
 import { httpHref } from "@/lib/safeUrl";
@@ -50,7 +51,7 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <p className="caps flex items-center gap-1.5 text-label text-muted-foreground">
-              {node.kind}{meta.tool ? ` · ${toolName(meta.tool)}` : node.via ? ` · ${node.via}` : ""}
+              {meta.decision ? node.kind : kindWithModel(node.kind, run)}{meta.tool ? ` · ${toolName(meta.tool)}` : node.via ? ` · ${node.via}` : ""}
               {meta.tool && mcpCallTool(meta.tool) && <McpMark />}
               {item && <><ChevronRight className="size-3" aria-hidden /> item {item.index + 1}</>}
             </p>
@@ -59,7 +60,7 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
               <StateChip state={item ? item.status : run?.status} />
               {item && (() => { const o = itemOutcome(data, mapPath!, item); return o.outcome ? <span className="font-mono text-label" title={o.pNote}>outcome <b className={TONE_TEXT[o.tone ?? ""]}>{o.outcome}</b>{o.p !== undefined && <span className="text-muted-foreground"> · {p2(o.p)}</span>}</span> : null; })()}
               {meta.decision && <ProviderChip provider={meta.provider} />}
-              {meta.decision && meta.model && <span className="font-mono text-label text-muted-foreground">{meta.model}</span>}
+              {meta.decision && (run?.model ?? meta.model) && <span className="font-mono text-label text-muted-foreground">{run?.model ?? meta.model}</span>}
               {run?.branch && <span className="font-mono text-label">took <b>{run.branch}</b></span>}
               {!item && time !== undefined && <span className="font-mono text-label text-muted-foreground">{ms(time)}</span>}
             </div>
