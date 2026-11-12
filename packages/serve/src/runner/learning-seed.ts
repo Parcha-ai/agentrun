@@ -25,6 +25,8 @@ export interface LearningSeedLay {
   readonly shown: () => Promise<Shown>;
   /** One line of the run's log. */
   readonly log: (line: string) => void;
+  /** False for a run of a revision that says `learning: "notes"`: its notes and skills are laid, never a learned workflow. */
+  readonly workflows?: false;
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -63,7 +65,7 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
     await laySkills(lay.work, taken, made);
     for (const path of seed.skipped) lay.log(`its learning folder's ${path} was not read`);
     for (const name of left) lay.log(`starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
-    const workflows = chooseWorkflows(seed, shown);
+    const workflows = lay.workflows === false ? { flows: [], left: [] } : chooseWorkflows(seed, shown);
     for (const name of workflows.left) lay.log(`starts without the learned workflow ${name} its agent learned: it is over what is left of the learned workflows' budget, or holds a secret`);
     return { seed, skills: taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`)), workflows: workflows.flows };
   } catch (error) {

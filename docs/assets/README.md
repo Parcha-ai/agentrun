@@ -35,3 +35,10 @@ repository's Apache-2.0 license.
 
 `pill-render.png` and `pill-local.png` are the README's two buttons, set in Inter 600 and JetBrains Mono 500 (both SIL Open
 Font License) on the same palette.
+
+## Case study cards and charts
+
+`case-studies/` holds the cards the README's Case studies section shows and the charts on the pages under
+`docs/case-studies/`. Each is an SVG set in Inter (SIL Open Font License), rendered at 2x. The
+numbers are the ones each case study's page states and explains. They are covered by the repository's Apache-2.0
+license.

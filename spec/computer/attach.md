@@ -158,7 +158,9 @@ The server maps an attached computer to a provider so a run takes it like any ot
   `exec` and `files` are groups it may declare but not Core ([`kinds.md`](kinds.md)).
 - **Claim, not make.** `create` claims the computer for a run, with the run's labels: refused `gone` while it is not
   attached, `refused` while another run holds it. `release` with `delete` ends the run's hold and deletes nothing;
-  `stop` is refused. A person's machine is never made, stopped or deleted by a run.
+  `stop` is refused. A person's machine is never made, stopped or deleted by a run. A run's hold ends at its
+  `lifetimeMs`, released or not: there it ends as a release does (the run's connections close, the next run may
+  claim) and the machine runs on. An agent's hold (`owner`) has no deadline.
 - **A run's connection outlives a redial.** Its calls go over the socket that is live when each is made: while the
   computer is away they fail `gone`. A new socket is a new session whose refs, states and handles are its own, and an
   old one could name something else there: the first call after a redial is refused `gone` without running, saying

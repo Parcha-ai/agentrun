@@ -170,13 +170,15 @@ export interface ComputerDepsOptions {
 
 /** The spec a computer of `kind` on `entry` is made with, besides its labels and its mount: its image (a provider that
  *  prepares its own image, its descriptor's prepareImage: the owner's AGENTRUN_DOCKER_IMAGE when set, else for a sandbox
- *  the package's recipe, which its prepareImage() builds; any other provider's: its descriptor's defaultImage for the
- *  kind, the computer package's PROVIDERS[].defaultImage; a kind with none refused in words, a prepared desktop's saying
- *  it needs an image with an X server, which the recipe lacks), the leak bound for its lifetime (its clean end is the
- *  run's release), and its network (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read
- *  from `env`) for a launch that names none; and the size of a computer on this machine's container engine (its
- *  descriptor's `local`), AGENTRUN_BOX_CPUS, _MEMORY and _PIDS (dockerLimitsOf, read once here): a vendor's computer
- *  sizes itself. No key and no environment. */
+ *  the package's recipe, which its prepareImage() builds; a provider whose descriptor declares imageEnv (Daytona's
+ *  AGENTRUN_DAYTONA_SNAPSHOT): that variable's value in `env` when set; any other provider's, and such a one's while it
+ *  is unset: its descriptor's defaultImage for the kind, the computer package's
+ *  PROVIDERS[].defaultImage; a kind with none refused in words, a prepared desktop's saying it needs an image with an X
+ *  server, which the recipe lacks), the leak bound for its lifetime (its clean end is the run's release), and its
+ *  network (networkOf): the run's box_allow, or this server's own (AGENTRUN_BOX_ALLOW, read from `env`) for a launch
+ *  that names none; and the size of a computer on this machine's container engine (its descriptor's `local`),
+ *  AGENTRUN_BOX_CPUS, _MEMORY and _PIDS (dockerLimitsOf, read once here): a vendor's computer sizes itself. No key and
+ *  no environment. */
 export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const named = envValue(env, DOCKER_IMAGE_ENV);
   // This server's allow setting, as a launch is stamped with it (box-settings.ts boxAllowOf; its start checks the setting).
@@ -184,6 +186,8 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
   const currentSet = (): boolean => boxAllowSetIn(env as NodeJS.ProcessEnv);
   const imageOf = (entry: ProviderEntry, kind: ComputerKindOf): string => {
     if (entry.prepareImage && named !== undefined) return named;
+    const chosen = entry.imageEnv === undefined ? undefined : envValue(env, entry.imageEnv)?.trim();
+    if (chosen !== undefined) return chosen;
     // A sandbox whose provider prepares its image: the package's own recipe, which its prepareImage() builds (the
     // descriptor gives it no default).
     if (entry.prepareImage && kind === "sandbox") return DEFAULT_DOCKER_IMAGE;
