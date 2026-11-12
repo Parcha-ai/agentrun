@@ -173,6 +173,13 @@ test("PROVIDERS is derived from the descriptors, and each provider module's MOUN
 	}
 });
 
+test("the phone's descriptor names adb as the program its server needs, built for x86-64 Linux, macOS and x86-64 Windows; no other names one", () => {
+	// Docker's daemon is the server's own daemon check, so Docker names none here.
+	assert.deepEqual(PROVIDERS.filter((entry) => entry.hostCommand).map((entry) => [entry.id, entry.hostCommand]), [
+		["phone-harness", { command: "adb", from: "Android platform-tools", builds: ["linux-x64", "darwin-x64", "darwin-arm64", "win32-x64"] }],
+	]);
+});
+
 test("a descriptor is checked when it is defined: its id, keys, settings and configurations, in words", () => {
 	const good = { id: "acme-cloud", label: "Acme", keys: [{ name: "ACME_KEY", option: "apiKey", required: true }], metered: true, mounts: [], network: ["none"], capabilities: [{ kind: "linux", groups: ["exec"] }], load: async () => ({}) };
 	assert.equal(defineProvider(good), good);
@@ -189,6 +196,9 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
 		[{ ledger: {} }, /ledger names the option it fills/],
+		[{ hostCommand: { command: "/usr/bin/adb", from: "Android platform-tools" } }, /hostCommand's command is a program's name, with no path/],
+		[{ hostCommand: { command: "adb", from: " " } }, /hostCommand says in words what installs it/],
+		[{ hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux x64"] } }, /hostCommand's builds are machines as Node names them/],
 		[{ capabilities: [{ kind: "desktop", groups: [], image: " windows" }] }, /a configuration's image " windows" is not a name/],
 		[{ capabilities: [{ kind: "desktop", groups: [], image: "windows" }, { kind: "desktop", groups: ["exec"], image: "windows" }] }, /two desktop configurations have the image windows/],
 		[{ capabilities: [{ kind: "desktop", groups: [], image: "windows", options: "os=windows" }] }, /a configuration's options are an object/],
