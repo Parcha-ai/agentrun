@@ -5,8 +5,8 @@ export type {
 } from "./authoring.js";
 export {
   runWorkflow, validateWorkflow, workflowSha256,
-  WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
-  WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
+  WorkflowCodeError, WorkflowStateError,
+  WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue, isItemFailure,
 } from "./workflow.js";
 export { defineJob } from "./job.js";
@@ -59,12 +59,12 @@ export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
 
 export {
-  authorContract, renderAuthorContract, renderAuthorHostAddendum, candidatePolicyErrors, applyHostOutputTypes, authorWorkflow,
-  AUTHOR_SKILL_NAME, authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
+  authorContract, renderAuthorContract, renderAuthorHostAddendum, applyHostOutputTypes, authorWorkflow,
+  authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle,
 } from "./author.js";
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow, HostOutputTypeOptions } from "./author.js";
 export {
-  WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
+  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
   MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";

@@ -1,14 +1,11 @@
+import { candidatePolicyErrors } from '../dist/author.js';
+import { WORKFLOW_NODE_KINDS } from '../dist/vocabulary.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  authorContract, renderAuthorContract, authorWorkflow, renderAuthorHostAddendum, candidatePolicyErrors, validateWorkflow, applyHostOutputTypes, runWorkflow,
-  authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle, AUTHOR_SKILL_NAME,
-  WORKFLOW_NODE_KINDS, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, MECHANICAL_PREDICATES, PREDICATE_FIELDS,
-  EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES,
-} from '../dist/index.js';
+import { authorContract, renderAuthorContract, authorWorkflow, renderAuthorHostAddendum, validateWorkflow, applyHostOutputTypes, runWorkflow, authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle, NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, MECHANICAL_PREDICATES, PREDICATE_FIELDS, EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, CALL_TRANSPORTS, CALL_RETRY_CLASSES } from '../dist/index.js';
 
 const host = {
   name: 'Example records host',
@@ -205,7 +202,7 @@ test('the packaged skill ships the generated language reference beside its guide
   const language = loadAuthorReference('language');
   assert.ok(language.includes(authorContract()), 'the skill reference is the SDK contract');
   const skill = await readFile(join(authorSkillDirectory(), 'SKILL.md'), 'utf8');
-  assert.match(skill, new RegExp(`^---\\nname: ${AUTHOR_SKILL_NAME}\\n`));
+  assert.match(skill, new RegExp(`^---\\nname: agentrun-author\\n`));
   assert.match(skill, /\]\(references\/language\.md\)/);
   const bundle = loadAuthorSkillBundle();
   for (const part of [language, loadAuthorReference('workflow-format'), loadAuthorReference('jev-decisions')]) assert.ok(bundle.includes(part));
