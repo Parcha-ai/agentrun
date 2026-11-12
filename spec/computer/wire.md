@@ -190,7 +190,7 @@ The result:
   `nav` (`back`, `home`, `app_switch`; feature `ui.nav`), `scroll` (a ref or a point, `dx`, `dy` in points) and `drag`
   (points, with `ms`). There is no wait step: an act with no steps and an `expect` is a wait.
 - `state`: the state the steps' points were read from. A step at a point needs it.
-- `expect`: `text` somewhere in the window (in a name, value or desc), or on the element `ref`; with `gone: true`, until it is not. The computer
+- `expect`: `text` somewhere in the window (in a name, value or desc, never a `secure` field's value), or on the element `ref`; with `gone: true`, until it is not. The computer
   polls it for `timeoutMs` (default `defaultExpectMs`, at most `maxExpectMs`).
 - `foreground`: the call allows the foreground route, which moves the user's pointer and focus. Default false.
 

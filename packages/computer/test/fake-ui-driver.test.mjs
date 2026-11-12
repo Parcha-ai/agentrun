@@ -136,6 +136,64 @@ test("a press is verified only when its effect is there at once; a double click 
 	await c.close();
 });
 
+test("ui.observe-shape reads the ui fixture on a computer with no exec or files, desktop and phone", { timeout: 60_000 }, async () => {
+	for (const options of [{}, { os: "android", kind: "android" }]) {
+		const report = await run(fakeUiProvider(options), ["ui.observe-shape"]);
+		assert.equal(statuses(report)["ui.observe-shape"], "pass", `${options.kind ?? "desktop"}: ${reasonOf(report, "ui.observe-shape")}`);
+	}
+});
+
+test("an expect never matches a secure field's value", async () => {
+	const app = {
+		id: "test.login",
+		name: "Login",
+		start: "a",
+		size: [300, 200],
+		screens: { a: { elements: [{ key: "pw", role: "textbox", name: "Password", flags: ["secure"], value: "hunter2", bounds: [10, 10, 200, 28] }] } },
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const probed = await c.client.call("ui.act", { steps: [], expect: { text: "hunter2", timeoutMs: 200 } });
+	assert.equal(probed.value.expect, "unmet", "the password is not readable through an expect");
+	const named = await c.client.call("ui.act", { steps: [], expect: { text: "Password", timeoutMs: 200 } });
+	assert.equal(named.value.expect, "met", "its name still is");
+	await c.close();
+});
+
+test("two apps' elements of one scripted key are two elements: a ref of the app behind is stale, not the front app's", async () => {
+	const appOf = (id) => ({ id, name: id, start: "a", size: [300, 200], screens: { a: { elements: [{ key: "go", role: "switch", name: "Go", bounds: [10, 10, 80, 28] }] } } });
+	const c = await fakeUiConnection({ apps: [appOf("test.one"), appOf("test.two")] });
+	await c.client.call("apps.launch", { id: "test.one" });
+	const one = (await c.client.call("ui.observe", {})).value.nodes[0].ref;
+	await c.client.call("apps.launch", { id: "test.two" });
+	const two = (await c.client.call("ui.observe", {})).value.nodes[0].ref;
+	assert.notEqual(one, two);
+	const pressed = await c.client.call("ui.act", { steps: [{ press: one }] });
+	assert.equal(pressed.value.steps[0].error?.kind, "stale", JSON.stringify(pressed.value.steps));
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes[0].flags?.includes("checked") ?? false, false, "test.two's switch is untouched");
+	await c.close();
+});
+
+test("nav home on a fake phone settles on its home screen, and the app comes back with apps.launch", async () => {
+	const c = await fakeUiConnection({ os: "android", kind: "android" });
+	await c.client.call("apps.launch", { id: APP });
+	const home = await c.client.call("ui.act", { steps: [{ nav: "home" }] });
+	assert.deepEqual(home.value.steps, [{ route: "semantic", verified: true }], JSON.stringify(home));
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.equal(seen.app.id, "home");
+	assert.deepEqual(seen.nodes, []);
+	const tapped = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [10, 10] }] });
+	assert.equal(tapped.value.steps[0].error?.kind, "unsupported");
+	await c.client.call("apps.launch", { id: APP });
+	assert.equal((await c.client.call("ui.observe", {})).value.app.id, APP);
+	await c.close();
+});
+
+test("the fixture's ui cases pass on a driver whose only input is the foreground route", { timeout: 60_000 }, async () => {
+	const report = await run(fakeUiProvider({ os: "android", kind: "android", features: { "ui.background": { off: "a phone has no posted input" } } }));
+	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+});
+
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
 	class Mumbling extends FakeUiDriver {
 		async handle(engine, method, params, signal) {

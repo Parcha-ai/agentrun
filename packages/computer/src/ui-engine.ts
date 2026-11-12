@@ -291,7 +291,9 @@ const sameSize = (a: Rect, b: Rect) => a[2] === b[2] && a[3] === b[3];
 const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, element.value, element.desc, element.bounds, element.flags]);
 /** What a person would see of a view: the window's size, its elements and its frame. */
 const fingerprint = (view: UiView) => JSON.stringify([view.window.id, view.window.bounds, view.elements.map((element) => [element.key, looksOf(element)]), view.frame]);
-const holdsText = (element: UiElement, text: string) => [element.name, element.value, element.desc].some((said) => said?.includes(text) ?? false);
+/** Whether an element says text, in its name, value or desc. A secure field's value is never read: an expect is no oracle for it. */
+const holdsText = (element: UiElement, text: string) =>
+	[element.name, element.flags?.includes("secure") ? undefined : element.value, element.desc].some((said) => said?.includes(text) ?? false);
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {

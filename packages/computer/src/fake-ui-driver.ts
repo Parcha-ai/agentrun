@@ -217,17 +217,24 @@ export class FakeUiDriver implements UiSource {
 
 	async look(target: UiTarget | undefined): Promise<Result<UiView>> {
 		const id = target?.app ?? this.#front;
-		if (id === undefined) return fail("not_found", "no app is in front: launch one with apps.launch");
+		if (id === undefined || (id === "home" && this.#front === undefined)) {
+			// A phone with no app in front shows its home screen (after nav home, say): a window to observe and settle on.
+			const [width, height] = [this.hello().screen?.width ?? 0, this.hello().screen?.height ?? 0];
+			if (this.kind === "android" || this.kind === "ios") return ok({ app: { id: "home", name: "Home screen" }, window: { id: "home#main", bounds: [0, 0, width, height] }, elements: [], frame: "home" });
+			return fail("not_found", "no app is in front: launch one with apps.launch");
+		}
 		const state = this.#running.get(id);
 		const app = this.apps.get(id);
 		if (state === undefined || app === undefined) return fail("not_found", `${id} is not running: launch it with apps.launch`);
 		const windowId = `${id}#main`;
 		if (target?.window !== undefined && target.window !== windowId) return fail("not_found", `${id} has no window ${target.window}; its window is ${windowId}`);
 		const screen = app.screens[state.screen];
+		// A key is the window's, so two apps' elements of the same scripted key are never one element to the engine.
+		const scoped = (key: string) => `${windowId}/${key}`;
 		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, ...element }) => {
 			const value = state.values.get(element.key) ?? element.value;
 			const flags = [...(element.flags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
-			return { ...element, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
+			return { ...element, key: scoped(element.key), ...(element.parent === undefined ? {} : { parent: scoped(element.parent) }), ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
 		});
 		const between = Date.now() < state.animateUntil;
 		return ok({
@@ -246,9 +253,20 @@ export class FakeUiDriver implements UiSource {
 	}
 
 	async run(step: UiStep, { element, view, foreground }: UiStepContext): Promise<Result<UiRun>> {
-		const state = this.#running.get(view.app.id) as AppState;
+		const running = this.#running.get(view.app.id);
+		if (running === undefined) {
+			// The home screen: nav runs (there is nowhere further to go), anything else has nothing to land on.
+			if ("nav" in step) return ok({ route: "semantic", verified: true });
+			return fail("unsupported", "the fake phone's home screen takes no input but nav: launch an app with apps.launch");
+		}
+		const state = running;
 		const app = this.apps.get(view.app.id) as FakeApp;
-		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
+		const prefix = `${view.window.id}/`;
+		/** The scripted element of a key, the view's (scoped to its window) or the app's own (a focus). */
+		const scripted = (key: string | undefined) => {
+			const local = key?.startsWith(prefix) ? key.slice(prefix.length) : key;
+			return app.screens[state.screen].elements.find((one) => one.key === local);
+		};
 		/** The route an input step (a pointer, typing, a key) takes, or why it may not run, in the off features' words. */
 		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
 			const only = target?.route === "foreground";

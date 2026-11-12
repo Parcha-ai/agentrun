@@ -15,7 +15,15 @@ const KNOWN: ReadonlySet<string> = new Set(Object.keys(FEATURES));
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
 
 const look = (t: CaseContext, extra: Record<string, unknown> = {}): Promise<UiObserveResult> => t.call("ui.observe", { target: { app: APP }, ...extra });
-const act = (t: CaseContext, params: Omit<UiActParams, "target">): Promise<UiActResult> => t.call("ui.act", { target: { app: APP }, ...params });
+/**
+ * ui.act on the fixture. A driver whose only input is the foreground route (ui.background off, ui.foreground on) gets
+ * foreground: true unless the case says otherwise, so the cases check what it offers rather than refuse it every step.
+ */
+const act = (t: CaseContext, params: Omit<UiActParams, "target">): Promise<UiActResult> => {
+	const features = t.hello.features ?? {};
+	const inputOnly = featureOff(features, "ui.background") !== undefined && features["ui.foreground"] === true;
+	return t.call("ui.act", { target: { app: APP }, ...(inputOnly && !("foreground" in params) ? { foreground: true } : {}), ...params });
+};
 const byId = (t: CaseContext, seen: UiObserveResult, id: string): UiNode => t.present(seen.nodes.find((node) => node.id === id), `the fixture's ${id}, by its id, in ui.observe: ${show(seen.nodes.map((node) => node.id ?? node.name))}`);
 const centre = ({ bounds: [x, y, w, h] }: UiNode): Point => [Math.floor(x + w / 2), Math.floor(y + h / 2)];
 
@@ -195,7 +203,9 @@ export const uiCases: Case[] = [
 		async run(t) {
 			const seen = await start(t);
 			const pressed = ran(t, (await act(t, { steps: [{ press: byId(t, seen, "wifi").ref }] })).steps[0], "press Wi-Fi");
-			t.equal(pressed.route, "semantic", "a press on a switch with an accessibility action goes the semantic route");
+			// The best route first: semantic, unless the driver's input is all it has (ui.background off, foreground only).
+			const inputOnly = featureOff(t.hello.features ?? {}, "ui.background") !== undefined;
+			t.assert(pressed.route === "semantic" || (inputOnly && pressed.route === "foreground"), `a press on a switch with an accessibility action goes the semantic route, or foreground on a driver with no other: it went ${pressed.route}`);
 			const after = await look(t);
 			t.assert(byId(t, after, "wifi").flags?.includes("checked"), `Wi-Fi is checked after its press: ${show(byId(t, after, "wifi").flags)}`);
 			// The canvas takes foreground input only, and its value counts the clicks that reached it. A driver need not
@@ -209,7 +219,7 @@ export const uiCases: Case[] = [
 			};
 			const off = featureOff(t.hello.features ?? {}, "ui.foreground");
 			const before = count(after);
-			const posted = await act(t, { steps: [{ click: canvas }] });
+			const posted = await act(t, { steps: [{ click: canvas }], foreground: false });
 			const first = posted.steps[0];
 			if (first !== undefined && "error" in first) {
 				const refused = refusedStep(t, posted, "a click on the canvas without foreground: true", ["denied", "unsupported"]);
