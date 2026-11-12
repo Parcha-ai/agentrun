@@ -92,11 +92,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     // A draft asked for or not never stops the turn: a count that can't be read asks for none.
     promptFacts: async (runId, agentId) => {
-      const { tools } = await draftTools(deps, runId);
+      const { tools, decisions } = await draftTools(deps, runId);
       const draftFor = await draftForOf(deps, agentId, runId, start.skills ?? []).catch(() => []);
       // With a draft asked for, what each tool its call nodes may run takes and gives, in the server's own words.
       const described = draftFor.length ? await describedOf(tools, deps.store) : [];
-      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described };
+      return { active: start.seedNotes ?? start.given.length, tools, draftFor, described, ...(decisions ? { decisions } : {}) };
     },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);

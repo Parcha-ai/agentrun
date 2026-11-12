@@ -688,6 +688,12 @@ export type DraftDecisions = {
   readonly deniedBy?: Readonly<Record<string, SettingFrom>>;
 };
 
+/** The providers a draft's decision node may name on this run, by id, as the check reads them (unrunnableNodes: the run's
+ *  providers; gatedDecisions: deny alone refuses one). None when the run has no `decisions`, so a decision node is
+ *  refused (LEARNED_NODES): the one place the rule is read, for the check and for what the reflect prompt allows. */
+export const draftDecisionProviders = (decisions: DraftDecisions | undefined): string[] =>
+  decisions ? Object.keys(decisions.providers).filter((id) => !Object.hasOwn(decisions.gated ?? {}, id) || decisions.gated![id] !== "deny") : [];
+
 /** Each decision a draft asks, by the node that asks it (the DSL's inspection lists each node and its pointer, a composed
  *  workflow's inner ones too): its kind, its pointer and its provider's id, the one it names or else `fallback`, the
  *  run's default. A judge, pick or sift node; a route by question (not by value); a loop's or an escalate's ask
