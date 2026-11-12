@@ -80,8 +80,8 @@ export interface HelloResult {
 	version: string;
 	os: ComputerOs;
 	/**
-	 * The OS's own version as the computer says it: a phone's Android release (getprop ro.build.version.release), such
-	 * as "15". Absent where the computer does not say one.
+	 * The OS's own version as the computer says it, with its build or API level when the driver knows it: "15",
+	 * "15 (API 35)", "26.1 (25B78)". Absent where the computer does not say one.
 	 */
 	osVersion?: string;
 	kind: ComputerKind;
@@ -99,6 +99,14 @@ export interface HelloResult {
 	 * words a person can act on. A feature not listed is not offered. A caller ignores a name it does not know.
 	 */
 	features?: Features;
+	/** The machine, for a person and a run's record: "Apple", "MacBook Pro"; "Google", "Pixel 9". */
+	device?: Device;
+}
+
+/** What the machine is, the same fields on every OS. Its CPU is hello's arch, its OS's version hello's osVersion. */
+export interface Device {
+	maker: string;
+	model: string;
 }
 
 /** A screen's size in points, and how many pixels a point holds (2 on a Retina Mac, 2.625 on many phones, 1 on Xvfb). */
@@ -123,6 +131,7 @@ export interface Features {
  */
 export const FEATURES = {
 	"apps.background": "apps.launch with background: true opens an app without bringing it to the front",
+	"ui.tree": "ui.observe reads the window's elements; off, it answers the window's image with no nodes (ui.image on) or is refused",
 	"ui.image": "ui.observe returns the window's image",
 	"ui.background": "steps run as input posted to the app itself: the user's pointer and focus stay where they are",
 	"ui.foreground": "steps run as the computer's own input, which moves the pointer and the focus (only when a call allows it)",
@@ -690,6 +699,8 @@ export interface UiNode {
 	name?: string;
 	/** What it holds: a text field's text, a slider's value. A secure field's value is never sent. */
 	value?: string;
+	/** What else it says, beside its name: a row's secondary text ("Mobile, Wi-Fi, hotspot"), a help tag. */
+	desc?: string;
 	/** The app's own name for it, when it has one: an Android resource-id, a macOS accessibility identifier. */
 	id?: string;
 	/** In window points. */
@@ -732,6 +743,11 @@ export interface UiObserveResult {
 	/** Against since, by ref. Absent when since was not given or the driver no longer holds it. */
 	diff?: { added: UiRef[]; removed: UiRef[]; changed: UiRef[] };
 	image?: UiImage;
+	/**
+	 * Why nodes is empty though the window is not: the tree is off here (feature ui.tree), in words. The result then
+	 * carries the window's image, asked for or not, so a caller can still act at points.
+	 */
+	empty?: string;
 	/** Nodes were left out: past MAX_UI_NODES, or to keep the reply within the line limit. */
 	truncated: boolean;
 }

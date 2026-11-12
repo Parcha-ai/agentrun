@@ -10,10 +10,11 @@
 // Its default app is the ui fixture (conformance/ui-fixture.ts). Pass apps of your own to script others.
 import { readFileSync } from "node:fs";
 import { PassThrough, type Readable, type Writable } from "node:stream";
-import { pathToFileURL } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
+import { type AttachSocket, socketStreams } from "./attach.js";
 import { DaemonClient } from "./client.js";
 import { type FakeApp, type FakeEffect, type FakeElement, UI_FIXTURE } from "./conformance/ui-fixture.js";
+import { isCommand } from "./entry.js";
 import {
 	CANCEL_METHOD,
 	type ComputerKind,
@@ -44,6 +45,12 @@ export interface FakeUiOptions {
 	features?: Features;
 	/** The settle window the engine waits for; default 50 ms, so tests stay quick. */
 	quietMs?: number;
+	/**
+	 * It cannot tell which elements background input reaches, as on a Mac, where a click posted to the app may never
+	 * reach a view that takes real input only. A click on a foreground element without foreground: true then goes the
+	 * background route, lands nowhere, and answers verified false. Default false: such a click is refused denied.
+	 */
+	blindBackground?: boolean;
 }
 
 /** What one app is doing: its screen, the screens behind it, its fields' values, its switches, its focus, its window. */
@@ -105,6 +112,7 @@ export class FakeUiDriver implements UiSource {
 	readonly calls: Array<[string, unknown]> = [];
 	readonly #features: Features;
 	readonly #quietMs: number;
+	readonly #blind: boolean;
 	readonly #running = new Map<string, AppState>();
 	#front: string | undefined;
 	#frames = 0;
@@ -117,6 +125,7 @@ export class FakeUiDriver implements UiSource {
 		const touch = this.kind === "android" || this.kind === "ios";
 		this.#features = {
 			"apps.background": touch ? { off: "an app a phone opens comes to the front" } : true,
+			"ui.tree": true,
 			"ui.image": true,
 			"ui.background": true,
 			"ui.foreground": true,
@@ -124,6 +133,7 @@ export class FakeUiDriver implements UiSource {
 			...options.features,
 		};
 		this.#quietMs = options.quietMs ?? 50;
+		this.#blind = options.blindBackground ?? false;
 	}
 
 	/** A connection's own ui engine: its refs and states are that connection's alone (wire.md, The ui group). */
@@ -132,7 +142,7 @@ export class FakeUiDriver implements UiSource {
 	}
 
 	hello(): HelloResult {
-		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: ["apps", "ui"], screen: SCREEN, features: this.#features };
+		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: ["apps", "ui"], screen: SCREEN, osVersion: this.os === "android" ? "15 (API 35)" : "26.1 (25B78)", features: this.#features, device: { maker: "AgentRun", model: "Fake ui driver" } };
 	}
 
 	/** The screen an app shows now, by its name; undefined when it is not running. */
@@ -211,10 +221,10 @@ export class FakeUiDriver implements UiSource {
 		const state = this.#running.get(id);
 		const app = this.apps.get(id);
 		if (state === undefined || app === undefined) return fail("not_found", `${id} is not running: launch it with apps.launch`);
-		const window = `${id}#main`;
-		if (target?.window !== undefined && target.window !== window) return fail("not_found", `${id} has no window ${target.window}; its window is ${window}`);
+		const windowId = `${id}#main`;
+		if (target?.window !== undefined && target.window !== windowId) return fail("not_found", `${id} has no window ${target.window}; its window is ${windowId}`);
 		const screen = app.screens[state.screen];
-		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, ...element }) => {
+		const elements = screen.elements.map(({ press: _press, enter: _enter, route: _route, counts: _counts, ...element }) => {
 			const value = state.values.get(element.key) ?? element.value;
 			const flags = [...(element.flags ?? []).filter((flag) => flag !== "checked" && flag !== "focused"), ...(state.checked.has(element.key) ? (["checked"] as const) : []), ...(state.focus === element.key ? (["focused"] as const) : [])];
 			return { ...element, ...(value === undefined ? {} : { value }), ...(flags.length > 0 ? { flags } : {}) };
@@ -222,7 +232,7 @@ export class FakeUiDriver implements UiSource {
 		const between = Date.now() < state.animateUntil;
 		return ok({
 			app: { id, name: app.name },
-			window: { id: window, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: state.bounds },
+			window: { id: windowId, ...(screen.title === undefined ? {} : { title: screen.title }), bounds: state.bounds },
 			elements,
 			frame: between ? `between:${this.#frames++}` : state.screen,
 		});
@@ -241,21 +251,29 @@ export class FakeUiDriver implements UiSource {
 		const scripted = (key: string | undefined) => app.screens[state.screen].elements.find((one) => one.key === key);
 		/** The route a pointer step takes, or why it may not run. */
 		const pointer = (target: FakeElement | undefined): Result<UiRun["route"]> => {
-			if (target?.route === "foreground" || this.#features["ui.background"] !== true) {
+			const only = target?.route === "foreground";
+			if (only && this.#blind && !foreground && this.#features["ui.background"] === true) return ok("background");
+			if (only || this.#features["ui.background"] !== true) {
 				if (this.#features["ui.foreground"] !== true) return fail("unsupported", "no route reaches it: ui.background and ui.foreground are off here");
 				if (!foreground) return fail("denied", `${target?.name ?? "this point"} takes foreground input only, which moves the user's pointer, and this call does not allow it: pass foreground: true`);
 				return ok("foreground");
 			}
 			return ok("background");
 		};
+		/** A pointer step by its route: an element it reaches is pressed, and a counting one verified by its count. */
+		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
+			if (hit === undefined || right || (hit.route === "foreground" && route !== "foreground")) return { route, verified: false };
+			this.#press(state, hit);
+			if (hit.counts !== true) return { route, verified: false };
+			state.values.set(hit.key, String(Number(state.values.get(hit.key) ?? hit.value ?? "0") + 1));
+			return { route, verified: true };
+		};
 		const target = scripted(element?.key);
 		if (target?.flags?.includes("disabled")) return fail("invalid", `${target.name ?? "the element"} is disabled`);
 		if ("press" in step || ("perform" in step && step.action === target?.actions?.[0])) {
 			if (target?.route === "foreground") {
 				const route = pointer(target);
-				if (!route.ok) return route;
-				this.#press(state, target);
-				return ok({ route: route.value, verified: false });
+				return route.ok ? ok(land(target, route.value)) : route;
 			}
 			this.#press(state, target as FakeElement);
 			return ok({ route: "semantic", verified: true });
@@ -279,9 +297,7 @@ export class FakeUiDriver implements UiSource {
 		if ("click" in step) {
 			const hit = target ?? (Array.isArray(step.click) ? scripted(view.elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number]))?.key) : undefined);
 			const route = pointer(hit);
-			if (!route.ok) return route;
-			if (hit !== undefined && step.button !== "right") this.#press(state, hit);
-			return ok({ route: route.value, verified: false });
+			return route.ok ? ok(land(hit, route.value, step.button === "right")) : route;
 		}
 		if ("type" in step) {
 			const into = target ?? scripted(state.focus);
@@ -398,6 +414,12 @@ export function serveUiLines(driver: FakeUiDriver, input: Readable, output: Writ
 	});
 }
 
+/** Serves a driver over an attach socket (spec/computer/attach.md): the driver's end of the binding, as a driver that dialed out. */
+export function serveUiSocket(driver: FakeUiDriver, socket: AttachSocket): void {
+	const { readable, writable } = socketStreams(socket);
+	serveUiLines(driver, readable, writable);
+}
+
 /** A connection over a real line stream to a driver: its client after hello. Closing it leaves the driver's apps running. */
 export async function connectUi(driver: FakeUiDriver): Promise<Result<ComputerConnection>> {
 	const requests = new PassThrough();
@@ -489,7 +511,7 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 }
 
 // node dist/fake-ui-driver.js [apps.json]: the driver on stdin and stdout, its apps from a JSON file of FakeApp[].
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isCommand(import.meta)) {
 	const file = process.argv[2];
 	const apps = file === undefined ? undefined : (JSON.parse(readFileSync(file, "utf8")) as FakeApp[]);
 	const driver = new FakeUiDriver(apps === undefined ? {} : { apps });

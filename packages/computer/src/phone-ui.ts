@@ -14,6 +14,7 @@ export interface AdbUiPhone {
 }
 
 const FEATURES: Features = {
+	"ui.tree": true,
 	"ui.foreground": true,
 	"ui.nav": true,
 	"ui.background": { off: "this phone is driven over adb, whose input is the phone's own; phoned's input is needed for the background route" },
@@ -124,8 +125,8 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		if (inside !== undefined) element.name = inside.slice(0, 3).join(", ");
 	}
 	const id = app ?? "android";
-	const window: Rect = [0, 0, pt(screen[0]), pt(screen[1])];
-	return ok({ app: { id, name: id }, window: { id, bounds: window }, elements });
+	const bounds: Rect = [0, 0, pt(screen[0]), pt(screen[1])];
+	return ok({ app: { id, name: id }, window: { id, bounds }, elements });
 }
 
 const centre = ([x, y, w, h]: Rect): Point => [x + Math.floor(w / 2), y + Math.floor(h / 2)];

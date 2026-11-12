@@ -216,6 +216,7 @@ export function fakeDevices({
 		 */
 		const uiSource = {
 			features: () => ({
+				"ui.tree": true,
 				"ui.foreground": true,
 				"ui.background": { off: "the fake phone takes input only as its own" },
 				"ui.image": { off: "the fake phone sends no window image" },

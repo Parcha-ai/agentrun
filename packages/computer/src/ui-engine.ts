@@ -45,6 +45,7 @@ export interface UiElement {
 	role: UiRole;
 	name?: string;
 	value?: string;
+	desc?: string;
 	id?: string;
 	bounds: Rect;
 	/** The key of the element above it. An element comes after its parent. */
@@ -283,10 +284,10 @@ const contains = ([x, y, w, h]: Rect, [px, py]: Point) => px >= x && py >= y && 
 const under = (view: UiView, point: Point) => view.elements.findLast((element) => contains(element.bounds, point));
 const sameRect = (a: Rect, b: Rect) => a.every((value, index) => value === b[index]);
 const sameSize = (a: Rect, b: Rect) => a[2] === b[2] && a[3] === b[3];
-const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, element.value, element.bounds, element.flags]);
+const looksOf = (element: UiElement) => JSON.stringify([element.role, element.name, element.value, element.desc, element.bounds, element.flags]);
 /** What a person would see of a view: the window's size, its elements and its frame. */
 const fingerprint = (view: UiView) => JSON.stringify([view.window.id, view.window.bounds, view.elements.map((element) => [element.key, looksOf(element)]), view.frame]);
-const holdsText = (element: UiElement, text: string) => (element.name?.includes(text) ?? false) || (element.value?.includes(text) ?? false);
+const holdsText = (element: UiElement, text: string) => [element.name, element.value, element.desc].some((said) => said?.includes(text) ?? false);
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
 	return new Promise((resolve) => {
@@ -370,13 +371,15 @@ export class UiEngine {
 		if (!checked.ok) return checked;
 		const params = checked.value;
 		const features = this.#source.features();
-		const wantsImage = params.image !== undefined && params.image !== false;
-		if (wantsImage) {
-			const off = featureOff(features, "ui.image");
-			if (off !== undefined) return fail("unsupported", `ui.observe: ${off}`);
-		}
+		const imageOff = featureOff(features, "ui.image");
+		// With the tree off, the image is the whole observation: it comes asked for or not, and with no image either,
+		// there is nothing to see.
+		const treeOff = featureOff(features, "ui.tree");
+		if (treeOff !== undefined && imageOff !== undefined) return fail("denied", `ui.observe: ${treeOff}, and ${imageOff}: there is nothing to see`);
+		const wantsImage = treeOff !== undefined || (params.image !== undefined && params.image !== false);
+		if (wantsImage && imageOff !== undefined) return fail("unsupported", `ui.observe: ${imageOff}`);
 		if (signal.aborted) return aborted("ui.observe");
-		const looked = await this.#source.look(params.target, signal);
+		const looked = await this.#see(params.target, signal);
 		if (!looked.ok) return looked;
 		const view = looked.value;
 		let image: UiImage | undefined;
@@ -403,8 +406,16 @@ export class UiEngine {
 			nodes,
 			...(since === undefined ? {} : { diff: this.#diff(since, view) }),
 			...(image === undefined ? {} : { image }),
+			...(treeOff === undefined ? {} : { empty: treeOff }),
 			truncated,
 		});
+	}
+
+	/** A look at the target, with no elements while the tree is off: a source never shows what the feature hides. */
+	async #see(target: UiTarget | undefined, signal: AbortSignal): Promise<Result<UiView>> {
+		const looked = await this.#source.look(target, signal); // the one direct look
+		if (!looked.ok || featureOff(this.#source.features(), "ui.tree") === undefined) return looked;
+		return ok({ ...looked.value, elements: [] });
 	}
 
 	/** The view's nodes, compact or full, at most MAX_UI_NODES. A compact node's parent is its nearest kept ancestor. */
@@ -412,7 +423,7 @@ export class UiEngine {
 		const byKey = new Map(view.elements.map((element) => [element.key, element]));
 		const kept = new Set<string>();
 		for (const element of view.elements) {
-			if (!full && element.name === undefined && element.value === undefined && !(element.actions?.length ?? 0) && !ACTIONABLE.has(element.role)) continue;
+			if (!full && element.name === undefined && element.value === undefined && element.desc === undefined && !(element.actions?.length ?? 0) && !ACTIONABLE.has(element.role)) continue;
 			// The element, and every element above it, so each node's parent is in the list.
 			for (let at: UiElement | undefined = element; at !== undefined && !kept.has(at.key); at = at.parent === undefined ? undefined : byKey.get(at.parent)) kept.add(at.key);
 		}
@@ -431,6 +442,7 @@ export class UiEngine {
 				role: element.role,
 				...(element.name === undefined ? {} : { name: element.name }),
 				...(element.value === undefined || element.flags?.includes("secure") ? {} : { value: element.value }),
+				...(element.desc === undefined ? {} : { desc: element.desc }),
 				...(element.id === undefined ? {} : { id: element.id }),
 				bounds: element.bounds,
 				...(parent === undefined ? {} : { parent: this.#ref(parent.key) }),
@@ -465,16 +477,18 @@ export class UiEngine {
 		const target: UiTarget | undefined = params.target ?? (held === undefined ? undefined : { app: held.app.id, window: held.window.id });
 		const foreground = params.foreground === true;
 		const features = this.#source.features();
+		const treeOff = featureOff(features, "ui.tree");
+		if (treeOff !== undefined && params.expect !== undefined) return fail("unsupported", `ui.act: an expect reads the window's elements, and ${treeOff}`);
 
 		if (signal.aborted) return aborted("ui.act");
-		const first = await this.#source.look(target, signal);
+		const first = await this.#see(target, signal);
 		if (!first.ok) return first;
 		let view = first.value;
 		const steps: UiStepResult[] = [];
 		for (const [index, step] of params.steps.entries()) {
 			if (signal.aborted) return aborted("ui.act");
 			if (index > 0) {
-				const looked = await this.#source.look(target, signal);
+				const looked = await this.#see(target, signal);
 				if (!looked.ok) return looked;
 				view = looked.value;
 			}
@@ -513,7 +527,7 @@ export class UiEngine {
 				}
 				await sleep(Math.min(this.#pollMs, Math.max(0, until - Date.now())), signal);
 				if (signal.aborted) return aborted("ui.act");
-				const looked = await this.#source.look(target, signal);
+				const looked = await this.#see(target, signal);
 				if (!looked.ok) return looked;
 				last = looked.value;
 			}
@@ -565,13 +579,13 @@ export class UiEngine {
 	/** Looks until two looks quietMs apart are the same, or settleMs passes: the settled look. */
 	async #settle(target: UiTarget | undefined, signal: AbortSignal): Promise<Result<UiView>> {
 		const until = Date.now() + this.#settleMs;
-		const looked = await this.#source.look(target, signal);
+		const looked = await this.#see(target, signal);
 		if (!looked.ok) return looked;
 		let last = looked.value;
 		while (this.#quietMs > 0 && Date.now() < until) {
 			await sleep(Math.min(this.#quietMs, Math.max(0, until - Date.now())), signal);
 			if (signal.aborted) return aborted("ui.act");
-			const next = await this.#source.look(target, signal);
+			const next = await this.#see(target, signal);
 			if (!next.ok) return next;
 			const quiet = fingerprint(next.value) === fingerprint(last);
 			last = next.value;

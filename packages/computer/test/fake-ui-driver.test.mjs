@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
+import { conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
 import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -34,6 +34,53 @@ test("with ui.image and ui.foreground off, both are refused with their sentences
 	for (const id of UI_CASES.filter((id) => id !== "ui.route-reported")) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
 	assert.equal(statuses(report)["ui.route-reported"], "skip");
 	assert.match(reasonOf(report, "ui.route-reported"), /the foreground route is not tested: ui.foreground is off here: the user's pointer is theirs/);
+});
+
+test("with ui.tree off, observe answers the image and the reason with no nodes, an expect is refused, and the fixture's cases skip in words", { timeout: 60_000 }, async () => {
+	const why = "Accessibility is not granted to Computerd: System Settings > Privacy & Security > Accessibility";
+	const report = await run(fakeUiProvider({ features: { "ui.tree": { off: why } } }));
+	for (const id of ["ui.hello", "ui.features-off-refused"]) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
+	for (const id of ["ui.fixture-shape", "ui.refs-stable", "ui.stale-point"]) {
+		assert.equal(statuses(report)[id], "skip", id);
+		assert.equal(reasonOf(report, id), `the fixture's cases read its elements, and ui.tree is off here: ${why}`);
+	}
+	const c = await fakeUiConnection({ features: { "ui.tree": { off: why } } });
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.deepEqual(seen.nodes, []);
+	assert.equal(seen.empty, `ui.tree is off here: ${why}`);
+	assert.equal(seen.image.width, 480, "the image comes unasked, at the window's size within the default edge");
+	const clicked = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [40, 150] }] });
+	assert.deepEqual(clicked.value.steps, [{ route: "background", verified: false }], "a point from the image-only state still lands");
+	await c.close();
+	const both = await run(fakeUiProvider({ features: { "ui.tree": { off: why }, "ui.image": { off: "Screen Recording is not granted" } } }), ["ui.features-off-refused"]);
+	assert.equal(statuses(both)["ui.features-off-refused"], "pass", reasonOf(both, "ui.features-off-refused"));
+});
+
+test("the canvas: a driver blind to which views background input reaches posts the click unverified and passes; one that verifies a click that never landed fails", { timeout: 60_000 }, async () => {
+	const c = await fakeUiConnection({ blindBackground: true });
+	await c.client.call("apps.launch", { id: APP });
+	const canvasOf = async () => (await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "canvas");
+	const canvas = await canvasOf();
+	assert.equal(canvas.value, "0");
+	const posted = await c.client.call("ui.act", { steps: [{ click: canvas.ref }] });
+	assert.deepEqual(posted.value.steps, [{ route: "background", verified: false }], "posted, and it cannot tell whether it landed");
+	assert.equal((await canvasOf()).value, "0", "it did not land");
+	const real = await c.client.call("ui.act", { steps: [{ click: canvas.ref }], foreground: true });
+	assert.deepEqual(real.value.steps, [{ route: "foreground", verified: true }]);
+	assert.equal((await canvasOf()).value, "1", "real input reached it, and the count read back verifies it");
+	await c.close();
+	const blind = await run(fakeUiProvider({ blindBackground: true }), ["ui.route-reported"]);
+	assert.equal(statuses(blind)["ui.route-reported"], "pass", reasonOf(blind, "ui.route-reported"));
+	class Boasting extends FakeUiDriver {
+		async run(step, context) {
+			const done = await super.run(step, context);
+			return done.ok && "click" in step ? { ok: true, value: { ...done.value, verified: true } } : done;
+		}
+	}
+	const boasting = await run(fakeUiProvider({ blindBackground: true }, (options) => new Boasting(options)), ["ui.route-reported"]);
+	assert.equal(statuses(boasting)["ui.route-reported"], "fail");
+	assert.match(reasonOf(boasting, "ui.route-reported"), /the click answered verified, and the canvas's count did not move/);
 });
 
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
@@ -162,6 +209,31 @@ test("the line server: method not found, parse error, a request with no id, and 
 	assert.equal(invalid.error.data.kind, "invalid");
 	input.end();
 	driver.close();
+});
+
+test("UiSession: typed observe and act on a target, a point act carries the last state, findNodes and refusedStep", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const ui = new UiSession(c.client, { app: APP });
+	const seen = (await ui.observe()).value;
+	assert.equal(ui.state, seen.state);
+	const [save] = findNodes(seen, { role: "button", text: "Save" });
+	assert.equal(save.id, "save");
+	assert.deepEqual(findNodes(seen, { text: "nothing like it" }), []);
+	const saved = (await ui.act([{ press: save.ref }], { expect: { text: "Saved" } })).value;
+	assert.equal(saved.expect, "met");
+	assert.equal(ui.state, saved.state, "an act's state is the session's last");
+	assert.equal(refusedStep(saved), undefined);
+	const [wifi] = findNodes(seen, { id: "wifi" });
+	const [x, y, w, h] = wifi.bounds;
+	const clicked = (await ui.act([{ click: [x + Math.floor(w / 2), y + Math.floor(h / 2)] }])).value;
+	assert.deepEqual(clicked.steps, [{ route: "background", verified: false }], "the click carried the last state, unasked");
+	assert.equal(c.driver.calls.at(-1)[1].state, saved.state);
+	const next = findNodes(seen, { id: "next" })[0].ref;
+	await ui.act([{ press: next }], { expect: { text: "Second page" } });
+	const stale = (await ui.act([{ press: save.ref }])).value;
+	assert.deepEqual(refusedStep(stale), { index: 0, kind: "stale", message: refusedStep(stale).message });
+	await c.close();
 });
 
 test("the CLI answers hello and ui.observe on stdin and stdout", async () => {
