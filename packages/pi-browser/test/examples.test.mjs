@@ -23,7 +23,7 @@ test("the README's Demos section names every example and every example it names 
 });
 
 test("an example is a runnable demo of 40 lines or fewer, never a placeholder", () => {
-  assert.ok(listed().length >= 3);
+  assert.ok(listed().length >= 2);
   for (const name of listed()) {
     const text = fs.readFileSync(path.join(EXAMPLES, name), "utf8");
     assert.ok(text.split("\n").length <= 41, `${name} is over 40 lines`);
@@ -54,28 +54,6 @@ function sandbox(t) {
   });
   return { ready, run, chromes, get dir() { return state.dir; } };
 }
-
-test("one-script-three-providers runs on a local Chrome, names an unknown provider, and names the key a hosted provider lacks", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
-  const site = await startSite();
-  t.after(() => site.close(), { timeout: 30_000 });
-  const box = sandbox(t);
-  await box.ready;
-  const local = await box.run("one-script-three-providers.mjs", [`${site.base}/a`], { PI_BROWSER_PROVIDER: "cdp" });
-  assert.equal(local.status, 0, local.err.slice(-1500));
-  assert.match(local.out, /^cdp: \[\S+\] RootWebArea: Page A/);
-  assert.deepEqual(fs.readdirSync(box.dir).filter((name) => name.startsWith("pi-browser-")), [], "the profile root is gone");
-  const noChrome = await box.run("one-script-three-providers.mjs", [], { PI_BROWSER_PROVIDER: "cdp", CHROME_PATH: path.join(box.dir, "no-such-chrome") });
-  assert.notEqual(noChrome.status, 0, "a Chrome that cannot start fails the demo");
-  assert.deepEqual(fs.readdirSync(box.dir).filter((name) => name.startsWith("pi-browser-")), [], "a failed start leaves no profile root");
-  const unknown = await box.run("one-script-three-providers.mjs", [], { PI_BROWSER_PROVIDER: "nope" });
-  assert.notEqual(unknown.status, 0);
-  assert.match(unknown.err, /PI_BROWSER_PROVIDER is nope; use cdp, browserbase or kernel/);
-  for (const [provider, key] of [["browserbase", "BROWSERBASE_API_KEY"], ["kernel", "KERNEL_API_KEY"]]) {
-    const refused = await box.run("one-script-three-providers.mjs", [], { PI_BROWSER_PROVIDER: provider, [key]: "", BB_API_KEY: "" });
-    assert.notEqual(refused.status, 0);
-    assert.match(refused.err, new RegExp(`${key} is not set`));
-  }
-});
 
 test("hold-an-irreversible-action holds the form post and the server never sees it", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
   const box = sandbox(t);

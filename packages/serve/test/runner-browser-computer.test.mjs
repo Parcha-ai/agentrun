@@ -67,7 +67,11 @@ function browserProvider(url, record) {
       if (record.released.some(([id]) => id === ref.id)) return { ok: false, error: { code: "gone", message: `the session ${ref.id} has ended` } };
       return { ok: true, value: { client: { close() {} }, hello: { version: "0", kind: "browser", groups: ["cdp"] }, cdp: { url }, close: async () => {} } };
     },
-    attach: async () => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } }),
+    // A session it made runs until it is released, as a vendor's reads.
+    async attach(ref) {
+      if (record.released.some(([id]) => id === ref.id)) return { ok: false, error: { code: "gone", message: `the session ${ref.id} has ended` } };
+      return { ok: true, value: { id: ref.id, name: ref.id, spec: { image: "chromium", user: "unknown", network: "open", kind: "browser" } } };
+    },
     async release(ref, how) {
       record.released.push([ref.id, how]);
       return { ok: true, value: undefined };
