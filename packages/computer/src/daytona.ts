@@ -182,6 +182,8 @@ interface CallInit {
 	retry?: boolean;
 	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
 	anyStatus?: boolean;
+	/** This one status is a value, with its status, not a failure (and not retried). */
+	answerStatus?: number;
 }
 
 /**
@@ -494,7 +496,7 @@ class Rest {
 					signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 				});
 				const bytes = new Uint8Array(await response.arrayBuffer());
-				if (response.ok || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
+				if (response.ok || response.status === init.answerStatus || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				retryable = response.status === 429 || response.status >= 500;
 				failure = errorOf(codeOf(response.status, text), `${what}: ${response.status} ${text}`, "daytona");
@@ -854,9 +856,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const toolbox = await this.#toolbox(sb, signal);
 		if (!toolbox.ok) return toolbox;
 		const staging = `${STAGING}${randomBytes(8).toString("hex")}`;
-		const form = new FormData();
-		form.append("file", new Blob([new Uint8Array(daemon)]), "computerd");
-		const uploaded = await this.#rest.call("POST", `${toolbox.value}/files/upload-v2?${new URLSearchParams({ path: staging })}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs }, signal);
+		const uploaded = await this.#upload(toolbox.value, staging, daemon, signal);
 		if (!uploaded.ok) return fail(uploaded.error.code, `the daemon's upload was refused: ${uploaded.error.message}`);
 		// Init's flags are built here (childCommands): every remote computer, an Archil one included, starts init with
 		// --own-network, init and every tool in a network namespace of their own, loopback alone; the archil client and
@@ -1041,6 +1041,26 @@ export class DaytonaProvider implements ComputerProvider {
 		}
 		if (url.protocol !== "https:") return vendorFail("daytona",`the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
 		return ok(`${url.href.replace(/\/+$/, "")}/${encodeURIComponent(sb.id)}`);
+	}
+
+	/**
+	 * A file's bytes to `path` in the sandbox: files/upload-v2, else files/upload. An older toolbox, as a self-hosted
+	 * Daytona's runners may run (the open daemon's routes, daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/server.go),
+	 * has no files/upload-v2 and answers it 404; its files/upload takes the same form (a path query, the bytes as
+	 * "file"). A 404 alone moves to the older route, so a refusal of any other kind is never sent twice.
+	 */
+	async #upload(toolbox: string, path: string, bytes: Buffer, signal?: AbortSignal): Promise<Result<Answer>> {
+		const query = new URLSearchParams({ path });
+		const send = (route: string, answerStatus?: number) => {
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array(bytes)]), "computerd");
+			return this.#rest.call("POST", `${toolbox}/${route}?${query}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs, ...(answerStatus === undefined ? {} : { answerStatus }) }, signal);
+		};
+		const current = await send("files/upload-v2", 404);
+		if (!current.ok || current.value.status !== 404) return current;
+		const missing = `POST ${new URL(`${toolbox}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.value.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
+		const older = await send("files/upload");
+		return older.ok ? older : fail(older.error.code, `${missing}, then ${older.error.message}`);
 	}
 
 	async #execute(toolbox: string, command: string, signal?: AbortSignal): Promise<Result<{ exitCode: number; result: string }>> {
