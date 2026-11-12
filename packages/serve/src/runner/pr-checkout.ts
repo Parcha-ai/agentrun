@@ -16,7 +16,9 @@
 // The token is revoked once the fetch is done (GitHub's DELETE /installation/token), and is never kept.
 //
 // Git there reads no system or global config (no filter, textconv or fsmonitor a machine's config could attach), fetches
-// no tags and no submodules, and checks out with the repository's own config alone, which this exec wrote.
+// no tags and no submodules, and checks out with the repository's own config alone, which this exec wrote. Its fetches
+// start no auto maintenance: since Git 2.47 that runs detached, so it would go on writing in .git after the exec returned,
+// and the checkout's removal at the claim's release could meet a folder still being written ("Directory not empty").
 //
 // What the run is told: one line in its system prompt, the checkout's facts, or why there is none and that the GitHub
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
@@ -61,7 +63,7 @@ if [ -n "\${auth:-}" ]; then export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$s
 auth=
 rm -rf "\${dir:?}"
 git init -q "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && git remote add origin "$url" || exit 10
-fetch() { git fetch -q --no-tags --no-recurse-submodules origin "$@" "$head" \${base:+"$base"}; }
+fetch() { git fetch -q --no-tags --no-recurse-submodules --no-auto-maintenance origin "$@" "$head" \${base:+"$base"}; }
 fetch --depth=${DEPTH} || exit 11
 mb=
 settled() {
