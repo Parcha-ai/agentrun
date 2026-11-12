@@ -42,7 +42,11 @@ class Demo(unittest.TestCase):
         # before the first request, which this faux model would read as its person's message.
         started = client.runs.start("notes", {"input": {"content": "Write notes.md with three facts about the Moon."}, "max_cost_usd": 5})
         self.assertEqual(started["agent_id"], "notes")
-        done = client.runs.wait(started["run_id"], timeout=60)
+        # The server's first run starts its first Docker computer (the agent writes a file), and on a fresh machine the
+        # server first builds that computer's image from its recipe (apt installs git, node, npm and rg): about 6 minutes
+        # cold on a loaded build box, under one on a CI runner. The server bounds that build at 10 minutes
+        # (IMAGE_TIMEOUT_MS), so the run gets that bound plus a minute for its own turn.
+        done = client.runs.wait(started["run_id"], timeout=660)
         self.assertEqual((done["run_id"], done["status"], done["cost"].get("cap_usd")), (started["run_id"], "completed", 5))
         listed = client.runs.list(limit=10)
         self.assertTrue(any(run["run_id"] == started["run_id"] for run in listed["runs"]), "the run is listed")

@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "AgentRun, the open-source platform that supercharges your agents (self-improvement, durable execution and a control plane on top of your favorite agent harness), on this machine with one command: npx @parcha/agentrun",
   "type": "module",
   "license": "Apache-2.0",
@@ -16,13 +16,13 @@
     "NOTICE"
   ],
   "dependencies": {
-    "@parcha/agentrun-serve": "0.1.0-beta.34"
+    "@parcha/agentrun-serve": "0.1.0-beta.35"
   },
   "scripts": {
     "test": "node --test 'test/*.test.mjs'"
   },
   "engines": {
-    "node": ">=24.11.0"
+    "node": ">=24.22.3"
   },
   "repository": {
     "type": "git",

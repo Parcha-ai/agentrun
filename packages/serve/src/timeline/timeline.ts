@@ -59,7 +59,7 @@ export type TimelineEvent = {
   usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
-  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number }[];
+  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -92,13 +92,21 @@ export const CALL_REFUSED = "agentrun.refused";
 
 /** Whether pi's error for a request is the model proxy's own refusal of it for the run's spend cap, before it was sent:
  *  the proxy's JSON body after the HTTP status pi-ai puts first, read by its fields (`type` "agentrun_proxy", `code`
- *  "spend_cap_reached", as the proxy writes them), never by its words. Any other error, a provider's 400 included, is not. */
+ *  "spend_cap_reached", as the proxy writes them), never by its words. Any other error, a provider's 400 included, is not.
+ *  pi-ai puts the status first in either of its clients' forms: the Responses client's "400 {...}" with the fields under
+ *  `error`, or the Messages client's "<api> API error (400): {...}" with them at the top (the runner's pi route speaks
+ *  Messages to the session's proxy). */
 function proxyCapRefusal(errorMessage: unknown): boolean {
   if (typeof errorMessage !== "string") return false;
   const at = errorMessage.indexOf("{");
-  if (at < 0 || !/^\d{3}\s*$/.test(errorMessage.slice(0, at))) return false;
+  if (at < 0) return false;
+  const head = errorMessage.slice(0, at);
+  // The provider's name is any word with no space (agentrun-session today; a route's own, such as openrouter/anthropic):
+  // the body's fields, never the name, say whose refusal it is.
+  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return false;
   try {
-    const error = (JSON.parse(errorMessage.slice(at)) as { error?: { type?: unknown; code?: unknown } } | null)?.error;
+    const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } } | null;
+    const error = body?.error ?? body;
     return error?.type === "agentrun_proxy" && error.code === "spend_cap_reached";
   } catch {
     return false;
@@ -1011,7 +1019,7 @@ export function endedOnTurnEndingTool(entries: readonly EntryLike[]): string | u
   return last.tool_use_id ?? undefined;
 }
 
-/** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields
+/** A workflow's decision receipt as its run's store keeps it (workflow/decisions.ts's DecisionRow): the fields
  *  runMetricsOf reads. */
 export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknown; status?: unknown; driver_spend?: unknown };
 

@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 const { openSqliteStore, RunFinal } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
+const { momentOverStore } = await import("../dist/store-view.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
 const { learnedParts } = await import("../dist/learning.js");
 
@@ -116,11 +117,104 @@ test("a message to an idle run that asked a question answers it (mode answer), a
   assert.equal((await commandsOf(store, "run-1"))[0].kind, "steer");
 });
 
-test("a message to an idle completed-and-reopenable run is a follow-up turn", async () => {
+test("a message to a completed agentic run, its moment as the view reads it, is a follow-up turn that reopens the run", async () => {
   const store = await freshStore();
   await queuedRun(store);
-  const answer = await message(store, moment({ working: false, awaitingAnswer: false }), "again");
+  await store.runs.update(await store.claim("run-1", "runner-a", { leaseMs: 30_000 }), { state: "ended", summary: "The answer." });
+  const read = await momentOverStore(store, "run-1");
+  assert.deepEqual([read.terminal, read.terminalKind, read.working], [true, "completed", false], "the view reads it completed");
+  const answer = await message(store, read, "again");
   assert.equal(answer.mode, "follow_up");
+  assert.equal((await store.runs.get("run-1")).state, "running", "the store reopened it");
+  assert.deepEqual((await commandsOf(store, "run-1")).map((one) => [one.kind, one.body.text, one.takenAt]), [["steer", "again", null]]);
+});
+
+/** `id` (queued first) claimed and ended with `patch`. */
+async function endedRun(store, id, patch) {
+  await queuedRun(store, id);
+  await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 30_000 }), patch);
+}
+
+test("a message to an agentic run a person stopped reopens it with the message as its next turn", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "stopped", summary: "stopped by a person", outcome: "stopped" });
+  const answer = await message(store, moment({ working: false }), "Go on, then.");
+  assert.equal(answer.mode, "follow_up");
+  const row = await store.runs.get("run-1");
+  assert.deepEqual([row.state, row.runner, row.endedAt, row.outcome], ["running", null, null, null], "opened again, for a runner to claim");
+  assert.deepEqual((await commandsOf(store, "run-1")).map((one) => [one.kind, one.body.text, one.takenAt]), [["steer", "Go on, then.", null]]);
+});
+
+test("a message to a cancelled run answers 409 finished in today's words, nothing written", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "stopped", summary: "cancelled", outcome: "cancelled" });
+  await assert.rejects(
+    () => message(store, moment({ cancelled: true, terminal: true, terminalKind: "cancelled", working: false }), "Go on."),
+    (e) => e.code === "not_continuable" && e.status === 409 && e.message === "This run was cancelled. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, "run-1")).length, 0);
+  assert.equal((await store.runs.get("run-1")).state, "stopped");
+});
+
+test("two messages racing at a completed agentic run are both taken as steers: one reopens it, the other lands on the reopened run, neither is refused", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-two", { state: "ended", summary: "The first answer." });
+  const done = moment({ id: "run-two", working: false, terminal: true, terminalKind: "completed" });
+  // Both read the run ended and are refused their steer; the other message's reopen lands between this one's refusal and
+  // its own reopen, so this one's reopen finds the run running again.
+  let raced = false;
+  const racing = {
+    runs: {
+      ...store.runs,
+      reopen: async (runId, command) => {
+        if (!raced) {
+          raced = true;
+          await message(store, done, "first");
+        }
+        return store.runs.reopen(runId, command);
+      },
+    },
+    command: (...args) => store.command(...args),
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+  };
+  const answer = await message(racing, done, "second");
+  assert.equal(answer.mode, "follow_up");
+  assert.equal((await store.runs.get("run-two")).state, "running");
+  const rows = await commandsOf(store, "run-two");
+  assert.deepEqual(rows.map((row) => [row.kind, row.body.text, row.takenAt]), [["steer", "first", null], ["steer", "second", null]], "both steers, in the order the run took them");
+});
+
+test("a message racing a run's end (the moment read before it) is refused by the store's reopen in that end's words: cancelled or failed, nothing written", async () => {
+  const store = await freshStore();
+  for (const [id, patch, words] of [
+    ["run-c", { state: "stopped", summary: "cancelled", outcome: "cancelled" }, "This run was cancelled. Start a new run of the agent."],
+    ["run-f", { state: "failed", summary: "it broke" }, "This run failed. Start a new run of the agent."],
+  ]) {
+    await endedRun(store, id, patch);
+    await assert.rejects(() => message(store, moment({ id, working: false }), "Go on."), (e) => e.code === "not_continuable" && e.status === 409 && e.message === words, id);
+    assert.equal((await commandsOf(store, id)).length, 0, id);
+    assert.equal((await store.runs.get(id)).state, patch.state, id);
+  }
+});
+
+test("a message to a run that failed, or to a completed workflow run, answers 409 finished in today's words through the store's refusal, nothing written", async () => {
+  const store = await freshStore();
+  await endedRun(store, "run-1", { state: "failed", summary: "it broke" });
+  await assert.rejects(
+    () => message(store, moment({ terminal: true, terminalKind: "failed", working: false }), "Go on."),
+    (e) => e.code === "not_continuable" && e.status === 409 && e.message === "This run failed. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, "run-1")).length, 0);
+  await store.agents.addRevision({ agentId: "a1", id: "r-wf", kind: "workflow", body: { workflow: { name: "w", nodes: [] } } });
+  await store.runs.create({ id: "run-wf", agentId: "a1", revisionId: "r-wf" });
+  await store.runs.update(await store.claim("run-wf", "runner-a", { leaseMs: 30_000 }), { state: "ended" });
+  await assert.rejects(
+    () => message(store, moment({ id: "run-wf", kind: "workflow", terminal: true, terminalKind: "completed", working: false }), "Go on."),
+    (e) => e.code === "not_continuable" && e.status === 409 && e.message === "This run is finished. Start a new run of the agent.",
+  );
+  assert.equal((await commandsOf(store, "run-wf")).length, 0);
+  assert.equal((await store.runs.get("run-wf")).state, "ended");
 });
 
 test("a message to a run whose harness takes no mid-turn steer follows the turn", async () => {
@@ -274,6 +368,82 @@ test("deny of a waiting tool call writes a deny command with the note", async ()
   const rows = await commandsOf(store, id);
   assert.equal(rows[0].kind, "deny");
   assert.equal(rows[0].body.note, "nope");
+});
+
+for (const [ending, words] of [["stop", "withdrawn when its run was stopped"], ["cancel", "canceled with its run"]]) {
+  test(`an answer to a waiting call after the run was given a ${ending} is 409 ${ending === "stop" ? "withdrawn" : "canceled"}, nothing written: the ${ending} comes first, so the call never runs`, async () => {
+    for (const decision of ["allow", "deny"]) {
+      const store = await freshStore();
+      const id = await queuedRun(store);
+      await sendCommand(store, id, { kind: ending, body: {} });
+      await assert.rejects(
+        () => approve(store, moment({ approvalIds: new Set(["call-1"]) }), "call-1", decision),
+        (e) => e.code === "not_continuable" && e.message === `The tool call call-1 was already ${words}.` && e.extra.details.reason === "already_answered",
+        decision,
+      );
+      assert.deepEqual((await commandsOf(store, id)).map((row) => row.kind), [ending], `${decision}: no answer written`);
+    }
+  });
+}
+
+test("an answer whose write lands just after a stop's is 409 withdrawn: the stop is read first, so the call never runs", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  // The stop is written between the answer's check and its own write.
+  const racing = {
+    runs: store.runs,
+    agents: store.agents,
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+    command: async (runId, command) => {
+      if (command.kind === "approve") await store.command(runId, { kind: "stop", body: {} });
+      return store.command(runId, command);
+    },
+  };
+  await assert.rejects(
+    () => approve(racing, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.message === "The tool call call-1 was already withdrawn when its run was stopped.",
+  );
+  assert.deepEqual((await commandsOf(store, id)).map((row) => row.kind), ["stop", "approve"], "the stop is read first: its end refuses the answer");
+});
+
+test("an answer whose write lands just after a stop's, and whose run's stopped end is written before it is read back, is 409 withdrawn: the end refused it", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  // The stop is written between the answer's check and its own write, and the runner takes it (the run's stopped end,
+  // which refuses every row left untaken) right after the answer's write, before the answer reads back.
+  const racing = {
+    runs: store.runs,
+    agents: store.agents,
+    commands: (...args) => store.commands(...args),
+    runOfOrigin: (...args) => store.runOfOrigin(...args),
+    command: async (runId, command) => {
+      if (command.kind !== "approve") return store.command(runId, command);
+      const stop = await store.command(runId, { kind: "stop", body: {} });
+      const written = await store.command(runId, command);
+      await store.runs.update(await store.claim(runId, "runner-a"), { state: "stopped", summary: "stopped by a person" }, { take: [stop.id] });
+      return written;
+    },
+  };
+  await assert.rejects(
+    () => approve(racing, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.message === "The tool call call-1 was already withdrawn when its run was stopped.",
+  );
+  const rows = await commandsOf(store, id);
+  assert.deepEqual(rows.map((row) => [row.kind, row.takenAt !== null, row.refused !== null]), [["stop", true, false], ["approve", true, true]], "the end took the stop and refused the answer (a refused row reads taken, with its refusal)");
+});
+
+test("a retry of an answer written behind a stop the runner has not taken yet is 409 withdrawn too, never settled as taken", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  // The first try's rows as its race left them: the stop, then the answer (that try was told 409).
+  await sendCommand(store, id, { kind: "stop", body: {} });
+  await sendCommand(store, id, { kind: "approve", body: { approval: "call-1" } });
+  await assert.rejects(
+    () => approve(store, moment({ approvalIds: new Set(["call-1"]) }), "call-1", "allow"),
+    (e) => e.code === "not_continuable" && e.message === "The tool call call-1 was already withdrawn when its run was stopped.",
+  );
+  assert.deepEqual((await commandsOf(store, id)).map((row) => row.kind), ["stop", "approve"], "nothing more written");
 });
 
 test("approve of a call the run never had is 404, nothing written", async () => {

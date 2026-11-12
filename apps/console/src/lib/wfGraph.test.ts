@@ -55,6 +55,62 @@ describe("drawWorkflowGraph", () => {
   });
 });
 
+// A workflow run's model node names the model it ran on, and its tier when it named one, on its card's kind line
+// (runMarks reads the run's nodes[path].model and .tier); a call node does not.
+describe("drawWorkflowGraph, a run's model nodes and their models", () => {
+  it("a model node's card reads its kind, tier and model; one of no tier its kind and model; a call node as before", async () => {
+    const { runMarks } = await import("./runGraph");
+    const flow = { v: 2, name: "t", root: { node: "chain", steps: [
+      { node: "extract", label: "quick look", tier: "fast", instructions: "Look.", out: "Out", as: "a" },
+      { node: "extract", label: "final answer", instructions: "Answer.", out: "Out", as: "b" },
+      { node: "call", label: "fetch the page", via: "tool", tool: "web_fetch", args: {}, out: "Out", as: "c" },
+    ] } };
+    const graph = workflowGraph(flow);
+    const run = {
+      run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-01T00:00:00Z", endedAt: "2026-11-01T00:00:02Z" },
+      workflow: flow, graph, decisions: [], effects: [], totals: { cost_usd: null, decisions: 0, effects: 0, elapsed_ms: 2000 },
+      nodes: { "/root": { status: "done" }, "/root/steps/0": { status: "done", model: "gpt-5-mini", tier: "fast" }, "/root/steps/1": { status: "done", model: "gpt-5-4-mini" }, "/root/steps/2": { status: "done" } },
+    } as never;
+    const s = svg();
+    drawWorkflowGraph(s, graph, runMarks(run, null));
+    const kind = (p: string) => s.querySelector(`g[data-path="${p}"] .kind`)?.textContent;
+    expect(kind("/root/steps/0")).toBe("extract · fast · gpt-5-mini");
+    expect(kind("/root/steps/1")).toBe("extract · gpt-5-4-mini");
+    expect(kind("/root/steps/2")).toBe("call · web_fetch");
+    expect(s.querySelector('g[data-path="/root/steps/0"] title')?.textContent).toContain("ran on gpt-5-mini (the fast tier)");
+  });
+});
+
+// A decision card names the model it ran on; its hover names the same one, not the workflow's declared model.
+describe("drawWorkflowGraph, a decision's hover", () => {
+  it("names the model the run used, the same as its card, and the declared one when nothing ran", () => {
+    const flow = { v: 2, name: "t", root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick.", out: "Out", as: "a" }] } };
+    const graph = workflowGraph(flow);
+    const meta = { "/root/steps/0": { decision: true, provider: "openrouter", model: "declared-model" } } as never;
+    const hover = (ran?: Record<string, { model: string; tier?: string }>) => {
+      const s = svg();
+      drawWorkflowGraph(s, graph, { meta, ran } as never);
+      return s.querySelector('g[data-path="/root/steps/0"] title')?.textContent;
+    };
+    expect(hover({ "/root/steps/0": { model: "actual-model-7b" } })).toContain("openrouter actual-model-7b");
+    expect(hover({ "/root/steps/0": { model: "actual-model-7b" } })).not.toContain("declared-model");
+    expect(hover()).toContain("openrouter declared-model");
+  });
+});
+
+// The count a page prints beside a graph is the boxes the drawing shows: on a workflow with a fan, frames and nesting too.
+describe("drawnNodeCount", () => {
+  it("counts the boxes the drawing shows, not the root chain the steps sit on", async () => {
+    const { drawnNodeCount, nodesWord } = await import("./wfGraph");
+    const g = workflowGraph(kybWorkflow);
+    const s = svg();
+    drawWorkflowGraph(s, g);
+    expect(drawnNodeCount(g)).toBe(s.querySelectorAll("g[data-path]:not(.chain)").length);
+    expect(drawnNodeCount(g)).toBeLessThan(g.nodes.length);
+    expect([nodesWord(1), nodesWord(4), nodesWord(0)]).toEqual(["1 node", "4 nodes", "0 nodes"]);
+  });
+});
+
 // A learned workflow's MCP call node (tl-jobs' learned MCP nodes): an ordinary call node, `via: "tool"`, whose tool is an
 // MCP server's (`mcp:<server>/<tool>`). Its card reads "<tool> on <server>" with an MCP mark, never the raw key; any
 // other call node reads as it did.

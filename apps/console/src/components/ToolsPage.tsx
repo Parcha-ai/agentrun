@@ -14,8 +14,8 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  `onSaved` reads the capabilities again: what each capability resolves to is the server's to say. `onOpen` reads them as
  *  the page opens, since the settings it reads may be newer than capabilities read earlier (another tab's change); until
  *  capabilities name the provider a row shows, its resolution reads "reading…", and a read that failed says so with
- *  Retry (`onOpen` answers whether its read landed). */
-export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; gates?: ToolGate[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
+ *  Retry (`onOpen` answers whether its read landed). `harnesses` (capabilities') greys out a harness this server can't run. */
+export function ToolsPage({ v2, choices, gates = [], harnesses, onSaved, onOpen }: { v2: Client; choices: ToolChoice[]; gates?: ToolGate[]; harnesses?: readonly { id: string; available: boolean; reason?: string }[]; onSaved: () => void; onOpen?: () => Promise<boolean> | void }) {
   const [answer, setAnswer] = useState<ToolSettings | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [problem, setProblem] = useState<{ fields: Record<string, string>; error: ApiError | null; unread?: true } | null>(null);
@@ -95,7 +95,7 @@ export function ToolsPage({ v2, choices, gates = [], onSaved, onOpen }: { v2: Cl
           {rows.length ? (
             <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
               refused={(_, permission) => permission === "deny"}
-              resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} />
+              resolvesOf={(t, provider) => (provider === t.provider && readFor(t.name) ? <PerHarness choice={t} harnesses={harnesses} />
                 : capsRead === "reading" ? <span className="block font-mono text-small text-muted-foreground">reading…</span>
                 : <span className="block text-small text-muted-foreground">{capsRead === "failed" ? "What it resolves to couldn't be read." : "It changed while this page read it."} <Button type="button" onClick={retry} disabled={busy} size="xs" className="ml-1">Retry</Button></span>)} />
           ) : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">This server offers no tool with a choice of provider.</p>}

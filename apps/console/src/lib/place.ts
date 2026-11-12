@@ -4,13 +4,12 @@ import type { Computer } from "./v2";
 /** Where an agent's runs execute (a definition's `place`, a run's `place`) and what this server offers
  *  (capabilities `places`). The server's words for a box it lacks (`reason`) are shown as it gives them. */
 export type Place = { mode: "runner" } | { mode: "sandbox"; box: string };
-/** `state`: the server's word on an available box (`preparing`: its image is still coming; a sandbox run's first box
- *  waits for it), or `unavailable`. */
+/** `state`: the server's word on a box, `ready` or `unavailable`. */
 export type BoxOffer = { id: string; available: boolean; reason?: string; state?: BoxState };
 /** A box's state as the server's document types it (capabilities' `places.boxes[].state`). */
 type BoxState = NonNullable<components["Capabilities"]["places"]>["boxes"][number]["state"];
 /** The same states at run time, to check an answer by: each must be one of the generated type's states. */
-const BOX_STATES = ["ready", "preparing", "unavailable"] as const satisfies readonly BoxState[];
+const BOX_STATES = ["ready", "unavailable"] as const satisfies readonly BoxState[];
 /** `defaultPlace`: the server's `default_place`, the place a NEW agent is given and where a revision that names no place
  *  runs (agentForm.ts defaultPlaceOf). */
 export type Places = { modes: string[]; boxes: BoxOffer[]; defaultPlace: Place };
@@ -52,6 +51,3 @@ export const placeLabel = (place: Place | undefined) => (!place ? "Where this se
 
 /** Where a run ran, as its header says it: "in a docker box" or "on the server" (every run view names its place). */
 export const runPlaceWords = (run: Place): string => (run.mode === "sandbox" ? `in a ${run.box} box` : "on the server");
-
-/** The box whose image is still coming (capabilities' `places.boxes`, state `preparing`), if any. */
-export const preparingBox = (places: Places | null | undefined): BoxOffer | undefined => places?.boxes.find((b) => b.available && b.state === "preparing");

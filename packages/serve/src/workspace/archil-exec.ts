@@ -1,7 +1,6 @@
 // Workspace exec on an Archil disk: one serverless exec call (archil-disk.ts) that mounts the workspace's folder and
-// its exec spill folder, and nothing else of the disk. Taken from pi-transport's box/archil-exec.ts, which has no
-// caller: the call, its 300 s cut, the hold on the folder with a queue, and the mapping of the exit and of the deadline.
-// The rest (boxes, records, sweeps) is not.
+// its exec spill folder, and nothing else of the disk: the call, its 300 s cut, the hold on the folder with a queue, and
+// the mapping of the exit and of the deadline.
 //
 // Archil runs one shell line in a fresh container with two folders of the disk, each a mount's `subdirectory`, held for
 // the line (no other client writes in them meanwhile; a second one waits up to queueMs):
@@ -32,7 +31,7 @@
 // Limit, stated (not measured): whether the wait for the folders' hold counts toward Archil's 300 s (a 290 s command
 // was not cut, measured live).
 import { randomBytes } from "node:crypto";
-import type { ArchilDisk, ArchilImage } from "./archil-disk.js";
+import type { ArchilDisk, ArchilExecNetwork, ArchilImage } from "./archil-disk.js";
 import { type ExecResult, WorkspaceError } from "./workspace.js";
 
 /** Archil cuts an exec call at 300 s. */
@@ -78,7 +77,22 @@ export type ExecJob = {
   readonly maxOutput: number;
   readonly queueMs: number;
   readonly image?: ArchilImage;
+  /** The container's network (DENY_EGRESS); absent, Archil's default, egress open. */
+  readonly network?: ArchilExecNetwork;
 };
+
+/** Archil refused an exec's network policy (a plan without network policies): nothing ran. The words are Archil's. */
+export class ArchilEgressRefused extends WorkspaceError {
+  override name = "ArchilEgressRefused";
+}
+
+/** Whether `error`, from an exec that asked for a network policy, is Archil refusing the policy itself: a 402 or a 403
+ *  whose code or words name the network (`network_plan_required`). Archil's exact answer is not measured; a 403 that
+ *  names no network (a refused key, the exec allowance spent) stays what it is. */
+export function refusesNetwork(error: unknown): boolean {
+  const { status, code, message } = (error ?? {}) as { status?: unknown; code?: unknown; message?: unknown };
+  return (status === 402 || status === 403) && /network|egress/i.test(`${typeof code === "string" ? code : ""} ${typeof message === "string" ? message : ""}`);
+}
 
 /** The program's runner: stderr to the file in its first argument, the program run, its raw wait status written to the
  *  file in its second, and the same exit a shell would give. No single quote in it: it rides in one. */
@@ -199,11 +213,16 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
     const request = {
       mounts: { [EXEC_MOUNT]: job.root, [SPILL_MOUNT]: job.spill }, queueMs: job.queueMs, command: execLine(job, mark),
       ...(job.image === undefined ? {} : { image: job.image }),
+      ...(job.network === undefined ? {} : { network: job.network }),
     };
     answer = await Promise.race([disk.exec(request), gaveUp]);
   } catch (error) {
     if (error instanceof WorkspaceError) throw error;
     const status = (error as { status?: unknown })?.status;
+    if (job.network !== undefined && refusesNetwork(error)) {
+      const code = (error as { code?: unknown }).code;
+      throw new ArchilEgressRefused("REFUSED", `Archil refused the exec's network policy (${status}${typeof code === "string" ? ` ${code}` : ""}): ${describe(error)}`, { path, cause: error });
+    }
     // A 400 is a mount Archil refused (a folder missing, or held by another client past the queue's wait): its own
     // words say which.
     const why = status === 400 ? "Archil refused to mount the exec's folders"

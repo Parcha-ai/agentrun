@@ -1,3 +1,4 @@
+import { WorkflowInvalidError } from '../dist/workflow.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -6,7 +7,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dryRunWorkflow, inspectWorkflow, runWorkflow, validateWorkflow, WorkflowInvalidError } from '../dist/index.js';
+import { dryRunWorkflow, inspectWorkflow, runWorkflow, validateWorkflow } from '../dist/index.js';
 
 // The closed set the issues draw from, written out here rather than imported: the test pins the published codes.
 const CODES = ['DOCUMENT_INVALID', 'SHAPE_INVALID', 'WORKFLOW_FIELD_INVALID', 'SCHEMA_INVALID', 'SCHEMA_UNKNOWN', 'INPUT_INVALID',
