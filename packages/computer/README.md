@@ -2446,10 +2446,9 @@ root devDependency for the live tests.
 
 `create(options)` takes the key as `options.apiKey` and nowhere else, and refuses in words without it. It reads no
 setting from the environment: serve passes its own `BOXD_API_KEY`, `BOXD_ORG` and `BOXD_REGION`, and the conformance
-module the `COMPUTER_BOXD_*` names it reads. The SDK reads `BOXD_API_KEY`, `BOXD_TOKEN`, `BOXD_BASE_URL` and
-`BOXD_REGION` when it is not given them, so the provider gives it the key, the API's address (`baseUrl`, default
-`https://boxd.sh:9443`) and the region (`""`, the API's home region, when unset) explicitly; an explicit key wins over
-an ambient token.
+module the `COMPUTER_BOXD_*` names it reads. The provider gives the SDK the key, the API's address (`baseUrl`, default
+`https://boxd.sh:9443`) and the region (`""`, the API's home region, when unset) explicitly, so the SDK takes none of
+them from the environment.
 
 | Option | Meaning | Unset |
 | --- | --- | --- |

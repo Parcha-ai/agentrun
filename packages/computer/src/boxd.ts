@@ -114,7 +114,7 @@ export interface BoxdMachines {
 export interface BoxdClientOptions {
 	apiKey: string;
 	baseURL: string;
-	/** "" is the API's home region. Never left out: the SDK would read BOXD_REGION then. */
+	/** "" is the API's home region. Never left out, so the SDK takes no region from the environment. */
 	region: string;
 	timeout: number;
 	/** How many times the SDK sends a call again after a connection error; 0 for create, which is never sent twice. */
@@ -176,9 +176,8 @@ export interface BoxdProviderOptions {
 	/** The longest lifetime check takes. Default 24 h, at most 30 days. */
 	maxLifetimeMs?: number;
 	/**
-	 * A backstop: boxd deletes every machine at create's time plus maxLifetimeMs (and up to 10 minutes more), whatever
-	 * the host does, written in the same call that makes the machine. The janitor still ends a computer at its deadline.
-	 * Default false.
+	 * A backstop: boxd deletes every machine 5 minutes past create's time plus maxLifetimeMs, whatever the host does,
+	 * written in the same call that makes the machine. The janitor still ends a computer at its deadline. Default false.
 	 */
 	deleteTimer?: boolean;
 	/**
@@ -202,7 +201,7 @@ export interface BoxdOptions extends Omit<BoxdProviderOptions, "Boxd"> {
 
 /** Not a literal, so no type checker or bundler resolves the SDK from this package. */
 const BOXD_PACKAGE: string = "@boxd-sh/sdk";
-/** The SDK's own default address (client.js DEFAULT_BASE_URL), given explicitly so BOXD_BASE_URL is never read. */
+/** The SDK's own default address (client.js DEFAULT_BASE_URL), given explicitly so the SDK takes none from the environment. */
 const DEFAULT_BASE_URL = "https://boxd.sh:9443";
 const BASE_URL = /^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/;
 const REGION = /^[a-z][a-z0-9-]{0,31}$/;
@@ -278,6 +277,8 @@ const MAX_TIMEOUT_MS = MAX_TIMER_MS - CALL_SLACK_MS;
 const STAGING = "/tmp/agentrun-computerd-";
 /** How far past the most a computer may live the deleteTimer backstop is set, in seconds: never before init's own end. */
 const DELETE_TIMER_SLACK_S = 300;
+/** The clock skew between this host and boxd that create's read-back of the backstop allows, in seconds. */
+const CLOCK_SKEW_S = 120;
 /** Where init's own words go: root's, in /run, which only root writes. */
 const INIT_LOG = "/run/agentrun-computerd.log";
 /** Public anycast resolvers, by address: TCP to 443, and DNS over UDP to 53, over IPv4 and IPv6. */
@@ -549,10 +550,10 @@ export class BoxdProvider implements ComputerProvider {
 
 	/**
 	 * daemon child: boxd's own agent runs every command in the machine, and init is a detached command it starts (#start),
-	 * so init's exit leaves the machine. boxd ends no machine by itself (this provider sets no timer), so the janitor ends
-	 * one by its deadline label, and init ends every process at the deadline. The agent answers on 57073, so init starts
-	 * with --own-network, and network none is all a computer takes until a proxy carries open out of the daemon's own
-	 * network.
+	 * so init's exit leaves the machine. The janitor ends a machine by its deadline label, and init ends every process at
+	 * the deadline. Without deleteTimer boxd has no timer for the machine; with it, boxd also deletes the machine 5 minutes
+	 * past the most it may live. The agent answers on 57073, so init starts with --own-network, and network none is all a
+	 * computer takes until a proxy carries open out of the daemon's own network.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
@@ -837,9 +838,10 @@ export class BoxdProvider implements ComputerProvider {
 		const deleteAt = machine.deleteAt instanceof Date ? machine.deleteAt.getTime() : machine.deleteAt;
 		if (!this.#deleteTimer && deleteAt !== null && deleteAt !== undefined) mismatch("delete-after", null, machine.deleteAt);
 		if (this.#deleteTimer) {
-			// The backstop: past the most this computer may live, and no later than its slack and clock skew beyond that.
+			// The backstop is set DELETE_TIMER_SLACK_S past the most this computer may live. The read-back takes it from that
+			// most up to CLOCK_SKEW_S beyond the slack.
 			const most = Date.parse(labels[MAX_LABEL] as string);
-			const latest = most + (DELETE_TIMER_SLACK_S + 120) * 1000;
+			const latest = most + (DELETE_TIMER_SLACK_S + CLOCK_SKEW_S) * 1000;
 			if (typeof deleteAt !== "number" || Number.isNaN(deleteAt) || deleteAt < most || deleteAt > latest) found.push(`delete-after: declared between ${labels[MAX_LABEL]} and ${new Date(latest).toISOString()}, read back ${show(machine.deleteAt)}`);
 		}
 		// A restore merges the snapshot's labels: one of agentrun's (a run, an owner, an epoch) that create did not write

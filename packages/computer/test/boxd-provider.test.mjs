@@ -303,6 +303,24 @@ test("deleteTimer writes boxd's delete timer with the machine, past the most it 
 	assert.match(refused.error.message, /delete-after: declared between/);
 });
 
+test("deleteTimer's read-back takes boxd's timer from the most a computer may live to 5 minutes and 2 of clock skew past it", async () => {
+	const hour = 3_600_000;
+	// boxd's timer as get reads it, offset from now plus the most the computer may live (create's time plus maxLifetimeMs).
+	const at = async (offsetS) => {
+		const { provider } = setup({ deleteTimer: true, maxLifetimeMs: hour }, { machine: { get deleteAt() { return new Date(Date.now() + hour + offsetS * 1000); } } });
+		return provider.create(SPEC);
+	};
+	for (const offsetS of [10, 300, 400]) {
+		const made = await at(offsetS);
+		assert.ok(made.ok, `${offsetS} s past the most: ${made.ok ? "" : made.error.message}`);
+	}
+	for (const offsetS of [-60, 480]) {
+		const made = await at(offsetS);
+		assert.equal(made.ok, false, `${offsetS} s past the most is refused`);
+		assert.match(made.error.message, /delete-after: declared between/);
+	}
+});
+
 test("a restore that carries agentrun's labels from its snapshot is refused and deleted; a size with a snapshot is refused in check", async () => {
 	const { fake, provider } = setup({}, { snapshotLabels: { "agentrun.run": "old-run" } });
 	const made = await provider.create({ ...SPEC, image: "agentrun-base" });
