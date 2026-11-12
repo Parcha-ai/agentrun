@@ -272,6 +272,7 @@ public actor UIEngine {
 		if refused || params.steps.isEmpty { view = try await settle(window) }
 		var outcome: ExpectOutcome?
 		if let expect = params.expect, !refused {
+			let settled = view
 			let until = clock.now() + Double(expect.timeoutMs ?? Limits.defaultExpectMs)
 			while true {
 				if holds(expect, view) {
@@ -285,6 +286,8 @@ public actor UIEngine {
 				try await sleep(min(timing.expectPollMs, max(1, until - clock.now())))
 				view = try await look(window)
 			}
+			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
+			if view.fingerprint != settled.fingerprint { view = try await settle(window) }
 		}
 		let state = store.add(view)
 		return UiActResult(steps: results, state: state, changed: first.fingerprint != view.fingerprint, expect: outcome)
@@ -554,6 +557,11 @@ public actor UIEngine {
 		let after = view.under(point)
 		if before?.handle != after?.handle || (before.map(held.looks) != after.map(view.looks)) {
 			throw RPCError.stale("what is at (\(x), \(y)) changed since state \(state!): observe again")
+		}
+		// With no element under the point (always so with ui.tree off), only the window's image can say it still shows
+		// what the state did.
+		if before == nil && held.frame != view.frame {
+			throw RPCError.stale("the window shows something else than at state \(state!), so (\(x), \(y)) may not land on what it showed: observe again")
 		}
 	}
 

@@ -30,14 +30,18 @@ export function createProvider(options = {}) {
 		release: ["delete"],
 	};
 	const missing = (id) => fail("not_found", `no computer ${id}: this module made none by that id`);
+	// As the attached provider (src/attach.ts): a person's Mac keeps its own network, so only "open" is taken.
+	const networkRefusal = (asked) => `this Mac is on its own network, which a run cannot block or limit: network ${JSON.stringify(asked)} is refused; ask for network "open"`;
 	return {
 		id: "computerd-macos",
 		version: "local",
 		capabilities: () => capabilities,
-		check: () => [],
+		check: (spec) => (spec.network === "open" ? [] : [{ field: "network", message: networkRefusal(spec.network) }]),
 		async create(spec) {
+			const refusals = this.check(spec);
+			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
 			const id = `mac-${next++}`;
-			made.set(id, { labels: { ...spec.labels }, deadline: new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)), image: spec.image });
+			made.set(id, { labels: { ...spec.labels }, deadline: new Date(Date.now() + (spec.lifetimeMs ?? capabilities.maxLifetimeMs)), image: spec.image, connections: new Set() });
 			return ok({ id, name: id });
 		},
 		async attach(ref) {
@@ -50,18 +54,23 @@ export function createProvider(options = {}) {
 			const matching = [...made].filter(([, m]) => Object.entries(labels).every(([key, value]) => m.labels[key] === value));
 			return ok(matching.map(([id, m]) => ({ ref: { id, name: id }, labels: m.labels, deadline: m.deadline, state: "running", network: "open" })));
 		},
-		async network(ref) {
-			return made.has(ref.id) ? ok("open") : missing(ref.id);
+		async network(ref, policy) {
+			if (!made.has(ref.id)) return missing(ref.id);
+			if (policy !== undefined && policy !== "open") return fail("refused", networkRefusal(policy));
+			return ok("open");
 		},
 		async connect(ref) {
-			if (!made.has(ref.id)) return missing(ref.id);
+			const m = made.get(ref.id);
+			if (m === undefined) return missing(ref.id);
 			const child = spawn(command, ["stdio"], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, ...env } });
 			const client = new DaemonClient({ readable: child.stdout, writable: child.stdin });
 			const close = async () => {
+				m.connections.delete(close);
 				client.close();
 				child.stdin.end();
 				if (child.exitCode === null) child.kill();
 			};
+			m.connections.add(close);
 			const hello = await client.call("hello", { client: "conformance" });
 			if (!hello.ok) {
 				await close();
@@ -69,8 +78,13 @@ export function createProvider(options = {}) {
 			}
 			return ok({ client, hello: hello.value, close });
 		},
+		// Release ends the run's hold, and closes every connection it was given: calls in flight come back aborted or
+		// gone, as the attached provider's do. The Mac itself is never stopped or deleted.
 		async release(ref, how) {
+			const m = made.get(ref.id);
+			if (m === undefined) return missing(ref.id);
 			if (how === "stop") return fail("unsupported", "this Mac is never stopped by the suite");
+			await Promise.all([...m.connections].map((close) => close()));
 			made.delete(ref.id);
 			return ok(undefined);
 		},

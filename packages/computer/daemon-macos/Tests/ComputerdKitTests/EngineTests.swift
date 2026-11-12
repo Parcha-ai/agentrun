@@ -122,6 +122,18 @@ final class EngineTests: XCTestCase {
 		XCTAssertTrue(both?.contains("Accessibility") == true && both?.contains("Screen Recording") == true, both ?? "")
 	}
 
+	func testWithoutTheTreeAPointIsStaleOnceTheImageChanged() async throws {
+		os.trusted = false
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let click = Step.click(.point(Point(10, 20)), button: nil, count: nil)
+		os.with { $0.frameHash = 1 }
+		let changed = try await engine.act(UiActParams(state: r.state, steps: [click]))
+		XCTAssertEqual(stepError(changed, 0)?.kind, .stale)
+		XCTAssertTrue(stepError(changed, 0)?.message.contains("shows something else than at state s1") == true, stepError(changed, 0)?.message ?? "")
+		XCTAssertEqual(os.entries.filter { $0.hasPrefix("bg.") }, [], "nothing was posted")
+	}
+
 	func testDescIsShownAndExpected() async throws {
 		os.add(30, "listitem", name: "Wi-Fi", desc: "Connected, secured", frame: Rect(110, 300, 200, 40))
 		let engine = os.engine()
@@ -346,6 +358,21 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(result.expect, .met)
 		XCTAssertGreaterThanOrEqual(os.now - start, 1200)
 		XCTAssertLessThan(os.now - start, 1600)
+	}
+
+	func testTheStateAfterAMetExpectIsTheSettledWindow() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			guard entry == "ax.AXPress 3" else { return }
+			// "Done" shows mid-transition; the window is still changing 100 ms later.
+			os.after(1200) { $0.add(9, "text", name: "Done", frame: Rect(120, 500, 50, 20), parent: 2) }
+			os.after(1300) { $0.add(10, "text", name: "Later", frame: Rect(200, 500, 50, 20), parent: 2) }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save"))], expect: Expect(text: "Done", timeoutMs: 3000)))
+		XCTAssertEqual(result.expect, .met)
+		let since = try await engine.observe(UiObserveParams(since: result.state))
+		XCTAssertEqual(since.diff, UiDiff(added: [], removed: [], changed: []), "the act's state already shows Later")
 	}
 
 	func testExpectUnmetAfterItsTimeout() async throws {
