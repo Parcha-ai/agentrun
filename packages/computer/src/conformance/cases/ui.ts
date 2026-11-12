@@ -3,7 +3,7 @@
 // window changed; an expect met and one unmet; the route each step took; and hello.features, each declared feature
 // doing what it says and each one off refused with its own sentence. The fixture is an image's, so its cases are Full: a
 // computer without it skips them in words. ui.hello needs no fixture and is Core for every computer of the ui group.
-import { FEATURES, MAX_IMAGE_EDGE, type Point, type UiActParams, type UiActResult, type UiNode, type UiObserveResult, type UiRoute, type UiStepResult } from "../../protocol.js";
+import { FEATURES, type Feature, MAX_IMAGE_EDGE, type Point, type UiActParams, type UiActResult, type UiNode, type UiObserveResult, type UiRoute, type UiStepResult } from "../../protocol.js";
 import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
 import { UI_FIXTURE } from "../ui-fixture.js";
@@ -15,14 +15,31 @@ const KNOWN: ReadonlySet<string> = new Set(Object.keys(FEATURES));
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
 
 const look = (t: CaseContext, extra: Record<string, unknown> = {}): Promise<UiObserveResult> => t.call("ui.observe", { target: { app: APP }, ...extra });
-/**
- * ui.act on the fixture. A driver whose only input is the foreground route (ui.background off, ui.foreground on) gets
- * foreground: true unless the case says otherwise, so the cases check what it offers rather than refuse it every step.
- */
-const act = (t: CaseContext, params: Omit<UiActParams, "target">): Promise<UiActResult> => {
+/** Whether the driver's only input is the foreground route: ui.background off, ui.foreground on. */
+const inputOnly = (t: CaseContext) => {
 	const features = t.hello.features ?? {};
-	const inputOnly = featureOff(features, "ui.background") !== undefined && features["ui.foreground"] === true;
-	return t.call("ui.act", { target: { app: APP }, ...(inputOnly && !("foreground" in params) ? { foreground: true } : {}), ...params });
+	return featureOff(features, "ui.background") !== undefined && features["ui.foreground"] === true;
+};
+/** The feature a route needs on. */
+const ROUTE_FEATURE: Readonly<Record<UiRoute, Feature>> = { semantic: "ui.tree", page: "ui.page", background: "ui.background", foreground: "ui.foreground" };
+/**
+ * ui.act on the fixture. An input-only driver gets foreground: true unless the case says otherwise, so the cases check
+ * what it offers rather than refuse it every step. Every step that ran is held to the routes it may take: its route's
+ * feature on, and the foreground route only when the call allowed it.
+ */
+const act = async (t: CaseContext, params: Omit<UiActParams, "target">): Promise<UiActResult> => {
+	const sent = { target: { app: APP }, ...(inputOnly(t) && !("foreground" in params) ? { foreground: true } : {}), ...params };
+	const result = await t.call("ui.act", sent);
+	const features = t.hello.features ?? {};
+	for (const [index, step] of (result.steps ?? []).entries()) {
+		if (typeof step !== "object" || step === null || "error" in step) continue;
+		const feature = ROUTE_FEATURE[step.route];
+		if (feature === undefined) continue;
+		const off = featureOff(features, feature);
+		t.assert(off === undefined, `steps[${index}] took the ${step.route} route, and ${off}`);
+		t.assert(step.route !== "foreground" || sent.foreground === true, `steps[${index}] took the foreground route on a call without foreground: true`);
+	}
+	return result;
 };
 const byId = (t: CaseContext, seen: UiObserveResult, id: string): UiNode => t.present(seen.nodes.find((node) => node.id === id), `the fixture's ${id}, by its id, in ui.observe: ${show(seen.nodes.map((node) => node.id ?? node.name))}`);
 const centre = ({ bounds: [x, y, w, h] }: UiNode): Point => [Math.floor(x + w / 2), Math.floor(y + h / 2)];
@@ -204,8 +221,7 @@ export const uiCases: Case[] = [
 			const seen = await start(t);
 			const pressed = ran(t, (await act(t, { steps: [{ press: byId(t, seen, "wifi").ref }] })).steps[0], "press Wi-Fi");
 			// The best route first: semantic, unless the driver's input is all it has (ui.background off, foreground only).
-			const inputOnly = featureOff(t.hello.features ?? {}, "ui.background") !== undefined;
-			t.assert(pressed.route === "semantic" || (inputOnly && pressed.route === "foreground"), `a press on a switch with an accessibility action goes the semantic route, or foreground on a driver with no other: it went ${pressed.route}`);
+			t.assert(pressed.route === "semantic" || (inputOnly(t) && pressed.route === "foreground"), `a press on a switch with an accessibility action goes the semantic route, or foreground on a driver with no other: it went ${pressed.route}`);
 			const after = await look(t);
 			t.assert(byId(t, after, "wifi").flags?.includes("checked"), `Wi-Fi is checked after its press: ${show(byId(t, after, "wifi").flags)}`);
 			// The canvas takes foreground input only, and its value counts the clicks that reached it. A driver need not

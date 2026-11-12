@@ -100,7 +100,8 @@ computer without it skips them in words. Where it is installed, the Core cases `
 `ui.observe-shape` use it too, so a computer that offers no exec or files (an attached Mac, a phone) still runs them;
 without it they use a phone's Settings app, or the input fixture written with files. They check observe's shape on a known window, refs that survive a change and
 go `stale` when their element leaves, a point refused `stale` once its window changed, an expect met and one unmet, the
-route each step reports, a click never answered verified unless it landed (on the canvas without `foreground: true`,
+route each step reports (in every case, never a route whose feature is off, nor foreground on a call that did not
+allow it), a click never answered verified unless it landed (on the canvas without `foreground: true`,
 a driver may refuse it `denied` or post it unverified; with it, the click lands and is verified by its count), and each
 feature: on, it does what it says; off, it is refused with its own sentence.
 

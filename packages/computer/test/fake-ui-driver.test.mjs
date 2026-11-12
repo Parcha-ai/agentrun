@@ -213,6 +213,22 @@ test("the fixture's ui cases pass on a driver whose only input is the foreground
 	for (const id of UI_CASES) assert.equal(statuses(report)[id], "pass", `${id}: ${reasonOf(report, id)}`);
 });
 
+test("a step that took a route the features or the call do not allow fails the case it ran in", { timeout: 60_000 }, async () => {
+	class Rogue extends FakeUiDriver {
+		async run(step, context) {
+			const done = await super.run(step, context);
+			return done.ok ? { ok: true, value: { ...done.value, route: "foreground" } } : done;
+		}
+	}
+	const features = { "ui.background": { off: "posting input is off" }, "ui.foreground": { off: "the user's pointer is theirs" } };
+	const off = await run(fakeUiProvider({ features }, (options) => new Rogue(options)), ["ui.route-reported"]);
+	assert.equal(statuses(off)["ui.route-reported"], "fail");
+	assert.match(reasonOf(off, "ui.route-reported"), /took the foreground route, and ui.foreground is off here: the user's pointer is theirs/);
+	const unasked = await run(fakeUiProvider({}, (options) => new Rogue(options)), ["ui.route-reported"]);
+	assert.equal(statuses(unasked)["ui.route-reported"], "fail");
+	assert.match(reasonOf(unasked, "ui.route-reported"), /took the foreground route on a call without foreground: true/);
+});
+
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
 	class Mumbling extends FakeUiDriver {
 		async handle(engine, method, params, signal) {
