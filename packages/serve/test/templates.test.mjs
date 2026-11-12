@@ -773,6 +773,13 @@ test("pickComputer takes the first entry this server meets: shell where it has o
   // [none] alone is the package's own choice, never a fallback: nothing to say.
   assert.deepEqual(pickComputer({ name: "reader", computer: ["none"], tools: ["read"] }, docker), { entry: "none", computer: { kind: "none" }, shell: null, dropped: [], defaults: [], note: null });
   assert.equal(pickComputer({ name: "reader", tools: ["read"] }, docker), undefined, "no list: where a new agent runs");
+  // A runner-only tool (browser) cannot run in a box: where the shell is a sandbox, the list falls to its next entry, in words.
+  const browsing = pickComputer({ name: "surfer", computer: ["shell", "none"], tools: ["browser", "read", "bash"] }, docker);
+  assert.equal(browsing.entry, "none");
+  assert.deepEqual(browsing.computer, { kind: "none" });
+  assert.match(browsing.note, /The docker sandbox runs browser nowhere, so the agent was made with the template's next choice, no computer/);
+  assert.match(pickComputer({ name: "surfer", computer: ["shell"], tools: ["browser"] }, docker).refused, /needs a shell, and the docker sandbox runs browser nowhere/);
+  assert.equal(pickComputer({ name: "surfer", computer: ["shell", "none"], tools: ["browser", "read", "bash"] }, exec).entry, "shell", "Archil's exec is no sandbox: the browser runs on the runner beside it");
   // compiled writes the pick: its computer, the tools less those dropped, and no bash policy without bash.
   const reader = readPackage(join(REVIEW));
   const shellPkg = { ...reader, tools: ["read", "bash"], toolPolicy: { bash: "read-only" }, computer: ["shell", "none"] };

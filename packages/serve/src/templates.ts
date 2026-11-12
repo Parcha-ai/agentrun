@@ -644,14 +644,20 @@ export const COMPUTER_FIX = "Turn on Archil in Settings → Workspace, or run Ag
  *  template. */
 export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, here: ShellHere): ComputerPick | { refused: string } | undefined {
   if (!p.computer) return undefined;
-  const shell = "none" in here ? undefined : here;
+  // A shell that is a sandbox runs the agent in the box, where a runner-only tool (browser) is refused: such a package
+  // cannot take that shell, so its list falls to the next entry, as it does where there is no shell at all.
+  const runnerOnly = (p.tools ?? []).filter((tool) => toolOf(tool)?.runnerOnly);
+  const found = "none" in here ? undefined : here;
+  const clash = found && found.computer.kind === "sandbox" && runnerOnly.length ? `${found.words} runs ${runnerOnly.join(", ")} nowhere` : undefined;
+  const shell = clash ? undefined : found;
+  const lack = "none" in here ? here.none : clash ?? "this server has none";
   const entry = p.computer.find((one) => one === "none" || shell);
-  if (!entry) return { refused: `The ${p.name} template needs a shell, and ${"none" in here ? here.none : "this server has none"}. Nothing was created.` };
+  if (!entry) return { refused: `The ${p.name} template needs a shell, and ${lack}. Nothing was created.` };
   const runs = entry === "shell" && shell ? shell.tools : [];
   const dropped = (p.tools ?? []).filter((tool) => toolOf(tool)?.sandboxOnly && !runs.includes(tool));
   const without = new Intl.ListFormat("en", { type: "conjunction" }).format(dropped);
-  const note = entry === "none" && p.computer[0] === "shell" && "none" in here
-    ? `${here.none.charAt(0).toUpperCase()}${here.none.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${COMPUTER_FIX}`
+  const note = entry === "none" && p.computer[0] === "shell" && !shell
+    ? `${lack.charAt(0).toUpperCase()}${lack.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${COMPUTER_FIX}`
     : dropped.length && shell ? `The shell here is ${shell.words}, which runs ${runs.join(", ")} alone, so the agent was made without ${without}.` : null;
   return entry === "shell" && shell
     ? { entry, computer: { ...shell.computer }, shell: shell.words, dropped, defaults: [...shell.tools], note }
