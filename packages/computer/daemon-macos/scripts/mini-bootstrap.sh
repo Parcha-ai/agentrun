@@ -38,9 +38,10 @@ version="$(sw_vers -productVersion)"
 echo "macOS $version ($(sw_vers -buildVersion)), $(uname -m), user $(id -un)"
 [[ "${version%%.*}" -ge 26 ]] || die "macOS 26 or later is needed, this is $version"
 developer="$(xcode-select -p 2>/dev/null || true)"
-[[ "$developer" == *Xcode*.app/* ]] || die "xcode-select points at '$developer': install Xcode 26 and run: sudo xcode-select -s /Applications/Xcode.app"
-xcodebuild -version | head -1
-swift --version 2>&1 | head -1
+[[ "$developer" == *Xcode*.app/* ]] || die "xcode-select points at '$developer': install Xcode 26 or later and run: sudo xcode-select -s /Applications/Xcode.app"
+# (sed -n 1p, never head: under pipefail, head closing the pipe early fails the script with the writer's SIGPIPE.)
+xcodebuild -version | sed -n 1p
+swift --version 2>&1 | sed -n 1p
 console="$(stat -f %Su /dev/console)"
 [[ "$console" == "$(id -un)" ]] || die "the logged-in desktop belongs to '$console': log in as $(id -un) (MINI.md: auto-login)"
 
@@ -52,7 +53,7 @@ hash="$("$here/scripts/local-identity.sh")" || die "no signing identity (the lin
 say "building Computerd.app and the ui fixture"
 build="$here/build"
 COMPUTERD_SIGN_IDENTITY="$hash" COMPUTERD_UI_FIXTURE=1 "$here/scripts/bundle.sh" "$build"
-codesign --display --requirements - "$build/Computerd.app" 2>&1 | grep -Eq 'certificate (leaf|root) = H"' \
+codesign --display --requirements - "$build/Computerd.app" 2>&1 | grep -E 'certificate (leaf|root) = H"' >/dev/null \
 	|| die "Computerd.app's designated requirement does not name the certificate, so a rebuild would lose the grants"
 
 say "installing in /Applications"

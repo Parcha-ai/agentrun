@@ -4,11 +4,14 @@ A Mac mini runs Computerd for the bench's mac suite, live QA and demos. Its setu
 `scripts/mini-bootstrap.sh`, which does every step a script can do. A person still has to switch on two grants in
 System Settings, once.
 
+The bench's mini is an M2 Mac mini (Mac14,3) with 8 GB, running macOS 27.2 (26B123) and Xcode 27.2 (Swift 6.4.2).
+Its auto-login user is `parchamonitor`.
+
 ## The Mac, set up once by hand
 
 The script assumes:
 
-- **macOS 26 and Xcode 26.** After installing Xcode:
+- **macOS 26 or later, and Xcode 26 or later.** After installing Xcode:
 
   ```sh
   sudo xcode-select -s /Applications/Xcode.app
@@ -82,6 +85,35 @@ Connect with Screen Sharing (`vnc://<mini's tailnet name>`). In the Computerd wi
 4. **Click Raise it now** and answer Allow. The screen capture alert then never appears in the middle of a task.
 
 The script notices the grants and goes on to the smoke check by itself.
+
+## The demo tasks
+
+Five tasks, one per built-in app. They use the computer bench's mac-dev ids, so they become the bench's mac suite and
+the script for live QA's bundle 3. Each one is driven by `ui.observe` and `ui.act`, with its steps batched in one call
+where a person would do them in one go. It is checked through `ui.observe` or the file system, and needs no
+Automation grant.
+
+| Task | App | What it does | How it is checked |
+| --- | --- | --- | --- |
+| mac.notes.new-note | Notes | super+n, then type a title and a line, in one call | the note's line, then its title in the list |
+| mac.safari.follow-link | Safari | open a local page in the background, press the "Quarterly report" link by its ref, then super+[ to come back | the linked page's heading, then the first page's link |
+| mac.finder.rename-file | Finder | open a folder in the background, then one call: click draft.txt, enter, type "final", enter | the folder holds final.txt and other.txt |
+| mac.textedit.edit-number | TextEdit | open totals.txt in the background, set the text to 42 and save with super+s, in one call | the saved file is the new text, the other lines kept |
+| mac.calendar.new-event | Calendar | super+n, type a title, enter, in one call | the event's title on the calendar, and gone after Delete |
+
+```sh
+python3 -I packages/computer/daemon-macos/scripts/mini-demos.py \
+  /Applications/Computerd.app/Contents/Helpers/computerd "$HOME/Library/Application Support/Computerd" /tmp/demos
+```
+
+It writes these files under `/tmp/demos`:
+
+- `<task>.mp4`: the task recorded from `screen.watch`, with the current step written along the bottom. `frames-to-movie.swift` makes it, with AVFoundation, so Xcode is all it needs.
+- `demos.json`: every call with its latency in ms, the routes its steps took, and its expect.
+- `demos.md`: the table of tasks, calls, steps and ms.
+
+Name one or more task ids to run only those. `--keep` leaves the note, event and files the tasks made. CI runs all
+five after the ui conformance cases, and reports them without failing the run.
 
 ## When something is off
 

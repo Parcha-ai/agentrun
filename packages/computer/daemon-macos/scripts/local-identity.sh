@@ -53,7 +53,7 @@ if [[ " $searched " != *" $file "* ]]; then
 	security list-keychains -d user -s "$file" $searched
 fi
 
-hash="$(security find-certificate -c "$cn" -Z "$file" | awk '/SHA-1 hash:/ { print $NF; exit }')"
+hash="$(security find-certificate -c "$cn" -Z "$file" | awk '/SHA-1 hash:/ && !h { h = $NF } END { print h }')"
 [[ -n "$hash" ]] || { echo "the identity '$cn' is not in $file" >&2; exit 1; }
 echo "identity '$cn', SHA-1 $hash, in $file" >&2
 echo "$hash"
