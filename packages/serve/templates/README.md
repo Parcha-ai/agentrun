@@ -34,7 +34,7 @@ so no package puts a write in its own `allow`. A tool the owner ticks at apply i
 no permission for it, so it follows this server's tool settings: under `approvals: ask` a ticked write asks the owner
 first unless the owner allowed it in Settings → Tools, and a ticked read runs unasked only where the owner turned on
 Allow reads for its server. A package whose job runs on triggers (code-review, inbound-lead,
-market-monitor, release-notes) runs unattended (`approvals: never`), so the writes the owner ticks at apply don't ask (a
+market-monitor, release-notes, upgrade-watch) runs unattended (`approvals: never`), so the writes the owner ticks at apply don't ask (a
 write left unticked is not granted at all): each is held by its pin,
 which the tool gate checks before it allows or asks anything (a review can only COMMENT, a send only reaches the channel
 set at apply, a draft issue is only ever created), or, where no pin can bound it, by a stated rule (a test lists both).
@@ -86,6 +86,7 @@ the owner grants a write, text the agent read could try to copy what that read r
 | `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: a saved Composio Slack or Gmail MCP server (toolkit `slack` or `gmail`), to send |
 | `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, adds a note with the score to the lead's HubSpot contact or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: a saved Composio HubSpot or Slack MCP server (toolkit `hubspot` or `slack`) |
 | `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | a saved GitHub MCP server (source `github`, on the GitHub App), every call pinned to its `owner` and `repo`; with none, a list of PRs in the message |
+| `upgrade-watch` | Reads what a GitHub repository released since the version you run, checks each breaking or behavior change against your list of what your project uses from it, and answers safe, changes needed (each finding quoted and linked, with what to do), up to date, or incomplete when notes could not be read. It writes nothing | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | nothing; `web_fetch` only |
 
 ## Eval cases
 
