@@ -89,6 +89,7 @@ struct FakeAX: Accessibility {
 	var feature: Feature { os.with { $0.trusted } ? .on : .off("Accessibility is not granted to Computerd") }
 	var pressAction: String { "AXPress" }
 	var menuAction: String { "AXShowMenu" }
+	var confirmAction: String { "AXConfirm" }
 	var incidentalActions: Set<String> { ["AXShowMenu", "AXScrollToVisible"] }
 
 	func resolve(_ target: Target?) throws -> ResolvedTarget {
@@ -175,9 +176,11 @@ struct FakeAX: Accessibility {
 
 	func focused(_ target: ResolvedTarget) -> ElementHandle? { os.with { $0.focusedID }.map { ElementHandle($0) } }
 
-	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> ElementHandle? {
+	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> MenuItem? {
 		os.with { os in
-			os.order.compactMap { os.elements[$0] }.first { $0.role == "menuitem" && $0.name == chord.text }.map { ElementHandle($0.id) }
+			os.order.compactMap { os.elements[$0] }.first { $0.role == "menuitem" && $0.name == chord.text }.map {
+				MenuItem(element: ElementHandle($0.id), enabled: !$0.flags.contains(.disabled))
+			}
 		}
 	}
 }

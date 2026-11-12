@@ -44,6 +44,8 @@ public actor UIEngine {
 	var looks = 0
 	var lookMs = 0.0
 	var frameMs = 0.0
+	/// The routes a step tried that showed nothing before the one it ended on, for timing.trace.
+	var climbed: [String] = []
 
 	public init(platform: Platform, policy: Policy, timing: Timing = Timing()) {
 		self.platform = platform
@@ -300,11 +302,13 @@ public actor UIEngine {
 			try Task.checkCancellation()
 			let (at, looked) = (clock.now(), looks)
 			do {
-				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground)
+				climbed = []
+				let (route, verified, after) = try await run(step, view: view, state: params.state, held: held, foreground: foreground, expect: params.expect)
 				results.append(.ran(route: route, verified: verified))
 				view = after
 				window = after.target.asTarget
-				spent.append("\(step.verb) \(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
+				let tried = climbed.map { "\($0) showed nothing, " }.joined()
+				spent.append("\(step.verb) \(tried)\(route.rawValue)\(verified ? "" : " unverified") \(Int(clock.now() - at)) ms, \(looks - looked) looks")
 			} catch let error as RPCError where Self.stepKinds.contains(error.kind) {
 				results.append(.error(StepError(kind: error.kind, message: error.message)))
 				refused = true
@@ -369,12 +373,14 @@ public actor UIEngine {
 		let route: Route
 		let off: String?
 		var notAllowed = false
+		/// A way that may do nothing, with no sign beforehand: when it shows no change, the next route tries.
+		var tentative = false
 		let run: () async throws -> Check
 	}
 
 	/// Checks a step against the look it runs on, runs it by the first route that can, settles, and checks its effect.
 	/// Answers the route, whether the effect showed, and the settled look.
-	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View) {
+	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool, expect: Expect? = nil) async throws -> (Route, Bool, View) {
 		let target = view.target
 		if case .nav(let nav) = step {
 			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
@@ -401,10 +407,14 @@ public actor UIEngine {
 
 		case .set(let ref, let value):
 			let secure = node!.flags.contains(.secure)
+			// A field that offers to confirm takes a set value only once confirmed, as Return does: Finder's name
+			// field shows a set name and renames nothing until then.
+			let confirms = node!.actions.contains(ax.confirmAction)
 			attempts = [
 				semantic(node!.settable ? nil : "\(ref)'s value cannot be set: click it and type instead") {
 					try self.ax.setValue(value, on: element!)
 					let ax = self.ax
+					if confirms { try ax.perform(ax.confirmAction, on: element!) }
 					return secure ? .readback { false } : .lasting { ax.value(element!) == value }
 				},
 			]
@@ -484,12 +494,13 @@ public actor UIEngine {
 		case .key(let text):
 			let chord = try KeyChord.parse(text)
 			let menu = chord.modifiers.contains(.cmd) ? ax.menuItem(for: chord, in: target) : nil
-			attempts = [
-				semantic(menu == nil ? "no menu item takes \(chord.text)" : nil) {
-					try self.ax.perform(self.ax.pressAction, on: menu!)
-					return .change
-				},
-			] + pointer(foreground) { route in
+			var press = semantic(menu == nil ? "no menu item takes \(chord.text)" : nil) {
+				try self.ax.perform(self.ax.pressAction, on: menu!.element)
+				return .change
+			}
+			// An item that reads disabled may work or not: a press of it that shows nothing goes on to keys.
+			press.tentative = menu?.enabled == false
+			attempts = [press] + pointer(foreground) { route in
 				try await route.key(chord, in: target)
 				return .change
 			}
@@ -515,7 +526,7 @@ public actor UIEngine {
 				return .change
 			}
 		}
-		return try await ladder(step, view: view, attempts)
+		return try await ladder(step, view: view, attempts, expect: expect)
 	}
 
 	func semantic(_ off: String?, _ run: @escaping () async throws -> Check) -> Attempt {
@@ -546,10 +557,16 @@ public actor UIEngine {
 	/// Takes the first route that can do the step; settles; checks. A route that turns out unable lets the next try. When
 	/// the one route left is one the call does not allow, the step is refused denied (the call can allow it); when no
 	/// route reaches it here, unsupported.
-	func ladder(_ step: Step, view: View, _ attempts: [Attempt]) async throws -> (Route, Bool, View) {
+	///
+	/// A route that ran and changed nothing in the window hands the step to the next route the call allows when the
+	/// call's expect does not hold, or when the route was tentative (a menu item that read disabled), rather than leave
+	/// the expect to wait out its timeout for an effect that never came. Only a step that changed nothing climbs, so a
+	/// route that visibly did the step is not done again.
+	func ladder(_ step: Step, view: View, _ attempts: [Attempt], expect: Expect? = nil) async throws -> (Route, Bool, View) {
 		var reasons: [String] = []
 		var denied = false
-		for attempt in attempts {
+		var unseen: (Route, View)?
+		for (i, attempt) in attempts.enumerated() {
 			if let off = attempt.off {
 				reasons.append("\(attempt.route.rawValue): \(off)")
 				denied = denied || attempt.notAllowed
@@ -570,9 +587,16 @@ public actor UIEngine {
 				try await sleep(timing.lastingMs)
 				guard holds() else { return (attempt.route, false, try await settle(after.target.asTarget)) }
 				return (attempt.route, true, after)
-			case .change: return (attempt.route, view.fingerprint != after.fingerprint, after)
+			case .change:
+				if view.fingerprint != after.fingerprint { return (attempt.route, true, after) }
+				let next = attempts[(i + 1)...].contains { $0.off == nil }
+				let pending = expect.map { !holds($0, after) } ?? false
+				guard next, pending || attempt.tentative else { return (attempt.route, false, after) }
+				climbed.append(attempt.route.rawValue)
+				unseen = (attempt.route, after)
 			}
 		}
+		if let (route, after) = unseen { return (route, false, after) }
 		let words = "no route could \(step.verb) here. " + reasons.joined(separator: "; ")
 		throw denied ? RPCError.denied(words) : RPCError.unsupported(words)
 	}

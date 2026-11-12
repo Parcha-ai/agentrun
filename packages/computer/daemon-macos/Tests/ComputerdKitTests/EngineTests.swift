@@ -491,6 +491,85 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(ran(kept, 0)?.1, true)
 	}
 
+	func testASetConfirmsAFieldThatOffersIt() async throws {
+		os.add(9, "textbox", name: "Name", value: "draft.txt", frame: Rect(120, 160, 300, 20), parent: 2, actions: ["AXConfirm"], settable: true, textInput: true)
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.set(ref(r, "Name"), value: "final.txt")]))
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { $0.hasPrefix("ax.") }, ["ax.set 9 final.txt", "ax.AXConfirm 9"], "set, then confirmed as Return would")
+		_ = try await engine.act(UiActParams(steps: [.set(ref(r, "Title"), value: "x")]))
+		XCTAssertFalse(os.entries.contains("ax.AXConfirm 4"), "a field that offers no confirm is only set")
+	}
+
+	/// A background app's menu item that reads disabled: pressing it does nothing; its key, posted, goes back a page.
+	func backMenuItemThatDoesNothing(reads flags: Set<UiFlag> = []) {
+		os.add(9, "menuitem", name: "super+[", actions: ["AXPress"], flags: flags)
+		os.react = { entry, os in
+			guard entry == "bg.key super+[" || entry == "fg.key super+[" else { return }
+			os.with { $0.elements[5]?.name = "Quarterly report" }
+		}
+	}
+
+	func testAStepThatShowsNothingClimbsToTheNextRouteWhileTheExpectWaits() async throws {
+		backMenuItemThatDoesNothing()
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let start = os.now
+		let result = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 10_000)))
+		XCTAssertEqual(ran(result, 0)?.0, .background, "the menu item showed nothing, so the keys went")
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(result.expect, .met)
+		XCTAssertLessThan(os.now - start, 2000, "no wait for the expect's timeout")
+		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "bg.key super+["])
+	}
+
+	func testAMenuItemThatReadsDisabledAndShowsNothingGoesOnToKeys() async throws {
+		backMenuItemThatDoesNothing(reads: [.disabled])
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let result = try await engine.act(UiActParams(steps: [.key("super+[")]))
+		XCTAssertEqual(ran(result, 0)?.0, .background, "no expect, but the item read disabled")
+		XCTAssertEqual(ran(result, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { $0.contains("key") || $0.hasPrefix("ax.AXPress") }, ["ax.AXPress 9", "bg.key super+["])
+
+		// A press of it that does the thing ends there.
+		os.react = { entry, os in
+			if entry == "ax.AXPress 9" { os.with { $0.elements[5]?.name = "Home" } }
+		}
+		let pressed = try await engine.act(UiActParams(steps: [.key("super+[")]))
+		XCTAssertEqual(ran(pressed, 0)?.0, .semantic)
+		XCTAssertEqual(ran(pressed, 0)?.1, true)
+		XCTAssertEqual(os.entries.filter { $0 == "bg.key super+[" }.count, 1, "no second key")
+	}
+
+	func testAStepThatShowsNothingStaysPutWithNoExpectOrNoRouteAllowed() async throws {
+		backMenuItemThatDoesNothing()
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		let alone = try await engine.act(UiActParams(steps: [.key("super+[")]))
+		XCTAssertEqual(ran(alone, 0)?.0, .semantic, "no expect: nothing says the step is still to do")
+		XCTAssertEqual(ran(alone, 0)?.1, false)
+		XCTAssertFalse(os.entries.contains("bg.key super+["))
+
+		// The background route shows nothing either; the foreground one is not allowed, so the step ends unverified.
+		os.react = nil
+		let result = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 1000)))
+		XCTAssertEqual(ran(result, 0)?.0, .background)
+		XCTAssertEqual(ran(result, 0)?.1, false)
+		XCTAssertEqual(result.expect, .unmet)
+		XCTAssertFalse(os.entries.contains("fg.key super+["), "foreground: true was not passed")
+
+		// With foreground allowed, it climbs there.
+		os.react = { entry, os in
+			if entry == "fg.key super+[" { os.with { $0.elements[5]?.name = "Quarterly report" } }
+		}
+		let front = try await engine.act(UiActParams(steps: [.key("super+[")], expect: Expect(text: "Quarterly report", timeoutMs: 10_000), foreground: true))
+		XCTAssertEqual(ran(front, 0)?.0, .foreground)
+		XCTAssertEqual(ran(front, 0)?.1, true)
+		XCTAssertEqual(front.expect, .met)
+	}
+
 	func testARedrawAloneNeitherHoldsASettleNorVerifiesAStep() async throws {
 		let engine = os.engine()
 		let r = try await engine.observe(UiObserveParams())

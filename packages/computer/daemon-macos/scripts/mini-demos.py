@@ -145,7 +145,9 @@ class Task:
         if self.rec:
             self.rec.caption(text)
 
-    def call(self, method, params, label):
+    def call(self, method, params, label, not_found=None):
+        """One call, timed and recorded. not_found: the words for a not_found the caller expects (a poll for a window
+        still to come, a teardown that closes the last one), printed in place of an error."""
         start = time.monotonic()
         reply = self.c.call(method, params)
         ms = round((time.monotonic() - start) * 1000)
@@ -168,7 +170,12 @@ class Task:
         tail = f" [{routes}]" if routes else ""
         if "expect" in entry and entry["expect"]:
             tail += f" expect {entry['expect']}"
-        print(f"    {method} {label}: {ms} ms{tail}" + (f" ERROR {json.dumps(reply['error'])}" if "error" in reply else ""), flush=True)
+        kind = (reply.get("error") or {}).get("data", {}).get("kind")
+        if not_found and kind == "not_found":
+            tail += f" ({not_found})"
+        elif "error" in reply:
+            tail += f" ERROR {json.dumps(reply['error'])}"
+        print(f"    {method} {label}: {ms} ms{tail}", flush=True)
         return reply
 
     def observe(self, label="observe", **extra):
@@ -177,7 +184,7 @@ class Task:
         # An app just opened may swap its first window for another (Notes does): not_found is asked again, for 10 s.
         deadline = time.monotonic() + 10
         while True:
-            reply = self.call("ui.observe", params, label)
+            reply = self.call("ui.observe", params, label, not_found="no window yet")
             if (reply.get("error") or {}).get("data", {}).get("kind") != "not_found" or time.monotonic() > deadline:
                 break
             time.sleep(0.5)
@@ -223,7 +230,7 @@ class Task:
         """super+w on the task's window, as teardown. Closing the act's own window leaves no window to settle on, which
         the driver answers not_found: the window is then gone, as asked."""
         self.say(label)
-        reply = self.call("ui.act", {"target": self.target(), "steps": [{"key": "super+w"}]}, label)
+        reply = self.call("ui.act", {"target": self.target(), "steps": [{"key": "super+w"}]}, label, not_found="closed, and no window is left")
         kind = (reply.get("error") or {}).get("data", {}).get("kind")
         if kind not in (None, "not_found"):
             raise Failed(f"{label}: {reply['error'].get('message')}")
@@ -240,12 +247,13 @@ class Task:
             print(f"    {n.get('ref')} {n.get('role')} name={n.get('name')!r} value={(n.get('value') or '')[:60]!r} id={n.get('id')!r} flags={n.get('flags')} parent={n.get('parent')}")
 
     def wait_for(self, text, label, seconds=20):
-        """Until the app has a window that shows the text: an expect, asked again while the app has no window yet."""
+        """Until the app has a window that shows the text: an expect, asked again while the app has no window yet. 0.2's
+        expect waits on a window it already has; an expect on a window appearing is a spec item still to come."""
         self.say(label)
         deadline = time.monotonic() + seconds
         while True:
             params = {"target": {"app": self.app}, "steps": [], "expect": {"text": text, "timeoutMs": 3000}}
-            reply = self.call("ui.act", params, label)
+            reply = self.call("ui.act", params, label, not_found="no window yet")
             if (reply.get("result") or {}).get("expect") == "met":
                 return
             if time.monotonic() > deadline:
