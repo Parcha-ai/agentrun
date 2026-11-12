@@ -28,7 +28,16 @@ The last sentence of the instructions is what makes its workflows run cheap. The
 
 ## 3. Tell it how it did
 
-Every run stops before it finishes and asks you to check its answer. Answer it:
+Start a run on a real input. It stops before it finishes and asks you to check its answer (`--wait` exits 8 while it
+waits on you):
+
+```sh
+npx @parcha/agentrun runs start mcc --wait \
+  --body '{"input": {"content": "Merchant: Blue Fern Boutique, https://bluefern.example"}}' > out.json
+run=$(node -p 'require("./out.json").run_id')
+```
+
+Answer it:
 
 ```sh
 npx @parcha/agentrun runs message "$run" --content "Right answer: 5691. You said 5651. The site only sells women's clothing."
