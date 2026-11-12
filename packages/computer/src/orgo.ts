@@ -381,7 +381,7 @@ export class OrgoProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = (typeof spec === "object" && spec !== null ? spec : {}) as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, labels, mount } = given;
+		const { image, network, cpus, memoryMb, labels, mount } = given;
 		if (image !== BASE && !(typeof image === "string" && TEMPLATE.test(image))) refuse("image", `an image is "${BASE}" (Orgo's base desktop) or an Orgo template, namespace/name@version`);
 		refusals.push(...checkTenure(given, this.capabilities(), "Orgo"));
 		if (network !== "none") refuse("network", NETWORK_REFUSAL);

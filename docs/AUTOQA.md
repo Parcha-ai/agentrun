@@ -302,7 +302,7 @@ run's claim from the kernel. It gives back:
   run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from the run's `work/inputs/`,
   as `runner/adapter-run-spec.ts` and `runner/cli-run-spec.ts` send it, on every harness.
 - Serve, a run's computer as the run shows it (`computer-view.ts`: `GET /v2/runs/{id}/computer`, who drives now), read from
-  the store through `computerViewOf` (`computer-routes.ts`), which also holds the owner's take-over and hand-back routes.
+  the store through `computerHoldOf`; `computer-routes.ts` holds the owner's take-over and hand-back routes.
 
 **Alone.** Computers are faked: `--faux` swaps in three faux providers (`faux-computers.ts`: `faux-sandbox`,
 `faux-broken` and a faux desktop), and the workspace tests use a fake computer (`test/workspace-fake-computer.mjs`). Put
