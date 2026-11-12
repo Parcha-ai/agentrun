@@ -1,0 +1,214 @@
+// The surface's one core against a fake computer: observe and act through the ui group, the screen-and-input fallback,
+// the outline, the shell and files, and a script's `computer` (built from its one-line prelude in a fresh context)
+// answering exactly what the core answers.
+import assert from "node:assert/strict";
+import test from "node:test";
+import vm from "node:vm";
+import { COMPUTER_CALL_GLOBAL, chordKeys, createSurface, opsOf, outlineOf, scriptPrelude, SurfaceError, withoutImageData } from "../dist/surface/index.js";
+import { fakeComputer, PNG } from "./fake-surface-driver.mjs";
+
+const surfaceOf = (options) => {
+	const fake = fakeComputer(options);
+	return { ...fake, surface: createSurface(fake.client, fake.hello) };
+};
+
+test("observe through ui: the outline names each element by ref, indented under its parent", async () => {
+	const { surface, calls } = surfaceOf();
+	const answer = await surface.call("observe", {});
+	assert.deepEqual(calls.at(-1), { method: "ui.observe", params: {} });
+	assert.equal(answer.value.id, "s1");
+	assert.deepEqual(answer.images, []);
+	assert.equal(
+		answer.text,
+		[
+			'state s1 · com.apple.Notes "Notes" · window "Untitled" 800×600 pt',
+			'@e1 window "Notes"',
+			'  @e2 textbox "Title" [focused]',
+			'  @e3 button "Save"',
+		].join("\n"),
+	);
+	assert.equal(answer.value.outline, answer.text);
+});
+
+test("observe with image: the window's image travels beside the text, and the text gives its scale", async () => {
+	const { surface, calls } = surfaceOf();
+	const answer = await surface.call("observe", { app: "com.apple.Notes", image: true });
+	assert.deepEqual(calls.at(-1).params, { target: { app: "com.apple.Notes" }, image: true });
+	assert.equal(answer.images.length, 1);
+	assert.deepEqual(answer.images[0], { type: "image", mimeType: "image/png", data: PNG, width: 2, height: 1 });
+	assert.match(answer.text, /image: 2×1 px of the window's 800×600 points$/);
+	assert.deepEqual(withoutImageData(answer.value).image, { type: "image", mimeType: "image/png", width: 2, height: 1 });
+});
+
+test("observe with image where ui.image is off: the whole screen instead, said in the text", async () => {
+	const { surface, calls } = surfaceOf({ features: {} });
+	const answer = await surface.call("observe", { image: true });
+	assert.deepEqual(calls.map((call) => call.method), ["ui.observe", "screen.shot"]);
+	assert.equal(answer.images[0].width, 1440);
+	assert.match(answer.text, /image: the whole screen, 1440×900 px/);
+});
+
+test("act: each step's route and readback, the expect, and the new state", async () => {
+	const { surface, calls } = surfaceOf();
+	const answer = await surface.call("act", { app: "com.apple.Notes", steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }], expect: { text: "Saved" } });
+	assert.deepEqual(calls.at(-1), { method: "ui.act", params: { target: { app: "com.apple.Notes" }, steps: [{ set: "@e2", value: "Groceries" }, { press: "@e3" }], expect: { text: "Saved" } } });
+	assert.deepEqual(answer.value, { steps: [{ route: "semantic", verified: true }, { route: "semantic", verified: true }], expect: "met", changed: true, state: "s2" });
+	assert.equal(answer.text, ["1. set: semantic, verified", "2. press: semantic, verified", "expect: met", "changed · state s2"].join("\n"));
+});
+
+test("act at a point takes the app's last observed state, and a refused step says why and stops the rest", async () => {
+	const { surface, calls } = surfaceOf();
+	await surface.call("observe", { app: "com.apple.Notes" });
+	const ok = await surface.call("act", { app: "com.apple.Notes", steps: [{ click: [20, 20] }] });
+	assert.equal(calls.at(-1).params.state, "s1");
+	assert.deepEqual(ok.value.steps, [{ route: "background", verified: false }]);
+	const stale = await surface.call("act", { app: "com.apple.Notes", state: "s1", steps: [{ click: [20, 20] }, { press: "@e3" }] });
+	assert.equal(stale.text, ["1. click: refused (stale): the window changed since s1", "1 later steps did not run", "changed · state s3"].join("\n"));
+});
+
+test("act with observe: one call returns the new observation, its outline after the steps", async () => {
+	const { surface } = surfaceOf();
+	const answer = await surface.call("act", { steps: [{ press: "@e3" }], observe: true });
+	assert.equal(answer.value.after.id, "s2");
+	assert.match(answer.text, /\n\nstate s2 · .*\n.*\n.*\n.*\n {2}@e4 text "Saved"$/);
+});
+
+test("an empty act with an expect is a wait, and gone waits for the opposite", async () => {
+	const { surface } = surfaceOf();
+	const answer = await surface.call("act", { steps: [], expect: { text: "Saved", gone: true } });
+	assert.equal(answer.value.expect, "met");
+	assert.equal(answer.text, ["expect: met", "unchanged · state s2"].join("\n"));
+});
+
+test("without the ui group: observe is the screen, read whole across screen.read; act maps steps at points to input", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer", "input.keys"], split: 10 });
+	const seen = await surface.call("observe", {});
+	assert.deepEqual(calls.map((call) => call.method), ["screen.shot", "screen.read"]);
+	assert.equal(seen.images[0].data, PNG);
+	assert.match(seen.text, /^screen 1440×900 px · this computer has no ui group/);
+	const acted = await surface.call("act", { steps: [{ click: [5, 6], count: 2 }, { type: "hi" }, { key: "cmd+s" }, { scroll: [1, 1], dy: 120 }, { drag: [[0, 0], [9, 9]] }, { nav: "back" }] });
+	assert.deepEqual(calls.at(-1), {
+		method: "input.actions",
+		params: {
+			actions: [
+				{ type: "click", at: [5, 6], count: 2 },
+				{ type: "type", text: "hi" },
+				{ type: "key", keys: ["cmd", "s"] },
+				{ type: "scroll", at: [1, 1], unit: "px", dy: 120 },
+				{ type: "drag", path: [[0, 0], [9, 9]] },
+				{ type: "button", name: "back" },
+			],
+		},
+	});
+	assert.equal(acted.value.steps.length, 6);
+	assert.deepEqual(acted.value.steps[0], { route: "input", verified: false });
+	assert.equal(acted.value.state, undefined);
+	assert.equal(acted.value.changed, undefined);
+});
+
+test("without the ui group: a ref, an into or an expect is refused before anything runs", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer"] });
+	await assert.rejects(surface.call("act", { steps: [{ press: "@e3" }] }), (error) => error instanceof SurfaceError && error.kind === "unsupported" && /needs the ui group/.test(error.message));
+	await assert.rejects(surface.call("act", { steps: [{ click: "@e3" }] }), /names an element/);
+	await assert.rejects(surface.call("act", { steps: [{ type: "x", into: "@e2" }] }), /click the field first/);
+	await assert.rejects(surface.call("act", { steps: [], expect: { text: "x" } }), /can't check an expect/);
+	assert.equal(calls.length, 0);
+});
+
+test("a touch-only phone: click is a tap, a right click a long press, drag a swipe", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.touch", "apps"], os: "android", kind: "android" });
+	await surface.call("act", { steps: [{ click: [1, 2] }, { click: [1, 2], button: "right" }, { drag: [[0, 0], [0, 50]], ms: 300 }] });
+	assert.deepEqual(calls.at(-1).params.actions, [
+		{ type: "tap", at: [1, 2] },
+		{ type: "long_press", at: [1, 2] },
+		{ type: "swipe", path: [[0, 0], [0, 50]], ms: 300 },
+	]);
+});
+
+test("input.act: a failed action is the last step, with its kind", async () => {
+	const { surface } = surfaceOf({ groups: ["screen", "input.touch"] });
+	const answer = await surface.call("input.act", { actions: [{ type: "tap", at: [1, 1] }, { type: "pinch", at: [1, 1], scale: 2 }, { type: "tap", at: [2, 2] }] });
+	assert.deepEqual(answer.value.steps, [{ route: "input", verified: false }, { error: { kind: "unsupported", message: "no pinch here" } }]);
+	assert.equal(answer.text, ["1. tap: input", "2. pinch: refused (unsupported): no pinch here", "1 later steps did not run"].join("\n"));
+});
+
+test("ops follow the groups, and an op the computer lacks is refused as unsupported", async () => {
+	assert.deepEqual(opsOf(["exec"]), ["shell.run"]);
+	assert.deepEqual(opsOf(["ui"]), ["observe", "act"]);
+	const { surface, calls } = surfaceOf({ groups: ["exec"] });
+	await assert.rejects(surface.call("screenshot", {}), (error) => error.kind === "unsupported");
+	await assert.rejects(surface.call("nope", {}), (error) => error.kind === "invalid");
+	assert.equal(calls.length, 0);
+});
+
+test("shell and files: a string runs in sh -c, output decoded; a file written in chunks reads back whole", async () => {
+	const { surface, calls } = surfaceOf();
+	const ran = await surface.call("shell.run", { command: "echo hi" });
+	assert.deepEqual(calls.at(-1).params, { argv: ["sh", "-c", "echo hi"], timeoutMs: 60_000 });
+	assert.equal(ran.value.stdout, "sh -c echo hi");
+	const big = "x".repeat(600 * 1024);
+	await surface.call("files.write", { path: "/tmp/a.txt", data: big });
+	assert.deepEqual(calls.filter((call) => call.method === "files.write").map((call) => call.params.offset), [undefined, 512 * 1024]);
+	assert.equal((await surface.call("files.read", { path: "/tmp/a.txt" })).value, big);
+	assert.deepEqual((await surface.call("files.stat", { path: "/tmp/a.txt" })).value, { path: "/tmp/a.txt", type: "file", size: big.length, mtimeMs: 1 });
+	await assert.rejects(surface.call("files.read", { path: "/nope" }), (error) => error.kind === "not_found");
+});
+
+test("a Windows computer runs a string command in cmd", async () => {
+	const { surface, calls } = surfaceOf({ os: "windows" });
+	await surface.call("shell.run", { command: "dir" });
+	assert.deepEqual(calls.at(-1).params.argv, ["cmd.exe", "/d", "/s", "/c", "dir"]);
+});
+
+test("chords split on +, and a trailing + is the plus key", () => {
+	assert.deepEqual(chordKeys("ctrl+shift+t"), ["ctrl", "shift", "t"]);
+	assert.deepEqual(chordKeys("ctrl++"), ["ctrl", "+"]);
+	assert.deepEqual(chordKeys("+"), ["+"]);
+});
+
+test("the outline stops within its cap and counts what it left out", () => {
+	const nodes = Array.from({ length: 2000 }, (_, index) => ({ ref: `@e${index}`, role: "listitem", name: `Row number ${index} of a long list`, bounds: [0, 0, 1, 1] }));
+	const outline = outlineOf("head", nodes, false);
+	assert.ok(outline.length <= 12_000, `outline is ${outline.length} chars`);
+	assert.match(outline, /\n… \d+ more elements not shown/);
+	assert.match(outlineOf("head", [], false), /no elements/);
+});
+
+/** A script run the way an isolate runs it: the one-line prelude, then the code, in a fresh context whose only global
+ *  is the host's call. */
+async function runScript(surface, code) {
+	const context = vm.createContext({ [COMPUTER_CALL_GLOBAL]: async (op, args) => (await surface.call(op, args)).value });
+	const source = `(async () => { ${scriptPrelude(surface.card)}\n${code}\n})()`;
+	return vm.runInContext(source, context);
+}
+
+test("a script's computer answers what the core answers, and has only the computer's namespaces", async () => {
+	const one = surfaceOf();
+	const two = surfaceOf();
+	const viaScript = await runScript(one.surface, `const notes = computer.app("com.apple.Notes"); await notes.observe(); return await notes.act([{ press: "@e3" }], { expect: { text: "Saved" } });`);
+	const viaTool = await two.surface.call("act", { app: "com.apple.Notes", steps: [{ press: "@e3" }], expect: { text: "Saved" } });
+	assert.equal(JSON.stringify(viaScript), JSON.stringify(viaTool.value));
+	const names = await runScript(surfaceOf({ groups: ["exec"] }).surface, "return Object.keys(computer)");
+	assert.deepEqual([...names], ["card", "shell"]);
+});
+
+test("a script finds elements in the last observation with no call, and a point step carries its state", async () => {
+	const { surface, calls } = surfaceOf();
+	const found = await runScript(
+		surface,
+		`const notes = computer.app("com.apple.Notes");
+		await notes.observe();
+		const [save] = notes.find({ role: "button", text: /save/i });
+		await notes.click([save.bounds[0] + 1, save.bounds[1] + 1]);
+		return save.ref;`,
+	);
+	assert.equal(found, "@e3");
+	assert.deepEqual(calls.map((call) => call.method), ["ui.observe", "ui.act"]);
+	assert.equal(calls[1].params.state, "s1");
+});
+
+test("a script's errors carry the computer's words", async () => {
+	const { surface } = surfaceOf({ groups: ["screen", "input.pointer"] });
+	await assert.rejects(runScript(surface, `return computer.input.act([]).then(() => computer.screen.shot()).then(() => { throw new Error("got here"); })`), /got here/);
+	await assert.rejects(runScript(surfaceOf().surface, `return computer.app("x").find({})`), /observe\(\) first/);
+});

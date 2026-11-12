@@ -66,6 +66,10 @@
       "types": "./dist/local-chrome.d.ts",
       "default": "./dist/local-chrome.js"
     },
+    "./surface": {
+      "types": "./dist/surface/index.d.ts",
+      "default": "./dist/surface/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
