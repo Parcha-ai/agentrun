@@ -209,6 +209,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     return new Proxy(store, {
       get(target, property) {
         if (property === "runs") return runs;
+        // answerOf and watchCommands pass through as every method does: bound to the store.
         const value: unknown = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
