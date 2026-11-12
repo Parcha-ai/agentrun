@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { BOX_IDS } from "../dist/boxes.js";
+import { BOX_IDS } from "../dist/place-offers.js";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, printed, scratch, withEnv } from "./support.mjs";
 
