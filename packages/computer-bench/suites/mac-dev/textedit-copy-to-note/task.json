@@ -5,7 +5,7 @@
   "title": "Copy one line of a TextEdit file into a new note",
   "split": "dev",
   "tags": ["textedit", "notes", "cross-app", "copy"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.TextEdit", "com.apple.Notes"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.TextEdit", "com.apple.Notes"] },
   "params": {
     "want": {
       "pick": [

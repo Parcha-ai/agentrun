@@ -91,7 +91,7 @@ function crc32(data: Buffer): number {
 export const SETTINGS_APP = "fake.settings";
 export const NOTES_APP = "fake.notes";
 /** The protocol's ui fixture app (its fake ui driver runs it): the fixture suite's tasks and plays are written for it. */
-export const FIXTURE_APP = "ai.agentrun.ui-fixture";
+export const FIXTURE_APP = "ai.agentrun.uifixture";
 
 export class FakeWorld implements Wire {
 	readonly settings = new Map<string, string>([
@@ -487,6 +487,12 @@ const RIGHT: Record<string, Play> = {
 		await h.act([{ press: h.find("Next") as string }], { app: FIXTURE_APP, expect: { text: "Second page" } });
 		return undefined;
 	},
+	"fixture.canvas": async (h) => {
+		await h.observe(FIXTURE_APP);
+		const canvas = h.find("Canvas") as string;
+		await h.act([{ click: canvas }, { click: canvas }, { click: canvas }], { app: FIXTURE_APP, foreground: true });
+		return undefined;
+	},
 };
 
 const WRONG: Record<string, Play> = {
@@ -537,6 +543,13 @@ const WRONG: Record<string, Play> = {
 		await h.act([{ press: h.find("Back") as string }], { app: FIXTURE_APP, expect: { text: "UI fixture" } });
 		return undefined;
 	},
+	// Clicks twice, one short.
+	"fixture.canvas": async (h) => {
+		await h.observe(FIXTURE_APP);
+		const canvas = h.find("Canvas") as string;
+		await h.act([{ click: canvas }, { click: canvas }], { app: FIXTURE_APP, foreground: true });
+		return undefined;
+	},
 };
 
 const playing =
@@ -566,8 +579,8 @@ export function helper(wire: Wire) {
 		return last;
 	};
 	const find = (name: string) => last?.nodes.find((node) => node.name === name)?.ref;
-	const act = async (steps: JsonObject[], more: { app?: string; expect?: JsonObject } = {}) => {
-		const result = await wire.call("ui.act", { ...(more.app ? { target: { app: more.app } } : {}), state: last?.state ?? "s0", steps, ...(more.expect ? { expect: more.expect } : {}) });
+	const act = async (steps: JsonObject[], more: { app?: string; expect?: JsonObject; foreground?: boolean } = {}) => {
+		const result = await wire.call("ui.act", { ...(more.app ? { target: { app: more.app } } : {}), state: last?.state ?? "s0", steps, ...(more.expect ? { expect: more.expect } : {}), ...(more.foreground ? { foreground: true } : {}) });
 		if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
 		return result.value as { steps: { route?: string; error?: { kind: string; message: string } }[]; state: string; changed: boolean; expect?: "met" | "unmet" };
 	};

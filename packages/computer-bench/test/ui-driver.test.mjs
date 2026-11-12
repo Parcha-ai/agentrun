@@ -31,20 +31,20 @@ function driverBackend(agents, drivers = [], options = {}) {
 test("verify on the fake ui driver: every fixture check fails the untouched window and passes the oracle's", async () => {
 	const out = tmp();
 	const proofs = await verifySuite({ tasks: tasks(), seeds: [1, 2], backend: driverBackend({}), nullStore: new Store(join(out, "null")), oracleStore: new Store(join(out, "oracle")) });
-	assert.equal(proofs.length, 3 * 2);
+	assert.equal(proofs.length, 4 * 2);
 	for (const proof of proofs) {
 		assert.equal(proof.untouched, "fails", `${proof.task}: ${proof.why ?? ""}`);
 		assert.equal(proof.solved, "passes", `${proof.task}: ${proof.why ?? ""}`);
 		assert.deepEqual(proof.wrong, []);
 	}
-	assert.match(proofMarkdown(proofs), /6 task × seed proofs; 0 not right/);
+	assert.match(proofMarkdown(proofs), /8 task × seed proofs; 0 not right/);
 });
 
 test("the fake agents on the fake ui driver: right passes every fixture task, wrong and null fail every one", async () => {
 	const s = store();
 	const drivers = [];
 	const results = await runBench({ tasks: tasks(), arms: [arm("fake-right"), arm("fake-wrong"), arm("fake-null")], seeds: [1, 2], backend: driverBackend(FAKE_AGENTS, drivers), store: s, grade: "never" });
-	assert.equal(results.length, 3 * 3 * 2);
+	assert.equal(results.length, 4 * 3 * 2);
 	for (const result of results) {
 		assert.equal(result.scored, true, `${result.task} ${result.arm}: ${result.outcome} ${result.why ?? ""}`);
 		assert.equal(result.outcome, result.arm === "fake-right" ? "pass" : "fail", `${result.task} ${result.arm} seed ${result.seed}: ${JSON.stringify(result.checks)}`);
@@ -132,6 +132,19 @@ test("an oracle act whose find matches nothing, or whose step is refused, or who
 		assert.equal(proof.solved, "fails", proof.task);
 		assert.ok(proof.wrong.includes("the oracle did not run to its end"), proof.task);
 	}
+});
+
+test("the canvas task reads the click count: three foreground clicks pass, two fail, each click verified by its count", async () => {
+	const s = store();
+	const results = await runBench({ tasks: tasks("fixture.canvas"), arms: [arm("fake-right"), arm("fake-wrong")], seeds: [1], backend: driverBackend(FAKE_AGENTS), store: s, grade: "never" });
+	assert.deepEqual(
+		results.map((result) => [result.arm, result.outcome, result.routes, result.verified]),
+		[
+			["fake-right", "pass", { foreground: 3 }, 3],
+			["fake-wrong", "fail", { foreground: 2 }, 2],
+		],
+	);
+	assert.match(JSON.stringify(results[1].checks), /three/);
 });
 
 test("an oracle step that ran but answered verified false is unconfirmed, never a pass; verified true is", async () => {

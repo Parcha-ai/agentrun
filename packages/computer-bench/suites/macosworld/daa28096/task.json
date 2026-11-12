@@ -12,7 +12,7 @@
     "changes": "Instruction written in our own words. The target level is a param; the source's 50 is one pick, and each pick keeps the source's tolerance (more than 4 below or above fails, as in 45 < v < 55). The source activated Music on an AMI snapshot with whatever volume it held; here setup keeps Music's own volume, sets it to 100 so the agent must change it, and teardown puts it back and quits Music."
   },
   "tags": ["music", "settings"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Music"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Music"] },
   "params": {
     "vol": {
       "pick": [

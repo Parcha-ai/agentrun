@@ -157,8 +157,15 @@ export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly st
 	const kinds: Record<string, string[]> = { desktop: ["desktop"], phone: ["android", "ios"], sandbox: ["linux"], browser: ["browser"] };
 	if (!(kinds[needs.kind] ?? []).includes(hello.kind)) return `the task needs a ${needs.kind}; this computer is a ${hello.kind}`;
 	if (needs.osVersion !== undefined && !(hello.osVersion ?? "").startsWith(needs.osVersion)) return `the task was written for ${needs.os} ${needs.osVersion}; this computer runs ${hello.osVersion ?? "an unknown version"}`;
-	const agentMissing = needs.groups.filter((group) => !agentGroups.includes(group));
-	if (agentMissing.length > 0) return `the agent needs ${agentMissing.join(", ")}, which it is not given here (it has ${agentGroups.join(", ") || "nothing"})`;
+	// A task names a group only when it can't be done without it (a drag needs input.pointer); the agent drives the rest
+	// with whatever the computer offers it, so one suite compares code-mode, tools and vendor computer-tool agents.
+	const missing = (needs.groups ?? []).filter((group) => !agentGroups.includes(group));
+	if (missing.length > 0) {
+		const offered = missing.filter((group) => hello.groups.includes(group));
+		return offered.length === 0
+			? `the task can't be done without ${missing.join(", ")}, which this computer does not have (it has ${hello.groups.join(", ") || "nothing"})`
+			: `the task can't be done without ${missing.join(", ")}, which the agent is not given here (it has ${agentGroups.join(", ") || "nothing"})`;
+	}
 	const benchMissing = task.benchGroups.filter((group) => !hello.groups.includes(group));
 	if (benchMissing.length > 0) return `the task's setup and checks need ${benchMissing.join(", ")}, which this computer does not offer`;
 	return undefined;

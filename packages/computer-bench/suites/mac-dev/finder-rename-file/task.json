@@ -5,7 +5,7 @@
   "title": "Rename a file in a Documents folder",
   "split": "dev",
   "tags": ["finder", "files", "rename"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.finder"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.finder"] },
   "params": {
     "doc": {
       "pick": [

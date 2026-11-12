@@ -5,7 +5,7 @@
   "title": "Set a labelled alarm in Clock",
   "split": "dev",
   "tags": ["clock", "create"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"] },
   "params": {
     "t": {
       "pick": [

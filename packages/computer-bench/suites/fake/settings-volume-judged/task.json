@@ -5,7 +5,7 @@
   "title": "Turn the volume down a little (fake world, judged)",
   "split": "dev",
   "tags": ["fake", "judged"],
-  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["ui"], "apps": ["fake.settings"] },
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "apps": ["fake.settings"] },
   "setup": [
     { "method": "exec.run", "params": { "argv": ["set", "volume", "8"], "timeoutMs": 1000 } },
     { "method": "apps.launch", "params": { "id": "fake.settings" } }

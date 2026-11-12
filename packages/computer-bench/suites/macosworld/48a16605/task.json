@@ -12,7 +12,7 @@
     "changes": "Instruction and the four to-do items are our own; the items are a param of three sets (the source's own items are not copied, so they can't be a pick). The source wrote TODO.txt over a clean AMI snapshot and read every open reminder on the Mac in list order; here setup moves an existing Desktop/TODO.txt aside, and the check reads only reminders made since setup, sorted, so reminders the Mac already had don't count and the order the agent adds them in doesn't matter. Teardown deletes the reminders made in the run and puts the Mac's own file back."
   },
   "tags": ["reminders", "files", "multi-app"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.reminders", "com.apple.finder", "com.apple.TextEdit"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.reminders", "com.apple.finder", "com.apple.TextEdit"] },
   "params": {
     "todo": {
       "pick": [

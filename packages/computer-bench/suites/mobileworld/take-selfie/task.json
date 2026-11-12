@@ -12,7 +12,7 @@
     "changes": "Instruction is the source's goal, word for word (\"Take a photo.\"; the source's name says selfie, its goal and check don't). The source counted MediaStore images added since setup, or more image files in /sdcard/Pictures; ours counts image files in /sdcard/DCIM and /sdcard/Pictures newer than a marker setup writes, which covers the vendor camera apps' folders, and leaves out Screenshots folders and unfinished (.pending) files so a screenshot can't pass. HEIC is counted as well as the source's JPEG, PNG and DNG. Teardown deletes the run's new images. The oracle saves a screen capture into DCIM/Camera: it proves the check reads a new camera-folder image, not that a camera app works."
   },
   "tags": ["camera", "create"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.GoogleCamera", "com.android.camera2", "com.android.camera", "com.sec.android.app.camera", "com.android.systemui"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.GoogleCamera", "com.android.camera2", "com.android.camera", "com.sec.android.app.camera", "com.android.systemui"] },
   "setup": [
     {
       "method": "exec.run",

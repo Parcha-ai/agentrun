@@ -5,7 +5,7 @@
   "title": "Put tomorrow's plan from a note into Calendar",
   "split": "dev",
   "tags": ["notes", "calendar", "cross-app", "dates", "demo"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes", "com.apple.iCal"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes", "com.apple.iCal"] },
   "params": {
     "title": { "pick": ["Dentist", "Team lunch", "Bike service", "Parent-teacher meeting"] },
     "slot": {

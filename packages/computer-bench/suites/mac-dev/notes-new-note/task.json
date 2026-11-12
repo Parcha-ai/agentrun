@@ -5,7 +5,7 @@
   "title": "Make a note with a given title and one line of body",
   "split": "dev",
   "tags": ["notes", "create"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes"] },
   "params": {
     "title": { "pick": ["Groceries", "Trip ideas", "Q3 plan", "Books to read"] },
     "line": { "pick": ["oat milk and eggs", "call the plumber", "ship phase 2", "pack the charger"] }

@@ -59,7 +59,8 @@ export interface Budget {
 export interface Needs {
 	os: string;
 	kind: string;
-	groups: string[];
+	/** Groups the computer must have because the task can't be done without them; never which tools the agent uses. */
+	groups?: string[];
 	apps?: string[];
 	osVersion?: string;
 }

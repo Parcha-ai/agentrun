@@ -5,7 +5,7 @@
   "title": "Save a page from Chrome as a PDF through the share sheet",
   "split": "heldout",
   "tags": ["share", "chrome", "print", "files", "demo"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.chrome"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.chrome"] },
   "params": {
     "port": { "int": [20000, 29999] },
     "shop": { "pick": ["Harbor Hardware", "Little Fern Nursery", "Northside Books", "Copper Kettle Cafe"] },

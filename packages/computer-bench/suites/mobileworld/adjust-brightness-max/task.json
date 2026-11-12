@@ -12,7 +12,7 @@
     "changes": "Instruction is the source's goal, word for word. The source set nothing up, so a phone already at full brightness passed with no action; here setup keeps the phone's own brightness and auto-brightness, turns auto-brightness off and starts at 128, and teardown puts both back. The check is the source's (screen_brightness at least 255), read with `settings get` instead of the source's helper."
   },
   "tags": ["settings", "display"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.settings", "com.android.settings.intelligence", "com.android.systemui"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence", "com.android.systemui"] },
   "setup": [
     {
       "method": "exec.run",

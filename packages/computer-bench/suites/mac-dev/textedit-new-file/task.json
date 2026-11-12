@@ -5,7 +5,7 @@
   "title": "Write and save a one-line plain text file",
   "split": "dev",
   "tags": ["textedit", "files", "create", "save-dialog"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.TextEdit"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.TextEdit"] },
   "params": {
     "name": { "pick": ["shopping", "call-list", "packing", "reading"] },
     "line": { "pick": ["Buy oat milk and eggs", "Call the plumber on Tuesday", "Pack the blue charger", "Finish chapter four"] }

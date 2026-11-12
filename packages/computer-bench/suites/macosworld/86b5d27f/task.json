@@ -12,7 +12,7 @@
     "changes": "Instruction written in our own words. The source only activated Script Editor; here setup also closes its open documents without saving and makes one new, empty document, so the front document is known to be empty. The source's check is kept (run the front document's text and see \"Script Editor\"), made exact (the name alone, or with .app) instead of a grep, and a second check holds the one-line part of the instruction, which the source did not check. Teardown closes the documents without saving and quits Script Editor."
   },
   "tags": ["script-editor", "applescript", "write"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.ScriptEditor2"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.ScriptEditor2"] },
   "setup": [
     {
       "method": "exec.run",

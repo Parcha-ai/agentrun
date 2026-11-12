@@ -12,7 +12,7 @@
     "changes": "Instruction written in our own words. The function and angle are a param; the source's sine of pi/6 is one pick, and the others (cosine of pi/3, tangent of pi/4) also need radians and Scientific mode. The source restored an AMI snapshot; here setup quits Calculator and clears its last result, and teardown puts the Mac's own value back. The check reads the same preference as the source (com.apple.calculator LastResultValue), compared to six decimals exactly instead of with grep. The oracle types a division with the same result into Calculator: it proves the check reads a solved state, not that the agent used the trigonometric key."
   },
   "tags": ["calculator", "compute"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.calculator"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.calculator"] },
   "params": {
     "f": {
       "pick": [

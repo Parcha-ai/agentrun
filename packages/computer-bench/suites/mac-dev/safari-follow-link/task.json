@@ -5,7 +5,7 @@
   "title": "Follow a local site's links to a named page",
   "split": "heldout",
   "tags": ["safari", "browse", "navigate"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Safari"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari"] },
   "params": {
     "city": {
       "pick": [

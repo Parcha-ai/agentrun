@@ -5,7 +5,7 @@
   "title": "Copy one value from a web page into a new note",
   "split": "heldout",
   "tags": ["safari", "notes", "cross-app", "copy"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Safari", "com.apple.Notes"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari", "com.apple.Notes"] },
   "params": {
     "customer": {
       "pick": [

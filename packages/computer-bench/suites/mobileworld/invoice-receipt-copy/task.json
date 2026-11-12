@@ -12,7 +12,7 @@
     "changes": "The source's goal is Chinese; the instruction is our English translation. The nine file names, dates (November 15, October 20 and December 5, 2025 at noon) and text layout are the source's; the source drew one to three line items at random for each invoice, ours are a fixed draw from the same ten items. The source emptied Download first; here setup moves aside only the files in the way (these nine names, any other invoice or receipt file in Download, an existing Finance/invoice) and teardown puts them back. Setup asks the media scanner to re-read each file so file managers show the set dates. The source's check (Finance/invoice holds exactly the November file; the file of that name in Download, if still there, is dated November) passed a move as well as a copy; ours asks for a copy: the original must still be in Download with its November date, and the copy must have the same bytes."
   },
   "tags": ["files", "copy", "translated"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
   "setup": [
     {
       "method": "exec.run",

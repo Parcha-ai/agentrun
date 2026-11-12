@@ -5,7 +5,7 @@
   "title": "Add a last line to an existing note",
   "split": "heldout",
   "tags": ["notes", "edit"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes"] },
   "params": {
     "title": { "pick": ["Packing list", "Camping kit", "Beach bag", "Ski trip"] },
     "add": { "pick": ["sunscreen", "headphones", "umbrella", "toothbrush", "rain jacket"] }

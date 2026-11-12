@@ -5,7 +5,7 @@
   "title": "Bring Notes to the front (fake world)",
   "split": "heldout",
   "tags": ["fake"],
-  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["apps"] },
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop" },
   "setup": [{ "method": "apps.launch", "params": { "id": "fake.settings" } }],
   "instruction": "Open Notes.",
   "budget": { "steps": 3, "usd": 0.1, "wall_s": 10 },

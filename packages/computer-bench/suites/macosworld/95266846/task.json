@@ -12,7 +12,7 @@
     "changes": "Instruction and script written by us: a loop that adds the numbers from 1 to N, where the source's loop went from 0 to 100. N is a param; 100, whose sum (5050) is the value the source checks, is one pick. The source started from a clean AMI snapshot; here setup moves an existing Documents/sum.scpt aside and teardown puts it back. The check is the source's (run the saved file with osascript), made exact instead of a grep."
   },
   "tags": ["script-editor", "applescript", "save"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.ScriptEditor2", "com.apple.finder"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.ScriptEditor2", "com.apple.finder"] },
   "params": {
     "n": {
       "pick": [

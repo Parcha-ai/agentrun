@@ -5,7 +5,7 @@
   "title": "Turn Dock auto-hiding on or off in System Settings",
   "split": "dev",
   "tags": ["settings", "dock", "toggle"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences"] },
   "params": {
     "mode": {
       "pick": [

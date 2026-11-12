@@ -5,7 +5,7 @@
   "title": "Move the Dock to another edge of the screen in System Settings",
   "split": "heldout",
   "tags": ["settings", "dock", "choice"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences"] },
   "params": {
     "pos": {
       "pick": [

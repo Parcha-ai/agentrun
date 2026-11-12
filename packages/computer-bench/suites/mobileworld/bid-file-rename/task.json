@@ -12,7 +12,7 @@
     "changes": "The source's goal is Chinese; the instruction is our English translation, with \"numbered from 1\" added (the source's check wants 1 to 4 but its goal doesn't say). The fifteen files and their text are the source's. The source dated files relative to the day of the run; ours are fixed dates in March 2026, and which bid file is oldest is a param: the source's order (proposal, catering, design, supplier) is one pick, two other orders are the others. The source deleted every bid_ file in Download first; here setup moves the phone's own bid_ files and same-named files aside and teardown puts them back. Setup also asks the media scanner to re-read each file so file managers show the set dates. The checks are the source's (old names gone, exactly bid_1 to bid_4 with the right extensions, dates ascending), plus one the source didn't have: the eleven other files are still there."
   },
   "tags": ["files", "rename", "translated"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.documentsui", "com.android.documentsui", "com.google.android.apps.nbu.files", "com.sec.android.app.myfiles"] },
   "params": {
     "o": {
       "pick": [

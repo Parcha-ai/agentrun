@@ -5,7 +5,7 @@
   "title": "Write a file (fake world)",
   "split": "heldout",
   "tags": ["fake"],
-  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["files"] },
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop" },
   "params": { "n": { "int": [2, 9] } },
   "setup": [{ "method": "exec.run", "params": { "argv": ["rm", "/tmp/bench-{{nonce}}.txt"], "timeoutMs": 1000 } }],
   "instruction": "Write the number {{n}} to /tmp/bench-{{nonce}}.txt.",

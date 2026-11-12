@@ -5,7 +5,7 @@
   "title": "Stop a labelled alarm from ringing in Clock",
   "split": "heldout",
   "tags": ["clock", "toggle"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"] },
   "params": {
     "t": {
       "pick": [

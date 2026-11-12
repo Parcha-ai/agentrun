@@ -5,7 +5,7 @@
   "title": "Open a Wikipedia article in Chrome",
   "split": "dev",
   "tags": ["chrome", "navigate", "live-web"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.chrome"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.chrome"] },
   "params": {
     "topic": {
       "pick": [

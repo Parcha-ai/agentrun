@@ -5,7 +5,7 @@
   "title": "Make a folder and move the files of one kind into it",
   "split": "heldout",
   "tags": ["finder", "files", "organise"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.finder"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.finder"] },
   "params": {
     "kind": {
       "pick": [

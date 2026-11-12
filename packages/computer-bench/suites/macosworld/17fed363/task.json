@@ -12,7 +12,7 @@
     "changes": "Instruction written in our own words. Start state as in the source (System Settings quit, com.apple.ncprefs content_visibility set to 2), but setup first keeps the Mac's own value and teardown puts it back. The check reads the same key and wants exactly 1 (the source's grep for \"1\" also matched values such as 10). No param: the source shows only that Never is 1, so the other choices' values are not known well enough to pick from."
   },
   "tags": ["settings", "notifications"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences"] },
   "setup": [
     {
       "method": "exec.run",

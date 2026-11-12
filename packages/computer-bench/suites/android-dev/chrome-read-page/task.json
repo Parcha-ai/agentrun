@@ -5,7 +5,7 @@
   "title": "Read a code from a web page in Chrome",
   "split": "dev",
   "tags": ["chrome", "info", "answer"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.chrome"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.chrome"] },
   "params": {
     "port": { "int": [20000, 29999] },
     "o": {

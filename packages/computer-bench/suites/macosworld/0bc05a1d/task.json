@@ -12,7 +12,7 @@
     "changes": "Instruction written in our own words, and it says the table goes in a new note: the source deleted every note on the Mac first, so any table it found was in a new note; we keep the Mac's notes and look only at notes made since setup. The source's check grepped all notes' HTML for a table; ours also wants every cell of the table empty, as the instruction says. Teardown deletes the notes made since setup."
   },
   "tags": ["notes", "create", "table"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes"] },
   "setup": [
     {
       "method": "exec.run",

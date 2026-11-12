@@ -12,7 +12,7 @@
     "changes": "Instruction and the seeded article are our own: the source's article text is not copied, so the article is a param of two short articles we wrote (the source's own can't be a pick). The note's title carries the run's nonce. The source deleted every note on the Mac before seeding; here setup only removes notes with this run's title and makes one note, and teardown deletes it. The source's check grepped all notes' HTML for the labels and paragraphs in order; ours reads this note's plain text and wants exactly the title, label 1, paragraph 1, label 2, paragraph 2 (blank lines ignored)."
   },
   "tags": ["notes", "edit"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Notes"] },
   "params": {
     "art": {
       "pick": [

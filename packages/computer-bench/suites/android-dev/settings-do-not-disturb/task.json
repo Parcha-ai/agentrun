@@ -5,7 +5,7 @@
   "title": "Turn Do Not Disturb on or off in Settings",
   "split": "heldout",
   "tags": ["settings", "toggle"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
   "params": {
     "mode": {
       "pick": [

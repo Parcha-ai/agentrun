@@ -5,7 +5,7 @@
   "title": "Add a reminder with a priority to a given list",
   "split": "dev",
   "tags": ["reminders", "create"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.reminders"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.reminders"] },
   "params": {
     "item": { "pick": ["Renew passport", "Book flights", "Water the plants", "Pay the phone bill"] },
     "prio": {

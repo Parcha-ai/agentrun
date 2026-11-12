@@ -134,11 +134,28 @@ test("a computer that is not what the task needs is refused before setup, and no
 	assert.equal(worlds[0].released, true);
 });
 
-test("an agent not given the ui group is refused for a task that needs it", async () => {
-	const s = store();
-	const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("fake-right")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS, agentGroups: ["exec", "files"] }), store: s });
-	assert.equal(result.outcome, "refused");
-	assert.match(result.why, /the agent needs ui/);
+test("a task names no agent tools: an agent given only ui, or every group, runs it alike", async () => {
+	for (const agentGroups of [["ui"], undefined]) {
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("fake-right")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS, ...(agentGroups ? { agentGroups } : {}) }), store: store(), grade: "never" });
+		assert.equal(result.outcome, "pass", `${agentGroups ?? "all"}: ${result.why ?? ""}`);
+	}
+});
+
+test("a group a task can't be done without is checked against hello: refused in one sentence naming it", async () => {
+	const [task] = fakeTasks("fake.settings.dark-theme");
+	// The same task (the fake agents play by its id), as if it needed a drag.
+	const drag = { ...task, spec: { ...task.spec, needs: { ...task.spec.needs, groups: ["input.pointer"] } } };
+	const worlds = [];
+	const lacking = fakeBackend({ agents: FAKE_AGENTS, worlds, world: () => new FakeWorld({ groups: ["exec", "files", "apps", "ui"] }) });
+	const [missing] = await runBench({ tasks: [drag], arms: [arm("fake-right")], seeds: [1], backend: lacking, store: store(), grade: "never" });
+	assert.equal(missing.outcome, "refused");
+	assert.equal(missing.why, "the task can't be done without input.pointer, which this computer does not have (it has exec, files, apps, ui)");
+	assert.deepEqual(worlds[0].calls, ["hello"], "refused before setup");
+	const [withheld] = await runBench({ tasks: [drag], arms: [arm("fake-right")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS, agentGroups: ["ui", "apps"] }), store: store(), grade: "never" });
+	assert.equal(withheld.outcome, "refused");
+	assert.match(withheld.why, /the task can't be done without input\.pointer, which the agent is not given here \(it has ui, apps\)$/);
+	const [given] = await runBench({ tasks: [drag], arms: [arm("fake-right")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: store(), grade: "never" });
+	assert.equal(given.outcome, "pass", given.why);
 });
 
 test("the grant: a call outside the agent's groups is denied and recorded, and the world never sees it", async () => {

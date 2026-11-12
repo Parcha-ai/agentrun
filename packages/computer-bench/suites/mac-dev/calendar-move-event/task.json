@@ -5,7 +5,7 @@
   "title": "Move an event to another time the same day",
   "split": "heldout",
   "tags": ["calendar", "edit", "dates"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.iCal"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.iCal"] },
   "params": {
     "title": { "pick": ["Budget review", "Haircut", "Lunch with Priya", "Car service"] },
     "slot": {

@@ -25,7 +25,7 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | field | what it is |
 | --- | --- |
 | `id`, `version`, `title`, `split` | `split` is `dev` (tune on it) or `heldout` (report on it, never tune on it) |
-| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the agent must be given, `apps` |
+| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps`. A task never says which tools the agent uses: the agent is given what the computer offers, so one suite compares code-mode, tools and vendor computer-tool agents |
 | `params` | per-seed perturbations: `{pick: [...]}` (scalars, or objects read as `{{name.field}}`) or `{int: [lo, hi]}`; each param is picked from sha256(task, seed, name), so every arm sees the same values |
 | `setup`, `teardown`, `oracle` | protocol calls: `{method, params, why, allow (error kinds that count as done), exit (exec.run's good exit codes)}` |
 | `instruction` | what the agent is told |
@@ -64,8 +64,8 @@ the nonce, and has an oracle: the calls that solve it, which `verify` uses to pr
 under the same conditions):
 
 1. opens an episode: a computer claimed for the run, its bench channel, and the agent that will drive it;
-2. reads `hello` and refuses a computer that is not what the task needs (os, kind, osVersion, the agent's groups, the
-   groups setup and checks need) before setup touches it;
+2. reads `hello` and refuses a computer that is not what the task needs (os, kind, osVersion, a group the task can't
+   be done without, the groups setup and checks need) before setup touches it, in one sentence naming what is missing;
 3. runs setup; a setup that fails is infra;
 4. runs the agent under its budget: the step budget answers `limit` past it and stops the agent, the wall budget aborts
    it, and a run that spent more than `usd` counts as `budget` whatever its checks say;
@@ -139,7 +139,7 @@ arm's paired difference against the first; the failure loci; and a table per tas
 | suite | tasks | what |
 | --- | --- | --- |
 | [fake](suites/fake) | 6 | the fake world's: what the tests run |
-| [ui-fixture](suites/ui-fixture) | 3 | the protocol's ui fixture app, run by its fake ui driver (`@parcha/agentrun-computer/fake-ui-driver`) in the tests, and by a real driver wherever the fixture app is installed |
+| [ui-fixture](suites/ui-fixture) | 4 | the protocol's ui fixture app (`ai.agentrun.uifixture`; its canvas counts the clicks that reach it), run by its fake ui driver (`@parcha/agentrun-computer/fake-ui-driver`) in the tests, and by a real driver wherever the fixture app is installed |
 | [mac-dev](suites/mac-dev/README.md) | 20 (10 dev, 10 held out) | Notes, Calendar, Finder, Safari, TextEdit, System Settings, Reminders on macOS 26; four tasks cross two apps |
 | [android-dev](suites/android-dev/README.md) | 20 (10 dev, 10 held out) | Settings, Clock, Contacts, Files, Chrome, and two tasks through Chrome's share sheet, on an unrooted phone, checked through `settings get`, `content query` and the ui tree |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |

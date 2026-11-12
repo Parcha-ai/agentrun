@@ -12,7 +12,7 @@ const GOOD = {
 	version: 1,
 	title: "A good task",
 	split: "dev",
-	needs: { os: "macos", kind: "desktop", groups: ["ui"] },
+	needs: { os: "macos", kind: "desktop" },
 	instruction: "Do it",
 	budget: { steps: 5, usd: 0.1, wall_s: 10 },
 	checks: [{ id: "c", kind: "exec", why: "it is done", argv: ["true"] }],

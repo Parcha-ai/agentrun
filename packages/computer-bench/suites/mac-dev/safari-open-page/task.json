@@ -5,7 +5,7 @@
   "title": "Find a named page on the IANA website",
   "split": "dev",
   "tags": ["safari", "browse", "network"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Safari"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari"] },
   "params": {
     "page": {
       "pick": [

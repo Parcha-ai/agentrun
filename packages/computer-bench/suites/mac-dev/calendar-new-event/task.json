@@ -5,7 +5,7 @@
   "title": "Add a timed event for tomorrow to a given calendar",
   "split": "dev",
   "tags": ["calendar", "create", "dates"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.iCal"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.iCal"] },
   "params": {
     "title": { "pick": ["Dentist", "Team sync", "Call with Sam", "Yoga class"] },
     "slot": {

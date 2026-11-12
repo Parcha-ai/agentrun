@@ -5,7 +5,7 @@
   "title": "Add an email address to a contact in Contacts",
   "split": "heldout",
   "tags": ["contacts", "edit"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.google.android.contacts", "com.android.contacts", "com.samsung.android.app.contacts"] },
   "params": {
     "who": {
       "pick": [

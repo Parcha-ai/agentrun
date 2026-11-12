@@ -5,7 +5,7 @@
   "title": "Say the device's name (fake world)",
   "split": "heldout",
   "tags": ["fake", "answer"],
-  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["ui"], "apps": ["fake.settings"] },
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "apps": ["fake.settings"] },
   "params": { "name": { "pick": ["Kitchen iPad", "Lab Phone 7", "Studio Mac 2"] } },
   "setup": [
     { "method": "exec.run", "params": { "argv": ["set", "device_name", "{{name}}"], "timeoutMs": 1000 } },

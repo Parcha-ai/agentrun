@@ -40,8 +40,8 @@
     "needs": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "kind", "groups"],
-      "description": "The computer the task runs on. The runner refuses a computer whose hello does not match, before anything runs.",
+      "required": ["os", "kind"],
+      "description": "What the task needs of the computer, never which tools the agent uses: the agent is given what the computer offers. The runner refuses a computer whose hello does not match, before anything runs.",
       "properties": {
         "os": { "enum": ["macos", "android", "linux", "windows", "ios"] },
         "kind": {
@@ -52,7 +52,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/group" },
           "uniqueItems": true,
-          "description": "The groups the agent needs. The groups setup, checks and the oracle use are read from their methods and needed too, on the bench's own channel."
+          "description": "Groups the computer must have because the task can't be done without them (a drag needs input.pointer). Leave it out otherwise. The groups setup, checks and the oracle use are read from their methods and needed too, on the bench's own channel."
         },
         "apps": {
           "type": "array",

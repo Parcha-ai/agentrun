@@ -5,7 +5,7 @@
   "title": "Set the Mac's appearance to Light or Dark in System Settings",
   "split": "heldout",
   "tags": ["settings", "appearance", "choice"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences"] },
   "params": {
     "mode": {
       "pick": [

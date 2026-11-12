@@ -5,7 +5,7 @@
   "title": "Read the phone's device name from Settings",
   "split": "dev",
   "tags": ["settings", "info", "answer"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.settings", "com.android.settings.intelligence"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence"] },
   "params": {
     "label": { "pick": ["Desk phone", "Lab handset", "Field unit", "Spare phone", "Kitchen tablet"] }
   },

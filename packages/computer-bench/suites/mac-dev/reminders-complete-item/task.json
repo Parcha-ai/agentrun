@@ -5,7 +5,7 @@
   "title": "Tick off one reminder of a list",
   "split": "heldout",
   "tags": ["reminders", "edit"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.reminders"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.reminders"] },
   "params": {
     "item": { "pick": ["Buy stamps", "Return library books", "Email the landlord", "Charge the camera"] }
   },

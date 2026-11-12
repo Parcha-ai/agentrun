@@ -12,7 +12,7 @@
     "changes": "Instruction written in our own words. Setup quits System Settings as the source does, and also quits System Information and puts Finder in front, so a System Report window left by an earlier run can't pass. The check is the source's full-score one (System Information is the app in front), read through apps.list by bundle id instead of a System Events process name; the source's partial scores (an About window, System Settings in front) are dropped, as the bench scores pass or fail."
   },
   "tags": ["settings", "navigate"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.systempreferences", "com.apple.SystemProfiler", "com.apple.finder"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.systempreferences", "com.apple.SystemProfiler", "com.apple.finder"] },
   "setup": [
     {
       "method": "exec.run",

@@ -5,7 +5,7 @@
   "title": "Turn the dark theme on (fake world)",
   "split": "dev",
   "tags": ["fake"],
-  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["ui"], "apps": ["fake.settings"] },
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "apps": ["fake.settings"] },
   "setup": [
     { "method": "exec.run", "params": { "argv": ["set", "dark", "no"], "timeoutMs": 1000 } },
     { "method": "apps.launch", "params": { "id": "fake.settings" } }

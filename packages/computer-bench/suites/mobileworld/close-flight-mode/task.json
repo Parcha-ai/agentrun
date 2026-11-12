@@ -12,7 +12,7 @@
     "changes": "Instruction is the source's goal, word for word. Start state as in the source (flight mode on), set with `cmd connectivity airplane-mode` instead of the source's helper; setup also keeps the phone's own state and teardown puts it back. The check is the source's (settings global airplane_mode_on is 0). Needs the bench phone on USB adb: flight mode can drop a Wi-Fi adb link."
   },
   "tags": ["settings", "toggle", "network"],
-  "needs": { "os": "android", "kind": "phone", "groups": ["ui", "screen"], "apps": ["com.android.settings", "com.android.settings.intelligence", "com.android.systemui"] },
+  "needs": { "os": "android", "kind": "phone", "apps": ["com.android.settings", "com.android.settings.intelligence", "com.android.systemui"] },
   "setup": [
     {
       "method": "exec.run",

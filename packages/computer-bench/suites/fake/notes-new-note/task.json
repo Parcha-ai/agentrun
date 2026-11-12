@@ -5,7 +5,7 @@
   "title": "Make a note (fake world)",
   "split": "dev",
   "tags": ["fake"],
-  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "groups": ["ui"], "apps": ["fake.notes"] },
+  "needs": { "os": "macos", "osVersion": "fake", "kind": "desktop", "apps": ["fake.notes"] },
   "params": {
     "title": { "pick": ["Groceries", "Trip ideas", "Q3 plan"] },
     "body": { "pick": ["oat milk", "pack the charger", "ship phase 2"] }

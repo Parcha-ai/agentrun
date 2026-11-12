@@ -5,23 +5,23 @@
   "title": "Turn the Wi-Fi switch on (ui fixture)",
   "split": "dev",
   "tags": ["fixture"],
-  "needs": { "os": "macos", "kind": "desktop", "groups": ["ui"], "apps": ["ai.agentrun.ui-fixture"] },
+  "needs": { "os": "macos", "kind": "desktop", "apps": ["ai.agentrun.uifixture"] },
   "setup": [
-    { "method": "apps.terminate", "params": { "id": "ai.agentrun.ui-fixture" }, "allow": ["not_found"] },
-    { "method": "apps.launch", "params": { "id": "ai.agentrun.ui-fixture" } }
+    { "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] },
+    { "method": "apps.launch", "params": { "id": "ai.agentrun.uifixture" } }
   ],
   "instruction": "In the UI fixture app, turn the Wi-Fi switch on.",
   "budget": { "steps": 6, "usd": 0.1, "wall_s": 20 },
   "checks": [
-    { "id": "on", "kind": "ui", "why": "The Wi-Fi switch is checked.", "app": "ai.agentrun.ui-fixture", "find": { "role": "switch", "name": { "equals": "Wi-Fi" }, "flags": ["checked"] }, "min": 1, "max": 1 },
-    { "id": "home", "kind": "ui", "why": "The app is still on its first page, so the switch was the change.", "app": "ai.agentrun.ui-fixture", "find": { "role": "heading", "name": { "equals": "UI fixture" } }, "min": 1, "max": 1 }
+    { "id": "on", "kind": "ui", "why": "The Wi-Fi switch is checked.", "app": "ai.agentrun.uifixture", "find": { "role": "switch", "name": { "equals": "Wi-Fi" }, "flags": ["checked"] }, "min": 1, "max": 1 },
+    { "id": "home", "kind": "ui", "why": "The app is still on its first page, so the switch was the change.", "app": "ai.agentrun.uifixture", "find": { "role": "heading", "name": { "equals": "UI fixture" } }, "min": 1, "max": 1 }
   ],
-  "teardown": [{ "method": "apps.terminate", "params": { "id": "ai.agentrun.ui-fixture" }, "allow": ["not_found"] }],
+  "teardown": [{ "method": "apps.terminate", "params": { "id": "ai.agentrun.uifixture" }, "allow": ["not_found"] }],
   "oracle": [
     {
       "method": "ui.act",
       "params": {
-        "target": { "app": "ai.agentrun.ui-fixture" },
+        "target": { "app": "ai.agentrun.uifixture" },
         "steps": [{ "set": { "find": { "role": "switch", "name": { "equals": "Wi-Fi" } } }, "value": "on" }]
       }
     }

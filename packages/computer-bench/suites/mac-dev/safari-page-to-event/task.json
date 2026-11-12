@@ -5,7 +5,7 @@
   "title": "Add an invitation from a web page to Calendar",
   "split": "heldout",
   "tags": ["safari", "calendar", "cross-app", "dates", "demo"],
-  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Safari", "com.apple.iCal"] },
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "apps": ["com.apple.Safari", "com.apple.iCal"] },
   "params": {
     "title": { "pick": ["Book club", "Open studio night", "Neighborhood cleanup", "Chess meetup"] },
     "where": { "pick": ["Room 2, Riverside Library", "The Long Hall, 14 Mill Lane", "Community garden gate"] },
