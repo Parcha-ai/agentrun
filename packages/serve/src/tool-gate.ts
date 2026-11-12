@@ -44,6 +44,10 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const mcpToolName = (server: string, tool: string): string => `mcp:${server}/${tool}`;
 /** Whether `name` is an MCP tool's gate name. */
 export const isMcpTool = (name: string): boolean => /^mcp:[^/]+\/.+$/.test(name);
+/** The MCP servers a revision grants tools of, by their catalog names (`mcp:<server>/<tool>`, a server's wildcard too), each
+ *  once: what a harness that names a session's MCP tool its own way (its facts' toolAlias: OpenCode's `<server>_<tool>`) is
+ *  matched against, so its call is held to that tool's settings and never to a table tool's of the same shape. */
+export const mcpServersOf = (granted: readonly string[]): string[] => [...new Set(granted.flatMap((name) => /^mcp:([^/]+)\//.exec(name)?.[1] ?? []))];
 /** A third-party catalog tool, by its name: monid's (`monid.<tool>`) or an MCP server's (`mcp:<server>/<tool>`). */
 export const isCatalogTool = (name: string): boolean => name.startsWith("monid.") || isMcpTool(name);
 /** Where a run's shell is, as its default permissions read it: `computer` false for a run with no computer (its bash, where
@@ -364,9 +368,10 @@ export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, s
 /** The gate of the run `runId` whose folder is `where`, on its pinned revision. `serverSettings`: the server's tool
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
- *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+ *  claim). The gate reads nothing of the run's own files: they are the agent's to write. `mcpServers`: the run's MCP
+ *  servers (mcpServersOf its grants), so a harness's own name for an MCP tool is held to that tool's settings. */
+export function runGate(where: { root: string; work: string; computer?: boolean; mcpServers?: readonly string[] }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.mcpServers ? { mcpServers: where.mcpServers } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** A run's folder as its spec names it: the run's Workspace (Mode 2: its folder on the run's disk, never a folder of this

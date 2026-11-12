@@ -882,6 +882,16 @@ describe("the Learning tab's skills and workflows", () => {
       expect(t.calls.filter((c) => c === "learning refunds")).toHaveLength(1);
     });
 
+    it("one that reads retired only because its file can't be read says so, and how to fix it, never who retired it (#2444)", async () => {
+      const v = learned({ skill: "retired" });
+      v.skills = v.skills!.map((x) => (x.file === SKILL_FILE ? { ...x, retired: { at: "2026-11-04T10:00:00Z", by: "host" as const, why: "unreadable" as const } } : x));
+      const t = await open(agent(true), { learning: async () => v, read: reads });
+      await t.click(/^Earlier skills/);
+      const earlier = t.host.querySelector('section[aria-label="Earlier skills"]')!.textContent!;
+      expect(earlier).toContain("Not read: its front matter can't be read; fix the file to use it");
+      expect(earlier).not.toMatch(/Retired by/);
+    });
+
     it("any other refusal says the skill was not retired, in the problem card's words", async () => {
       const t = await open(agent(true), { learning: async () => learned(), read: reads, retire: async () => { throw new ClientError(400, "bad_request", "A workflow is retired by its README.md."); } });
       await t.click(/^Retire find-policies$/);

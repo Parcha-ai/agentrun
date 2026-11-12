@@ -83,13 +83,13 @@ function configOf(value: unknown): Config | undefined {
 
 /** The mark of the wait a run stands at, its webhook-id's marker: one per ask, however often or whenever the run is read,
  *  so every read of the same ask makes the same webhook-id. A question's is its waiting row (run-view.ts withAsks: the
- *  asked call's result, `:waiting`); an approval's, the call it holds; a budget pause's, its time; a hand-over's, when it
+ *  asked call's result, `:waiting`); an approval's, the call it holds; a budget pause's, its time and its cap; a hand-over's, when it
  *  was asked; a stop, which waits on no ask, the last row that shows (not usage, a phase or learning's). Never the last
  *  row for an ask: a run read between the person's answer and its runner's take of it shows the answer last, and a
  *  marker from that row would tell the same ask twice, under two ids. Undefined when there is none. */
 export function waitMarkerOf(
   rows: readonly { id: string; kind: string; agent_label?: string | null }[],
-  pending: { kind?: unknown; id?: unknown; at?: unknown; asked_at?: unknown } | null | undefined,
+  pending: { kind?: unknown; id?: unknown; at?: unknown; asked_at?: unknown; cap_usd?: unknown } | null | undefined,
   waiting: boolean,
   learningLabel: string,
 ): string | undefined {
@@ -97,7 +97,10 @@ export function waitMarkerOf(
   if (!waiting) return last();
   const kind = pending?.kind;
   if (kind === "approval" && typeof pending?.id === "string") return `approval:${pending.id}`;
-  if (kind === "budget" && typeof pending?.at === "string") return `budget:${pending.at}`;
+  // A pause at the cap, by when it came and the cap it waits at: waits at one cap are one pause, told once, and a raise that
+  // still does not cover the step pauses the run anew at the higher cap, told again (the runner writes no row for the
+  // refused step, so its time alone would not move).
+  if (kind === "budget" && typeof pending?.at === "string") return `budget:${pending.at}${typeof pending.cap_usd === "number" ? `:${pending.cap_usd}` : ""}`;
   if ((kind === "browser" || kind === "computer") && typeof pending?.asked_at === "string") return `${kind}:${pending.asked_at}`;
   return rows.findLast((r) => r.kind === "waiting")?.id ?? last();
 }

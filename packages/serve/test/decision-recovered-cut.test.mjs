@@ -10,7 +10,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { decisionRecovery, durableDecisions } from "@parcha/agentrun-pi/durable";
+import { decisionRecovery } from "../dist/workflow/decision-recovery.js";
+import { durableDecisions } from "../dist/workflow/readers.js";
 import { servedPart } from "../dist/graph-served.js";
 
 /** A held value of 512 characters, made at runtime: no credential-shaped literal for the source export. */
