@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
+import { checkUiAct, chordKeys, conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
 import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, NEXT_ANIMATE_MS, NEXT_MS, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -187,6 +187,12 @@ test("every point of a drag is held to its state: an end outside the window is i
 	assert.equal(moved.value.steps[0].error?.kind, "stale", JSON.stringify(moved.value.steps));
 	assert.match(moved.value.steps[0].error.message, new RegExp(`what is at \\(${onWifi[0]}, ${onWifi[1]}\\) changed`));
 	await c.close();
+});
+
+test("a chord's last key may be + itself", () => {
+	assert.deepEqual(["+", "shift++", "ctrl+shift+t", "a"].map(chordKeys), [["+"], ["shift", "+"], ["ctrl", "shift", "t"], ["a"]]);
+	for (const key of ["+", "shift++", "ctrl+="]) assert.equal(checkUiAct({ steps: [{ key }] }).ok, true, key);
+	for (const key of ["", "++", "shift+", "+shift"]) assert.equal(checkUiAct({ steps: [{ key }] }).ok, false, key);
 });
 
 test("a fake desktop with no app in front shows its desktop", async () => {

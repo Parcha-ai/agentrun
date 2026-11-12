@@ -32,7 +32,7 @@ export const ATTACH_CLOSE = {
 	binary: 1003,
 	/** A frame over maxLineBytes. */
 	tooBig: 1009,
-	/** The computer's hello is not what it paired as (another kind, os or user): pair again. */
+	/** The computer's hello is not what it paired as (another kind or os): pair again. */
 	mismatch: 4400,
 	/** The token is unknown or was revoked: pair again. */
 	unauthorized: 4401,
@@ -187,6 +187,14 @@ export class AttachHub {
 		this.#pending.set(paired.id, pending);
 		pending.add(socket);
 		const client = new DaemonClient(socketStreams(socket));
+		// Listened for before the hello is awaited, so a close in that wait is never missed: it keeps the socket out of
+		// #live, or takes it out once in.
+		let closed = false;
+		let mine: Live | undefined;
+		socket.onClose(() => {
+			closed = true;
+			if (mine !== undefined && this.#live.get(paired.id) === mine) this.#live.delete(paired.id);
+		});
 		const hello = await client.call("hello", { client: "agentrun-serve" });
 		const revoked = !pending.delete(socket);
 		if (pending.size === 0 && this.#pending.get(paired.id) === pending) this.#pending.delete(paired.id);
@@ -210,12 +218,10 @@ export class AttachHub {
 			socket.close(ATTACH_CLOSE.replaced, why);
 			return fail("refused", why);
 		}
-		const live: Live = { socket, client, hello: hello.value, dial };
-		this.#live.set(paired.id, live);
+		if (closed) return fail("gone", `${paired.name}'s socket closed while it said hello`);
+		mine = { socket, client, hello: hello.value, dial };
+		this.#live.set(paired.id, mine);
 		older?.socket.close(ATTACH_CLOSE.replaced, "the computer dialed again");
-		socket.onClose(() => {
-			if (this.#live.get(paired.id) === live) this.#live.delete(paired.id);
-		});
 		return hello;
 	}
 
@@ -245,11 +251,14 @@ export class AttachHub {
 			stop.abort();
 		};
 		given.add(end);
-		// Every caller's calls go over the one client; a drop fails them all with gone.
+		// Every caller's calls go over the computer's live socket, looked up per call: a drop fails the calls in flight
+		// with gone, and once the computer dials again the next call goes over its new socket (whose refs are its own).
 		const shared: ComputerClient = {
 			call: (method, params, options) => {
 				if (stop.signal.aborted) return Promise.resolve(fail("gone", "this connection to the computer was closed: connect again"));
-				return live.client.call(method, params, { ...options, signal: options?.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]) });
+				const now = this.#live.get(id);
+				if (now === undefined) return Promise.resolve(fail("gone", "the computer is not attached now: it dials back on its own, so try again shortly"));
+				return now.client.call(method, params, { ...options, signal: options?.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]) });
 			},
 			close: end,
 		};

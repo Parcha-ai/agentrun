@@ -186,7 +186,7 @@ The result:
 
 - `steps`: at most `maxSteps`, run in order. Each is one of: `press` (the element's default action), `set` with `value`
   (a field's text, a slider's value, a switch's `"on"` or `"off"`), `perform` with `action`, `click` (a ref or a point;
-  `button` and `count`), `type` (text, `into` a ref or where the focus is), `key` (a chord from the key table, `"super+s"`),
+  `button` and `count`), `type` (text, `into` a ref or where the focus is), `key` (a chord from the key table, `"super+s"`; its last key may be `+` itself, `"shift++"`),
   `nav` (`back`, `home`, `app_switch`; feature `ui.nav`), `scroll` (a ref or a point, `dx`, `dy` in points) and `drag`
   (points, with `ms`). There is no wait step: an act with no steps and an `expect` is a wait.
 - `state`: the state the steps' points were read from. A step at a point needs it.

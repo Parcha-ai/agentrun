@@ -202,6 +202,29 @@ test("a phone's tree is its ui.observe, the nodes a model can tap or type into, 
   ]);
 });
 
+test("a phone's tree adds the window's origin before the scale (a window below a status bar), and refuses a hello with no screen rather than guess a scale", async () => {
+  const root = scratch();
+  const phone = fakeDesktop(root);
+  phone.overrides.hello = () => ({ screen: { width: 360, height: 640, scale: 3 } });
+  phone.overrides["ui.observe"] = () => ({
+    state: "s1",
+    app: { id: "com.example.mail", name: "Mail" },
+    window: { id: "w1", bounds: [0, 24, 360, 616] },
+    nodes: [{ ref: "@e1", role: "button", name: "Send", bounds: [250, 551, 100, 40] }],
+    truncated: false,
+  });
+  const run = await runTools(localWorkspace(root), { kind: "phone", computer: phone, hello: helloOf("phone", [...PHONE_GROUPS, "ui", "input.keys"]) }, { mode: 2, context: ctx });
+  const tools = run.hostTools(["phone_tree"]);
+  assert.deepEqual(await call(tools, "phone_tree", {}), { isError: false, text: [
+    "1 node you can tap or type into, of 1 on the screen. Coordinates are a phone_screen screenshot's pixels.",
+    '- button "Send": center (900, 1785), bounds 750,1725 300x120',
+  ].join("\n") });
+  phone.overrides.hello = () => ({});
+  const refused = await call(tools, "phone_tree", {});
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /hello gives no screen/);
+});
+
 test("a browser brings none of the registry's tools: the run's browser tool drives it (runner-browser-computer.test.mjs)", async () => {
   const run = await runTools(localWorkspace(scratch()), { kind: "browser", browser: { provider: "local-chrome" } }, { mode: 1, context: ctx });
   assert.deepEqual(names(run), FILES);

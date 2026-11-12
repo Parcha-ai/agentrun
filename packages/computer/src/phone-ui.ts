@@ -1,9 +1,9 @@
 // The ui group on a phone the phone harness drives over adb, until phoned answers it on the phone itself. A look is one
 // uiautomator dump, which waits for the phone to be idle, so it is already settled. A step is adb's input at the
 // element's centre: the phone's own input, so every step takes the foreground route, and none is verified.
-import type { Features, InputAction, Point, Rect, UiFlag, UiImage, UiRole, UiStep, UiTarget } from "./protocol.js";
+import { type Features, type InputAction, MAX_ACTIONS, MAX_KEY_REPEAT, type Point, type Rect, type UiFlag, type UiImage, type UiRole, type UiStep, type UiTarget } from "./protocol.js";
 import { fail, ok, type Result } from "./result.js";
-import type { UiElement, UiRun, UiSource, UiStepContext, UiView } from "./ui-engine.js";
+import { chordKeys, type UiElement, type UiRun, type UiSource, type UiStepContext, type UiView } from "./ui-engine.js";
 
 /** What the ui needs of the phone: its pixels per point, its tree, and one input action run through input.actions. */
 export interface AdbUiPhone {
@@ -101,8 +101,11 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		if (bool("checkable") && bool("checked")) flags.push("checked");
 		if (bool("password")) flags.push("secure");
 		const actions = [...(bool("clickable") ? ["ACTION_CLICK"] : []), ...(bool("long-clickable") ? ["ACTION_LONG_CLICK"] : []), ...(bool("scrollable") ? ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"] : [])];
+		// An empty field shows its hint as its text, which it does not hold: it is dropped, so an expect never meets it and a
+		// set does not count it to erase. A dump with no hint attribute cannot tell the two apart.
+		const hint = editable ? attrs.hint || undefined : undefined;
 		const label = attrs["content-desc"] || undefined;
-		const text = attrs.text || undefined;
+		const text = attrs.text && attrs.text !== hint ? attrs.text : undefined;
 		const parent = open.findLast((one) => one !== undefined);
 		const element: UiElement = {
 			key,
@@ -202,22 +205,25 @@ export class AdbUiSource implements UiSource {
 		if ("set" in step) {
 			const target = element as UiElement;
 			if (target.role === "switch" || target.role === "checkbox") {
-				const on = step.value === "on" || step.value === "true";
-				if (!on && step.value !== "off" && step.value !== "false") return fail("invalid", `set ${step.set}: a ${target.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
+				const on = step.value === "on";
+				if (!on && step.value !== "off") return fail("invalid", `set ${step.set}: a ${target.role} is set to "on" or "off", not ${JSON.stringify(step.value)}`);
 				if ((target.flags?.includes("checked") ?? false) === on) return ok({ route: "foreground", verified: true });
 				return done(await input({ type: "tap", at: at(step.set) }));
 			}
 			if (target.role !== "textbox" && target.role !== "searchbox") return fail("unsupported", `set ${step.set}: a ${target.role} has no value a phone driven over adb can set`);
 			// The tap leaves the caret anywhere in the text (on any line of a multiline field), and adb presses no
 			// select-all or ctrl+end: as many deletes back and forward as the text is long clear it from any caret.
+			// Each repeat is one adb call of many key codes; a field longer than one batch can clear is refused whole.
 			const erase = [...(target.value ?? "")].length;
+			const most = Math.floor((MAX_ACTIONS - 2) / 2) * MAX_KEY_REPEAT;
+			if (erase > most) return fail("limit", `set ${step.set}: the field holds ${erase} characters, more than the ${most} a phone driven over adb clears in one step`);
 			const keys: InputAction[] = [];
-			for (const key of ["backspace", "delete"]) for (let left = erase; left > 0; left -= 100) keys.push({ type: "key", keys: [key], repeat: Math.min(100, left) });
+			for (const key of ["backspace", "delete"]) for (let left = erase; left > 0; left -= MAX_KEY_REPEAT) keys.push({ type: "key", keys: [key], repeat: Math.min(MAX_KEY_REPEAT, left) });
 			return done(await input({ type: "tap", at: at(step.set) }, ...keys, ...(step.value === "" ? [] : [{ type: "type" as const, text: step.value }])));
 		}
 		if ("type" in step) return done(await input(...(step.into === undefined ? [] : [{ type: "tap" as const, at: at(step.into) }]), { type: "type", text: step.type }));
 		if ("key" in step) {
-			const keys = step.key.split("+");
+			const keys = chordKeys(step.key);
 			if (keys.length > 1) return fail("unsupported", `key ${step.key}: a phone driven over adb presses one key at a time`);
 			return done(await input({ type: "key", keys }));
 		}

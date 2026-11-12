@@ -130,6 +130,51 @@ test("an older dial whose hello answers after a newer one went live is closed, n
 	quick.close();
 });
 
+test("a socket that closes while it says hello never goes live", async () => {
+	const hub = new AttachHub();
+	let answer;
+	const gate = new Promise((resolve) => {
+		answer = resolve;
+	});
+	class Slow extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "hello") await gate;
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const driver = new Slow();
+	const paired = pairedFor(driver);
+	const [serve, computer] = socketPair();
+	serveUiSocket(driver, computer);
+	const accepting = hub.accept(paired, serve);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	computer.close(ATTACH_CLOSE.going, "the network changed");
+	answer();
+	const accepted = await accepting;
+	assert.equal(accepted.ok, false, JSON.stringify(accepted));
+	assert.equal(hub.online(paired.id), false, "the closed socket is not the computer's live one");
+	driver.close();
+});
+
+test("a run's connection outlives a redial: gone while the computer is away, then its calls go over the new socket", async () => {
+	const driver = new FakeUiDriver();
+	const hub = new AttachHub();
+	const paired = pairedFor(driver);
+	const first = await dial(hub, paired, driver);
+	const run = hub.connection(paired.id);
+	assert.equal((await run.client.call("ping", {})).ok, true);
+	first.computer.close(ATTACH_CLOSE.going, "the network changed");
+	await new Promise((resolve) => setImmediate(resolve));
+	const away = await run.client.call("ping", {});
+	assert.equal(away.error?.code, "gone", JSON.stringify(away));
+	await dial(hub, paired, driver);
+	assert.equal((await run.client.call("ping", {})).ok, true, "the run's connection reaches the computer over its new socket");
+	const replaced = await dial(hub, paired, driver);
+	assert.equal(replaced.accepted.ok, true);
+	assert.equal((await run.client.call("ping", {})).ok, true, "and over the one that replaced it");
+	driver.close();
+});
+
 test("a hello that is not what the computer paired as is closed: another kind with mismatch, another protocol with protocol", async () => {
 	const hub = new AttachHub();
 	const phone = new FakeUiDriver({ os: "android", kind: "android" });

@@ -379,9 +379,11 @@ export function fakePhoneHarness({ readyAfter = 1, start = "ok", loseAnswer = fa
 			return ok();
 		}
 		if (w[0] === "input" && w[1] === "keyevent") {
-			const k = w[2];
-			if (KEYS[k]) KEYS[k]();
-			else if (/^KEYCODE_[A-Z0-9]$/.test(k) && phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += k.slice(8).toLowerCase();
+			// input keyevent presses each key code it is given, in order.
+			for (const k of w.slice(2)) {
+				if (KEYS[k]) KEYS[k]();
+				else if (/^KEYCODE_[A-Z0-9]$/.test(k) && phone.foreground === SEARCH_PKG && phone.screen === "search") phone.search += k.slice(8).toLowerCase();
+			}
 			return ok();
 		}
 		if (w[0] === "pm" && w[1] === "list" && w[2] === "packages") return ok([SETTINGS, LAUNCHER, "com.android.chrome"].map((p) => `package:${p}`).join("\n") + "\n");

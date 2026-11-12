@@ -1245,8 +1245,11 @@ class AdbClient implements ComputerClient {
 			case "key": {
 				if (action.keys.length !== 1) return { kind: "unsupported", message: `key ${show(action.keys)}: a combo of keys is not something adb's input keyevent can press; send one key at a time` };
 				const key = action.keys[0];
-				const press = KEYCODES[key] ? `input keyevent KEYCODE_${KEYCODES[key]}` : /^[a-z0-9]$/.test(key) ? `input keyevent KEYCODE_${key.toUpperCase()}` : `input text ${quote(key)}`;
-				return { commands: Array.from({ length: action.repeat ?? 1 }, () => press) };
+				const code = KEYCODES[key] ? `KEYCODE_${KEYCODES[key]}` : /^[a-z0-9]$/.test(key) ? `KEYCODE_${key.toUpperCase()}` : undefined;
+				const times = action.repeat ?? 1;
+				// input keyevent takes many key codes in one call, so a repeat is one adb shell, not one a press.
+				if (code !== undefined) return { commands: [`input keyevent ${Array.from({ length: times }, () => code).join(" ")}`] };
+				return { commands: Array.from({ length: times }, () => `input text ${quote(key)}`) };
 			}
 			case "wait":
 				return { commands: [], waitMs: action.ms };
@@ -1402,10 +1405,12 @@ class AdbClient implements ComputerClient {
 		return ok(text.slice(start, text.lastIndexOf(">") + 1));
 	}
 
-	/** One input action, as input.actions runs it: its refusal in words. */
-	/** A ui step's actions, as one batch: every action is checked before the first runs. */
+	/**
+	 * A ui step's actions, as one batch in its turn with input.actions' batches (never interleaved with one): every
+	 * action is checked before the first runs.
+	 */
 	async #input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>> {
-		const ran = await this.#actions(actions, signal);
+		const ran = await this.#inTurn(actions, this.#either(signal));
 		if (!ran.ok) return ran;
 		const { failed } = ran.value as InputActionsResult;
 		return failed === undefined ? ok(undefined) : fail(failed.kind, failed.message.replace(/^action \d+: /, ""));

@@ -136,11 +136,6 @@ const isRef = (value: unknown): value is UiRef => typeof value === "string" && v
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
 const isPoint = (value: unknown): value is Point => Array.isArray(value) && value.length === 2 && value.every(isWhole);
 
-/** The step's name: the one field that says what it is. */
-export function stepName(step: UiStep): StepName {
-	return STEP_NAMES.find((name) => name in step) as StepName;
-}
-
 /** The ref a step acts on, if any: press, set, perform, a click or scroll at a ref, and type's into. */
 export function stepRef(step: UiStep): UiRef | undefined {
 	if ("press" in step) return step.press;
@@ -163,9 +158,19 @@ export function stepPoints(step: UiStep): Point[] {
 	return [];
 }
 
+/**
+ * A key chord's names, in order: joined by "+", the last of them may be "+" itself ("+", "shift++"). Every driver reads
+ * a chord with it.
+ */
+export function chordKeys(chord: string): string[] {
+	if (chord === "+") return ["+"];
+	if (chord.endsWith("++")) return [...chord.slice(0, -2).split("+"), "+"];
+	return chord.split("+");
+}
+
 /** A key chord's words: undefined when it is one, else why not. */
 function chordWrong(chord: string): string | undefined {
-	const names = chord.split("+");
+	const names = chordKeys(chord);
 	const wrong = names.find((name) => !KEY_NAMES.has(name) && !/^[\x21-\x7e]$/.test(name));
 	if (chord === "" || wrong !== undefined) return `key ${show(chord)}: each name joined by "+" is one of the key table's (protocol.json keys) or one printable character`;
 	return undefined;
@@ -287,6 +292,15 @@ export function featureOff(features: Features, name: Feature): string | undefine
 	const value = features[name];
 	if (value === true) return undefined;
 	return value === undefined ? `this computer does not offer ${name}` : `${name} is off here: ${value.off}`;
+}
+
+/**
+ * A rect of a ui observation, in window points, as screen.shot and input.actions take it: screenshot pixels, the
+ * window's origin added and the screen's scale (hello.screen.scale) applied. The one conversion every caller uses.
+ */
+export function windowRectToPixels(window: Rect, scale: number, [x, y, w, h]: Rect): Rect {
+	const [wx, wy] = window;
+	return [Math.round((wx + x) * scale), Math.round((wy + y) * scale), Math.round(w * scale), Math.round(h * scale)];
 }
 
 const contains = ([x, y, w, h]: Rect, [px, py]: Point) => px >= x && py >= y && px < x + w && py < y + h;

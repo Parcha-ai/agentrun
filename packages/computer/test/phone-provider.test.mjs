@@ -690,8 +690,7 @@ test("the client answers the phone groups over adb: a screenshot, touch, keys, b
 		"input keyevent KEYCODE_APP_SWITCH",
 		"input text 'Hello,%sit'\\''s%s1'",
 		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER",
-		"input keyevent KEYCODE_ENTER",
+		"input keyevent KEYCODE_ENTER KEYCODE_ENTER",
 		"input keyevent KEYCODE_A",
 		"input text '%'",
 	]);
@@ -987,6 +986,35 @@ test("set clears a multiline field's whole text wherever the tap leaves the care
 	const ran = await source.run({ set: "@e1", value: "new" }, { element, view, foreground: true }, new AbortController().signal);
 	assert.equal(ran.ok, true, JSON.stringify(ran));
 	assert.equal(text, "new");
+});
+
+test("an empty field's hint is not its value: an expect never meets it; a field holding other text keeps it", async () => {
+	const xml = (text) => `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="${text}" hint="Search apps" bounds="[0,0][100,50]" /></hierarchy>`;
+	const [empty] = parseUiElements(xml("Search apps"), 1, [100, 50]).value.elements;
+	assert.equal(empty.value, undefined);
+	assert.equal(empty.name, undefined, "nor its name");
+	const engine = new UiEngine({ features: () => ({ "ui.tree": true }), look: async () => ({ ok: true, value: parseUiElements(xml("Search apps"), 1, [100, 50]).value }), image: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }), run: async () => ({ ok: false, error: { code: "unsupported", message: "no" } }) });
+	assert.equal((await engine.act({ steps: [], expect: { text: "Search apps", timeoutMs: 100 } })).value.expect, "unmet");
+	const [typed] = parseUiElements(xml("maps"), 1, [100, 50]).value.elements;
+	assert.equal(typed.value, "maps");
+});
+
+test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
+	const ran = [];
+	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) };
+	const source = new AdbUiSource(phone, () => [400, 400]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [] };
+	const toggle = { key: "t", role: "switch", name: "Wi-Fi", bounds: [0, 0, 100, 40] };
+	const refused = await source.run({ set: "@e1", value: "true" }, { element: toggle, view, foreground: true }, new AbortController().signal);
+	assert.equal(refused.error?.code, "invalid");
+	assert.match(refused.error.message, /is set to "on" or "off", not "true"/);
+	const long = { key: "f", role: "textbox", name: "Notes", value: "x".repeat(5000), bounds: [0, 0, 400, 200] };
+	const tooLong = await source.run({ set: "@e2", value: "short" }, { element: long, view, foreground: true }, new AbortController().signal);
+	assert.equal(tooLong.error?.code, "limit");
+	assert.match(tooLong.error.message, /holds 5000 characters, more than the 4900/);
+	assert.deepEqual(ran, [], "no input for either");
+	const key = await source.run({ key: "shift++" }, { view, foreground: true }, new AbortController().signal);
+	assert.match(key.error?.message ?? "", /presses one key at a time/, "a chord ending in + is two keys, shift and +");
 });
 
 test("ui.observe never sends a secure field's value", async () => {
