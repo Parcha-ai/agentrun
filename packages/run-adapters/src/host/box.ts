@@ -19,22 +19,6 @@ export interface BoxRecord {
   writer: { pid: number; startTime: string };
 }
 
-/** Where a box's record goes. `ahead` is synchronous (the file and its directory are synced before it returns) and runs
- *  before the spawn; `started` runs while bwrap waits, and no process of the harness runs until it resolves. */
-export interface BoxRecorder {
-  ahead(record: BoxRecord): void;
-  started(record: BoxRecord): Promise<void>;
-}
-
-/** What a reap found, by the kernel's own count: the processes left in the recorded pid namespace, or the cgroup's.
- *  `none`: the record names neither a pid nor a cgroup, so there was nothing to count (a crash before the pid was
- *  known; --die-with-parent ends such a box with its parent). */
-export interface Reaped {
-  empty: boolean;
-  left: number;
-  by: "pidns" | "cgroup" | "none";
-}
-
 export type BoxErrorCode =
   | "bwrap_missing" | "bwrap_setuid" | "bwrap_userns_denied" | "box_probe_failed"
   | "box_refused" | "box_record_failed" | "box_start_failed"

@@ -36,7 +36,7 @@ function browserProvider(id, url, record) {
     },
     async create(spec) {
       const made = `${id}-${record.created.length + 1}`;
-      record.created.push({ id: made, labels: spec.labels, lifetimeMs: spec.lifetimeMs });
+      record.created.push({ id: made, labels: spec.labels, lifetimeMs: spec.lifetimeMs, ...(spec.browser ? { browser: spec.browser } : {}) });
       return { ok: true, value: { id: made, name: made } };
     },
     async connect(ref) {
@@ -44,7 +44,11 @@ function browserProvider(id, url, record) {
       if (record.released.some(([released]) => released === ref.id)) return { ok: false, error: { code: "gone", message: `the ${id} session ${ref.id} has ended` } };
       return { ok: true, value: { client: { close() {} }, hello: { version: "0", kind: "browser", groups: ["cdp"] }, cdp: { url }, close: async () => {} } };
     },
-    attach: async () => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } }),
+    async attach(ref) {
+      if (!record.created.some((one) => one.id === ref.id)) return { ok: false, error: { code: "not_found", message: `no ${id} session ${ref.id}` } };
+      if (record.released.some(([released]) => released === ref.id)) return { ok: false, error: { code: "gone", message: `the ${id} session ${ref.id} has ended` } };
+      return { ok: true, value: { id: ref.id, name: ref.id, spec: { image: "chromium", user: "unknown", network: "open", kind: "browser" } } };
+    },
     async release(ref, how) {
       record.released.push([ref.id, how]);
       return { ok: true, value: undefined };
@@ -79,12 +83,14 @@ for (const [provider, keys, url] of [
     assert.deepEqual(record.created, [], "the claim makes no session");
     const sessions = claimBrowserProvider(answer.computer.browser);
     assert.equal(sessions.name, provider);
-    assert.equal(sessions.caps.maxLifetimeS, 600);
+    assert.equal(answer.computer.browser.maxLifetimeS, 600);
+    assert.deepEqual(answer.computer.browser.features, { timeout: "wall-clock" }, "a provider that declares no session features ends its sessions on a wall clock");
 
-    // The tool's first call: a session under the run's labels and its tag, living no longer than custody asks.
-    const first = await sessions.create({ tag: "ar-run-1-1", maxLifetimeS: 120 }, new AbortController().signal);
+    // The tool's first call: a session under the run's labels and its tag, living no longer than custody asks, at its viewport.
+    const session = (tag, maxLifetimeS) => ({ tag, maxLifetimeS, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1288, height: 711 }, metadata: {} });
+    const first = await sessions.create(session("ar-run-1-1", 120), new AbortController().signal);
     assert.deepEqual(first, { id: `${provider}-1`, tag: "ar-run-1-1" });
-    assert.deepEqual(record.created, [{ id: `${provider}-1`, labels: { "agentrun.run": "run-1", "agentrun.epoch": "2", "agentrun.session": "ar-run-1-1" }, lifetimeMs: 120_000 }]);
+    assert.deepEqual(record.created, [{ id: `${provider}-1`, labels: { "agentrun.run": "run-1", "agentrun.epoch": "2", "agentrun.session": "ar-run-1-1" }, lifetimeMs: 120_000, browser: { viewport: { width: 1288, height: 711 } } }]);
     assert.deepEqual(await sessions.findByTag("ar-run-1-1"), [first], "a create whose answer was lost is found by its tag");
     const atStart = record.connects;
     const target = await sessions.attach(first);
@@ -98,7 +104,7 @@ for (const [provider, keys, url] of [
     assert.equal(await sessions.status(first), "gone", "a session its provider says has ended is gone");
 
     // A session the tool left open is let go with the claim, once.
-    const second = await sessions.create({ tag: "ar-run-1-2", maxLifetimeS: 6_000 }, new AbortController().signal);
+    const second = await sessions.create(session("ar-run-1-2", 6_000), new AbortController().signal);
     assert.equal(record.created[1].lifetimeMs, 600_000, "never past the computer's own lifetime");
     await answer.release();
     await answer.release();

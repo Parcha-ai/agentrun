@@ -78,7 +78,7 @@ test("pi: a cap that cannot buy its first request's least is refused before anyt
   // medium thinking level's 8,192 (pi-ai's table), 9,216 at $1 a million, $0.009216 (rounded up in the words to $0.01). The
   // agent names medium thinking: one that names none is sent at effort none, its least the answer's 1,024 tokens alone.
   const { api, posts } = await gateway(t, "0,1");
-  const { run_id } = await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 }, { thinking: "medium" });
+  const { run_id }= await start(api, "tiny", "What is six times seven?", { max_cost_usd: 0.0005 }, { thinking: "medium" });
   const { run } = await ended(api, run_id);
   const rows = await settledRows(api, run_id);
   assert.deepEqual([run.status, run.state, run.error, run.pending?.kind, posts()], ["input_required", "waiting", null, "budget", 0], JSON.stringify(run));
@@ -120,7 +120,8 @@ for (const harness of ["claude-agent", "codex"]) {
     const { run, rows } = await ended(api, run_id);
     assert.deepEqual([run.status, run.state, run.error, run.pending?.kind], ["input_required", "waiting", null, "budget"], JSON.stringify(run));
     // To run it the cap would have to be what was spent and the next request's least: $0.003 + $0.1024, $0.11 up to the cent.
-    assert.match(run.pending.said, /^Not sent: this run has spent \$0 of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
+    // It spent $0.003: under a cent, but never "$0", which would say it spent nothing.
+    assert.match(run.pending.said, /^Not sent: this run has spent less than a cent of its \$0\.105 cap, and the next step needs at least \$0\.11\. Raise the cap to at least \$0\.11 to continue\.$/);
     assert.equal((await records(data, run_id, "faux.request")).length, 2, "two were sent");
     const usage = rows.findLast((r) => r.kind === "usage")?.usage;
     assert.equal(usage?.requests, 2, JSON.stringify(usage));

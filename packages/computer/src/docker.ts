@@ -1,5 +1,4 @@
-// The Docker provisioner: every call through the docker CLI with execFile or spawn, never a shell. The hardening flags
-// and the inspect reading follow pi-transport's Docker box.
+// The Docker provisioner: every call through the docker CLI with execFile or spawn, never a shell.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
@@ -30,7 +29,6 @@ import {
 	egressShaped,
 	hostOf,
 	inspectDrift,
-	mountAsked,
 	mountOf,
 	networkOf,
 	samePolicy,
@@ -394,7 +392,7 @@ export class DockerProvider implements ComputerProvider {
 		const refusals: Refusal[] = [];
 		const refuse = (field: string, message: string) => refusals.push({ field, message });
 		const given = spec as unknown as Record<string, unknown>;
-		const { image, lifetimeMs, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
+		const { image, network, cpus, memoryMb, pids, labels, workdir, user, mount } = given;
 		if (typeof image !== "string" || image.trim() === "" || image.startsWith("-")) {
 			refuse("image", "an image is required, such as debian:bookworm-slim");
 		} else if (image.includes("\0")) refuse("image", NUL);

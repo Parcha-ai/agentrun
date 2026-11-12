@@ -1,5 +1,5 @@
 // How the server opens a run's database, run.sqlite, which the run's own process writes: in WAL, under an exclusive lock,
-// with no automatic checkpoint, and ended by process.exit with no close (pi-durable-disk's exclusive profile, keepWal),
+// with no automatic checkpoint, and ended by process.exit with no close,
 // so its WAL stays until whoever takes the run back checkpoints it. The server never opens it read-write while a
 // process holds the run: every read is a fresh read-only open with no locking (`vfs=unix-none`) and an exclusive
 // locking mode (the WAL index in heap, no -shm), kept for that read alone, since a connection kept open falls behind

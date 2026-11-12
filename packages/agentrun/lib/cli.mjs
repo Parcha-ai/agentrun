@@ -502,14 +502,14 @@ async function command(entry, argv, env, io) {
 }
 
 /** A hand-written command of LOCAL: its flags and arguments checked, then its `run`, with this module's custody of the
- *  token (targetOf, BAD_HEADER), its requests (clientOf, request, send) and its secret-route guard (secretAt). */
+ *  token (targetOf, BAD_HEADER) and its requests (clientOf, request). */
 async function local(entry, argv, env, io) {
   const { values, positionals } = parse(argv, { ...GLOBAL, ...entry.options });
   if (values.help) return io.stdout.write(`${helpOf(entry, entry.help)}\n`), 0;
   const args = positionals.slice(entry.command.length);
   const count = entry.pathParams.length;
   if (args.length !== count) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, send, secretAt, BAD_HEADER };
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
 }
 

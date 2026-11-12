@@ -17,13 +17,13 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
-import { launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
+import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -50,6 +50,20 @@ function importedRefusal(moment: RunMoment): ApiError {
   return new ApiError("not_continuable", `This run was imported from ${source}: it is history, not run here, so it takes no message. Start a new run of the agent.`, {
     details: { reason: "imported", imported_from: source },
     next_action: { type: "request", method: "POST", path: `/agents/${moment.agentId}/runs`, caller_supplies: ["input", "Idempotency-Key"] },
+  });
+}
+
+/** An archived run, or a run of an archived agent, takes no message: archiving closes it. Said as archived, never as
+ *  finished, with the way back: unarchive it (or its agent), or start a new run. */
+function archivedRefusal(moment: RunMoment): ApiError {
+  const own = moment.archived === "run";
+  const why = own ? "This run is archived" : "This run's agent is archived";
+  const back = own ? `unarchive it (POST /runs/${moment.id}/unarchive)` : `unarchive the agent (POST /agents/${moment.agentId}/unarchive)`;
+  return new ApiError("not_continuable", `${why}, so it takes no message: ${back} to go on, or start a new run of the agent.`, {
+    details: { reason: "archived", archived: moment.archived },
+    next_action: own
+      ? { type: "request", method: "POST", path: `/runs/${moment.id}/unarchive`, caller_supplies: [] }
+      : { type: "request", method: "POST", path: `/agents/${moment.agentId}/unarchive`, caller_supplies: [] },
   });
 }
 
@@ -139,6 +153,8 @@ export async function message(
   { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
+  // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
+  if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
   // A message that may not answer a person (a trigger's) is refused while the run waits on one, before anything else, as the
@@ -154,7 +170,7 @@ export async function message(
     const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }).then(
       () => true,
       (error: unknown) => {
-        if (error instanceof StoreConstraint) return false;
+        if (error instanceof AnswerTaken) return false;
         throw error;
       },
     );
@@ -317,7 +333,8 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
       const end = await endBefore(store, moment.id, { taken: true });
       throw alreadyAnswered(id, end?.decision ?? "withdrawn", end === undefined);
     }
-    const won = error instanceof StoreConstraint ? await sentAnswer(store, moment.id, id) : undefined;
+    // Lost to an answer written first (the store's AnswerTaken, from its one-answer index alone): read the winner.
+    const won = error instanceof AnswerTaken ? await sentAnswer(store, moment.id, id) : undefined;
     if (!won) throw error;
     return settle(won);
   }
@@ -348,7 +365,7 @@ function uuidv7(now = Date.now()): string {
 
 /** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
  *  place fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean; readonly thinking?: unknown };
+type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
@@ -378,6 +395,10 @@ export interface StartDeps {
   readonly files?: { hold(runId: string, ids: readonly string[]): Promise<void>; release(runId: string): Promise<void> };
   /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
   fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
+  /** The Archil disk the run's launch record keeps (server.ts launchDiskOf): the one its body's `archil_disk` names, else
+   *  its agent's when it has one now; undefined for neither, or in Mode 1. A disk named in Mode 1 is refused. Absent, no
+   *  disk is kept. */
+  launchDiskOf?(agentId: string, named: string | undefined): Promise<LaunchDisk | undefined>;
   /** A run's title from its input (server.ts workflowTitle), for a workflow run's title. */
   workflowTitle(name: string, input: Record<string, unknown>): string;
   /** Every secret this server never shows, for the title's redaction (server.ts serverSecrets). */
@@ -433,14 +454,16 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
-  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && rbody.learning === true;
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
+  // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
+  const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...grade };
+  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...notesOnly, ...grade };
   try {
     // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
     const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
@@ -454,10 +477,10 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.
-    const workflows = chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...grade };
+    const workflows = notesOnly.notesOnly ? [] : chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
+    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
   } catch {
-    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...grade };
+    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...notesOnly, ...grade };
   }
 }
 
@@ -604,6 +627,11 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
   const learning = await learningStartFor(deps, entry, revision, rbody, input);
+  // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
+  // customer), else its agent's when it has one; with neither, its claim makes the agent's.
+  const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
+  if (named !== undefined && !deps.launchDiskOf) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps no run on an Archil disk." }]);
+  const archilDisk = deps.launchDiskOf ? await deps.launchDiskOf(entry.agent.id, named) : undefined;
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
@@ -626,6 +654,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(trigger ? { trigger } : {}),
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
+    ...(archilDisk ? { archilDisk } : {}),
   };
   return { launch, revision };
 }
