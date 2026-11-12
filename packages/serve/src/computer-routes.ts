@@ -1,7 +1,8 @@
 // A run's desktop or phone, as its owner takes it: POST /v2/runs/{id}/computer/take-over and POST .../computer/hand-back
 // (the hand-back for every kind: a browser's answers its agent's ask, as POST .../browser/hand-back does). Owner-only, as
-// a run's browser is: the owner's password session in the console, never a token. GET /v2/runs/{id}/computer and the live
-// viewer are tl-browser's; computerViewOf is the store-backed read of the run's computer it can build on.
+// a run's browser is: the owner's password session in the console, never a token. GET /v2/runs/{id}/computer is answered by
+// server.ts from computerView (computer-view.ts) over computerHoldOf; computerViewOf is the store-backed read of the run's
+// computer the take-over tests check against.
 //
 // Everything is read from the one store (computer-commands.ts): the run's computer is up, and who drives it, as the run's
 // runner committed them to the run's journal; a take-over or hand-back is a command row the runner applies to the run's
