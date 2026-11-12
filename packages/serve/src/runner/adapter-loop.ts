@@ -185,6 +185,8 @@ type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
  *  hold can no longer stand (the cap refused more of the person's time, or what it kept is gone), and the run parks. */
 export interface PersonWait {
   readonly lapsed: Promise<string>;
+  /** The run parked on this hold's lapse (not a lapse the answer's placement overrode): the host records why it let go. */
+  confirmed?(): void;
   drop(): void;
 }
 
@@ -2140,6 +2142,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
+        if (value === "lapsed") for (const hold of waitHolds) hold.confirmed?.();
         endWait(mine);
         resolve(value);
       };
