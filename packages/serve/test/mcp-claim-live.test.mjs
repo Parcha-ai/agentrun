@@ -107,6 +107,31 @@ test("an OAuth access token that runs out mid-run: the next call refreshes it fi
   for (const authorization of new Set(seen.filter(Boolean))) assert.ok(held.includes(authorization) && held.includes(authorization.replace(/^Bearer /, "")), "held, whole and bare");
 });
 
+test("an OAuth refresh that failed mid-run is not sent again by the next call, and the owner's new sign-in is read by the call after it", async (t) => {
+  const on = await registryOn(t);
+  const oauth = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer });
+  t.after(() => Promise.all([mcp.close(), oauth.close()]));
+  await signedIn(on.registry, "docs", mcp);
+  const call = await claimed(t, on, "docs");
+  assert.deepEqual(await call("call-1"), { text: "5" });
+  const refreshes = () => oauth.log.filter((entry) => entry.path === "/token" && entry.form.grant_type === "refresh_token").length;
+  on.clock.now += HOUR + 1_000;
+  oauth.expire();
+  oauth.fail(503);
+  const heard = mcp.log.length;
+  const refused = await call("call-2");
+  assert.equal(refused.isError, true, JSON.stringify(refused));
+  assert.equal(refreshes(), 1, "the refresh left once");
+  assert.equal((await call("call-3")).isError, true, "still refused");
+  assert.equal(refreshes(), 1, "the refresh token was not sent again by the next call");
+  assert.equal(mcp.log.length, heard, "nothing was sent to the server with the expired token");
+  // The owner signs in again: the row changed, so the next call reads it and goes, on the new token.
+  oauth.heal();
+  await signedIn(on.registry, "docs", mcp);
+  assert.deepEqual(await call("call-4"), { text: "5" }, "the new sign-in is the credential the call sends");
+});
+
 test("an OAuth access token near its end, its authorization server hanging: the call goes at once on the current token, the refresh behind it", async (t) => {
   const on = await registryOn(t);
   const oauth = await startFakeOAuth();

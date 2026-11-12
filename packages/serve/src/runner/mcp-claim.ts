@@ -381,7 +381,11 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // And whether the row still holds the token this claim opened: another claim's refresh moves the row's token end (not
     // its credential's change time), so the row has a fresh token while this claim holds the one about to expire.
     const moved = stamp.auth === "oauth" && was?.until !== undefined && stamp.tokenUntil !== was.until;
-    const due = moved || (stamp.auth === "oauth" && left !== null && left <= REFRESH_MARGIN_MS);
+    // An entry that did not open (a refresh that failed or never answered, a sign-in that expired) is read again only when
+    // the row changed (the owner signed in again or replaced it) or another claim moved its token: never refreshed once
+    // more on its own, since a refresh that left may already have spent the refresh token.
+    const unopened = credentials[name]?.unopened !== undefined;
+    const due = moved || (!unopened && stamp.auth === "oauth" && left !== null && left <= REFRESH_MARGIN_MS);
     if (!changed && !due) return;
     let going = reopening.get(name);
     if (!going) {
