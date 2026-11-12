@@ -49,6 +49,8 @@ const ROLES: Array<[RegExp, UiRole]> = [
  */
 const EDITABLE = /(EditText|AutoCompleteTextView)$/;
 const SEARCH_VIEW = /(^|\.)SearchView$/;
+/** A field whose text equals its hint: the hint's length, which a set erases though observe shows no value. */
+const hintLength = new WeakMap<UiElement, number>();
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const unescape = (text: string) =>
@@ -101,8 +103,9 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		if (bool("checkable") && bool("checked")) flags.push("checked");
 		if (bool("password")) flags.push("secure");
 		const actions = [...(bool("clickable") ? ["ACTION_CLICK"] : []), ...(bool("long-clickable") ? ["ACTION_LONG_CLICK"] : []), ...(bool("scrollable") ? ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"] : [])];
-		// An empty field shows its hint as its text, which it does not hold: it is dropped, so an expect never meets it and a
-		// set does not count it to erase. A dump with no hint attribute cannot tell the two apart.
+		// An empty field shows its hint as its text, which it does not hold. uiautomator's dump has no attribute saying the hint
+		// is showing, so a text equal to the hint is ambiguous: observe drops it (an expect never meets a hint), and a set
+		// still erases that many characters (hintLength), since a delete in an empty field deletes nothing.
 		const hint = editable ? attrs.hint || undefined : undefined;
 		const label = attrs["content-desc"] || undefined;
 		const text = attrs.text && attrs.text !== hint ? attrs.text : undefined;
@@ -118,6 +121,7 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 			...(actions.length > 0 ? { actions } : {}),
 		};
 		elements.push(element);
+		if (hint !== undefined && attrs.text === hint) hintLength.set(element, [...hint].length);
 		// Every text is also a text of each element above it, for the rows that have none of their own.
 		// A password field's text never names a row above it: its label may, its text may not.
 		const said = bool("password") ? label : (text ?? label);
@@ -214,7 +218,7 @@ export class AdbUiSource implements UiSource {
 			// The tap leaves the caret anywhere in the text (on any line of a multiline field), and adb presses no
 			// select-all or ctrl+end: as many deletes back and forward as the text is long clear it from any caret.
 			// Each repeat is one adb call of many key codes; a field longer than one batch can clear is refused whole.
-			const erase = [...(target.value ?? "")].length;
+			const erase = target.value === undefined ? (hintLength.get(target) ?? 0) : [...target.value].length;
 			const most = Math.floor((MAX_ACTIONS - 2) / 2) * MAX_KEY_REPEAT;
 			if (erase > most) return fail("limit", `set ${step.set}: the field holds ${erase} characters, more than the ${most} a phone driven over adb clears in one step`);
 			const keys: InputAction[] = [];

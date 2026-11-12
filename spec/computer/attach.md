@@ -157,8 +157,9 @@ The server maps an attached computer to a provider so a run takes it like any ot
   attached, `refused` while another run holds it. `release` with `delete` ends the run's hold and deletes nothing;
   `stop` is refused. A person's machine is never made, stopped or deleted by a run.
 - **A run's connection outlives a redial.** Its calls go over the socket that is live when each is made: while the
-  computer is away they fail `gone`, and once it dials back they go over the new socket (whose refs are its own, so
-  the run observes again).
+  computer is away they fail `gone`. A new socket is a new session whose refs, states and handles are its own, and an
+  old one could name something else there: the first call after a redial is refused `gone` without running, saying
+  the computer dialed back, and the calls after it go over the new socket (so the run observes again).
 - **A run's connections end with its hold.** Each `connect` gives a connection over the one socket. Closing it, or the
   run's release, cancels its calls still running and refuses its later ones `gone`, so a run done with the computer
   cannot reach it once another run holds it.

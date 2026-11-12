@@ -252,12 +252,19 @@ export class AttachHub {
 		};
 		given.add(end);
 		// Every caller's calls go over the computer's live socket, looked up per call: a drop fails the calls in flight
-		// with gone, and once the computer dials again the next call goes over its new socket (whose refs are its own).
+		// with gone. A new socket is a new session whose refs, states and handles are its own, and an old one could name
+		// something else there: the first call after a redial is refused gone, saying so, and the calls after it go over
+		// the new socket.
+		let using = live;
 		const shared: ComputerClient = {
 			call: (method, params, options) => {
 				if (stop.signal.aborted) return Promise.resolve(fail("gone", "this connection to the computer was closed: connect again"));
 				const now = this.#live.get(id);
 				if (now === undefined) return Promise.resolve(fail("gone", "the computer is not attached now: it dials back on its own, so try again shortly"));
+				if (now !== using) {
+					using = now;
+					return Promise.resolve(fail("gone", "the computer dialed back since the last call: its refs, states and handles from before are void, so observe again (this call did not run)"));
+				}
 				return now.client.call(method, params, { ...options, signal: options?.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]) });
 			},
 			close: end,

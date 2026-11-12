@@ -997,6 +997,17 @@ test("an empty field's hint is not its value: an expect never meets it; a field 
 	assert.equal((await engine.act({ steps: [], expect: { text: "Search apps", timeoutMs: 100 } })).value.expect, "unmet");
 	const [typed] = parseUiElements(xml("maps"), 1, [100, 50]).value.elements;
 	assert.equal(typed.value, "maps");
+	// The dump cannot say the hint is showing, so the field may hold that very text: a set erases it anyway.
+	const ran = [];
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 50]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 100, 50] }, elements: [empty] };
+	const set = await source.run({ set: "@e1", value: "maps" }, { element: empty, view, foreground: true }, new AbortController().signal);
+	assert.equal(set.ok, true, JSON.stringify(set));
+	assert.deepEqual(ran.slice(1), [
+		{ type: "key", keys: ["backspace"], repeat: 11 },
+		{ type: "key", keys: ["delete"], repeat: 11 },
+		{ type: "type", text: "maps" },
+	]);
 });
 
 test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {

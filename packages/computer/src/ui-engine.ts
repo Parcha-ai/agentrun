@@ -298,8 +298,7 @@ export function featureOff(features: Features, name: Feature): string | undefine
  * A rect of a ui observation, in window points, as screen.shot and input.actions take it: screenshot pixels, the
  * window's origin added and the screen's scale (hello.screen.scale) applied. The one conversion every caller uses.
  */
-export function windowRectToPixels(window: Rect, scale: number, [x, y, w, h]: Rect): Rect {
-	const [wx, wy] = window;
+export function windowRectToPixels([wx, wy]: Rect, scale: number, [x, y, w, h]: Rect): Rect {
 	return [Math.round((wx + x) * scale), Math.round((wy + y) * scale), Math.round(w * scale), Math.round(h * scale)];
 }
 

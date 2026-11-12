@@ -156,7 +156,7 @@ test("a socket that closes while it says hello never goes live", async () => {
 	driver.close();
 });
 
-test("a run's connection outlives a redial: gone while the computer is away, then its calls go over the new socket", async () => {
+test("a run's connection outlives a redial: gone while the computer is away; the first call after it is refused gone unrun (its old refs and handles are void), then its calls go over the new socket", async () => {
 	const driver = new FakeUiDriver();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
@@ -168,10 +168,15 @@ test("a run's connection outlives a redial: gone while the computer is away, the
 	const away = await run.client.call("ping", {});
 	assert.equal(away.error?.code, "gone", JSON.stringify(away));
 	await dial(hub, paired, driver);
-	assert.equal((await run.client.call("ping", {})).ok, true, "the run's connection reaches the computer over its new socket");
+	const told = await run.client.call("ping", {});
+	assert.equal(told.error?.code, "gone", JSON.stringify(told));
+	assert.match(told.error.message, /dialed back since the last call: its refs, states and handles from before are void/);
+	assert.equal((await run.client.call("ping", {})).ok, true, "then the run's connection reaches the computer over its new socket");
+	// A redial between two calls, with no call seeing the computer away, is told all the same.
 	const replaced = await dial(hub, paired, driver);
 	assert.equal(replaced.accepted.ok, true);
-	assert.equal((await run.client.call("ping", {})).ok, true, "and over the one that replaced it");
+	assert.equal((await run.client.call("ping", {})).error?.code, "gone", "a socket replaced between calls is told");
+	assert.equal((await run.client.call("ping", {})).ok, true, "and the call after goes over the one that replaced it");
 	driver.close();
 });
 
