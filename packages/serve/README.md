@@ -1472,7 +1472,9 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
   -d '{"input": {"content": "..."}, "mcp_auth": {"gateway": {"headers": {"authorization": "Bearer <this run'"'"'s token>"}}}}'
 ```
 
-The run's calls of that server carry those headers, and only to the origin the server had when the run was started. The
+Only the owner saves a per_run server (it is a secret write, as a saved credential is): its address is where every
+run's handed credential goes. The run's calls of that server carry those headers, and only to the origin the server had
+when the run was started. The
 credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
 a resume, a restart or a lost lease uses it again, and erased by the write that ends the run. It is never in the run's
 saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new credential
