@@ -255,7 +255,7 @@ async function timeline(api, runId) {
 }
 
 // SKIP (follow-up #2089): the run's cost leaves out its decisions' cost, so the timeline's usage row and the run's cost disagree
-test.skip("a judge's and a route's decisions are timeline rows: the judge's node, provider and each answer with its probability, the route's branch and unsure when it took that branch, and their cost on the usage row", async (t) => {
+test("a judge's and a route's decisions are timeline rows: the judge's node, provider and each answer with its probability, the route's branch and unsure when it took that branch, and their cost on the usage row", async (t) => {
   await withCanary(t);
   const { api } = await serve(t, { fauxJev: FAUX_JEV });
   const branch = (name) => ({ criteria: `the case is ${name}`, body: { ...probe(), label: `probe ${name}` } });
@@ -290,7 +290,7 @@ test("a workflow followed live through its end: the usage row its cursor last re
 });
 
 // SKIP (follow-up #2089): the run's cost leaves out the cost the decision provider reported, so it reads 0
-test.skip("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
+test("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
   await withCanary(t);
   process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });

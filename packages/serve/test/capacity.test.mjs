@@ -66,7 +66,7 @@ test("a run that has failed gives its place back once its process exits: a start
 });
 
 // SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again
-test.skip("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
+test("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
   const gate = join(await scratch(t), "gate");
   await writeFile(gate, "");
   withEnv(t, { EXIT_GATE: gate });

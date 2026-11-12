@@ -101,7 +101,7 @@ function cliOf(env, seen) {
 }
 
 // SKIP (follow-up #2080): the CLI demo's follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2430; this case passes on its head).
-test.skip("demo: the CLI creates an agent, starts a capped run, reads it, lists runs and sends it a message, the token never in its output", { timeout: 120_000 }, async (t) => {
+test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs and sends it a message, the token never in its output", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch(t);
   const server = await serve(t, dir, env);
   const record = join(server.data, ".server.json");

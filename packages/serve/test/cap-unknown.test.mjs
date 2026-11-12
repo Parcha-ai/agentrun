@@ -718,7 +718,7 @@ async function inFlight(api, id, content, cap = 10) {
 }
 
 // SKIP (follow-up #2080): a capped pi run steered mid-answer never sends or answers the steered request on the runner.
-test.skip("a capped pi run steered mid-answer: the answer in flight finishes, never aborted, and the steered request is admitted", async (t) => {
+test("a capped pi run steered mid-answer: the answer in flight finishes, never aborted, and the steered request is admitted", async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   const dir = mkdtempSync(join(tmpdir(), "cap-steer-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

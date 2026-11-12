@@ -38,7 +38,7 @@ function assertLevels(runs, read, what) {
 }
 
 // SKIP (follow-up #2080): a pi run's effort (low, medium, high) does not reach its Responses request; reasoning.effort is always none on the runner.
-test.skip("pi: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 120_000 }, async (t) => {
+test("pi: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 120_000 }, async (t) => {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
