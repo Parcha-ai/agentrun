@@ -277,6 +277,23 @@ test("a disabled control takes no effect by any route: its ref is refused, a cli
 	await c.close();
 });
 
+test("blind background input reaches no field or key effect that takes foreground input only: typing and enter land nowhere, with foreground: true they apply", async () => {
+	const field = { key: "pin", role: "textbox", name: "PIN", bounds: [10, 10, 200, 28], route: "foreground", enter: { go: "b" } };
+	const app = { id: "test.blind", name: "Blind", start: "a", size: [300, 200], screens: { a: { elements: [field] }, b: { elements: [{ key: "done", role: "text", name: "Done", bounds: [10, 10, 80, 28] }] } } };
+	const c = await fakeUiConnection({ apps: [app], blindBackground: true });
+	await c.client.call("apps.launch", { id: app.id });
+	const ref = (await c.client.call("ui.observe", {})).value.nodes[0].ref;
+	const typed = await c.client.call("ui.act", { steps: [{ type: "1234", into: ref }, { key: "enter" }] });
+	assert.deepEqual(typed.value.steps, [{ route: "background", verified: false }, { route: "background", verified: false }], JSON.stringify(typed));
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.equal(seen.nodes[0].value, undefined, "nothing was typed");
+	assert.equal(seen.nodes[0].name, "PIN", "and enter did not go to the next screen");
+	const real = await c.client.call("ui.act", { foreground: true, steps: [{ type: "1234", into: ref }, { key: "enter" }] });
+	assert.deepEqual(real.value.steps.map((one) => one.route), ["foreground", "foreground"], JSON.stringify(real));
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes[0].name, "Done", "real input typed and entered");
+	await c.close();
+});
+
 test("the fake ui provider keeps a computer's network (none or open, never an allowlist) and ends a computer at its deadline", async () => {
 	const provider = fakeUiProvider();
 	const spec = { image: "fake-ui", user: "501", kind: "desktop", labels: { run: "r1" } };

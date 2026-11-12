@@ -312,6 +312,33 @@ test("a run's release closes its connections: their calls in flight are cancelle
 	driver.close();
 });
 
+test("a run's hold on an attached computer ends at its lifetime, released or not: its connections close, the next run may claim it, and the machine stays attached", async () => {
+	const driver = new FakeUiDriver();
+	const hub = new AttachHub();
+	const paired = pairedFor(driver);
+	const provider = attachedProvider(paired, hub);
+	const { serve } = await dial(hub, paired, driver);
+	const spec = { image: "attached", lifetimeMs: 80, network: "open", labels: { run: "a" } };
+	assert.equal((await provider.create(spec)).ok, true);
+	const [held] = (await provider.list({ run: "a" })).value;
+	assert.ok(held.deadline instanceof Date && held.deadline.getTime() > Date.now(), "the hold reports its deadline");
+	assert.ok((await provider.attach({ id: paired.id })).value.spec.deadline instanceof Date);
+	const run = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	assert.equal((await run.client.call("ping", {})).ok, true);
+	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).error?.code, "refused", "held until its deadline");
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal((await run.client.call("ping", {})).error?.code, "gone", "the expired run's connection is closed");
+	assert.equal(hub.claimed(paired.id), undefined);
+	assert.equal(hub.online(paired.id), true, "the person's machine stays attached");
+	assert.equal(serve.closed, undefined);
+	assert.equal((await provider.create({ ...spec, labels: { run: "b" }, lifetimeMs: 60_000 })).ok, true, "the next run claims it");
+	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).ok, true);
+	const agent = await provider.create({ image: "attached", network: "open", labels: { agent: "x" }, owner: { agent: "x" } });
+	assert.equal(agent.ok, true, JSON.stringify(agent));
+	assert.equal(hub.deadline(paired.id), undefined, "an agent's hold has no deadline");
+	driver.close();
+});
+
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
 	assert.equal(redialDelay(0, () => 0), 1000);
 	assert.equal(redialDelay(3, () => 1), 6400);

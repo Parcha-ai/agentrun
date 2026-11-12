@@ -294,9 +294,14 @@ export class FakeUiDriver implements UiSource {
 			return ok("foreground");
 		};
 		/** A pointer step by its route: an element it reaches is pressed, and a counting one verified by its count. */
+		/**
+		 * Whether input by this route has an effect on the element: a disabled control takes it and does nothing, and a
+		 * view that takes real input only never sees input posted by another route (blindBackground lets one through).
+		 * Every input step (a point, typing, a key) applies its effect only through this.
+		 */
+		const takes = (one: FakeElement, route: UiRun["route"]) => !disabled(one) && !(one.route === "foreground" && route !== "foreground");
 		const land = (hit: FakeElement | undefined, route: UiRun["route"], right = false): UiRun => {
-			// A disabled control a point lands on takes the input and does nothing, as a real one does.
-			if (hit === undefined || right || disabled(hit) || (hit.route === "foreground" && route !== "foreground")) return { route, verified: false };
+			if (hit === undefined || right || !takes(hit, route)) return { route, verified: false };
 			this.#press(state, hit);
 			if (hit.counts !== true) return { route, verified: false };
 			state.values.set(hit.key, String(Number(state.values.get(hit.key) ?? hit.value ?? "0") + 1));
@@ -342,7 +347,7 @@ export class FakeUiDriver implements UiSource {
 			const into = target ?? scripted(state.focus);
 			const route = pointer(into);
 			if (!route.ok) return route;
-			if (into === undefined || disabled(into) || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
+			if (into === undefined || !takes(into, route.value) || (into.role !== "textbox" && into.role !== "searchbox")) return ok({ route: route.value, verified: false });
 			state.focus = into.key;
 			state.values.set(into.key, `${state.values.get(into.key) ?? into.value ?? ""}${step.type}`);
 			return ok({ route: route.value, verified: true });
@@ -351,7 +356,7 @@ export class FakeUiDriver implements UiSource {
 			const focused = scripted(state.focus);
 			const route = pointer(focused);
 			if (!route.ok) return route;
-			if (step.key === "enter" && focused?.enter !== undefined && !disabled(focused)) this.#apply(state, focused.enter);
+			if (step.key === "enter" && focused?.enter !== undefined && takes(focused, route.value)) this.#apply(state, focused.enter);
 			return ok({ route: route.value, verified: false });
 		}
 		if ("nav" in step) {
