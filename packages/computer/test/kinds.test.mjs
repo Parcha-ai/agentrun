@@ -27,6 +27,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { BoxdProvider } from "../dist/boxd.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -35,6 +36,7 @@ import { LocalBrowserProvider } from "../dist/local-chrome.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 import { create as createOrgo } from "../dist/orgo.js";
 import { fakeDocker } from "./fake-docker.mjs";
+import { fakeBoxd } from "./fake-boxd.mjs";
 import { PhoneHarnessProvider } from "../dist/phone-harness.js";
 import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
 
@@ -97,6 +99,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		{ id: "browserbase", label: "Browserbase", keys: [key("BROWSERBASE_API_KEY", "apiKey"), key("BROWSERBASE_PROJECT_ID", "projectId")], metered: true },
 		{ id: "kernel", label: "Kernel", keys: [key("KERNEL_API_KEY", "apiKey")], metered: true },
 		{ id: "local-chrome", label: "Local Chrome", keys: [], metered: false },
+		{ id: "boxd", label: "boxd", keys: [key("BOXD_API_KEY", "apiKey"), key("BOXD_ORG", "org", false), key("BOXD_REGION", "region", false)], metered: true },
 	]);
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
@@ -126,10 +129,10 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));
-	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], agent37: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"], "local-chrome": ["browser"] });
+	assert.deepEqual(kinds, { docker: ["sandbox", "desktop"], daytona: ["sandbox"], modal: ["sandbox"], e2b: ["sandbox", "desktop"], agent37: ["sandbox", "desktop"], orgo: ["desktop"], "phone-harness": ["phone"], browserbase: ["browser"], kernel: ["browser"], "local-chrome": ["browser"], boxd: ["sandbox", "desktop"] });
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "boxd"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -147,6 +150,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
+		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE, desktop: all.BOXD_DEFAULT_IMAGE },
 	};
 	assert.deepEqual(PROVIDERS.map((entry) => entry.id).sort(), Object.keys(expected).sort(), "every provider is named here");
 	for (const entry of PROVIDERS) {
@@ -158,6 +162,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		[daytona.DAYTONA_DEFAULT_SNAPSHOT, modal.MODAL_DEFAULT_IMAGE, e2b.E2B_BASE_TEMPLATE, e2b.E2B_DESKTOP_TEMPLATE, all.AGENT37_BASE_TEMPLATE, all.AGENT37_BOX_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
 		["default", "debian:bookworm-slim", "base", "desktop", "agent37-base", "agentrun-box", "linux", "android", "chromium"],
 	);
+	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
 	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE).
 	assert.equal(PROVIDERS.find((entry) => entry.id === "docker").defaultImage, undefined);
 });
@@ -270,6 +275,7 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: fakeBoxd().Boxd })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

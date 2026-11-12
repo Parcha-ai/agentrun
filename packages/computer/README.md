@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -37,8 +37,8 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
-  and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
+  inside. It never runs commands itself: the daemon does. This package has five: Docker, Modal's VM runtime, Daytona,
+  E2B (desktops) and boxd (microVMs), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
 The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.2
 (`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
@@ -632,6 +632,7 @@ live under:
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
+  | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -2424,6 +2425,149 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 
 `touch.pinch` skips in the provider's own refusal.
 
+## boxd
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's BOXD_API_KEY), and the @boxd-sh/sdk package is the host's own (npm 0.3.1).
+const boxd = await providerFor("boxd", { apiKey, org: "my-org", region: "fra" });
+const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A boxd computer is a [boxd](https://boxd.sh?ref=agentrun) machine: a KVM microVM running Ubuntu 24.04, with its own
+kernel and disk. It is kind `linux` by default, and kind `desktop` with `kind: "desktop"`: computerd starts Xvfb itself,
+as on E2B and a Docker desktop, and its X11 shim drives it. Every call goes through the host's boxd TypeScript SDK, the
+`@boxd-sh/sdk` package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls (`BoxdClientClass`) and
+imports nothing at load. The package is the host's to install, as E2B's and Modal's are; this repository pins it as a
+root devDependency for the live tests.
+
+### Settings
+
+`create(options)` takes the key as `options.apiKey` and nowhere else, and refuses in words without it. It reads no
+setting from the environment: serve passes its own `BOXD_API_KEY`, `BOXD_ORG` and `BOXD_REGION`, and the conformance
+module the `COMPUTER_BOXD_*` names it reads. The SDK reads `BOXD_API_KEY`, `BOXD_TOKEN`, `BOXD_BASE_URL` and
+`BOXD_REGION` when it is not given them, so the provider gives it the key, the API's address (`baseUrl`, default
+`https://boxd.sh:9443`) and the region (`""`, the API's home region, when unset) explicitly; an explicit key wins over
+an ambient token.
+
+| Option | Meaning | Unset |
+| --- | --- | --- |
+| `apiKey` | the boxd API key | required |
+| `org` | the org machines are made in and listed from, by name or id | the key's own |
+| `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
+| `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither | the org's default |
+| `kind` | `linux` or `desktop` | `linux` |
+| `namePrefix` | what every machine's name starts with, before 12 hex digits | `computer-` |
+| `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
+| `deleteTimer` | a backstop: boxd deletes every machine 5 minutes past create's time plus `maxLifetimeMs`, whatever the host does, written in the same call that makes it | `false` |
+| `daemonUser` | uid:gid the daemon runs as; never root, never the image's own user (1000) | `2510:2510` |
+| `daemonPath`, `desktop`, `timeouts`, `probeTargets` | as on E2B | |
+
+### How the daemon gets in, and how it is reached
+
+boxd's own agent runs every command in a machine, as the image's user (`boxd`, uid 1000, with passwordless sudo), so
+computerd is a `child`, as on Daytona and E2B:
+
+1. `machines.create` with the name `<namePrefix><12 hex digits>`, `isolated: true` (the machine joins none of the
+   org's networks, no other machine reaches it, and it holds no in-machine credential), the run's labels with the
+   provider's own beside them (`agentrun.computer=1`, its name, the deadline, the image and the most extend may reach),
+   `config.autoSuspendTimeout: 0` and, with `vcpu`, the size. `image: "default"` is boxd's own image; any other image
+   is the name of a boxd snapshot, restored with `fromSnapshot` (its size is the snapshot's, so `check` refuses one with
+   `vcpu`). With `deleteTimer`, `deleteAfter` too. create has a client of its own, bounded by `createMs` and never sent
+   twice. The create is raced against the caller's signal, never cancelled: one that lands after create gave up is
+   deleted by its id; one whose answer never said what it made (the SDK's deadline, a lost connection) is looked for by
+   its name label until it shows or `listedMs` (60 s) passes, and deleted.
+2. `machines.waitUntilReady`, then `machines.setEgressAllow(id, ["none"])` (the machine reaches nothing) and
+   `machines.setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may
+   work for a long time with none, so neither standby nor hibernation may freeze them. Then `machines.get` reads it
+   all back (below).
+3. `files.upload` puts the daemon at `/tmp/agentrun-computerd-<random>`, and the install command Daytona and E2B send
+   (`src/hosted/scripts.ts`) moves it to `/opt/agentrun/computerd`, root-owned, through `sudo -n`, and prints its sha256, which
+   must be the uploaded one's.
+4. A start command runs `computerd init --deadline <time> --user 2510:2510 --own-network --max-deadline <create's time
+   plus the cap>` as root, detached with `setsid -f`, so the exec that started it returns and init stays. Init's own
+   words go to `/run/agentrun-computerd.log`, which only root can write; a create whose daemon never answers reads it
+   back into its error.
+5. `connect()` runs `computerd stdio` as root over one `machines.streamExec`: requests go in on its stdin, replies come
+   back on its stdout. `close()` cancels the stream, which ends the bridge and nothing else, since init runs in a
+   session of its own.
+6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
+   `process.start`, as the computer's user, inside init's network namespace, and create waits until hello declares the
+   display (`src/desktop.ts`).
+
+boxd's in-machine agent, which carries the SDK's exec and file calls, listens on TCP 57073. Init starts with
+`--own-network`, so the daemon and every program it starts run in a network namespace of their own, their loopback
+alone, with no vsock and no io_uring (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)):
+`vendorAgentPorts` declares 57073, and `isolation.vendor-agent` checks that a program of the computer's user reaches it
+on neither loopback.
+
+### Capabilities
+
+| Capability | Declared | Why |
+| --- | --- | --- |
+| `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own |
+| `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; with `deleteTimer`, boxd also deletes it just past the most it may live, as a backstop |
+| `network` | `none` | the egress allowlist `["none"]`, read back by `machines.get`, and the daemon's own network namespace; open and allowlists wait for a proxy out of it, as on Daytona and E2B |
+| `networkReadBack` | `true` | `machines.get` reports `egressAllow` |
+| `isolation` | `microvm` | a KVM microVM with its own kernel |
+| `daemon` | `child` | boxd's agent runs the commands; init is a detached command it starts |
+| `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys` | checked against hello on every connect |
+| `maxLifetimeMs` | 24 h, up to 30 days | `options.maxLifetimeMs`; boxd sets no cap of its own |
+| `release` | `delete` | `machines.delete` |
+| `mount` | none | the run's folder on an Archil disk needs box/Dockerfile's tools in the machine; not built for boxd yet |
+| `vendorAgentPorts` | `[57073]` | boxd's in-machine agent |
+
+### What the provider does
+
+- `check(spec)` refuses in words, with no call: an image that is not `"default"` or a snapshot's name (or a snapshot,
+  when the provider names a size), a lifetime past the cap, a network that is not none, a label in the provider's
+  namespace or a name boxd does not take (1 to 63 of `a-z0-9._/-`, not `boxd/`), `cpus`, `memoryMb` or `pids` (the size is
+  the provider's), `user`, `workdir`, `mount` and any other field.
+- `create` holds the machine `machines.get` reads back to what it asked for: every label, the name, the snapshot it was
+  restored from, no other `agentrun.*` label (a restore merges its snapshot's labels), the egress allowlist `["none"]`,
+  `isolated`, no standby, no hibernation, no auto-destroy, the delete timer (none, or with `deleteTimer` the backstop),
+  the org and the size when given, and a status that runs. Then the daemon: the installed binary's sha256, hello
+  (version, `linux`, `amd64`, kind, groups and its fence), `/proc/self/status` (uid and gid 2510, no groups,
+  `NoNewPrivs` 1, every capability set zero, seccomp on), its own network (the loopback alone), `/proc/self/cwd`
+  (`/work`) and `/proc/self/exe`; and the probe, which refuses the computer if any target answers. A failure, mismatch
+  or abort at any step deletes the machine and waits until boxd reads it gone; create never returns ok once its signal
+  has aborted.
+- `attach({ id })` or `attach({ labels })` reads the spec back from boxd and, for a running machine, the daemon, as at
+  create; one that drifts is refused and left as it is. Only a machine with `agentrun.computer=1` whose name is the one
+  its label records, with this provider's prefix, counts.
+- `list(labels)` asks boxd for the provider's label and the labels given, in its org. `running`, `suspended` (standby,
+  which wakes on the next call) and the states on the way to running are `running`; `hibernated`, `stopped` and
+  `failed` are `stopped`, so the janitor can sweep them.
+- `extend(ref, ttlMs)` moves init's deadline with `deadline.extend`, then the deadline label the janitor reads; never
+  earlier, and never past create's time plus the cap.
+- `release(ref, "delete")` reads the machine back to check it is this provider's, deletes it, and waits until
+  `machines.get` answers not found and the label listing no longer shows it, twice running, within `goneMs` (120 s).
+  `release(ref, "stop")` is refused in words.
+- `testConnection()` is one listing by the provider's label, which makes nothing.
+
+### Conformance on boxd
+
+```sh
+AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
+AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
+```
+
+The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LIVE_BOXD=1` before it reads anything
+else, then reads `COMPUTER_BOXD_API_KEY` (`apiKey`, required), `COMPUTER_BOXD_ORG` (`org`), `COMPUTER_BOXD_REGION`
+(`region`), `COMPUTER_BOXD_DAEMON` (`daemonPath`), `COMPUTER_BOXD_KIND` (`kind`), `COMPUTER_BOXD_USER` (`daemonUser`)
+and `COMPUTER_BOXD_NAME_PREFIX` (`namePrefix`), never `BOXD_API_KEY`, and caps every computer of a run at 30 minutes.
+`conformanceImage()` is `COMPUTER_BOXD_IMAGE`, else `"default"`, and `createDriftedProvider()` uploads a daemon built
+with Go as `<version>-drift`. `test/boxd/conformance.boxd.test.mjs` runs the suite with `computerd-fixture` built for
+linux/amd64, and skips unless the switch and `COMPUTER_BOXD_API_KEY` are both set.
+
+### Live runs
+
+On 2026-11-12, against boxd with an org key, the suite passed Core on both kinds: `kind linux` 62/62 (with
+`lifetime.extend`), `kind desktop` 68/68 (screen and input included), and the CLI's run of `--provider boxd` 63/63 (with
+`health.no-key-in-errors`). Every run left no computer behind. A run of serve with a boxd desktop took a screenshot
+and released the machine when the run ended.
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -2728,6 +2872,7 @@ AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, a key the lead OKed
 AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, a key the lead OKed, and the e2b package
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer     # also needs COMPUTER_BOXD_API_KEY, a key the lead OKed, and the @boxd-sh/sdk package
 ```
 
 `npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names

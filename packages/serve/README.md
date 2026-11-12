@@ -618,8 +618,8 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -648,7 +648,8 @@ the owner's signed-in session only (the API token is 403), and `POST /v2/compute
 the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`, `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, and
-`KERNEL_API_KEY`; Docker takes none. The vendors bill their computers by time on their own pages: this server meters no
+`KERNEL_API_KEY`, and `BOXD_API_KEY` (with `BOXD_ORG` and `BOXD_REGION` optional); Docker takes none.
+The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
 
@@ -741,7 +742,8 @@ passes the binding's conformance cases (below) needs no change here.
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal, E2B or Agent37 sandbox mounts
   the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
-  it cannot mount the disk.
+  it cannot mount the disk. A boxd sandbox takes no mount yet, so it is refused in both modes; a boxd desktop runs in
+  either.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
