@@ -283,6 +283,8 @@ export interface AdapterLoopOptions {
   readonly restartLimit?: number;
   /** pi's retry of a model request that failed retryably. Default MODEL_RETRY. */
   readonly retry?: ConversationRetryPolicy;
+  /** pi-ai's retries inside one attempt. Default MODEL_STREAM. */
+  readonly stream?: ConversationStreamOptions;
   /** The gate's clock (epoch ms): when an ask was asked and answered, and when a wait in the claim on the person's answer
    *  started. Default Date.now. */
   readonly now?: () => number;
@@ -626,6 +628,7 @@ export function createAdapterLoop(spec: (claim: Claim, run: AdapterRun) => Adapt
 function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec | Promise<AdapterRunSpec>, options: AdapterLoopOptions, deps: LoopDeps): Loop {
   const restartLimit = options.restartLimit ?? DEFAULT_RESTART_LIMIT;
   const retry = options.retry ?? MODEL_RETRY;
+  const stream = options.stream ?? MODEL_STREAM;
   const now = options.now ?? Date.now;
   /** The gate's clock as main's card says a time: ISO. */
   const isoNow = () => new Date(now()).toISOString();
@@ -1059,7 +1062,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: { restartLimit, retry, stream: MODEL_STREAM }, onReport: () => {},
+          models: () => models, registry, settings: { restartLimit, retry, stream }, onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {
