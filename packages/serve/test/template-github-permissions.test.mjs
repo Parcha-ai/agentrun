@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { APP_PERMISSIONS } from "../dist/github-connection.js";
 import { appPermissionWarnings, TOOL_PERMISSIONS } from "../dist/template-github-permissions.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { dockerBox, scratch, serve, withEnv } from "./support.mjs";
 
 const RELEASE_NOTES = { name: "release-notes", mcp: [{ server: "github", tools: ["list_releases", "pull_request_read", "issue_write"], required: false, allow: [], pin: {} }] };
 const CODE_REVIEW = { name: "code-review", mcp: [{ server: "github", tools: ["pull_request_read", "pull_request_review_write", "add_comment_to_pending_review"], required: false, allow: [], pin: {} }] };
@@ -48,6 +48,8 @@ async function savedGitHub(t, auth) {
 }
 
 test("release-notes applied where the github MCP server runs on the App's tokens says, in its apply answer, that its draft stays in its answer; code-review is not warned, nor release-notes on the owner's own token", { timeout: 120_000 }, async (t) => {
+  // code-review's checkout needs a shell, so a box (bash runs only in one).
+  await dockerBox(t);
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await savedGitHub(t, "github_app");
   const notes = await api("POST", "/templates/release-notes/apply", { parameters: { repo: "acme/widgets" } });

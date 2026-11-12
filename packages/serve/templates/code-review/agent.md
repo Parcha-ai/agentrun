@@ -9,12 +9,11 @@ repository: https://github.com/Parcha-ai/agentrun
 harness: [pi]
 model: { tier: fast, prefer: openrouter/particle-ai/particle-1 }
 effort: medium
-# A computer with a shell first, else none. With a shell, bash runs from the run's work folder, where AgentRun has
-# checked out the pull request in repo/ before the first turn (`checkout: pull_request`: its head at ref pr/head, with
-# pr/base and pr/merge-base beside it, fetched read-only by the platform, never by the agent). With none, the agent has
-# no bash and its reviewers read the change through the GitHub tools. read opens the skill's own files. subagent starts
-# the eight reviewers, each on the agent's own model with a subset of its tools.
-computer: [shell, none]
+# bash runs from the run's work folder, where AgentRun has checked out the pull request in repo/ before the first turn
+# (`checkout: pull_request`: its head at ref pr/head, with pr/base and pr/merge-base beside it, fetched read-only by
+# the platform, never by the agent). Where the agent has no bash, its reviewers read the change through the GitHub
+# tools. read opens the skill's own files. subagent starts the eight reviewers, each on the agent's own model with a
+# subset of its tools.
 checkout: pull_request
 tools: [read, bash, subagent]
 # bash is read-only (bash-read-only.ts): the gate refuses any command that could write, run code or read outside the

@@ -15,7 +15,7 @@ import { FINDINGS } from "./fixtures/faux-review.mjs";
 const keyedWarnings = (body) => body.warnings.filter((w) => w.reason === "not_set_up_here" && /^The tool \S+ needs /.test(w.message ?? ""));
 import { schemaProblems } from "./schema-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { asOwner, follow, scratch, serve, withEnv } from "./support.mjs";
+import { asOwner, dockerBox, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
@@ -63,7 +63,7 @@ const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
   const [review] = readPackages();
   assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.3.0", { tier: "fast", prefer: "openrouter/particle-ai/particle-1" }, "medium", { per_run_usd: 0.5, tool_calls: 90 }, false]);
-  assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
+  assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, undefined, "pull_request"], "a shell (the server's box); bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
   assert.equal(review.skills["review/findings.schema.json"], file("findings.schema.json"), "the answer's schema ships beside the SKILL.md that names it");
   assert.equal(review.skills["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the default rules, and the starter a repo copies, ship beside the SKILL.md that reads them");
@@ -101,7 +101,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - name: mine\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, agent_id: other }"), /target is a start_run with no agent_id/);
   await refused(({ edit }) => edit("${parameters.repo} with", "${parameters.repository} with"), /\$\{parameters\.repository\} names no parameter/);
   await refused(({ edit }) => edit("effort: medium", "effort: off"), /effort is one of/);
-  await refused(({ edit }) => edit("computer: [shell, none]", "computer: my-laptop"), /computer is default .*or a preference list of shell, none/);
+  await refused(({ edit }) => edit("\ncheckout: pull_request\n", "\ncheckout: pull_request\ncomputer: my-laptop\n"), /computer is default \(this server's own place\)/);
   await refused(({ edit }) => edit("tier: fast", "tier: cheap"), /model is \{tier: fast \| balanced \| strong/);
   await refused(({ edit }) => edit("tier: fast", "tier: constructor"), /model is \{tier: fast \| balanced \| strong/);
   await refused(({ edit }) => edit("author: { name: Parcha Labs }", "author: { name: Parcha Labs, emali: team@example.com }"), /author is \{name, email\?, url\?\}/);
@@ -191,7 +191,8 @@ test("on a gateway server, a package's model is never one the gateway has not sa
   assert.doesNotMatch(both.warning ?? "", /model for the fast tier/);
 });
 
-test("code-review through the API: listed, applied with a repo it makes the agent with the review skill and its reviewers' guides, and its model, and a run's answer meets its findings schema", { timeout: 120_000 }, async (t) => {
+test("code-review through the API: listed, applied with a repo it makes the agent in the box with the review skill and its reviewers' guides, and its model, and a run's answer meets its findings schema", { timeout: 120_000 }, async (t) => {
+  await dockerBox(t);
   const { api, baseUrl } = await serve(t, { faux: REVIEW_FAUX });
   const meets = await documented(baseUrl);
 
@@ -221,9 +222,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const { definition } = agent;
   assert.deepEqual([definition.name, definition.version, definition.harness, definition.thinking, definition.max_cost_usd, definition.learning, definition.skills], ["Code review: Parcha-ai/agentrun", 1, "pi", "medium", 0.5, false, ["review"]], "definition.version is the revision number, never the package's");
   assert.deepEqual([definition.max_tool_calls, definition.checkout], [90, "pull_request"], "each conversation's tool budget, and the checkout the platform makes before the first turn");
-  // No shell here (no box): [shell, none] takes none, so the agent is made without bash, and the apply says so.
-  assert.deepEqual([definition.computer, definition.tools, definition.tool_settings], [{ kind: "none" }, ["read", "subagent"], undefined], "no shell and no GitHub MCP server here: read for the skill's files, subagent for the reviewers");
-  assert.equal(applied.body.warnings.filter((w) => w.field === "computer").length, 1, JSON.stringify(applied.body.warnings));
+  assert.deepEqual([definition.place, definition.tools, definition.tool_settings], [{ mode: "sandbox", box: "docker" }, ["read", "bash", "subagent"], { bash: { policy: "read-only" } }], "the docker box here and no GitHub MCP server: read for the skill's files, read-only bash for the checkout, subagent for the reviewers");
   assert.equal(definition.model, "openrouter/particle-ai/particle-1", "its preferred model, which this server runs");
   assert.match(definition.instructions, /the pull request is already checked out in\s+`repo\/`/);
   assert.match(definition.instructions, /start eight reviewers on it in one turn with `subagent`/);
@@ -236,7 +235,11 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.notEqual(other.body.agent_id, applied.body.agent_id, "each apply makes its own agent");
   assert.equal((await api("GET", `/agents/${other.body.agent_id}`)).body.definition.model, "openrouter/other-lab/other-model", "the person applying overrides the model");
 
-  // A pasted diff runs no command (the skill's own path for it): the run answers on the runner, and meets the findings schema.
+  // A test's docker is a fake with no computerd, so no box run starts here: the review runs on the runner, the same agent
+  // with its shell taken off (the skill's pasted-diff path runs no command anyway). Its answer meets the findings schema.
+  const { version: _, computer: __, ...edited } = definition;
+  const moved = await api("PUT", `/agents/${applied.body.agent_id}/definition`, { definition: { ...edited, tools: ["read", "subagent"], tool_settings: undefined, place: { mode: "runner" } } });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
   const run = await api("POST", `/agents/${applied.body.agent_id}/runs`, { input: { content: file("evals/null-name/prompt.md").replace(/^---[\s\S]*?---\n/, "") } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
@@ -337,6 +340,7 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
 });
 
 test("code-review's GitHub tools: granted, never allowed by the package itself; only the owner's grants at apply become allow, and a deny the owner set stays", async (t) => {
+  await dockerBox(t);
   const { api } = await serve(t);
   const github = await startFakeMcp({ name: "github" });
   t.after(() => github.close());
@@ -354,10 +358,10 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.equal(plain.body.warnings.find((w) => w.field === "mcp.github"), undefined, "nothing skipped");
   const agent = (await api("GET", `/agents/${plain.body.agent_id}`)).body;
-  assert.deepEqual(agent.definition.tools, ["read", "subagent", ...granted], "no shell here: its read for the skill's files, subagent for the reviewers, and the GitHub tools");
+  assert.deepEqual(agent.definition.tools, ["read", "bash", "subagent", ...granted], "its read for the skill's files, bash for the checkout, subagent for the reviewers, and the GitHub tools");
   // The package sets no permission of its own; its pinned write gets its pin, bounding it to COMMENT reviews even once
   // granted: a write a template grants never runs without its pin.
-  assert.deepEqual(agent.definition.tool_settings, { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } });
+  assert.deepEqual(agent.definition.tool_settings, { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } }, bash: { policy: "read-only" } });
   assert.deepEqual(plain.body.warnings.filter((w) => w.field.startsWith("pins.")), [], "the agent keeps its pin: nothing to say");
   // code-review runs unattended by default (approvals never): its asks are allows, the pinned write too (its pin bounds
   // each call at the gate).
@@ -376,7 +380,7 @@ test("code-review's GitHub tools: granted, never allowed by the package itself; 
   const consented = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: reads });
   assert.equal(consented.status, 201, JSON.stringify(consented.body));
   // The review write's pin travels with it whatever its permission: a grant of the reads never strips it.
-  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, { ...Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])), "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } });
+  assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tool_settings, { ...Object.fromEntries(reads.filter((tool) => tool !== "mcp:github/get_file_contents").map((tool) => [tool, { permission: "allow" }])), "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } }, bash: { policy: "read-only" } });
   // Unattended by default (approvals never): an ask with nothing standing behind it is an allow, the pinned review write
   // too (the pin still bounds each call at the gate); the unpinned comment write runs unasked,
   // bounded by the pinned review write it adds to.
@@ -411,6 +415,7 @@ test("a parameter's enum is a closed set: the list shows it, apply refuses a val
 });
 
 test("a repository parameter is owner/name with no trailing dot: \"acme/widgets.\" is refused at apply, \"acme/widgets\" and \"acme/my.repo\" are taken", async (t) => {
+  await dockerBox(t);
   const { api } = await serve(t);
   for (const name of ["code-review", "release-notes"]) {
     const bad = await api("POST", `/templates/${name}/apply`, { parameters: { repo: "acme/widgets." } });
@@ -468,14 +473,17 @@ test("every package this server ships applies on a server with nothing saved: no
       assert.deepEqual(applied.body.error.fields.map((f) => f.field), required);
       continue;
     }
-    assert.equal(applied.status, 201, `${name}: ${JSON.stringify(applied.body)}`);
-    // A package that prefers a shell ([shell, none], code-review's) where there is none: made with no computer and
-    // without bash, and the apply says so and what to do.
+    // A package with a shell (code-review's checkout) needs a box, and this server has none: refused, saying why and
+    // what to do (start AgentRun with the docker box), and nothing is made.
     if (tools?.includes("bash")) {
-      const made = (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition;
-      assert.deepEqual([made.computer, made.tools.includes("bash")], [{ kind: "none" }, false], name);
-      assert.match(applied.body.warnings.find((w) => w.field === "computer")?.message ?? "", /so the agent was made with the template's next choice, no computer, and without bash\./, JSON.stringify(applied.body.warnings));
+      assert.equal(applied.status, 422, `${name}: ${JSON.stringify(applied.body)}`);
+      assert.deepEqual(applied.body.error.fields.map((f) => [f.field, f.reason]), [[`definition.tools[${tools.indexOf("bash")}]`, "not_an_option"]]);
+      assert.match(applied.body.error.message, /^bash runs only in a box, .*, which has no shell \(a shell needs a sandbox computer\), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker\./);
+      assert.equal((await api("GET", "/agents")).body.agents.length, before, `${name}: nothing was made`);
+      assert.deepEqual((await api("GET", "/triggers")).body.triggers.filter((x) => x.name === "pull-requests"), [], `${name}: nor its trigger`);
+      continue;
     }
+    assert.equal(applied.status, 201, `${name}: ${JSON.stringify(applied.body)}`);
     const keyed = keyedWarnings(applied.body);
     assert.deepEqual(keyed, [], `${name} grants a tool that needs a key, so its runs would be refused here`);
     const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
@@ -536,6 +544,7 @@ test("a package with a webhook trigger, on a server handed no seal key, keeps it
 });
 
 test("a server-wide deny of every tool of an MCP server (mcp:<server>/*) keeps each grant of it denied", async (t) => {
+  await dockerBox(t);
   const { api } = await serve(t);
   const github = await startFakeMcp({ name: "github" });
   t.after(() => github.close());
@@ -546,7 +555,7 @@ test("a server-wide deny of every tool of an MCP server (mcp:<server>/*) keeps e
   const applied = await api("POST", "/templates/code-review/apply", { parameters: { repo: "Parcha-ai/agentrun" }, grants: granted });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
-  assert.deepEqual(agent.definition.tool_settings, { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } } }, "no grant is written over the wildcard deny; the pinned write keeps its pin");
+  assert.deepEqual(agent.definition.tool_settings, { "mcp:github/pull_request_review_write": { pin: { event: [null, "COMMENT"], method: ["create", "delete_pending", "submit_pending"] } }, bash: { policy: "read-only" } }, "no grant is written over the wildcard deny; the pinned write keeps its pin");
   assert.deepEqual(agent.tools.filter((x) => granted.includes(x.name)).map((x) => [x.name, x.permission]), granted.map((tool) => [tool, "deny"]));
   assert.deepEqual(applied.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => w.field), granted.map((tool) => `grants.${tool}`));
 });
@@ -607,6 +616,7 @@ test("every shipped package's agent gets its answer schema beside its skill, and
 });
 
 test("an apply's approvals: the override, else the package's own (a trigger template runs unattended), else ask", async (t) => {
+  await dockerBox(t);
   const { api } = await serve(t);
   const approvalsOf = async (applied) => { assert.equal(applied.status, 201, JSON.stringify(applied.body)); return (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition.approvals ?? "ask"; };
   const review = { parameters: { repo: "Parcha-ai/agentrun" } };
