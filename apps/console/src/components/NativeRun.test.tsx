@@ -4,7 +4,8 @@ import { expect, it } from "vitest";
 import { NativeRun } from "./NativeRun";
 it("keeps native task usage separate from reflection, unknown prices unknown, and identifies pinned configuration and learning", () => {
   const html = renderToStaticMarkup(createElement(NativeRun, { native: { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "source", fingerprint: "cfg123", session_id: "native-session", model: "native-model", learning_revision: "learning123", model_requests: null, usage: { task: { input_tokens: 100, output_tokens: 20, cache_read_tokens: null, cache_write_tokens: null, cost_usd: null }, reflection: [{ input_tokens: 30, output_tokens: 10, cache_read_tokens: null, cache_write_tokens: null, cost_usd: 0.04 }] } } }));
-  for (const value of ["native-session", "native-model", "Profile: review", "learning123", "cfg123", "Task usage", "Reflection usage", "100", "$0.04", "Unknown"]) expect(html).toContain(value);
+  for (const value of ["native-session", "native-model", "Profile: review", "learning123", "cfg123", "Task usage", "Reflection usage", "20", "$0.04", "Unknown"]) expect(html).toContain(value);
+  expect(html).not.toContain(">100<");
   expect(html).not.toContain("$0.00");
   expect(html).toContain("Grading usage");
 });
@@ -27,4 +28,22 @@ it("keeps native stop/cancel controls while offering no in-session composer or M
   const html = renderToStaticMarkup(createElement(NeedsYouStrip, { asking: [], failed: [], live: [live], agentName: () => "Native", onAnswer: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null }));
   expect(html).not.toContain(">Steer</a>");
   expect([...new DOMParser().parseFromString(html, "text/html").querySelectorAll("button")].map((button) => button.textContent?.trim())).toContain("Stop");
+});
+
+
+it.each([
+  { runtime: "codex", taskInput: 100, reflectionInput: 60 },
+  { runtime: "claude-code", taskInput: 70, reflectionInput: 40 },
+])("$runtime separates uncached input from cache reads for task and reflection", ({ runtime, taskInput, reflectionInput }) => {
+  const native = { ...nativeMetadata, runtime, usage: {
+    task: { input_tokens: taskInput, output_tokens: 12, cache_read_tokens: 30, cache_write_tokens: 0, cost_usd: null },
+    reflection: [{ input_tokens: reflectionInput, output_tokens: 4, cache_read_tokens: 20, cache_write_tokens: 0, cost_usd: null }],
+  } };
+  const html = renderToStaticMarkup(createElement(NativeRun, { native }));
+  const document = new DOMParser().parseFromString(html, "text/html");
+  expect([...document.querySelectorAll("thead th")].map((cell) => cell.textContent)).toEqual(["Phase", "Uncached input", "Output tokens", "Cache read", "Cache write", "Cost"]);
+  expect([...document.querySelectorAll("tbody tr")].map((row) => [...row.querySelectorAll("th,td")].map((cell) => cell.textContent))).toEqual([
+    ["Task usage", "70", "12", "30", "0", "Unknown"],
+    ["Reflection usage · turn 1", "40", "4", "20", "0", "Unknown"],
+  ]);
 });
