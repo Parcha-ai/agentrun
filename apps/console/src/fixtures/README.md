@@ -1,7 +1,7 @@
 # Recorded fixtures
 
 Responses of AgentRun Server's `agentrun.v2/0`, recorded from a seeded server on its scripted model (synthetic content,
-no key, no network) with the dev kit that has since been removed. Each file is `{request, status, headers, body}` as the
+no key, no network). The recorder is gone; the files are edited by hand. Each file is `{request, status, headers, body}` as the
 server answered.
 
 They are kept in step with the contract by editing, not by recording again: when the served document makes a field
@@ -51,9 +51,7 @@ on a harness the server does not run (409 `agent_not_runnable`).
 
 No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.
 
-`learning.*` are one agent's learning, recorded from a faux server with learning on (`learning-demo/`: `serve.mjs` starts
-agentrun-serve on `faux-refunds.mjs`, a refund-policy finder that works slowly until it has notes and reads each note first
-once it does; `seed.mjs` runs it six times; `record.mjs` records). Taylor Stitch's run keeps the first note, Brooklinen's
+`learning.*` are one agent's learning, recorded from a faux server with learning on (a refund-policy finder that works slowly until it has notes and reads each note first once it does, run six times). Taylor Stitch's run keeps the first note, Brooklinen's
 keeps a better one that replaces it, a person adds a note of their own, Kith's note is not kept (about one shop only), and
 three runs have nothing new. Then, in order: the agent, its learning, its runs and its stats; a person opens a note
 (`learning.note`), someone else saves a change to it (`learning.note-theirs`), the person's save on the version they
@@ -70,7 +68,5 @@ carries each run's learning in words (`detail`), and the impact each side's time
 what learning itself costs a run.
 `learning.diff-run` and `learning.diff` are a pair from one later recording of the same story: Brooklinen's run, and what
 its learning changed (`GET /v2/runs/{id}/learning/diff`: the note it added, the note it replaced, and the index), for
-the run page's "What it changed". `record.mjs` records them with the rest; until the set is recorded again whole, their
-run is not the one in `learning.runs`.
-To record them again: build the server and the console, then `node serve.mjs ...`, `node seed.mjs <url> <data>` and
-`node record.mjs <url> <data> apps/console/src/fixtures`. No token is written: the token stays in the data directory.
+the run page's "What it changed". Their run is not the one in `learning.runs`.
+No token is written to any fixture.

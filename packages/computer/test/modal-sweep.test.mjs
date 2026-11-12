@@ -29,8 +29,12 @@ function sink() {
 	return stream;
 }
 
-/** main with the fake as the client, and what it printed. */
-async function sweep(argv, fake, { env = ENV, waitMs = 200, pollMs = 10 } = {}) {
+/**
+ * main with the fake as the client, and what it printed. The read-back waits on the fake's own condition (a terminated
+ * sandbox finished after its lingering polls), bounded at 10 s: a busy machine slows the polls, never the count of them.
+ * A test of the bound itself (a sandbox that never finishes) gives its own waitMs.
+ */
+async function sweep(argv, fake, { env = ENV, waitMs = 10_000, pollMs = 10 } = {}) {
 	const stdout = sink();
 	const stderr = sink();
 	const made = [];
@@ -123,11 +127,12 @@ test("--after exits 1 and names a sandbox still running once its wait runs out",
 	const stuck = fake.add({ ...tagged(), stuck: true });
 	const ended = fake.add(tagged());
 	const started = Date.now();
-	const ran = await sweep(["--after", file], fake, { waitMs: 150, pollMs: 10 });
+	// The bound ends the stuck one's wait; it is wide enough that the ended one's reads always fit in it on a busy machine.
+	const ran = await sweep(["--after", file], fake, { waitMs: 1_500, pollMs: 10 });
 	assert.ok(Date.now() - started < 5_000, "bounded");
 	assert.equal(ran.code, 1);
 	assert.deepEqual(JSON.parse(ran.stdout), { swept: 2, gone: 1, stillThere: [stuck], leftAlone: 0 });
-	assert.match(ran.stderr, new RegExp(`${stuck} is still running after 0\\.15 s`));
+	assert.match(ran.stderr, new RegExp(`${stuck} is still running after 1\\.5 s`));
 	assert.equal(fake.sandboxes.get(ended).running, false);
 });
 
