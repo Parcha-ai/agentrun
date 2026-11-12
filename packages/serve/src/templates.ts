@@ -42,7 +42,7 @@ export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -109,6 +109,9 @@ export type Package = {
   /** A policy by tool (bash only: `read-only`, bash-read-only.ts), which apply writes as the tool's `policy` in the
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
+  /** What the server checks out in each run's folder before its first turn (the definition's `checkout`,
+   *  runner/pr-checkout.ts): the pull request the run's GitHub event names. */
+  checkout?: "pull_request";
   parameters: Record<string, Parameter>;
   secrets: string[];
   /** Each run's limits: its spend cap (the agent's max_cost_usd) and the tool calls each of its conversations may make
@@ -342,6 +345,8 @@ export function readPackage(dir: string): Package {
       if (!computer.includes("shell") && shellOnly.length) bad(MANIFEST, `computer: [none] gives no shell, so ${shellOnly.join(", ")} would never be granted: add shell to computer, or take ${shellOnly.length === 1 ? "it" : "them"} out of tools`);
     }
   }
+  // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
+  if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
   const parameters: Record<string, Parameter> = {};
   for (const [key, p] of Object.entries(f.parameters === undefined ? {} : isObject(f.parameters) ? f.parameters : (bad(MANIFEST, "parameters is a mapping of names"), {}))) {
     const ok = PARAMETER.test(key) && isObject(p) && !unknownFields(p, ["type", "required", "pattern", "enum", "format", "description", "default"]).length && (PARAMETER_TYPES as readonly unknown[]).includes(p.type) && (p.required === undefined || typeof p.required === "boolean") && typeof p.description === "string" && p.description.trim() !== "" && (p.pattern === undefined || (p.type === "string" && typeof p.pattern === "string"));
@@ -508,7 +513,7 @@ export function readPackage(dir: string): Package {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -547,7 +552,7 @@ export function packageView(p: Package) {
   return {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null,
+    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -711,6 +716,8 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
     // The package's answer schema (manifest `output`): each completed run's structured answer, checked, is its result.output.
     ...(isObject(p.outputSchema) ? { output_schema: p.outputSchema } : {}),
+    // The package's checkout (manifest `checkout`): the server fetches it before each run's first turn.
+    ...(p.checkout ? { checkout: p.checkout } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
 }

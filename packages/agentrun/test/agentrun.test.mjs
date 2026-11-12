@@ -83,7 +83,7 @@ test("demo: with no model key, the bin starts on a free loopback port and prints
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
 });
 
-test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says on stderr that the Docker box is on by default, and the box image's first build as it starts and as it ends; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
+test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on PATH), the bin says on stderr that the Docker box is on by default; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
   delete env.AGENTRUN_BOXES;
   const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-docker-"));
@@ -91,8 +91,6 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
   writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
-  // The build holds until the test lets it go: the start's line comes first, and the end's only once it ends.
-  writeFileSync(join(dir, "state", "build-hold"), "");
   const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(() => stopChild(child, exited));
@@ -100,62 +98,16 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
-  const until = async (pattern) => {
-    for (let i = 0; !pattern.test(err); i++) {
-      assert.ok(i < 1000, `the bin printed ${pattern}: ${out}${err}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  };
-  await until(/^Preparing the Docker box image .*\n/m);
-  const said = () => err.split("\n").filter((line) => start.SAID.test(line));
+  for (let i = 0; !(/^Boxes: .*\n/m.test(err) && /\n$/.test(out)); i++) {
+    assert.ok(i < 1000, `the bin printed its boxes line: ${out}${err}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const said = err.split("\n").filter((line) => start.SAID.test(line));
   assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "stdout is the one running line a script reads");
-  assert.match(said()[0], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\. docker is preparing \(building the box image [^\n]*\)\./);
-  assert.equal(said()[1], "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.");
-  assert.equal(said().length, 2, err);
-  rmSync(join(dir, "state", "build-hold"));
-  await until(/^The Docker box image is ready\.\n/m);
-  assert.deepEqual(said().slice(2), ["The Docker box image is ready."], "one line as the build ends, nothing else");
-  assert.match(out, /^AgentRun is running at http:\/\/127\.0\.0\.1:\d+\/\n$/, "still the one line on stdout");
+  assert.match(said[0], /^Boxes: docker \(on by default; set AGENTRUN_BOXES to change\)\./);
+  assert.equal(said.length, 1, err);
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
-});
-
-test("a terminal that closes its pipes after the address (`| head -n 1`) ends no command: a box image line said later goes nowhere, and the server keeps running until it is stopped", { timeout: 120_000 }, async (t) => {
-  const { home, env } = bare(t);
-  delete env.AGENTRUN_BOXES;
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-npx-pipe-"));
-  removeAtEnd(dir);
-  mkdirSync(join(dir, "bin"));
-  mkdirSync(join(dir, "state"));
-  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
-  writeFileSync(join(dir, "state", "build-hold"), "");
-  const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
-  const exited = new Promise((resolve) => child.on("exit", resolve));
-  t.after(() => stopChild(child, exited));
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  // Read on either pipe: what this test checks is that a line said once the reader has gone ends nothing, wherever it goes.
-  for (let i = 0; !/^Preparing the Docker box image /m.test(out + err); i++) {
-    assert.ok(i < 1000, `the bin printed its lines: ${out}${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  // The reader goes, as `head -n 1` does once it has its line: both pipes close. The command says its later lines through
-  // console, which drops a write's error; a raw stream write there would end it on the closed pipe (EPIPE).
-  child.stdout.destroy();
-  child.stderr.destroy();
-  rmSync(join(dir, "state", "build-hold"));
-  // The build ends (the server's record of the image says so), and the server says it, a line the command passes on.
-  const record = join(STORE(home), "box-image.json");
-  for (let i = 0; !(existsSync(record) && JSON.parse(readFileSync(record, "utf8")).state === "ready"); i++) {
-    assert.ok(i < 600, "the image's build ended");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  assert.equal(child.exitCode, null, "the command is still running after a line it said went nowhere");
-  child.kill("SIGTERM");
-  assert.equal(await exited, 0, "a stop then is a clean one");
 });
 
 test("a subcommand is the server's own, on ~/.agentrun: import --dry-run", { timeout: 60_000 }, async (t) => {
@@ -340,8 +292,8 @@ test("an API-only server's line stands for the Open line: the address is its AGE
   assert.equal(await openUrl(early.stdout), undefined, "the API-only line stands for the Open line only after the base URL it names");
 });
 
-test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and box image lines among them", async (t) => {
-  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.\n", "The Docker box image is ready.\n"]);
+test("the lines after the Open line go on, one whole line at a time, however the output is cut; the bin says the boxes and setup lines among them", async (t) => {
+  const server = stub(["agentrun-serve on http://127.0.0.1:7344/v2\nOpen http://127.0.0.1:7344/\nBox", "es: docker (on by default; set AGENTRUN_BOXES to change).\nGET /v2/health 200\n", "Set up this server: https://agentrun.example.com/setup#code=AbCd", "EfGh\n", "GET /v2/agents 200\n"]);
   t.after(() => server.kill());
   const after = [];
   assert.equal(await openUrl(server.stdout, undefined, [], (line) => after.push(line)), "http://127.0.0.1:7344/");
@@ -349,7 +301,7 @@ test("the lines after the Open line go on, one whole line at a time, however the
     assert.ok(i < 100, JSON.stringify(after));
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.", "The Docker box image is ready."]);
+  assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Set up this server: https://agentrun.example.com/setup#code=AbCdEfGh"]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
 });
 

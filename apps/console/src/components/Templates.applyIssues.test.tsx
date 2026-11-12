@@ -21,7 +21,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const KYB: TemplateView = {
   name: "kyb", display_name: "KYB", version: "1.0.0", description: "Checks a business.", license: "MIT", author: null, repository: null, output: null,
-  harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, mcp: [],
+  harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null, mcp: [],
   parameters: {
     risk_appetite: { type: "string", required: true, description: "How much risk to accept", enum: ["low", "medium", "high"] },
     company: { type: "string", required: true, description: "The company's legal name" },

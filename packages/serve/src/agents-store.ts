@@ -139,6 +139,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
+    ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
     // The tool-call budget (tool-budget.ts): 0 keeps none.
     ...(typeof definition.max_tool_calls === "number" && definition.max_tool_calls > 0 ? { maxToolCalls: definition.max_tool_calls } : {}),
     ...common,
@@ -331,6 +332,8 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         ...(definition.cap_mode === undefined && currentBody.capMode !== undefined ? { cap_mode: currentBody.capMode } : {}),
         // The structured answer's schema is the agent's contract with its callers: an edit that leaves it out keeps it.
         ...(definition.output_schema === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).outputSchema !== undefined ? { output_schema: (currentBody as AgenticBody).outputSchema } : {}),
+        // So is the checkout its runs start in (none clears it).
+        ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
       }
     : {};
   return makeRevision({ ...definition, ...carried }, files, note);
@@ -378,7 +381,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     ...(body.capMode !== undefined ? { cap_mode: body.capMode } : {}),
   };
   const kindBody = revision.kind === "agentic"
-    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...common }
+    ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...((body as AgenticBody).learning !== undefined ? { learning: (body as AgenticBody).learning } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).maxToolCalls !== undefined ? { max_tool_calls: (body as AgenticBody).maxToolCalls } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
   return {
     id: agent.id,
