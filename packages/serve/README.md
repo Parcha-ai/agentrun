@@ -773,12 +773,50 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
   it, so a sandbox runs on Docker only; a Daytona, Modal or E2B sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
-- **Mode 2**: on your own Archil disk. `PUT /v2/workspace/archil` turns it on with the disk's id, its region, its S3 URL
-  (and an exec image pinned by digest, if you want one other than serve's default), and the account key,
-  `ARCHIL_API_KEY`; `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by
-  digest (git 2.47), because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An
-  image you name needs git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts the run's folder from the disk with a
-  mount credential minted for that run alone; Docker's sandbox is refused, since it cannot mount the disk.
+- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
+  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
+  `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
+  because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
+  git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Daytona, Modal or E2B sandbox mounts
+  the run's folder from its disk with a mount credential minted for that run alone; Docker's sandbox is refused, since
+  it cannot mount the disk.
+
+**Archil disks: one per agent.** In Mode 2 every agent has its own disk. It is made on the agent's first run that uses
+it, never when the agent is made, in the account key's region, named `agentrun-<server id>-i-<agent id>` (an id with
+characters Archil doesn't take, or past 46 of them, is `h-` with its first 21 safe characters and 24 hex digits of its
+SHA-256, so no agent's disk name is another's); making it is
+idempotent by that name, and `GET /v2/agents/{agent_id}/archil` says which disk it is. A run's mount credential is minted
+on its run's disk, so Archil refuses that token on every other disk: a run of one agent can't mount another agent's
+files. This is the default, and it is enough for one owner: this server has no roles, and everything on it is its
+owner's.
+
+- **Isolating tenants.** A run's start may name another disk: `"archil_disk": {"disk_id": "dsk-…"}` on
+  `POST /v2/agents/{agent_id}/runs` or `POST /v2/runs` (an agent given inline). The run then keeps its folder there, and
+  its token is minted there, so a system that runs one agent for many customers (one expert, say) names a disk per
+  customer. That disk is the caller's: agentrun never makes, renames or removes it. It takes the id Archil returned when
+  the disk was made (`dsk-…`; Archil's API addresses disks by id, not owner/name), never a key or a region. The server
+  reads the disk at Archil before the run is made: a disk in another region than the account key's, or none of that id,
+  is a 422 naming the region, and no run is made; the claim reads it again, for a disk removed in between. The run's
+  launch keeps the disk it used, and whether it was the launch's or the agent's, so every claim, revoke and reclaim of
+  that run acts on that one disk, after a restart too. Any disk in the key's region may be named, by design: this
+  server has one owner, and a backend that launches runs for its customers is a trusted caller. Isolation comes from a
+  disk per boundary.
+- **The plan's disk limit.** Archil's free plan allows 5 disks per region. When Archil refuses to make an agent's disk
+  for its plan's limit, the run fails in words ("your Archil plan allows 5 disks; upgrade or delete an agent"); no run
+  falls back to a shared disk.
+- **Removing an agent's disk.** This server archives agents and never deletes one, and an archive keeps everything,
+  its disk included. `DELETE /v2/agents/{agent_id}/archil` deletes the agent's own disk at Archil (its runs' folders,
+  its home and its learning with it) and frees a disk of the plan, once no live run of any agent is on it (a run of
+  another agent may name it in `archil_disk`). The agent must be archived, unless its source manages it: an inline
+  run's agent is never archived here, and its caller decides when it is done. The disk is marked as being removed
+  before the live runs are counted: from then a new run of the agent on it is `409 agent_not_runnable`, and a run
+  launched just before is refused at its claim, so no run starts on a disk being deleted. A refusal leaves the disk the
+  agent's. It never touches a disk a run's launch named.
+- **Before you upgrade.** In Archil mode, an agent's files from before this release stay on the old server disk at
+  Archil; the agent starts on a new disk of its own. `diskId` is no longer a setting: there is no server-wide disk, and
+  no agent falls back to one.
+- **Later, narrower tokens.** Archil's tokens reach a whole disk; nothing narrower exists today. If Archil ships
+  path-scoped tokens, a run's token narrows from its disk to its own folder with no other change.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at `/workspace` in every computer that mounts
 it: a sandbox always, and a desktop whose provider mounts the mode's folder (Docker's in Mode 1, E2B's in Mode 2). A
@@ -2046,6 +2084,7 @@ serves these routes alone:
 - a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
   `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
@@ -2215,9 +2254,9 @@ alone: a model of any other provider runs as it does without it. `codex` and `op
 to serve's gateway (`AGENT_MODEL_BASE_URL`), else OpenAI with `OPENAI_API_KEY`. A harness with none of its own settings, where
 `OPENROUTER_API_KEY` is set, runs through OpenRouter (`https://openrouter.ai/api`, the key as a bearer token):
 claude-agent on its Messages endpoint, with Anthropic's own id on the wire (OpenRouter takes it: its Claude Code guide
-says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6-sol`). On that key alone the defaults are
-`openrouter/openai/gpt-6-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
-claude-agent and `openai/gpt-6-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
+says its "Anthropic Skin … handles model mapping") and the run priced by OpenRouter's catalog entry; codex and opencode on its Responses API, with the model's whole id (`openai/gpt-6.1-sol`). On that key alone the defaults are
+`openrouter/openai/gpt-6.1-sol` for pi (pi-ai's OpenRouter provider, on the bearer route), `anthropic/claude-sonnet-5.5` for
+claude-agent and `openai/gpt-6.1-sol` for codex and opencode; a direct provider's key gives the default for its harnesses where it is
 set. A model named `openrouter/<vendor>/<model>` (pi's name for it) goes through OpenRouter on every harness. An endpoint
 the host names never gets OpenRouter's key: `ANTHROPIC_BASE_URL` without `ANTHROPIC_API_KEY` is refused. A model with more
 than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming the form to use. A provider
@@ -2975,7 +3014,8 @@ no cap fixes, its error), as a person who has never seen a model request reads t
 least $0.03, and this run's cap is $0.01. Raise the cap to at least $0.03 to continue.", and once a run has spent:
 "Not sent: this run has spent $0.45 of its $0.50 cap, and the next step needs at least $0.03. Raise the cap to at least
 $0.48 to continue." What was spent, and what steps still running hold (named when it is a cent or more), read to the
-nearest cent ($0.0237416 reads $0.02); the exact amounts are `pending.spent_usd`. The cap to raise to is what was
+nearest cent ($0.0237416 reads $0.02); a spend above $0 that rounds to $0 reads "less than a cent" ("this run has spent
+less than a cent of its $0.105 cap"), never "$0"; the exact amounts are `pending.spent_usd`. The cap to raise to is what was
 spent, what steps still running hold, and the next step's least, rounded up to the cent so that it is enough. The words
 name no model. The refusal's timeline row is an `error` row with
 `paused: true`: the request was not sent and the run waits on a raise, so it reads as a pause, never as a failure. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's

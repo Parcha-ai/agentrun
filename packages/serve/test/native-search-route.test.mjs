@@ -47,13 +47,13 @@ test("a run's plane follows the route its model requests take, the one providerF
   const plane = (env, model) => planeFor(env, { harness: "codex", tools: ["web_search"], ...(model ? { model } : {}) }, {}).web_search;
   const cases = [
     [{ OPENROUTER_API_KEY: fake("or") }, undefined],
-    [{ OPENROUTER_API_KEY: fake("or") }, "openai/gpt-6-sol"],
-    [{ OPENROUTER_API_KEY: fake("or"), OPENAI_API_KEY: fake("openai") }, "openrouter/openai/gpt-6-sol"],
-    [{ OPENROUTER_API_KEY: fake("or"), OPENAI_API_KEY: fake("openai") }, "openai/gpt-6-sol"],
-    [{ OPENAI_API_KEY: fake("openai") }, "openai/gpt-6-sol"],
+    [{ OPENROUTER_API_KEY: fake("or") }, "openai/gpt-6.1-sol"],
+    [{ OPENROUTER_API_KEY: fake("or"), OPENAI_API_KEY: fake("openai") }, "openrouter/openai/gpt-6.1-sol"],
+    [{ OPENROUTER_API_KEY: fake("or"), OPENAI_API_KEY: fake("openai") }, "openai/gpt-6.1-sol"],
+    [{ OPENAI_API_KEY: fake("openai") }, "openai/gpt-6.1-sol"],
   ];
   for (const [env, model] of cases) {
-    const named = model ?? "openai/gpt-6-sol";
+    const named = model ?? "openai/gpt-6.1-sol";
     const slash = named.indexOf("/");
     const ref = { provider: named.slice(0, slash), modelId: named.slice(slash + 1) };
     const viaOpenRouter = providerFor("openai-responses", env, ref, "codex").origin === OPENROUTER_BASE;

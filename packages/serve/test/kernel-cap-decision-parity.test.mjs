@@ -13,7 +13,7 @@ import { test } from "node:test";
 const kernel = await import("../../run-adapters/dist/kernel/cap/index.js");
 const { holdOf } = await import("../dist/decision-cap.js");
 
-const MODEL = "openai/gpt-6-sol";
+const MODEL = "openai/gpt-6.1-sol";
 const STATE = { applicant: "Ada Lovelace", country: "UK" };
 const QUESTIONS = { match: "Is the applicant the person in the record?", risk: "Is the country high risk?", note: "Anything else?" };
 const IMAGES = { passport: "data:image/png;base64,AAAA", selfie: "data:image/png;base64,BBBB" };

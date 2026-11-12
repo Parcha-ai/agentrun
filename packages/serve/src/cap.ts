@@ -918,7 +918,9 @@ const whyOf = ({ text, figures }: ReturnType<typeof capRefusal>) => ({ why: text
  *  (RefusalFigures, the pause's spent_usd). */
 const spentOf = (spent: number, held: number, cap: number): string => {
   const holds = centsMoney(held);
-  return holds !== "$0" ? `spent ${centsMoney(spent)} and holds ${holds} for steps still running, of its ${money(cap)} cap` : `spent ${centsMoney(spent)} of its ${money(cap)} cap`;
+  // A spend above $0 that rounds to it reads "less than a cent", never "$0" (the kernel's spentMoney).
+  const spentWords = spent > 0 && centsMoney(spent) === "$0" ? "less than a cent" : centsMoney(spent);
+  return holds !== "$0" ? `spent ${spentWords} and holds ${holds} for steps still running, of its ${money(cap)} cap` : `spent ${spentWords} of its ${money(cap)} cap`;
 };
 /** An amount in words, to the nearest cent ($0.0237416 is $0.02), as money says it ($1, $0.20, $0). */
 export const centsMoney = (usd: number): string => money(Math.round(usd * 100) / 100);

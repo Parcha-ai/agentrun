@@ -111,7 +111,7 @@ test("a paid call that fails counts at what it was held at, as a model request t
   const request = capped.streamSimple(priced, context);
   assert.equal(wentOut(sent), 0, "it may have been sent and charged: the run's spend keeps its $0.001");
   const refused = await request.result();
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\./);
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\./);
 });
 
 test("a paid call the cap refuses while a model request is in flight names what is held for it apart from what the run has spent, in one format, with the cap that would run the call", async (t) => {
@@ -192,7 +192,7 @@ test("a paid call the run's stop cuts short, or one that times out, counts at wh
   // A request dearer than the room left is refused for room, naming what is spent: never for a spend unknown.
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0045 cap, /, "refused for room, never for a spend unknown");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0045 cap, /, "refused for room, never for a spend unknown");
   assert.ok(Math.abs(seen.last()?.spentUsd - 0.003) < 1e-12, `the three calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 
@@ -223,7 +223,7 @@ test("a paid call monid answers FAILED with no cost, or whose answer is lost, co
   await settled();
   const refused = await capped.streamSimple(model({ input: 0, output: 2, cacheRead: 0, cacheWrite: 0 }), context).result();
   assert.equal(sent.length, 2, "not sent");
-  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0035 cap, /, "refused for room, never for a spend unknown");
+  assert.match(refused.errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0035 cap, /, "refused for room, never for a spend unknown");
   assert.ok(Math.abs(seen.last()?.spentUsd - 0.002) < 1e-12, `the two calls at their holds as spent (#1539): ${JSON.stringify(seen.last())}`);
 });
 

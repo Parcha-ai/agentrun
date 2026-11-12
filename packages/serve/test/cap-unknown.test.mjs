@@ -343,7 +343,7 @@ test("after a crash, the cut request's held worst case is spent: the next reques
     const next = (await capModels(models, cap, spent)).streamSimple(outputOnly, context);
     assert.equal(sent.length, sends, `a cap of $${cap}`);
     if (sends) sent[0].end({ total: 0 });
-    else assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+    else assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
     await next.result();
   }
 });
@@ -357,7 +357,7 @@ test("the spend a reopened run reads is the full amount, never the timeline's to
   const { models, sent } = fakeModels();
   const next = (await capModels(models, 0.001 + 0.0000002, spent)).streamSimple(outputOnly, context);
   assert.equal(sent.length, 0, "not sent: $0.0000004 spent and $0.001 held pass the cap");
-  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0010002 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0010002 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });
 
 test("pi under a cap: a request stopped before its end whose stream and the 1,024-token allowance pass its limit counts at the worst case the cap held for it, which it hands its marks; the next goes while that leaves room, and is refused once it does not", async () => {
@@ -377,7 +377,7 @@ test("pi under a cap: a request stopped before its end whose stream and the 1,02
   assert.deepEqual(options, [0.001, 0.001], "each request carries what the cap held for it to its marks");
   const third = capped.streamSimple(outputOnly, context);
   assert.equal(sent.length, 2, "with $0.002 counted, $0.001 more passes $0.0025");
-  assert.match((await third.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0025 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+  assert.match((await third.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0025 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });
 
 /** Requests the test ends itself, each recorded with the options it went with: `end(stopReason, text, total)` streams
@@ -653,7 +653,7 @@ test("pi under a cap: a summary that fails with no answer counts at the worst ca
   await settle();
   const next = capped.streamSimple(outputOnly, context);
   assert.equal(sent.length, 0, "$0.001 counted and $0.001 more passes $0.0015");
-  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent \$0 of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
+  assert.match((await next.result()).errorMessage, /^spend_cap_reached \(out of budget\): Not sent: this run has spent less than a cent of its \$0\.0015 cap, and the next step needs at least \$0\.01\. Raise the cap to at least \$0\.01 to continue\.$/);
 });
 
 test("pi under a cap: a refused request's own start mark is written before its error ends the request, and a mark that fails still ends it", async () => {
