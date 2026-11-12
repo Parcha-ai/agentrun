@@ -112,9 +112,11 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		};
 		elements.push(element);
 		// Every text is also a text of each element above it, for the rows that have none of their own.
-		if (text ?? label) for (const above of open) if (above !== undefined) texts.set(above.key, [...(texts.get(above.key) ?? []), (text ?? label) as string]);
+		// A password field's text never names a row above it: its label may, its text may not.
+		const said = bool("password") ? label : (text ?? label);
+		if (said) for (const above of open) if (above !== undefined) texts.set(above.key, [...(texts.get(above.key) ?? []), said]);
 		// What the elements above it show, for their keys: a field's text is a person's to change, so it is not part.
-		const fixed = editable ? label : (text ?? label);
+		const fixed = editable || bool("password") ? label : (text ?? label);
 		if (fixed) for (const above of open) if (above !== undefined) shows.set(above.key, [...(shows.get(above.key) ?? []), fixed]);
 		if (selfClosing) path.pop();
 		else {

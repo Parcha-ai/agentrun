@@ -169,6 +169,8 @@ export class AttachHub {
 	readonly #claims = new Map<string, Record<string, string>>();
 	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
 	readonly #pending = new Map<string, Set<AttachSocket>>();
+	/** Each computer's connections given out, by the function that closes one. */
+	readonly #given = new Map<string, Set<() => void>>();
 
 	/** Takes a computer's new socket: calls hello on it, and keeps it when the hello is what the computer paired as. */
 	async accept(paired: PairedComputer, socket: AttachSocket): Promise<Result<HelloResult>> {
@@ -213,13 +215,37 @@ export class AttachHub {
 		return this.#live.get(id)?.hello;
 	}
 
-	/** The computer's connection, shared: closing it leaves the socket open. Undefined while it is not attached. */
+	/**
+	 * A connection over the computer's one socket: closing it leaves the socket open, cancels its calls still running and
+	 * refuses its later ones, and the run's release closes every connection it was given, so a run done with the computer
+	 * cannot reach it once another run holds it. Undefined while it is not attached.
+	 */
 	connection(id: string): ComputerConnection | undefined {
 		const live = this.#live.get(id);
 		if (live === undefined) return undefined;
+		const stop = new AbortController();
+		const given = this.#given.get(id) ?? new Set<() => void>();
+		this.#given.set(id, given);
+		const end = () => {
+			given.delete(end);
+			stop.abort();
+		};
+		given.add(end);
 		// Every caller's calls go over the one client; a drop fails them all with gone.
-		const shared: ComputerClient = { call: (method, params, options) => live.client.call(method, params, options), close: () => {} };
-		return { client: shared, hello: live.hello, close: async () => {} };
+		const shared: ComputerClient = {
+			call: (method, params, options) => {
+				if (stop.signal.aborted) return Promise.resolve(fail("gone", "this connection to the computer was closed: connect again"));
+				return live.client.call(method, params, { ...options, signal: options?.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]) });
+			},
+			close: end,
+		};
+		return { client: shared, hello: live.hello, close: async () => end() };
+	}
+
+	/** Closes every connection given out for the computer. */
+	#closeGiven(id: string): void {
+		for (const end of [...(this.#given.get(id) ?? [])]) end();
+		this.#given.delete(id);
 	}
 
 	/** Holds the computer for a run, with the run's labels; false when another run holds it. */
@@ -234,8 +260,10 @@ export class AttachHub {
 		return this.#claims.get(id);
 	}
 
+	/** Ends the run's hold, and closes the connections it was given. */
 	unclaim(id: string): void {
 		this.#claims.delete(id);
+		this.#closeGiven(id);
 	}
 
 	/** Ends a computer's attachment: its token was revoked, or the computer was removed. */
@@ -244,6 +272,7 @@ export class AttachHub {
 		this.#pending.delete(id);
 		for (const socket of pending ?? []) socket.close(ATTACH_CLOSE.unauthorized, why);
 		pending?.clear();
+		this.#closeGiven(id);
 		this.#live.get(id)?.socket.close(ATTACH_CLOSE.unauthorized, why);
 		this.#live.delete(id);
 		this.#claims.delete(id);
@@ -274,6 +303,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
 	const offline = () => fail("gone", `${paired.name} is not attached now: open its driver, which dials this server`);
 	const holds = (labels: Record<string, string>, wanted: Record<string, string>) => Object.entries(wanted).every(([key, value]) => labels[key] === value);
+	/** Why a network other than open is refused: a run never narrows a person's own machine's network. */
+	const networkRefusal = (asked: unknown) =>
+		`${paired.name} is a person's own machine on its own network, which a run cannot block or limit: network ${JSON.stringify(asked)} is refused; ask for network "open"`;
 	return {
 		id: "attached",
 		// The driver's version is the computer's, whatever it is: the provider never refuses a newer or older build of one
@@ -282,7 +314,11 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			return now().version;
 		},
 		capabilities,
-		check: (spec) => [...kindRefusals(capabilities()), ...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities()) : [])],
+		check: (spec) => [
+			...kindRefusals(capabilities()),
+			...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities()) : []),
+			...(spec.network === "open" ? [] : [{ field: "network", message: networkRefusal(spec.network) }]),
+		],
 		async create(spec) {
 			const refusals = this.check(spec);
 			if (refusals.length > 0) return fail("refused", refusals.map((refusal) => refusal.message).join("; "));
@@ -300,8 +336,10 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (!holds(have, labels)) return ok([]);
 			return ok([{ ref, labels: have, deadline: undefined, state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" } }]);
 		},
-		async network(asked) {
-			return mine(asked) ? ok({ other: "the machine's own network" }) : unknown(asked.id);
+		async network(asked, policy) {
+			if (!mine(asked)) return unknown(asked.id);
+			if (policy !== undefined && policy !== "open") return fail("refused", networkRefusal(policy));
+			return ok({ other: "the machine's own network" });
 		},
 		async connect(asked) {
 			if (!mine(asked)) return unknown(asked.id);

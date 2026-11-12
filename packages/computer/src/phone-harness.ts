@@ -1070,7 +1070,7 @@ class AdbClient implements ComputerClient {
 			case "apps.list":
 				return this.#appsList();
 			case "apps.launch":
-				if (params.background === true) return refuse("unsupported", "apps.launch: this phone does not offer apps.background: an app it opens comes to the front");
+				if (params.background === true) return refuse("unsupported", "apps.launch: apps.background is off here: an app a phone opens comes to the front");
 				return this.#launch(params.id, params.url);
 			case "apps.terminate":
 				return this.#terminate(params.id);

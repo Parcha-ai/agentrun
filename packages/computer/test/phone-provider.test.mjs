@@ -947,6 +947,10 @@ test("ui.observe never sends a secure field's value", async () => {
 	const seen = await engine.observe({});
 	assert.equal(seen.ok, true, JSON.stringify(seen));
 	assert.deepEqual(seen.value.nodes.map(({ role, value, flags }) => ({ role, value, flags })), [{ role: "textbox", value: undefined, flags: ["secure"] }]);
+	const row = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" content-desc="Password" password="true" bounds="[0,0][100,50]" /></node></hierarchy>`;
+	const [named] = parseUiElements(row, 1, [100, 50]).value.elements;
+	assert.equal(named.name, "Password", "a row is named by the field's label, never its text");
+	assert.ok(!named.key.includes("hunter2"), "nor is the text in its key");
 });
 
 test("apps.launch puts the named app in front, even when its task holds another app's activity on top", async () => {

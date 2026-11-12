@@ -123,6 +123,19 @@ test("typing and keys take the routes the features allow, refused in the off fea
 	await canvas.close();
 });
 
+test("a press is verified only when its effect is there at once; a double click lands twice", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => seen.nodes.find((n) => n.id === id).ref;
+	assert.deepEqual((await c.client.call("ui.act", { steps: [{ press: ref("wifi") }] })).value.steps, [{ route: "semantic", verified: true }], "a switch's toggle reads back at once");
+	assert.deepEqual((await c.client.call("ui.act", { steps: [{ press: ref("save") }] })).value.steps, [{ route: "semantic", verified: false }], "Save shows Saved only later");
+	const twice = await c.client.call("ui.act", { steps: [{ click: ref("canvas"), count: 2 }], foreground: true });
+	assert.deepEqual(twice.value.steps, [{ route: "foreground", verified: true }]);
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "canvas").value, "2");
+	await c.close();
+});
+
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {
 	class Mumbling extends FakeUiDriver {
 		async handle(engine, method, params, signal) {
@@ -235,6 +248,9 @@ test("the line server: method not found, parse error, a request with no id, and 
 	assert.equal((await reply(1)).error.code, -32601);
 	input.write("{not json\n");
 	assert.equal((await reply(null)).error.code, -32700);
+	replies.length = 0;
+	input.write("null\n");
+	assert.equal((await reply(null)).error.code, -32600, "a line of JSON that is not an object is an invalid request, and the server goes on");
 	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "apps.launch", params: { id: APP } })}\n`);
 	await reply(2);
 	input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ui.act", params: { steps: [], expect: { text: "never", timeoutMs: 30_000 } } })}\n`);

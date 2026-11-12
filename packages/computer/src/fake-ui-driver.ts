@@ -277,7 +277,7 @@ export class FakeUiDriver implements UiSource {
 				return route.ok ? ok(land(target, route.value)) : route;
 			}
 			this.#press(state, target as FakeElement);
-			return ok({ route: "semantic", verified: true });
+			return ok({ route: "semantic", verified: this.#shownAtOnce(target as FakeElement) });
 		}
 		if ("perform" in step) {
 			if (!(target?.actions ?? []).includes(step.action)) return fail("unsupported", `${target?.name ?? "the element"} has no action ${step.action}`);
@@ -299,7 +299,11 @@ export class FakeUiDriver implements UiSource {
 			// A point lands on what the app draws there, whether or not the view carries its elements (ui.tree off).
 			const hit = target ?? (Array.isArray(step.click) ? app.screens[state.screen].elements.findLast((one) => this.#inside(one.bounds, step.click as [number, number])) : undefined);
 			const route = pointer(hit);
-			return route.ok ? ok(land(hit, route.value, step.button === "right")) : route;
+			if (!route.ok) return route;
+			// A double or triple click lands as many times; a right click once.
+			let landed = land(hit, route.value, step.button === "right");
+			for (let more = step.button === "right" ? 0 : (step.count ?? 1) - 1; more > 0; more--) landed = land(hit, route.value);
+			return ok(landed);
 		}
 		if ("type" in step) {
 			const into = target ?? scripted(state.focus);
@@ -331,6 +335,12 @@ export class FakeUiDriver implements UiSource {
 
 	#inside([x, y, w, h]: [number, number, number, number], [px, py]: [number, number]): boolean {
 		return px >= x && py >= y && px < x + w && py < y + h;
+	}
+
+	/** Whether a press's effect is there to read back as soon as it ran: a toggle, a focus, or a screen opened at once. */
+	#shownAtOnce(element: FakeElement): boolean {
+		if (["switch", "checkbox", "textbox", "searchbox"].includes(element.role)) return true;
+		return element.press !== undefined && (element.press.after ?? 0) === 0;
 	}
 
 	#press(state: AppState, element: FakeElement): void {
@@ -374,12 +384,14 @@ export function serveUiLines(driver: FakeUiDriver, input: Readable, output: Writ
 	const error = (id: unknown, kind: DaemonErrorKind, message: string, code = codeOf(kind)) => reply({ jsonrpc: "2.0", id: id ?? null, error: { code, message, data: { kind } } });
 	const line = async (text: string) => {
 		if (Buffer.byteLength(text) > MAX_LINE_BYTES) return error(null, "limit", "the request is over the line limit", JSONRPC_CODES.invalidRequest);
-		let message: { id?: number | string; method?: unknown; params?: unknown };
+		let parsed: unknown;
 		try {
-			message = JSON.parse(text);
+			parsed = JSON.parse(text);
 		} catch {
 			return error(null, "invalid", "the line is not JSON", JSONRPC_CODES.parse);
 		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return error(null, "invalid", "a request is a JSON object", JSONRPC_CODES.invalidRequest);
+		const message = parsed as { id?: number | string; method?: unknown; params?: unknown };
 		if (message.method === CANCEL_METHOD) {
 			running.get((message.params as { id?: number | string } | undefined)?.id ?? "")?.abort();
 			return;

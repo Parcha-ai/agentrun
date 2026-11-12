@@ -204,6 +204,33 @@ test("one run holds an attached computer; offline refuses create; release never 
 	driver.close();
 });
 
+test("a run's release closes its connections: their calls in flight are cancelled and later ones refused, so the next run's computer is its own; a narrowed network is refused", async () => {
+	const driver = new FakeUiDriver();
+	const hub = new AttachHub();
+	const paired = pairedFor(driver);
+	const provider = attachedProvider(paired, hub);
+	await dial(hub, paired, driver);
+	const spec = { image: "attached", lifetimeMs: 60_000, network: "open", labels: { run: "a" } };
+	for (const network of ["none", { allow: ["example.com"] }]) {
+		const refused = await provider.create({ ...spec, network });
+		assert.equal(refused.error.code, "refused");
+		assert.match(refused.error.message, /a person's own machine on its own network, which a run cannot block or limit/);
+	}
+	assert.equal((await provider.network({ id: paired.id, name: paired.name }, "none")).error.code, "refused");
+	assert.equal((await provider.create(spec)).ok, true);
+	const first = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	await first.client.call("apps.launch", { id: APP });
+	const waiting = first.client.call("ui.act", { steps: [], expect: { text: "never", timeoutMs: 30_000 } });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal((await provider.release({ id: paired.id, name: paired.name }, "delete")).ok, true);
+	assert.equal((await waiting).error.code, "aborted", "the released run's call in flight is cancelled");
+	assert.equal((await first.client.call("ping", {})).error.code, "gone", "and its later calls are refused");
+	assert.equal((await provider.create({ ...spec, labels: { run: "b" } })).ok, true);
+	const second = (await provider.connect({ id: paired.id, name: paired.name })).value;
+	assert.equal((await second.client.call("ping", {})).ok, true, "the next run's connection works over the same socket");
+	driver.close();
+});
+
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
 	assert.equal(redialDelay(0, () => 0), 1000);
 	assert.equal(redialDelay(3, () => 1), 6400);
