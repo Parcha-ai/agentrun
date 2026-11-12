@@ -18,9 +18,13 @@ let package = Package(
 	targets: [
 		.target(name: "CComputerd"),
 		.target(name: "ComputerdKit"),
+		// The macOS layer calls AppKit, the accessibility API, ScreenCaptureKit and Security, whose types carry no
+		// Sendable annotations. It builds in the Swift 5 language mode, so those are warnings; the core keeps Swift 6's
+		// strict checking.
 		.target(
 			name: "ComputerdMac",
 			dependencies: ["ComputerdKit", "CComputerd"],
+			swiftSettings: [.swiftLanguageMode(.v5)],
 			linkerSettings: [
 				.linkedFramework("AppKit", .when(platforms: [.macOS])),
 				.linkedFramework("ApplicationServices", .when(platforms: [.macOS])),
@@ -30,9 +34,9 @@ let package = Package(
 				.linkedLibrary("bsm", .when(platforms: [.macOS])),
 			]
 		),
-		.executableTarget(name: "ComputerdApp", dependencies: ["ComputerdMac", "ComputerdKit"]),
+		.executableTarget(name: "ComputerdApp", dependencies: ["ComputerdMac", "ComputerdKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
 		.executableTarget(name: "ComputerdCLI", dependencies: ["ComputerdKit"]),
 		.testTarget(name: "ComputerdKitTests", dependencies: ["ComputerdKit"]),
-		.testTarget(name: "ComputerdMacTests", dependencies: ["ComputerdMac", "ComputerdKit"]),
+		.testTarget(name: "ComputerdMacTests", dependencies: ["ComputerdMac", "ComputerdKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
 	]
 )

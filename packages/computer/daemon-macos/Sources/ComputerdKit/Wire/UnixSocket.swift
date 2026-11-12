@@ -20,10 +20,10 @@ public enum Paths {
 		return home + "/computerd.sock"
 	}
 
-	/// The attach binding's settings: the serve URL and the pairing token.
+	/// The attach binding's settings: the server this Mac is paired with, and its computer id.
 	public static var attach: String { home + "/attach.json" }
 
-	/// The claim's policy on this Mac: the apps it may touch, whether it may take the keyboard and mouse.
+	/// The owner's policy for this Mac: the apps a connection may touch.
 	public static var policy: String { home + "/policy.json" }
 }
 

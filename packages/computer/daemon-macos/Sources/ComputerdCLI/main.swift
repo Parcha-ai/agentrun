@@ -2,10 +2,12 @@
 // macOS judges every action by the app's signature, wherever the command was started (an SSH session in a VM, a
 // terminal, a harness).
 //
-//   computerd [stdio]           relay stdin and stdout to the app: the computer protocol's stdio binding
-//   computerd hello             print the app's hello (its features, with the reason each is off)
-//   computerd pair URL TOKEN    save the attach binding's serve URL and pairing token, and restart the app to dial it
-//   computerd unpair            forget them
+//   computerd [stdio]                  relay stdin and stdout to the app: the computer protocol's stdio binding
+//   computerd hello                    print the app's hello (its features, with the reason each is off)
+//   computerd pair SERVER CODE [NAME]  pair this Mac with a server, by the code its console shows, so the app dials it
+//   computerd unpair                   forget the server and the token
+//
+// Pairing runs in the app's own executable, so the token it puts in the keychain is the app's to read.
 import ComputerdKit
 import Foundation
 #if canImport(Darwin)
@@ -74,50 +76,50 @@ func hello() -> Never {
 	exit(0)
 }
 
-func pair(_ url: String, _ token: String) -> Never {
-	guard let parsed = URL(string: url), parsed.scheme == "wss" || parsed.scheme == "ws", parsed.host != nil else {
-		fail("\(url) is not a wss:// URL")
-	}
-	let settings = AttachSettings(url: url, token: token)
-	do {
-		try settings.save()
-	} catch {
-		fail("cannot save \(Paths.attach): \(error)")
-	}
-	restartApp()
-	print("paired: Computerd dials \(url)")
-	exit(0)
-}
-
-func unpair() -> Never {
-	try? FileManager.default.removeItem(atPath: Paths.attach)
-	restartApp()
-	print("unpaired")
-	exit(0)
-}
-
-/// Restarts the LaunchAgent, so the app reads its settings again.
-func restartApp() {
-	#if os(macOS)
-	let task = Process()
-	task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-	task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(AttachSettings.agentLabel)"]
-	try? task.run()
-	task.waitUntilExit()
+/// The app's executable: $COMPUTERD_APP, else Contents/MacOS/Computerd of the bundle this command sits in
+/// (Contents/Helpers/computerd), through any symlink to it.
+func appExecutable() -> String {
+	if let given = ProcessInfo.processInfo.environment["COMPUTERD_APP"], !given.isEmpty { return given }
+	var me = URL(fileURLWithPath: CommandLine.arguments[0])
+	#if canImport(Darwin)
+	var size: UInt32 = 4096
+	var buffer = [CChar](repeating: 0, count: Int(size))
+	if _NSGetExecutablePath(&buffer, &size) == 0 { me = URL(fileURLWithPath: String(cString: buffer)) }
 	#endif
+	let contents = me.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+	return contents.appendingPathComponent("MacOS/Computerd").path
 }
 
+/// Runs the app's executable with these arguments and exits with its status.
+func runApp(_ arguments: [String]) -> Never {
+	let path = appExecutable()
+	guard FileManager.default.isExecutableFile(atPath: path) else {
+		fail("cannot find Computerd.app's executable at \(path): run the computerd inside Computerd.app/Contents/Helpers")
+	}
+	let task = Process()
+	task.executableURL = URL(fileURLWithPath: path)
+	task.arguments = arguments
+	do {
+		try task.run()
+	} catch {
+		fail("cannot run \(path): \(error)")
+	}
+	task.waitUntilExit()
+	exit(task.terminationStatus)
+}
+
+let usage = "usage: computerd [stdio] | hello | pair SERVER CODE [NAME] | unpair"
 let args = Array(CommandLine.arguments.dropFirst())
 switch args.first {
 case nil, "stdio": relay()
 case "hello": hello()
 case "pair":
-	guard args.count == 3 else { fail("usage: computerd pair wss://<serve>/v2/computers/attach <pairing token>") }
-	pair(args[1], args[2])
-case "unpair": unpair()
+	guard args.count == 3 || args.count == 4 else { fail("usage: computerd pair https://<server> <code from its console> [a name for this Mac]") }
+	runApp(["--pair"] + args.dropFirst())
+case "unpair": runApp(["--unpair"])
 case "-h", "--help", "help":
-	print("usage: computerd [stdio] | hello | pair URL TOKEN | unpair")
+	print(usage)
 	exit(0)
 default:
-	fail("unknown command \(args[0]): computerd [stdio] | hello | pair URL TOKEN | unpair")
+	fail("unknown command \(args[0]): \(usage)")
 }

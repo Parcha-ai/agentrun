@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# CI: starts Computerd.app the way its LaunchAgent does (launchd, in the runner's Aqua session), headless, and runs
+# smoke.py against it through the app's own computerd command.
+#
+#   scripts/smoke.sh PATH/TO/Computerd.app
+set -euo pipefail
+
+app="$(cd "$(dirname "${1:?usage: smoke.sh PATH/TO/Computerd.app}")" && pwd)/$(basename "$1")"
+here="$(cd "$(dirname "$0")" && pwd)"
+label=ai.parcha.computerd
+domain="gui/$(id -u)"
+home=/tmp/computerd-ci
+mkdir -p "$home"
+chmod 700 "$home"
+export COMPUTERD_HOME="$home"
+
+plist="$HOME/Library/LaunchAgents/$label.plist"
+mkdir -p "$(dirname "$plist")"
+cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$label</string>
+	<key>ProgramArguments</key><array><string>$app/Contents/MacOS/Computerd</string></array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>COMPUTERD_HOME</key><string>$home</string>
+		<key>COMPUTERD_HEADLESS</key><string>1</string>
+	</dict>
+	<key>LimitLoadToSessionType</key><string>Aqua</string>
+	<key>RunAtLoad</key><true/>
+	<key>StandardErrorPath</key><string>$home/stderr.log</string>
+</dict>
+</plist>
+EOF
+
+direct=""
+finish() {
+	if [[ -n "$direct" ]]; then kill "$direct" 2>/dev/null || true; else launchctl bootout "$domain/$label" 2>/dev/null || true; fi
+	echo "--- the app's log"
+	cat "$home/stderr.log" 2>/dev/null || true
+}
+trap finish EXIT
+
+launchctl bootout "$domain/$label" 2>/dev/null || true
+if launchctl bootstrap "$domain" "$plist"; then
+	echo "launchd started Computerd in $domain"
+else
+	echo "launchctl bootstrap $domain failed: starting Computerd directly (grants then follow the runner's process)"
+	COMPUTERD_SERVE=1 COMPUTERD_HEADLESS=1 "$app/Contents/MacOS/Computerd" 2>"$home/stderr.log" &
+	direct=$!
+fi
+
+python3 -I "$here/smoke.py" "$app/Contents/Helpers/computerd" "$home"
