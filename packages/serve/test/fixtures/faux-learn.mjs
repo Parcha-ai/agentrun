@@ -98,6 +98,18 @@ function grade(prompt, faux) {
       return verdictOf(rules, files, faux);
     })();
   }
+  // "Grade: format.": a draft shown beside its skill whose format names "Grand total:" is dropped on Format when its
+  // workflow.json never writes it, and kept when it does (#2412); every other item is kept.
+  if (rules.includes("Grade: format.")) {
+    const fenced = (label) => new RegExp(`----- begin (\\w+): ${label.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} -----\\n([\\s\\S]*?)\\n----- end \\1 -----`).exec(prompt)?.[2];
+    const items = files.map((file) => {
+      const name = /^workflows\/([^/]+)\/workflow\.json$/.exec(file)?.[1];
+      const skill = name && fenced(`skills/${name}/SKILL.md, the skill this draft keeps as a workflow (not graded)`);
+      const drops = Boolean(skill?.includes("Grand total:")) && !fenced(`${file}, new`)?.includes("Grand total");
+      return drops ? { file, decision: "drop", question: "Format", why: "Its output cannot give the skill's format: no Grand total line." } : { file, decision: "keep", why: "It holds." };
+    });
+    return faux.message(JSON.stringify({ merge: items.some(({ decision }) => decision === "keep"), reason: "Judged each item.", items }));
+  }
   return verdictOf(rules, files, faux);
 }
 

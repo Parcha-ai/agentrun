@@ -116,7 +116,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, readPackages, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
@@ -127,7 +127,8 @@ import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { archilRoute, createArchilRoutes } from "./archil-routes.js";
+import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
+import { agentDiskOf, ARCHIL_DISK_ID, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -215,6 +216,9 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
+   *  (a launch's disk read, the settings' test, an agent's disk removed). */
+  archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
    *  backend), in place of Browserbase's or Kernel's. */
   fauxBrowser?: string;
@@ -391,6 +395,9 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/sign-ins\/([^/]+)$/, name: "forgetSignIn" },
+  // The agent's Archil disk (archil-routes.ts): read, and removed for an archived agent.
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/archil$/, name: "getAgentArchil" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/archil$/, name: "deleteAgentArchil" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files$/, name: "listHomeFiles" },
@@ -1052,7 +1059,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
   const shellOf = async (setting: { kind: string; provider?: string; image?: string }) => runShellOf(setting, await modeNow(), claimKinds({}));
-  const archil = createArchilRoutes({ store, sealKey, env: process.env });
+  /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
+   *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
+   *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
+   *  is no shell), whose shell runs the shell tools; else none, and why. */
+  const shellHere = async (): Promise<ShellHere> => {
+    if ((await shellOf({ kind: "none" })) === "local") return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
+    const fresh = newAgentPlace(boxOffers);
+    let why = "why" in fresh ? fresh.why : "it is not set up";
+    if ("place" in fresh && fresh.place.mode === "sandbox") {
+      const computer = { kind: "sandbox", provider: fresh.place.box };
+      const ready = await computerReady(computer);
+      if ("refused" in ready) why = ready.refused;
+      else if ((await shellOf(computer)) === "computer") return { computer, tools: [...shellTools("computer")], words: `the ${fresh.place.box} sandbox` };
+    }
+    return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
+  };
+  const archil = createArchilRoutes({ store, sealKey, env: process.env, ...(options.archilControl ? { control: options.archilControl } : {}) });
   /** Where a run of `revision` has its shell (shellOf): its computer setting as the claim reads it (computer-for-claim.ts
    *  settingOf), else its place's computer, else the place its run would resolve to (fallbackPlace). The agent's tool
    *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
@@ -1165,6 +1188,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     readyFiles: (ids) => uploads.readyFiles(ids as string[]),
     files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
+    // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
+    // A disk the body names is read at Archil once, before the run is made (archil-routes.ts checkLaunchDisk): one that is
+    // not there or not in the key's region is a 422 here, and Mode 1 is too. An agent whose disk is being removed
+    // (archil-routes.ts removeAgentDisk) starts no run on it: 409 until the removal is done.
+    launchDiskOf: async (agentId, named) => {
+      if (named !== undefined) {
+        await archil.checkLaunchDisk(named);
+        return { diskId: named, kind: "launch" };
+      }
+      if (!(await inArchilMode(store))) return undefined;
+      const own = await agentDiskOf(store, agentId);
+      if (own?.removing) throw new ApiError("agent_not_runnable", `The agent ${agentId}'s Archil disk ${own.diskId} is being removed (DELETE /v2/agents/${agentId}/archil): start the run once that is done, and it gets a new disk.`);
+      return own ? { diskId: own.diskId, kind: "agent" } : undefined;
+    },
     workflowTitle,
     serverSecrets,
     toolSettings: () => settings.get(),
@@ -1736,6 +1773,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const server = "Add it in Settings → MCP servers, under that name, then apply the template again.";
       throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `the MCP server ${need.server}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server.`, fix: server }))] });
     }
+    // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
+    // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
+    // whose entries is met (a shell alone, where there is none) refuses the apply: nothing is made.
+    const pick = pickComputer(pkg, await shellHere());
+    if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: COMPUTER_FIX }] });
+    const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.server}`, reason: NOT_SET_UP, message: `No MCP server ${need.server} is saved on this server, so the agent was made without its tools (${need.tools.join(", ")}). Save it in Settings → MCP servers and apply again to grant them.` }));
     const harness = pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
@@ -1754,7 +1797,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
     // never), else ask. Deny and pins hold either way.
     const chosenApprovals = approvals ?? pkg.approvals;
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}) }, templateDeps);
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants: grants.filter((tool) => !denied.includes(tool)), ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>).
     const refusedTriggers = madeTriggerIssues(made.triggers, Date.now());
@@ -1811,7 +1854,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
-    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
+    const applied = { template: pkg.name, version: pkg.version, agent_id: entry.agent.id, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
     return { applied, minted };
   }
 
@@ -1966,7 +2009,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk"]);
+    if (body.archil_disk !== undefined) {
+      const disk = body.archil_disk;
+      const extra = isObject(disk) ? Object.keys(disk).filter((key) => key !== "disk_id") : [];
+      if (!isObject(disk) || typeof disk.disk_id !== "string" || !ARCHIL_DISK_ID.test(disk.disk_id)) issues.push({ field: "archil_disk.disk_id", reason: "wrong_type", message: "archil_disk is { disk_id }: the disk id Archil returned when the disk was made (dsk- and 16 hex digits; Archil's API addresses disks by id, not owner/name), in this server's Archil region" });
+      else if (extra.length) issues.push({ field: `archil_disk.${extra[0]}`, reason: "not_allowed", message: "archil_disk names a disk by its id alone: its region is this server's Archil key's, and no key is ever sent with a run", fix: `Remove ${extra.map((key) => `archil_disk.${key}`).join(" and ")}.` });
+    }
     if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
     if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
     if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -2583,6 +2632,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const entry = await needAgent(id);
         return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), triggers_off: triggersOff }, { etag: etagOf(entry) });
       }
+      case "getAgentArchil":
+      case "deleteAgentArchil": {
+        // The agent's Archil disk (archil-routes.ts): its rules are the handler's; the dispatch reads the agent (archived, or
+        // managed by its source) and how to count the live runs on a disk.
+        const entry = await needAgent(id);
+        const controller = new AbortController();
+        req.once("close", () => controller.abort());
+        const agent = { id, archived: entry.agent.archivedAt != null, external: entry.agent.externalRef !== null, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
+        return send(res, 200, await archilRoute(archil, found.name, { agent, signal: controller.signal }), { "cache-control": "no-store" });
+      }
       case "forgetSignIn": {
         await needAgent(id);
         let key: string;
@@ -3082,8 +3141,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets secret_set and the words.
         return send(res, answer.status, secret && !replayed ? triggerMade(first, secret, mayHoldSecrets(req), new Date().toISOString()) : answer.body, answer.headers);
       }
-      case "listTemplates":
-        return send(res, 200, { templates: templates.map(packageView) });
+      case "listTemplates": {
+        // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
+        const here = templates.some((one) => one.computer) ? await shellHere() : undefined;
+        const pickView = (pkg: Package) => {
+          const pick = here && pickComputer(pkg, here);
+          if (!pick) return null;
+          if ("refused" in pick) return { entry: null, computer: null, shell: null, dropped: [], note: pick.refused };
+          return { entry: pick.entry, computer: pick.computer, shell: pick.shell, dropped: pick.dropped, note: pick.note };
+        };
+        return send(res, 200, { templates: templates.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
+      }
       case "applyTemplate": {
         const pkg = templates.find((t) => t.name === id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
