@@ -7,8 +7,9 @@ import type { Command } from "./loop-contract.js";
 /** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good.
  *  browser_hand_back is a person's answer to the agent's browser hand-over (runner/hand-back.ts). computer_take_over and
  *  computer_hand_back are a person's turn with the run's desktop or phone (computer-commands.ts, runner/computer-journal.ts).
- *  pause and resume are a workflow run's (runs.ts pause). */
-export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise", "browser_hand_back", "computer_take_over", "computer_hand_back", "pause", "resume"]);
+ *  computer_start, computer_call and computer_release are the owner's, for a computer the run holds (computer-held.ts,
+ *  runner/held-run.ts). pause and resume are a workflow run's (runs.ts pause). */
+export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise", "browser_hand_back", "computer_take_over", "computer_hand_back", "computer_start", "computer_call", "computer_release", "pause", "resume"]);
 
 export interface CommandInput {
   readonly kind: string;
@@ -51,9 +52,15 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       if (text(body.take)) return undefined;
       if (!text(body.ask)) return "a computer hand-back names the take it ends (take) or the ask it answers (ask)";
       return body.outcome === "done" || body.outcome === "cancelled" ? undefined : "a computer hand-back's outcome is done or cancelled";
+    case "computer_call":
+      if (!text(body.method)) return "a computer call names its protocol method";
+      return body.params === undefined || (typeof body.params === "object" && body.params !== null && !Array.isArray(body.params)) ? undefined : "a computer call's params are an object";
+    case "computer_start":
+    case "computer_release":
     case "pause":
     case "resume":
-      // A workflow run's pause or resume (POST /runs/{id}/pause, /resume): the run's runner takes it; it carries nothing.
+      // A held run's start or release (POST /runs/{id}/start, /computer/release), or a workflow run's pause or resume
+      // (POST /runs/{id}/pause, /resume): the run's runner takes it; it carries nothing.
       return Object.keys(body).length === 0 ? undefined : `a ${kind} carries nothing`;
     default:
       return undefined;

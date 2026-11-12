@@ -14,6 +14,8 @@ import type { Revision } from "./agent-rows.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
+import { holdOf } from "./computer-held.js";
+import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
@@ -592,6 +594,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? body.cap_mode : rbody.capMode;
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   await deps.runnable(revision, place, { capped: cap !== undefined });
+  // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
+  // revision's computer, else its place's).
+  const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);
+  if (hold !== undefined && "field" in hold) throw invalid([hold]);
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
@@ -636,6 +642,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
     ...(archilDisk ? { archilDisk } : {}),
+    ...(hold ? { hold } : {}),
   };
   return { launch, revision };
 }

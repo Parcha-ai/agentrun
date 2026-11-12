@@ -25,7 +25,7 @@ import { raiseFollowUpId } from "../run-view.js";
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
  *  takeover's note, its computer's hold, the learning seed it laid): read past when a claim asks whether the run's root ends
  *  on its end (a fresh reopen). */
-const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold"]);
+const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold", HELD_KIND, HELD_CALL_KIND]);
 
 /** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
 const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
@@ -37,6 +37,8 @@ import { approvalOf, CLOSE_MS, CUT_STEP_MS, STOP_SETTLE_MS, commandRequest, cutL
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold, type RunComputerHold } from "./computer-journal.js";
+import { type HeldSpec, isHeldCommand, type JournalHeld, journalHeld } from "./held-run.js";
+import { HELD_CALL_KIND, HELD_KIND, heldWords } from "../computer-held.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
 import { DECISION_SESSION, FIT_TOLERANCE, overCapOf, paidRefusal, runCap, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -146,6 +148,10 @@ export interface AdapterRunSpec {
    *  changes to the run's journal, which the server reads (computer-routes.ts), and applies the person's take-over and
    *  hand-back rows to it (runner/computer-journal.ts). */
   readonly computer?: RunComputerHold;
+  /** The run's computer held for its owner (a run started with `hold: true`, computer-held.ts): the agent's first input
+   *  waits for the owner's start, the run's end waits for the owner's release, and the owner's calls go to `client`
+   *  (runner/held-run.ts). */
+  readonly held?: HeldSpec;
   /** Lets this spec's resources go once the loop writes nothing more through them: called once, after its Session and
    *  Harness are closed, when its pass ends (a restart's included) and at the run's end. Never throws out: a failure is
    *  logged, and the end stands. */
@@ -652,6 +658,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let held: { detach(): void } | undefined;
   /** The run's computer hold's journal side, for the current pass (AdapterRunSpec.computer). */
   let computerNow: JournalHold | undefined;
+  /** The run's computer held for its owner, for the current pass (AdapterRunSpec.held). */
+  let heldNow: JournalHeld | undefined;
   /** This claim's spec, once known: a raise is checked by its cap's rule, and the end's patch is read from it. */
   let specNow: AdapterRunSpec | undefined;
   /** Whether this claim's tool host was let go (its beforeRelease run), once. */
@@ -861,6 +869,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       landed.catch(() => undefined);
       await landed;
       return outcome;
+    });
+    handing = turn.catch(() => undefined);
+    return turn;
+  };
+
+  /** The owner's start, call or release of a held computer (runner/held-run.ts): taken by the commit that writes what came
+   *  of it (its entry carries the row's id); refused in words when it changed nothing. One at a time, in the take-over's
+   *  turn: a call runs on the computer before the next row is looked at. */
+  const heldCommand = (command: Command): Promise<CommandOutcome> => {
+    const turn = handing.then(async (): Promise<CommandOutcome> => {
+      await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
+      const [theGate, theHeld] = [gate, heldNow];
+      if (!theGate || theGate.sealed) return { later: "the run is parking or ending: the row waits for its next claim" };
+      if (!theHeld) return { refused: "This run does not hold its computer: start it with hold: true." };
+      const decided = await theHeld.decide(command);
+      if ("refused" in decided) return decided;
+      if (theGate.sealed) return { later: "the run is parking or ending: the row waits for its next claim" };
+      const madeBy = (data: Record<string, unknown>) => theHeld.madeBy(data, command.id);
+      const landed = theGate.expect((batches) => writesEntry(HELD_KIND, madeBy)(batches) ?? writesEntry(HELD_CALL_KIND, madeBy)(batches), { take: [command.id] });
+      landed.catch(() => undefined);
+      await decided.write();
+      await landed;
+      return { taken: true };
     });
     handing = turn.catch(() => undefined);
     return turn;
@@ -1510,6 +1541,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The run's journal so far: a take an earlier claim's computer left in force ends released here (computer-journal.ts).
           await computerNow.up(await entriesOf(gate.journal, root.id, context));
         }
+        // The run's computer held for its owner: the hold goes on where the last pass left it, or starts waiting on the
+        // run's first claim. A new claim's computer is not the one an open hold held: the run ends in those words.
+        heldNow = undefined;
+        if (spec.held) {
+          const [journalOf, rootOf] = [harness, root];
+          heldNow = journalHeld(spec.held, (entries) => journalOf.commit(async (tx) => {
+            for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
+          }, context), now);
+          if ((await heldNow.up(await entriesOf(gate.journal, root.id, context), restarts === 0)) === "lost") {
+            return await writeEnd(harness, root, gate, { state: "failed", summary: heldWords.lost }, []);
+          }
+        }
         // The cap a raise left the run at, before any request of this claim, through the one reader the run view and its
         // budget card read too (capNowOf: the newest raise entry, else the launch's cap): a claim that takes over a raised
         // run (a resume, another runner's, a restarted server's) holds it to the raise, never the launch's cap.
@@ -1562,6 +1605,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         await reportHeld(harness, root.id);
         if (restarts > restartLimit + 1) {
           return await writeEnd(harness, root, gate, { state: "failed", summary: `the kernel faulted on every restart (${restarts} restarts)` }, [], await cutRows(claim, spec, "faulted"));
+        }
+        // A held computer waits for its owner's start before the agent's first input; the owner's calls set the task up
+        // meanwhile. A release, or no call for the hold's minutes, ends the run before its agent ever ran. A stop ends it
+        // stopped, and a lost claim leaves it for the next claim.
+        if (heldNow?.state() === "waiting") {
+          const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
+          const waited = await heldNow.untilStarted(Promise.race([stopping, aborted, harness.closed]));
+          // Set by stop() during the wait: read past the narrowing TypeScript did before it.
+          const cut = stopReason as StopReason | undefined;
+          if (cut?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cut.cancel), [cut.commandId], await cutRows(claim, spec, "stopped"));
+          if (cut || deps.signal.aborted || waited === "cut") return await interrupted(cut?.kind ?? "its claim's signal aborted");
+          if (heldNow.state() === "released") {
+            const why = heldNow.lapse() === "timeout" ? heldWords.timeout(spec.held!.minutes) : "The owner released the computer before the agent started";
+            return await writeEnd(harness, root, gate, { state: "stopped", outcome: "cancelled", summary: why }, []);
+          }
         }
         let followedUp = false;
         if (raising.resuming) {
@@ -1823,6 +1881,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (cut?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cut.cancel), [cut.commandId], await cutRows(claim, spec, "stopped"));
           if (cut || deps.signal.aborted) return await interrupted(cut?.kind ?? "its claim's signal aborted");
         }
+        // A held computer stays the owner's after the agent's end, for their checks: the run's end, and its computer's
+        // release after it, wait for the owner's release or the hold's lapse. A stop ends the run stopped at once, and a
+        // lost claim leaves it for the next claim.
+        if (heldNow) {
+          const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
+          handingBack = true;
+          const waited = await heldNow.heldAtEnd(Promise.race([stopping, aborted, harness.closed]));
+          const cut = stopReason as StopReason | undefined;
+          if (cut?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cut.cancel), [cut.commandId], await cutRows(claim, spec, "stopped"));
+          if (cut || deps.signal.aborted || waited === "cut") return await interrupted(cut?.kind ?? "its claim's signal aborted");
+        }
         // The end-of-run step, once, before the end: its rows ride in the end commit. A stop or a lost claim during it
         // writes no end of the job's (a person's stop ends the run stopped; a lost claim leaves it for the next claim).
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed");
@@ -1856,6 +1925,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       held?.detach();
       computerNow?.detach();
       computerNow = undefined;
+      heldNow = undefined;
       handingBack = false;
       deps.live?.(() => undefined);
       // A tool host's beforeRelease, when no end or park let it go first (a shutdown, a lost claim): the Harness still open.
@@ -2422,6 +2492,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (command.kind === "raise") return raise(command);
       if (command.kind === HAND_BACK) return handBack(command);
       if (isComputerCommand(command)) return computerCommand(command);
+      if (isHeldCommand(command)) return heldCommand(command);
       // A pause is a workflow run's: an agentic run's turn is stopped instead, in main's words (runs.ts pause).
       if (command.kind === "pause" || command.kind === "resume") return { refused: AGENTIC_PAUSE_REFUSED };
       return { refused: `an adapter loop takes no ${command.kind} command` };

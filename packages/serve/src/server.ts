@@ -126,6 +126,7 @@ import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute } from "./computer-routes.js";
+import { heldField, heldRoute, holdIssues } from "./computer-held-routes.js";
 import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
@@ -436,6 +437,11 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
+  // A held computer's (computer-held-routes.ts): a run started with hold: true waits for its start, takes its owner's
+  // protocol calls, and keeps its computer after its agent's end until released.
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/start$/, name: "startRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/call$/, name: "callRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/release$/, name: "releaseRunComputer" },
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
@@ -1084,7 +1090,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!setting) return {};
     const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
     const field = runComputerField(setting, { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) });
-    return field ? { computer: field } : {};
+    // A run that holds its computer for its owner says where the hold is (computer-held-routes.ts heldField).
+    const held = field ? await heldField(store, runId, { context: ctx }) : undefined;
+    return field ? { computer: { ...field, ...(held ? { held } : {}) } } : {};
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -1999,7 +2007,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "archil_disk", "hold", "hold_minutes"]);
+    issues.push(...holdIssues(body));
     if (body.archil_disk !== undefined) {
       const disk = body.archil_disk;
       const extra = isObject(disk) ? Object.keys(disk).filter((key) => key !== "disk_id") : [];
@@ -2786,6 +2795,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
         }, store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
+      }
+      case "startRun":
+      case "callRunComputer":
+      case "releaseRunComputer": {
+        // A held computer's routes (computer-held-routes.ts), over the store: each a command row the run's runner applies.
+        const run = await needRun(id);
+        return send(res, 200, await heldRoute(found.name, run.id, await bodyOf(req), store, { context: ctx }), { "cache-control": "no-store" });
       }
       case "listComputers":
       case "saveComputerKeys":
