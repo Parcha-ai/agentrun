@@ -81,7 +81,7 @@ test('document store: with no option, the readers see commits that are only in t
 });
 
 test('document store: the readers see a journal from the store file, wherever the host keeps it, without the Harness, as the last commit left it', async () => {
-  // pi-durable-disk's layout: the store under the claim's `store/` directory.
+  // The store under the claim's `store/` directory.
   const directory = mkdtempSync(join(root, 'run-'));
   mkdirSync(join(directory, 'store'));
   const file = join(directory, 'store', 'run.sqlite');

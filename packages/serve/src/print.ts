@@ -32,7 +32,7 @@ const value = (v: string | number) => {
 export const logLine = (event: string, fields: Record<string, string | number> = {}): string =>
   [`at=${new Date().toISOString()}`, `event=${event}`, ...Object.entries(fields).map(([k, v]) => `${k}=${value(v)}`)].join(" ");
 
-/** A duration as pi-durable-disk's --drain-timeout takes it ("8s", "500ms", "1m"), in milliseconds; undefined when it is not one. */
+/** A duration as --drain-timeout takes it ("8s", "500ms", "1m"), in milliseconds; undefined when it is not one. */
 export function durationMs(text: string): number | undefined {
   const m = /^(\d+(?:\.\d+)?)(ms|s|m)$/.exec(text.trim());
   return m ? Math.round(Number(m[1]) * { ms: 1, s: 1_000, m: 60_000 }[m[2] as "ms" | "s" | "m"]) : undefined;

@@ -34,7 +34,7 @@ export const KINDS = {
    *  a call nor a message, so the reader passes over it. */
   messageSending: "agentrun.message.sending",
   /** A pi input the person did not type (a trigger's message): pi's user entry under the host's kind, its `data.origin`
-   *  the Timeline's attribution (pi-durable-agent's originMatcher reads a host's user entry's own origin). The model
+   *  the Timeline's attribution (the timeline reads a host's user entry's own origin). The model
    *  reads it as any message. */
   input: "agentrun.input",
   /** A tool call the gate asked a person about: the run parks on it. */

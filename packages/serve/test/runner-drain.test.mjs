@@ -1,5 +1,4 @@
-// A runner's close drains (RunnerOptions.drainMs), as a run's own process did on the server's stop (pi-durable-disk's
-// drain: the run goes on until nothing needs it, up to the drain's deadline, then the rest is released interrupted). It
+// A runner's close drains (RunnerOptions.drainMs), as a run's own process did on the server's stop (the run goes on until nothing needs it, up to the drain's deadline, then the rest is released interrupted). It
 // stops claiming at once; each run it holds goes on to its own end (a turn in flight finishes, its outcome journaled), so
 // a model request under way is never cut and paid again on the resume; past the bound, the rest are stopped for a
 // shutdown where they can resume. A person's stop sent meanwhile still reaches its run. Each loop here holds its turn
