@@ -1,9 +1,7 @@
+import { WorkflowInputInvalidError } from '../dist/workflow.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  runWorkflow, validateWorkflow, synthesizeAnswers,
-  WorkflowInputInvalidError, EscalationSignal, EffectOutcomeUnknownError,
-} from '../dist/index.js';
+import { runWorkflow, validateWorkflow, synthesizeAnswers, EscalationSignal, EffectOutcomeUnknownError } from '../dist/index.js';
 
 const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const valueSchema = object({ value: { type: 'number' } });

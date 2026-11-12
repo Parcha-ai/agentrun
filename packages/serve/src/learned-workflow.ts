@@ -6,8 +6,8 @@
 // unavailable, a model node that names any tool, a code node or a shell or executor call is refused before any node
 // runs, never after earlier ones spent), then runs it with the workflow DSL's runWorkflow:
 //   - a model node (agent, decide, extract, report) on the run's model of its tier, else the run's own model (the one
-//     model the run was made with and handed the key of: app.ts), in a fresh session of its own (agentrun-pi's host
-//     runner), with no tool of its own;
+//     model the run was made with and handed the key of: app.ts), in a fresh session of its own (the host
+//     runner, workflow/host-session.ts), with no tool of its own;
 //   - a call node `via: "tool"` on the tool table's effect, as a workflow revision's (app.ts), for a tool the agent has,
 //     its paid requests booked under the tool's call (paid-calls.ts), each node's under a call of its own; web_search
 //     where it resolves native on the provider's hosted search through the run's models (hosted-search.ts), on a harness
@@ -27,6 +27,7 @@ import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
 import { type Ledger, ledgerOf } from "./paid-calls.js";
+import { PORT_PROVIDER } from "./port-models.js";
 import { forModel } from "./result.js";
 import type { Plane } from "./tool-plane.js";
 import { ARGS_PREVIEW_BYTES, deniedText, type SettingFrom } from "./tool-gate.js";
@@ -157,6 +158,10 @@ export type LearnedWorkflowRun = {
   models: RunModels;
   /** The run's model a model node of `tier` runs on: the tier's, else the run's own. */
   modelOf(tier: string | undefined): ModelRef | undefined;
+  /** The session's model as a person reads it, the id the run's route names it by: what a node's trace says it ran on
+   *  (its `model`) when modelOf answers with the session's own port (PORT_PROVIDER), whose model id names no model. A
+   *  ref of another provider (a tier's own model) is named by its model id. */
+  modelName?(tier: string | undefined): string | undefined;
   /** The `llm` tool's completion, for a call node that names it. */
   complete?: Complete;
   /** The run's models a call node's native web_search goes through (EffectRun.search): on the runner, the session's
@@ -300,9 +305,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy);
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
-  // agentrun-pi's root loads its host runner and @earendil-works/pi-coding-agent, an optional peer of agentrun-pi: serve
-  // depends on it (package.json) so an installed server has it, not only this repository.
-  const { createPiHostRunner } = await import("@parcha/agentrun-pi");
+  // The host runner loads @earendil-works/pi-coding-agent and pi-agent-core, serve's own dependencies (package.json).
+  const { createPiHostRunner } = await import("./workflow/host-session.js");
   const runners = new Map<string, NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>();
   const runnerFor = async (tier: string | undefined) => {
     const known = runners.get(tier ?? "default");
@@ -316,8 +320,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     runners.set(tier ?? "default", runner);
     return runner;
   };
+  // Each model node's model and tier by its execution path, as it runs: its node.end (the same path) puts them on its
+  // trace. Never by its label, which a workflow may repeat. Only a model node runs here: a call node never has one.
+  const ranOn = new Map<string, { model: string; tier?: string }>();
   const runNode = async (request: Parameters<NonNullable<Parameters<typeof dsl.runWorkflow>[2]["runNode"]>>[0]) => {
     if (request.tools?.length) throw new Error(`${NODE_TOOLS_REFUSED}: its node "${request.label}" names ${request.tools.join(", ")}`);
+    const tier = typeof request.tier === "string" ? request.tier : undefined;
+    const ref = run.modelOf(tier);
+    const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
+    if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
     return (await runnerFor(request.tier as string | undefined))(request);
   };
@@ -360,10 +371,11 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
   };
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
-  const onEvent = (event: { type: string; label: string; detail?: unknown }) => {
+  const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0 });
+    const ran = typeof event.executionPath === "string" ? ranOn.get(event.executionPath) : undefined;
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
   };
   try {
     const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...(signal ? { signal } : {}) } as never);

@@ -217,8 +217,8 @@ describe("App, the agent builder's unsaved changes", () => {
     await act(async () => { p.button("Save revision")!.click(); });
     await wait(() => !!p.host.textContent?.includes("Saved"), "saved");
     expect(p.unloadAsks()).toBe(false);
-    // A revision note alone is typed text too.
+    // A revision note alone saves nothing (Save stays off), so it holds nothing either: one flag for both.
     await p.type(p.host.querySelector<HTMLInputElement>('input[aria-label="Revision note"]')!, "French now");
-    expect(p.unloadAsks()).toBe(true);
+    expect(p.unloadAsks()).toBe(false);
   });
 });

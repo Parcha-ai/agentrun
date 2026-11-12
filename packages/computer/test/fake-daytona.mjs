@@ -18,6 +18,10 @@ export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import
 export const DEFAULT_SNAPSHOT = "fake-default-snapshot";
 /** The GPU snapshots the fake holds, with the GPU each gives its sandboxes (its own resources, GET /snapshots/daytona-gpu). */
 export const GPU_SNAPSHOTS = { "daytona-gpu": { gpu: 1, gpuType: "H100" } };
+/** A GPU snapshot of box/Dockerfile, as box/build-daytona.py --gpu H100 names it: one H100, its user root. */
+export const ARCHIL_GPU_SNAPSHOT = "agentrun-archil-gpu-h100-0123456789ab";
+/** The GPU a snapshot gives its sandboxes: daytona-gpu's, or one of ours by its name; undefined for any other. */
+const gpuOfSnapshot = (snapshot) => GPU_SNAPSHOTS[snapshot] ?? (/^agentrun-archil-gpu-h100-[0-9a-f]{12}$/.test(snapshot ?? "") ? { gpu: 1, gpuType: "H100" } : undefined);
 /** Daytona's answer to a create that names a snapshot and sends resources beside it (live, 11-11): a snapshot carries its own. */
 export const RESOURCES_WITH_SNAPSHOT = "Cannot specify Sandbox resources when using a snapshot";
 const RESOURCE_FIELDS = ["cpu", "gpu", "gpuType", "memory", "disk"];
@@ -76,6 +80,7 @@ export const ARCHIL_PREFLIGHT = [
 	"archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2",
 	"tool 2510:2510",
 	"sudo none",
+	"fuse present",
 ].join("\n");
 /** The verb of a root command's argv: the helper's, or the shared script's by its marker (preflight). */
 export function rootVerb(argv) {
@@ -154,7 +159,7 @@ export function fakeDaytona(initial = {}) {
 			cpu: 1,
 			// A GPU snapshot's GPU, its own resource; else the GPUs asked for with no snapshot (CreateSandbox gpu, gpuType as a
 			// preference list), read back as gpu and the type assigned.
-			...(GPU_SNAPSHOTS[body.snapshot] ?? { gpu: body.gpu ?? 0, ...(Array.isArray(body.gpuType) ? { gpuType: body.gpuType[0] } : {}) }),
+			...(gpuOfSnapshot(body.snapshot) ?? { gpu: body.gpu ?? 0, ...(Array.isArray(body.gpuType) ? { gpuType: body.gpuType[0] } : {}) }),
 			memory: 1,
 			disk: 3,
 			state: knobs.stuck ? "pending_build" : "creating",

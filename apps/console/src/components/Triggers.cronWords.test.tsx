@@ -1,15 +1,18 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPage } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Trigger } from "@/lib/v2";
 
-// A schedule's cron line reads in words on the Triggers list and on its page ("At 08:00, only on Monday · UTC"); the raw
+// A schedule's cron line reads in words on the Triggers list and on its page, in the viewer's time with its own in
+// parentheses ("At 3:00 AM your time (08:00 UTC), only on Monday · next Mon Nov 16, 3:00 AM EST" from New York); the raw
 // line stays the words' tooltip (and the editor's field), never the text.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+beforeEach(() => { vi.stubEnv("TZ", "America/New_York"); });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllEnvs(); });
+const LINE = "At 3:00 AM your time (08:00 UTC), only on Monday · next Mon Nov 16, 3:00 AM EST";
 
 const DIGEST: Trigger = {
   id: "trg_d", name: "weekly-digest", enabled: true, source: { kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" },
@@ -38,16 +41,13 @@ describe("a schedule's cron in words", () => {
   it("in the list: the words, with the raw line only as their title", async () => {
     const host = await open({});
     const row = host.querySelector('[data-trigger="trg_d"]')!;
-    expect(row.textContent).toContain("At 08:00, only on Monday · UTC");
+    expect(row.querySelector('[title="0 8 * * 1"]')!.textContent).toBe(`${LINE} · monitor`);
     expect(row.textContent).not.toContain("0 8 * * 1");
-    expect(row.querySelector('[title="0 8 * * 1"]')!.textContent).toContain("At 08:00, only on Monday");
   });
 
   it("on its page: the words and its next time, the raw line only as their title", async () => {
     const host = await open({ trigger: "trg_d" });
-    expect(host.textContent).toContain("At 08:00, only on Monday · UTC");
-    expect(host.textContent).toContain("next ");
+    expect(host.querySelector('[title="0 8 * * 1"]')!.textContent).toBe(LINE);
     expect(host.textContent).not.toContain("0 8 * * 1");
-    expect(host.querySelector('[title="0 8 * * 1"]')).not.toBeNull();
   });
 });

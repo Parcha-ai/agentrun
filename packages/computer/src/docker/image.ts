@@ -18,7 +18,10 @@
 // recipe's own failing step, or the line Docker could not parse, which the caller wrote.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { fail, ok, type Result } from "../result.js";
+import { failFor, ok, type Result, vendorFail } from "../result.js";
+
+/** This module's failures: one with code vendor names Docker. */
+const fail = failFor("docker");
 
 /** The repository every recipe's image is tagged in. */
 export const IMAGE_REPOSITORY = "agentrun-computer";
@@ -266,7 +269,7 @@ function labelsOf(stdout: string): Record<string, string> {
 
 /** The failures every docker call shares: no CLI, the bound (in the words given), the last caller gone. */
 function common(docker: string, answer: Answer, timedOut: string): Result<never> | undefined {
-	if (answer.code === "ENOENT") return fail("docker", `the docker CLI (${docker}) was not found`);
+	if (answer.code === "ENOENT") return vendorFail("docker",`the docker CLI (${docker}) was not found`);
 	if (answer.code === "timeout") return fail("timeout", timedOut);
 	if (answer.code === "aborted") return fail("aborted", "it was stopped: no caller waits on it any more");
 	return undefined;
@@ -275,8 +278,8 @@ function common(docker: string, answer: Answer, timedOut: string): Result<never>
 function inspectFailure(docker: string, tag: string, answer: Answer, timeoutMs: number): Result<never> {
 	const shared = common(docker, answer, `docker image inspect ${tag} did not answer within ${span(timeoutMs)}, so it was stopped: call again`);
 	if (shared) return shared;
-	if (NOT_RUNNING.test(answer.stderr)) return fail("docker", `Docker did not answer docker image inspect ${tag}: is it running, and may this user reach it?`);
-	return fail("docker", `docker image inspect ${tag} failed (${exitOf(answer)}): run it on this machine as this process's user to see why`);
+	if (NOT_RUNNING.test(answer.stderr)) return vendorFail("docker",`Docker did not answer docker image inspect ${tag}: is it running, and may this user reach it?`);
+	return vendorFail("docker",`docker image inspect ${tag} failed (${exitOf(answer)}): run it on this machine as this process's user to see why`);
 }
 
 function buildFailure(docker: string, source: Extract<Source, { kind: "recipe" }>, answer: Answer, timeoutMs: number): Result<never> {
@@ -284,21 +287,21 @@ function buildFailure(docker: string, source: Extract<Source, { kind: "recipe" }
 	const shared = common(docker, answer, `the build of ${tag} did not finish within ${span(timeoutMs)}, so it was stopped: call again to build it again`);
 	if (shared) return shared;
 	const said = answer.stderr;
-	if (/no space left on device/i.test(said)) return fail("docker", `the build of ${tag} ran out of disk space: free some, then call again`);
+	if (/no space left on device/i.test(said)) return vendorFail("docker",`the build of ${tag} ran out of disk space: free some, then call again`);
 	// A base that could not be fetched for want of a network says so in both ways: the network is the cause.
-	if (UNREACHABLE.test(said)) return fail("docker", `the build of ${tag} could not reach the network (it pulls ${base}): call again once this machine can reach it`);
-	if (NO_BASE.test(said)) return fail("docker", `the build of ${tag} could not pull its base, ${base}: name a base the registry has, or pull it on this machine first`);
-	if (NO_PACKAGE.test(said)) return fail("docker", `the recipe of ${tag} names a package its base's package manager could not install: check the names, then call again`);
+	if (UNREACHABLE.test(said)) return vendorFail("docker",`the build of ${tag} could not reach the network (it pulls ${base}): call again once this machine can reach it`);
+	if (NO_BASE.test(said)) return vendorFail("docker",`the build of ${tag} could not pull its base, ${base}: name a base the registry has, or pull it on this machine first`);
+	if (NO_PACKAGE.test(said)) return vendorFail("docker",`the recipe of ${tag} names a package its base's package manager could not install: check the names, then call again`);
 	const line = PARSE.exec(said)?.[1];
-	if (line !== undefined) return fail("docker", `Docker could not parse the recipe of ${tag} at line ${line}: fix that line`);
+	if (line !== undefined) return vendorFail("docker",`Docker could not parse the recipe of ${tag} at line ${line}: fix that line`);
 	for (const pattern of STEP) {
 		const step = pattern.exec(said);
 		if (step === null) continue;
 		// The step is the recipe's own words, which the caller wrote: the shell's prefix off, BuildKit's quoting undone.
 		const command = (step[1] ?? "").replace(/\\(.)/g, "$1").replace(/^\/bin\/sh -c /, "").slice(0, 200);
-		return fail("docker", `the recipe of ${tag} failed at the step \`RUN ${command}\` with exit code ${step[2]}: fix that step`);
+		return vendorFail("docker",`the recipe of ${tag} failed at the step \`RUN ${command}\` with exit code ${step[2]}: fix that step`);
 	}
-	return fail("docker", `docker build of ${tag} failed (${exitOf(answer)}): run docker build with the recipe on this machine to see why`);
+	return vendorFail("docker",`docker build of ${tag} failed (${exitOf(answer)}): run docker build with the recipe on this machine to see why`);
 }
 
 function pullFailure(docker: string, image: string, answer: Answer, timeoutMs: number): Result<never> {
@@ -306,8 +309,8 @@ function pullFailure(docker: string, image: string, answer: Answer, timeoutMs: n
 	const shared = common(docker, answer, `the pull of ${image} did not finish within ${span(timeoutMs)}, so it was stopped: run docker pull ${image} on this machine, or call again`);
 	if (shared) return shared;
 	const said = answer.stderr;
-	if (DENIED.test(said)) return fail("docker", `the registry refused the pull of ${image} (no such repository, or it needs a docker login): ${see}`);
-	if (NO_MANIFEST.test(said)) return fail("docker", `the registry has no ${image}: name an image it has`);
-	if (UNREACHABLE.test(said)) return fail("docker", `the registry could not be reached to pull ${image}: ${see}`);
-	return fail("docker", `docker pull ${image} failed (${exitOf(answer)}): ${see}`);
+	if (DENIED.test(said)) return vendorFail("docker",`the registry refused the pull of ${image} (no such repository, or it needs a docker login): ${see}`);
+	if (NO_MANIFEST.test(said)) return vendorFail("docker",`the registry has no ${image}: name an image it has`);
+	if (UNREACHABLE.test(said)) return vendorFail("docker",`the registry could not be reached to pull ${image}: ${see}`);
+	return vendorFail("docker",`docker pull ${image} failed (${exitOf(answer)}): ${see}`);
 }

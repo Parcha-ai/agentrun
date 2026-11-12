@@ -20,7 +20,7 @@ import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { BOUND_TOOLS } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { triggerBodyIssues } from "./triggers.js";
-import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MAX_TOOL_CALLS, MODEL_REF, unknownFields } from "./validate.js";
+import { DEFAULT_INPUT_SCHEMA, definitionBodyIssues, inputIssues, isObject, type Json, MAX_TOOL_CALLS, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { APPROVALS, type Approvals } from "./approvals.js";
 
 /** The packages this server ships. */
@@ -38,7 +38,7 @@ export const PARAMETER_TYPES = ["string", "number", "integer", "boolean"] as con
  *  (market-monitor's schedule). A form shows a schedule picker and a time-zone choice; the value is the same text. */
 export const PARAMETER_FORMATS = ["cron", "timezone"] as const;
 export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "schema"] as const;
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "secrets", "budget", "learning", "approvals", "triggers", "output", "checks"];
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -90,7 +90,9 @@ export type Package = {
   repository?: string;
   /** Harness ids in the order the package prefers them; absent, any (the server's default). */
   harness?: string[];
-  model?: { tier: string; prefer?: string };
+  /** The agent's tier and the model it prefers on it; `fast` and `strong`, the model it prefers for each of those tiers
+   *  when a subagent runs on it (runner/subagent.ts), compiled into the definition's model_tiers (packageTiers). */
+  model?: { tier: string; prefer?: string; fast?: string; strong?: string };
   effort?: string;
   /** Absent, the tools the server gives a new agent that names none. */
   tools?: string[];
@@ -100,6 +102,9 @@ export type Package = {
   /** A policy by tool (bash only: `read-only`, bash-read-only.ts), which apply writes as the tool's `policy` in the
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
+  /** What the server checks out in each run's folder before its first turn (the definition's `checkout`,
+   *  runner/pr-checkout.ts): the pull request the run's GitHub event names. */
+  checkout?: "pull_request";
   parameters: Record<string, Parameter>;
   secrets: string[];
   /** Each run's limits: its spend cap (the agent's max_cost_usd) and the tool calls each of its conversations may make
@@ -290,7 +295,8 @@ export function readPackage(dir: string): Package {
   if (f.repository !== undefined && !(typeof f.repository === "string" && URL.canParse(f.repository) && /^https?:$/.test(new URL(f.repository).protocol))) bad(MANIFEST, "repository is an http(s) URL");
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
-  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer"]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && (f.model.prefer === undefined || (typeof f.model.prefer === "string" && MODEL_REF.test(f.model.prefer))))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id"}`);
+  const ref = (value: unknown) => value === undefined || (typeof value === "string" && MODEL_REF.test(value));
+  if (f.model !== undefined && !(isObject(f.model) && !unknownFields(f.model, ["tier", "prefer", ...MODEL_TIER_NAMES]).length && typeof f.model.tier === "string" && Object.hasOwn(MODEL_TIERS, f.model.tier) && ref(f.model.prefer) && MODEL_TIER_NAMES.every((tier) => ref((f.model as Record<string, unknown>)[tier])))) bad(MANIFEST, `model is {tier: ${Object.keys(MODEL_TIERS).join(" | ")}, prefer?: "provider/model-id", ${MODEL_TIER_NAMES.map((tier) => `${tier}?: "provider/model-id"`).join(", ")}}`);
   if (f.effort !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(f.effort)) bad(MANIFEST, `effort is one of ${THINKING_LEVELS.join(", ")}`);
   const tools = f.tools === undefined ? undefined : list(f.tools, "tools");
   if (tools?.some((tool) => tool.startsWith("mcp:"))) bad(MANIFEST, "tools grants no MCP tool: mcp lists them, by server");
@@ -318,6 +324,8 @@ export function readPackage(dir: string): Package {
     else if (tools && !tools.includes("bash")) bad(MANIFEST, "tool_policy.bash: the package's tools grant no bash, so its policy would hold nothing: add bash to tools, or leave tool_policy out");
     else toolPolicy = { bash: given.bash as BashPolicy };
   }
+  // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
+  if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
   // Computers by name come with the computer protocol; until then a package runs where this server puts a new agent.
   if (f.computer !== undefined && f.computer !== "default") bad(MANIFEST, "computer is default (this server's own place): no other computer is known yet");
   const parameters: Record<string, Parameter> = {};
@@ -485,8 +493,8 @@ export function readPackage(dir: string): Package {
   const p: Package = {
     name, ...(typeof f.display_name === "string" ? { displayName: f.display_name } : {}), version: f.version as string, description: f.description as string,
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
-    ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as { tier: string; prefer?: string } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(toolPolicy ? { toolPolicy } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: f.model as NonNullable<Package["model"]> } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, secrets, ...(isObject(f.budget) ? { budget: { ...(typeof f.budget.per_run_usd === "number" ? { per_run_usd: f.budget.per_run_usd } : {}), ...(typeof f.budget.tool_calls === "number" ? { tool_calls: f.budget.tool_calls } : {}) } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), checks, instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -494,7 +502,8 @@ export function readPackage(dir: string): Package {
   // trigger's times are read as of the epoch, so its form is checked here and a date that has passed is the apply's
   // refusal, never a server's start.
   const samples = Object.fromEntries(Object.entries(parameters).map(([key, spec]) => [key, spec.default ?? SAMPLES[spec.type]]));
-  const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), mcp, defaultTools: [], grants: [] });
+  const declared = Object.fromEntries(MODEL_TIER_NAMES.flatMap((tier) => (p.model?.[tier] ? [[tier, p.model[tier]!]] : [])));
+  const made = compiled(p, samples, { ...(harness ? { harness: harness[0]! } : {}), ...(p.model?.prefer ? { model: p.model.prefer } : {}), ...(Object.keys(declared).length ? { modelTiers: declared } : {}), mcp, defaultTools: [], grants: [] });
   for (const issue of definitionBodyIssues(made.agent)) bad(issue.field.startsWith("skills.") ? `skills/${issue.field.slice("skills.".length)}` : MANIFEST, `${issue.field.startsWith("skills.") ? "" : `the agent it makes: ${issue.field}: `}${issue.message}`);
   for (const issue of madeTriggerIssues(made.triggers, 0)) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
@@ -524,7 +533,7 @@ export function packageView(p: Package) {
   return {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null,
+    harness: p.harness ?? null, model: p.model ?? null, effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ server, tools, required, allow, pin }) => ({ server, required, tools: tools.map((name) => ({ name, tool: mcpToolName(server, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -596,6 +605,27 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
   return { ...(id && !bare ? { model: id } : {}), ...(warning ? { warning } : {}) };
 }
 
+/** The model of each tier a package's subagents run on here (the definition's model_tiers), as `{modelTiers?, warning?}`:
+ *  a tier's model the package names (`model.fast`, `model.strong`) when this server runs it on `harness` with a key for its
+ *  provider, never through a gateway, as packageModel keeps `prefer`; else none, the tier then this server's own
+ *  (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), and a warning says so. The agent's own tier, named nowhere else, is the model
+ *  the agent itself got (`own`), so a subagent on the agent's tier runs on the agent's model. */
+export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model"], harness: string, own?: string): Promise<{ modelTiers?: Record<string, string>; warning?: string }> {
+  if (!model) return {};
+  const gateway = Boolean(env.AGENT_MODEL_BASE_URL);
+  const tiers: Record<string, string> = {};
+  const skipped: string[] = [];
+  for (const tier of MODEL_TIER_NAMES) {
+    const named = model[tier];
+    if (!named) continue;
+    if (!gateway && harnessRuns(env, named, harness) && !("why" in (await chooseModel(env, named, tier, harness)))) tiers[tier] = named;
+    else skipped.push(`model.${tier} ${named} is not used: ${gateway ? "this server reaches its models through a gateway, which has not said it serves that model" : "this server cannot run it"}, so the agent's ${tier} subagents run on this server's model for the tier.`);
+  }
+  const mine = (MODEL_TIER_NAMES as readonly string[]).includes(model.tier) ? (model.tier as (typeof MODEL_TIER_NAMES)[number]) : undefined;
+  if (mine && !model[mine] && own) tiers[mine] = own;
+  return { ...(Object.keys(tiers).length ? { modelTiers: tiers } : {}), ...(skipped.length ? { warning: skipped.join(" ") } : {}) };
+}
+
 /** The bodies an apply makes: POST /v2/agents' (its definition and skill files) and each trigger's, with no agent_id,
  *  every `${parameters.x}` filled. `mcp`: the package's MCP servers this server has saved, whose tools are granted beside
  *  the package's tools (or, when it names none, `defaultTools`, those this server gives a new agent), each at the
@@ -603,7 +633,7 @@ export async function packageModel(env: NodeJS.ProcessEnv, model: Package["model
  *  pin, filled, in the agent's tool settings, whatever its permission; one whose pin fills empty (its parameter not
  *  given) is set to deny instead, granted or not, and named in `unpinned` (by gate name, with the parameters not given):
  *  a send with no destination set never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpNeed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool)));
   const allowed = chosen.grants.filter((tool) => granted.includes(tool));
@@ -620,13 +650,15 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   }
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
-    ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(p.effort ? { thinking: p.effort } : {}),
+    ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(chosen.modelTiers && Object.keys(chosen.modelTiers).length ? { model_tiers: chosen.modelTiers } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
     ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.tool_calls ? { max_tool_calls: p.budget.tool_calls } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
     // The package's answer schema (manifest `output`): each completed run's structured answer, checked, is its result.output.
     ...(isObject(p.outputSchema) ? { output_schema: p.outputSchema } : {}),
+    // The package's checkout (manifest `checkout`): the server fetches it before each run's first turn.
+    ...(p.checkout ? { checkout: p.checkout } : {}),
   };
   return { agent: { definition, skills: { ...p.skills } }, triggers: p.triggers.map((trigger) => filled(trigger, parameters) as Json), unpinned };
 }
