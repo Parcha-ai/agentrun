@@ -19,6 +19,10 @@ export type RunnableDeadline = { clear(): void; held(): number };
  *  deadline or across it, and is not counted. A wait of the transaction's own (a call awaited inside it) leaves the
  *  loop free, so it counts in full and is refused on time. */
 export function runnableDeadline(ms: number, expire: () => void): RunnableDeadline {
+  // Cleared with the functions they were set with: a caller that swaps the global timers while a transaction is open
+  // (node:test's mocked timers, enabled mid-run) would otherwise clear nothing, and the look's interval would hold the
+  // process open for good.
+  const [after, every, cancel, stop] = [setTimeout, setInterval, clearTimeout, clearInterval];
   const start = performance.now();
   let last = start;
   let held = 0;
@@ -29,18 +33,18 @@ export function runnableDeadline(ms: number, expire: () => void): RunnableDeadli
     last = now;
     return now;
   };
-  const ticks = setInterval(look, TICK_MS);
+  const ticks = every(look, TICK_MS);
   let timer: NodeJS.Timeout | undefined;
   const check = () => {
     const left = ms - (look() - start - held);
     if (left <= 0) return expire();
-    timer = setTimeout(check, Math.ceil(left));
+    timer = after(check, Math.ceil(left));
   };
-  timer = setTimeout(check, ms);
+  timer = after(check, ms);
   return {
     clear: () => {
-      clearInterval(ticks);
-      clearTimeout(timer);
+      stop(ticks);
+      cancel(timer);
     },
     held: () => {
       look();
