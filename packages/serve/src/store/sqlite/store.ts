@@ -838,7 +838,8 @@ class SqliteStore implements Store {
         return rows.map(runOf);
       },
       archive: async (runId, archived) => {
-        await db.write([{ sql: "UPDATE runs SET archived_at = ? WHERE id = ?", params: [archived ? now() : null, runId] }]);
+        // Archiving an archived run keeps its first time: a second archive is a no-op, never a new time.
+        await db.write([archived ? { sql: "UPDATE runs SET archived_at = COALESCE(archived_at, ?) WHERE id = ?", params: [now(), runId] } : { sql: "UPDATE runs SET archived_at = NULL WHERE id = ?", params: [runId] }]);
       },
       reopen: async (runId, { kind, body = null }) => {
         const command = await db.transaction(async (tx) => {
