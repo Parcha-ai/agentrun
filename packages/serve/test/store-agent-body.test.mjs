@@ -1,8 +1,7 @@
-// The agent body validator (store/agent-body.ts, the P4 fold of pi-durable-agent's bodyOf): everything the old validator
+// The agent body validator (store/agent-body.ts): everything the old validator
 // accepted it accepts — harness, tool settings, place, content-addressed skills, a default cap, the learning switch.
 // The agent-level argument pin is NOT handled here: agents-store.ts checks and keeps it through tool-plane's pinIssues +
-// canonicalToolSettings (the one copy). Ported from
-// pi-durable-agent/test/agent-store.test.mjs's revision checks, tested on bodyOf directly.
+// canonicalToolSettings (the one copy). Tested on bodyOf directly.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
