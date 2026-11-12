@@ -1,0 +1,29 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "fixture.wifi",
+  "version": 1,
+  "title": "Turn the Wi-Fi switch on (ui fixture)",
+  "split": "dev",
+  "tags": ["fixture"],
+  "needs": { "os": "macos", "kind": "desktop", "groups": ["ui"], "apps": ["ai.agentrun.ui-fixture"] },
+  "setup": [
+    { "method": "apps.terminate", "params": { "id": "ai.agentrun.ui-fixture" }, "allow": ["not_found"] },
+    { "method": "apps.launch", "params": { "id": "ai.agentrun.ui-fixture" } }
+  ],
+  "instruction": "In the UI fixture app, turn the Wi-Fi switch on.",
+  "budget": { "steps": 6, "usd": 0.1, "wall_s": 20 },
+  "checks": [
+    { "id": "on", "kind": "ui", "why": "The Wi-Fi switch is checked.", "app": "ai.agentrun.ui-fixture", "find": { "role": "switch", "name": { "equals": "Wi-Fi" }, "flags": ["checked"] }, "min": 1, "max": 1 },
+    { "id": "home", "kind": "ui", "why": "The app is still on its first page, so the switch was the change.", "app": "ai.agentrun.ui-fixture", "find": { "role": "heading", "name": { "equals": "UI fixture" } }, "min": 1, "max": 1 }
+  ],
+  "teardown": [{ "method": "apps.terminate", "params": { "id": "ai.agentrun.ui-fixture" }, "allow": ["not_found"] }],
+  "oracle": [
+    {
+      "method": "ui.act",
+      "params": {
+        "target": { "app": "ai.agentrun.ui-fixture" },
+        "steps": [{ "set": { "find": { "role": "switch", "name": { "equals": "Wi-Fi" } } }, "value": "on" }]
+      }
+    }
+  ]
+}

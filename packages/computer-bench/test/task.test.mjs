@@ -38,7 +38,7 @@ const problemsOf = (spec, files) => {
 
 test("every suite in the package loads, and mac-dev and android-dev are 20 tasks, half dev and half held out", () => {
 	const counts = {};
-	for (const suite of ["fake", "mac-dev", "android-dev", "macosworld", "mobileworld"]) {
+	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "macosworld", "mobileworld"]) {
 		const tasks = loadSuite(join(SUITES, suite));
 		counts[suite] = { all: tasks.length, dev: tasks.filter((task) => task.spec.split === "dev").length };
 		for (const task of tasks) {
@@ -81,6 +81,15 @@ test("the schema refuses a task with a field missing, a bad id, an unknown check
 	assert.match(problemsOf({ ...GOOD, checks: [{ id: "c", kind: "vibes", why: "w" }] }), /kind|vibes/);
 	assert.match(problemsOf({ ...GOOD, colour: "blue" }), /colour|additional/);
 	assert.match(problemsOf({ ...GOOD, checks: [] }), /checks|fewer/);
+});
+
+test("a ui.act call may name an element by find, and the schema holds the find to a ui query", () => {
+	const act = (slot) => ({ ...GOOD, oracle: [{ method: "ui.act", params: { steps: [{ press: slot }] } }] });
+	assert.equal(problemsOf(act("@e4")), "");
+	assert.equal(problemsOf(act({ find: { role: "button", name: { equals: "Save" } } })), "");
+	assert.match(problemsOf(act({ find: { colour: "red" } })), /colour|additional/);
+	assert.match(problemsOf(act({ find: { role: "button" }, also: 1 })), /also|additional/);
+	assert.match(problemsOf(act({ find: { name: { equals: "Save", near: "x" } } })), /near|additional/);
 });
 
 test("the rules past the schema: placeholders, duplicate checks, regexes, exit, and a rubric for checks that are not sufficient", () => {

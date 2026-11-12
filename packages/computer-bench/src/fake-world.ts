@@ -90,6 +90,8 @@ function crc32(data: Buffer): number {
 
 export const SETTINGS_APP = "fake.settings";
 export const NOTES_APP = "fake.notes";
+/** The protocol's ui fixture app (its fake ui driver runs it): the fixture suite's tasks and plays are written for it. */
+export const FIXTURE_APP = "ai.agentrun.ui-fixture";
 
 export class FakeWorld implements Wire {
 	readonly settings = new Map<string, string>([
@@ -391,6 +393,9 @@ export type FakeAgent = (wire: Wire, request: AgentRequest) => Promise<AgentResu
 export interface FakeBackendOptions {
 	/** Makes each episode's world (default: a fresh FakeWorld). */
 	world?: (request: OpenRequest) => FakeWorld;
+	/** Each episode's computer from elsewhere instead of a FakeWorld: another fake driver's connection (a protocol client
+	 *  is a Wire), closed on release. */
+	connect?: (request: OpenRequest) => Promise<{ wire: Wire; close(): Promise<void> }>;
 	/** Agents by harness name. */
 	agents: Record<string, FakeAgent>;
 	/** The groups the agent is given (default: all the world offers). */
@@ -410,15 +415,18 @@ export function fakeBackend(options: FakeBackendOptions): Backend {
 			opens += 1;
 			if (options.failOpens !== undefined && opens <= options.failOpens) return { ok: false, error: { code: "vendor", message: "the fake vendor had no computer free" } };
 			const agent = options.agents[request.arm.harness];
-			const world = options.world?.(request) ?? new FakeWorld();
-			options.worlds?.push(world);
+			const connected = options.connect ? await options.connect(request) : undefined;
+			const world = connected ? undefined : (options.world?.(request) ?? new FakeWorld());
+			if (world) options.worlds?.push(world);
+			const wire: Wire = connected?.wire ?? (world as FakeWorld);
 			const episode: Episode = {
-				identity: { provider: "fake", ref: `fake-${opens}` },
-				bench: world,
+				identity: { provider: connected ? "fake-connected" : "fake", ref: `fake-${opens}` },
+				bench: wire,
 				...(options.agentGroups ? { agentGroups: options.agentGroups } : {}),
-				agent: async (agentRequest) => (agent ? agent(agentRequest.tap(world), agentRequest) : { outcome: "refused", message: `no fake agent for harness ${request.arm.harness}` }),
+				agent: async (agentRequest) => (agent ? agent(agentRequest.tap(wire), agentRequest) : { outcome: "refused", message: `no fake agent for harness ${request.arm.harness}` }),
 				async release() {
-					world.released = true;
+					if (world) world.released = true;
+					await connected?.close();
 				},
 			};
 			return { ok: true, value: episode };
@@ -464,6 +472,21 @@ const RIGHT: Record<string, Play> = {
 		await h.launch(NOTES_APP);
 		return undefined;
 	},
+	"fixture.save": async (h, _wire, request) => {
+		await h.observe(FIXTURE_APP);
+		await h.act([{ set: h.find("Name") as string, value: String(request.task.params.name) }, { press: h.find("Save") as string }], { app: FIXTURE_APP, expect: { text: "Saved" } });
+		return undefined;
+	},
+	"fixture.wifi": async (h) => {
+		await h.observe(FIXTURE_APP);
+		await h.act([{ press: h.find("Wi-Fi") as string }], { app: FIXTURE_APP });
+		return undefined;
+	},
+	"fixture.second-page": async (h) => {
+		await h.observe(FIXTURE_APP);
+		await h.act([{ press: h.find("Next") as string }], { app: FIXTURE_APP, expect: { text: "Second page" } });
+		return undefined;
+	},
 };
 
 const WRONG: Record<string, Play> = {
@@ -491,6 +514,27 @@ const WRONG: Record<string, Play> = {
 	},
 	"fake.notes.front": async (h) => {
 		await h.launch(SETTINGS_APP);
+		return undefined;
+	},
+	// Saves before the name is in, and stops without waiting for Saved.
+	"fixture.save": async (h, _wire, request) => {
+		await h.observe(FIXTURE_APP);
+		await h.act([{ press: h.find("Save") as string }], { app: FIXTURE_APP });
+		await h.act([{ type: String(request.task.params.name).slice(0, 2), into: h.find("Name") as string }], { app: FIXTURE_APP });
+		return undefined;
+	},
+	// Presses Wi-Fi twice: on, then off again.
+	"fixture.wifi": async (h) => {
+		await h.observe(FIXTURE_APP);
+		await h.act([{ press: h.find("Wi-Fi") as string }, { press: h.find("Wi-Fi") as string }], { app: FIXTURE_APP });
+		return undefined;
+	},
+	// Goes to the second page and back.
+	"fixture.second-page": async (h) => {
+		await h.observe(FIXTURE_APP);
+		await h.act([{ press: h.find("Next") as string }], { app: FIXTURE_APP, expect: { text: "Second page" } });
+		await h.observe(FIXTURE_APP);
+		await h.act([{ press: h.find("Back") as string }], { app: FIXTURE_APP, expect: { text: "UI fixture" } });
 		return undefined;
 	},
 };
@@ -522,8 +566,8 @@ export function helper(wire: Wire) {
 		return last;
 	};
 	const find = (name: string) => last?.nodes.find((node) => node.name === name)?.ref;
-	const act = async (steps: JsonObject[], app?: string) => {
-		const result = await wire.call("ui.act", { ...(app ? { target: { app } } : {}), state: last?.state ?? "s0", steps });
+	const act = async (steps: JsonObject[], more: { app?: string; expect?: JsonObject } = {}) => {
+		const result = await wire.call("ui.act", { ...(more.app ? { target: { app: more.app } } : {}), state: last?.state ?? "s0", steps, ...(more.expect ? { expect: more.expect } : {}) });
 		if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
 		return result.value as { steps: { route?: string; error?: { kind: string; message: string } }[]; state: string; changed: boolean; expect?: "met" | "unmet" };
 	};

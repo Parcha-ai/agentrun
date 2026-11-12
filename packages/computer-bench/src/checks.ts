@@ -69,7 +69,8 @@ export interface ObservedNode {
 	flags?: string[];
 }
 
-function nodeMatches(node: ObservedNode, query: UiQuery): boolean {
+/** Whether a node is what a query names: its role, and its name, value and flags as far as the query says. */
+export function nodeMatches(node: ObservedNode, query: UiQuery): boolean {
 	if (query.role !== undefined && (node.role ?? "").toLowerCase() !== query.role.toLowerCase()) return false;
 	if (query.name !== undefined && !matches(node.name ?? "", query.name)) return false;
 	if (query.value !== undefined && !matches(node.value ?? "", query.value)) return false;

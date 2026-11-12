@@ -26,7 +26,7 @@ function proofOf(result: Result | undefined): { state: "pass" | "fail" | "infra"
 	if (!result) return { state: "infra", failing: [], answers: [], why: "no result" };
 	if (result.outcome === "infra" || result.outcome === "refused") return { state: result.outcome, failing: [], answers: [], why: result.why };
 	const checks = result.checks ?? [];
-	return { state: result.stage1 === "pass" ? "pass" : "fail", failing: checks.filter((c) => c.status !== "pass").map((c) => c.id), answers: checks.filter((c) => c.kind === "answer").map((c) => c.id) };
+	return { state: result.stage1 === "pass" ? "pass" : "fail", failing: checks.filter((c) => c.status !== "pass").map((c) => c.id), answers: checks.filter((c) => c.kind === "answer").map((c) => c.id), ...(result.why ? { why: result.why } : {}) };
 }
 
 /** Runs the null and oracle passes and says, per task and seed, whether its checks behave. */
@@ -53,15 +53,18 @@ export async function verifySuite(options: {
 			const after = proofOf(last(solved, id, seed));
 			const hasOracle = (task.spec.oracle ?? []).length > 0;
 			const answerOnly = after.state === "fail" && after.failing.every((check) => after.answers.includes(check));
+			// A scored oracle run says why only when one of its calls failed: then nothing was proved, whatever the checks said.
+			const oracleFailed = hasOracle && (after.state === "pass" || after.state === "fail") && after.why !== undefined;
 			const solvedState: TaskProof["solved"] = !hasOracle
 				? "no oracle"
 				: after.state === "infra" || after.state === "refused"
 					? after.state
-					: after.state === "pass" || answerOnly
+					: !oracleFailed && (after.state === "pass" || answerOnly)
 						? "passes"
 						: "fails";
 			const wrong = [
 				...(before.state === "pass" ? ["every check passed the untouched state"] : []),
+				...(oracleFailed ? ["the oracle did not run to its end"] : []),
 				...(solvedState === "fails" ? after.failing.filter((check) => !after.answers.includes(check)).map((check) => `${check} failed the solved state`) : []),
 			];
 			proofs.push({

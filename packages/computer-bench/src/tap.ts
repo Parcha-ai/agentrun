@@ -28,21 +28,42 @@ export interface TapOptions {
 	frames?: Frames;
 }
 
+/** Where a run's frames come from: the whole screen (group screen), or the front window's image (group ui with the
+ *  feature ui.image on), for a computer with no screen group. */
+export type FrameSource = "screen" | "ui";
+
+/** The frame source a hello allows, best first; undefined when it has neither. */
+export function frameSourceOf(hello: { groups: readonly string[]; features?: Record<string, unknown> }): FrameSource | undefined {
+	if (hello.groups.includes("screen")) return "screen";
+	if (hello.groups.includes("ui") && hello.features?.["ui.image"] === true) return "ui";
+	return undefined;
+}
+
 /** The frames of one run: the last one taken, and a way to take the next. */
 export class Frames {
 	last: string | undefined;
 	constructor(
 		private readonly wire: Wire,
 		private readonly store: Store,
+		private readonly source: FrameSource = "screen",
 	) {}
 
-	/** Takes a whole screenshot (screen.shot, then screen.read to its end) and keeps it; undefined when it can't. */
+	/** Takes a whole screenshot (screen.shot, then screen.read to its end), or the front window's image, and keeps it;
+	 *  undefined when it can't. */
 	async take(signal?: AbortSignal): Promise<string | undefined> {
-		const shot = await readShot(this.wire, signal);
+		const shot = this.source === "screen" ? await readShot(this.wire, signal) : await readWindow(this.wire, signal);
 		if (shot === undefined) return undefined;
 		this.last = this.store.blob(shot);
 		return this.last;
 	}
+}
+
+/** The front window's image from ui.observe, whole. */
+async function readWindow(wire: Wire, signal?: AbortSignal): Promise<Buffer | undefined> {
+	const observed = await wire.call("ui.observe", { image: true }, { signal });
+	if (!observed.ok) return undefined;
+	const image = (observed.value as { image?: { data?: unknown } }).image;
+	return typeof image?.data === "string" ? Buffer.from(image.data, "base64") : undefined;
 }
 
 /** A whole PNG from screen.shot and screen.read. */

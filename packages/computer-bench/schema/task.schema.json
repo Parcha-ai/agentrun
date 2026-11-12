@@ -166,7 +166,33 @@
           "uniqueItems": true,
           "description": "exec.run only: the exit codes that count as done. Default [0]."
         }
+      },
+      "if": { "properties": { "method": { "const": "ui.act" } } },
+      "then": {
+        "properties": {
+          "params": {
+            "properties": {
+              "steps": { "type": "array", "items": { "$ref": "#/$defs/uiActStep" } }
+            }
+          }
+        }
       }
+    },
+    "uiActStep": {
+      "type": "object",
+      "description": "A ui.act step as the protocol has it, except that a slot naming an element (press, set, perform, click, into, scroll) may hold {\"find\": <uiQuery>}: the runner puts in the ref of the first node of the window that matches, observed just before the act.",
+      "properties": {
+        "press": { "$ref": "#/$defs/refSlot" },
+        "set": { "$ref": "#/$defs/refSlot" },
+        "perform": { "$ref": "#/$defs/refSlot" },
+        "click": { "$ref": "#/$defs/refSlot" },
+        "into": { "$ref": "#/$defs/refSlot" },
+        "scroll": { "$ref": "#/$defs/refSlot" }
+      }
+    },
+    "refSlot": {
+      "if": { "type": "object", "required": ["find"] },
+      "then": { "additionalProperties": false, "properties": { "find": { "$ref": "#/$defs/uiQuery" } } }
     },
     "match": {
       "type": "object",

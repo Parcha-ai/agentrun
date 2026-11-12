@@ -5,12 +5,12 @@
 // What a computer or a harness is lives behind Backend; what a task is lives in its folder.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { type CheckResult, nodeLine, type ObservedNode, runChecks, type Stage1, stage1Of } from "./checks.js";
+import { type CheckResult, nodeLine, nodeMatches, type ObservedNode, runChecks, type Stage1, stage1Of } from "./checks.js";
 import { combine, GRADER_STEPS, type GradeWhen, type GraderInput, type GraderVerdict, type Judge, wantsGrader } from "./grader.js";
 import { type ComputerIdentity, ENTRY, imageType, type RunHeader, type RunRecord, type Step, type Store } from "./record.js";
-import { Frames, tap } from "./tap.js";
-import { type Call, type ResolvedTask, resolveTask, type Task } from "./task.js";
-import { fromBase64, type Hello, type Json, type Wire, type WireResult } from "./wire.js";
+import { Frames, frameSourceOf, tap } from "./tap.js";
+import { type Call, type ResolvedTask, resolveTask, type Task, type UiQuery } from "./task.js";
+import { fromBase64, type Hello, type Json, type JsonObject, type Wire, type WireResult } from "./wire.js";
 
 export const BENCH_VERSION = "0.1.0";
 
@@ -130,7 +130,8 @@ export interface RunOptions {
 	retries?: number;
 	/** Episodes at once. Default 1. */
 	parallel?: number;
-	/** Frames after each act (the image before and after it). Default on where the computer has a screen. */
+	/** Frames after each act (the image before and after it). Default on where the computer has a screen, or a ui group
+	 *  with ui.image on (the front window's image then). */
 	frames?: boolean;
 	/** "agent" (default) runs each arm's agent; "null" runs no agent; "oracle" runs the task's oracle on the bench's
 	 *  channel. null and oracle prove the checks (fail on the untouched state, pass on a solved one) with no model. */
@@ -158,13 +159,67 @@ export function helloMismatch(hello: Hello, task: Task, agentGroups: readonly st
 	return undefined;
 }
 
+/** The slots of a ui.act step that name an element. In a task's calls each may hold `{"find": <uiQuery>}` instead of a
+ *  ref, since a task can't know a window's refs before it runs. */
+const REF_SLOTS = ["press", "set", "perform", "click", "into", "scroll"] as const;
+
+const isFind = (value: unknown): value is { find: UiQuery } => typeof value === "object" && value !== null && !Array.isArray(value) && "find" in value;
+
+/**
+ * A ui.act call's params with each `{"find": query}` put in as the ref of the first node that matches it, read by one
+ * ui.observe (full) of the call's target. The act then runs against that observation's state, unless the call names
+ * one. Params without a find come back as they are.
+ */
+export async function resolveFinds(wire: Wire, params: JsonObject, signal?: AbortSignal): Promise<WireResult<JsonObject>> {
+	const steps = Array.isArray(params.steps) ? (params.steps as JsonObject[]) : [];
+	if (!steps.some((step) => REF_SLOTS.some((slot) => isFind(step[slot])))) return { ok: true, value: params };
+	const observed = await wire.call("ui.observe", { ...(params.target === undefined ? {} : { target: params.target }), full: true }, { signal });
+	if (!observed.ok) return observed;
+	const seen = observed.value as { state?: string; nodes?: ObservedNode[] };
+	const resolved: JsonObject[] = [];
+	for (const step of steps) {
+		const copy: JsonObject = { ...step };
+		for (const slot of REF_SLOTS) {
+			const want = copy[slot];
+			if (!isFind(want)) continue;
+			const ref = (seen.nodes ?? []).find((node) => nodeMatches(node, want.find))?.ref;
+			if (ref === undefined) return { ok: false, error: { code: "not_found", message: `no node of the window matches ${JSON.stringify(want.find)} (the step's ${slot})` } };
+			copy[slot] = ref;
+		}
+		resolved.push(copy);
+	}
+	return { ok: true, value: { ...params, steps: resolved, ...(params.state === undefined && typeof seen.state === "string" ? { state: seen.state } : {}) } };
+}
+
+/** Why a ui.act's answer means its steps did not all happen, or undefined when they did. */
+function actShortfall(value: unknown): string | undefined {
+	const v = (value ?? {}) as { steps?: { error?: { kind?: string; message?: string } }[]; expect?: string };
+	const refused = (v.steps ?? []).findIndex((one) => one.error !== undefined);
+	if (refused >= 0) return `its step ${refused + 1} was refused: ${v.steps?.[refused]?.error?.kind}: ${v.steps?.[refused]?.error?.message}`;
+	if (v.expect === "unmet") return "its expect did not hold in time";
+	return undefined;
+}
+
 /** Runs setup, teardown or oracle calls, in order. The first that fails ends them, with why. */
 async function runCalls(wire: Wire, calls: readonly Call[], signal: AbortSignal): Promise<string | undefined> {
 	for (const call of calls) {
-		const result = await wire.call(call.method, call.params as Record<string, Json>, { signal });
+		let params = call.params as JsonObject;
+		if (call.method === "ui.act") {
+			const found = await resolveFinds(wire, params, signal);
+			if (!found.ok) {
+				if (call.allow?.includes(found.error.code)) continue;
+				return `ui.act could not find its elements: ${found.error.code}: ${found.error.message}`;
+			}
+			params = found.value;
+		}
+		const result = await wire.call(call.method, params, { signal });
 		if (!result.ok) {
 			if (call.allow?.includes(result.error.code)) continue;
 			return `${call.method} failed: ${result.error.code}: ${result.error.message}`;
+		}
+		if (call.method === "ui.act") {
+			const short = actShortfall(result.value);
+			if (short) return `ui.act: ${short}`;
 		}
 		if (call.method === "exec.run") {
 			const value = result.value as { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
@@ -282,7 +337,8 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 		if (setupFailed) return end({ ...empty, outcome: "infra", phase: "setup", why: `setup: ${setupFailed}` });
 
 		// The agent, under its budget.
-		const frames = (options.frames ?? true) && hello.groups.includes("screen") ? new Frames(tapped("frame"), store) : undefined;
+		const frameSource = frameSourceOf(hello);
+		const frames = (options.frames ?? true) && frameSource ? new Frames(tapped("frame"), store, frameSource) : undefined;
 		if (frames) await frames.take(signal);
 		const stop = new AbortController();
 		let spent: "steps" | "wall" | undefined;
@@ -390,6 +446,8 @@ async function grade(options: RunOptions, run: Checked, signal: AbortSignal): Pr
 		stage1,
 		checks: checks.map(({ id, kind, status }) => ({ id, kind, status })),
 		by: combined.by,
+		// An agent (or an oracle) that failed by its own account says why; the checks still decide.
+		...(run.input.agent.outcome === "error" && run.input.agent.message ? { why: run.input.agent.message } : {}),
 		...(verdict && options.judge ? { grade: { verdict: verdict.verdict, locus: verdict.locus, by: combined.by, confidence: verdict.confidence, judge: options.judge.id } } : {}),
 		...(queue ? { queue } : {}),
 	});

@@ -50,6 +50,11 @@ Checks, each `{id, kind, why}` plus its fields, all read through the protocol on
 
 A match is one of `equals`, `contains`, `matches`, `oneOf` or `empty`, with `not`, `trim` (default true) and `caseless`.
 
+A `ui.act` call in setup, teardown or the oracle can't know a window's refs, so any slot that names an element
+(`press`, `set`, `perform`, `click`, `into`, `scroll`) may hold `{"find": <ui query>}` instead. The runner observes the
+call's target (full), puts in the ref of the first node that matches, and acts on that observation's state. A find
+that matches nothing fails the call, and so does a ui.act whose step was refused or whose `expect` did not hold.
+
 A good task starts from the opposite of its goal (so an agent that does nothing fails), names everything it makes with
 the nonce, and has an oracle: the calls that solve it, which `verify` uses to prove its checks.
 
@@ -74,8 +79,10 @@ can't take the task) is neither. `--mode null` runs no agent and `--mode oracle`
 channel: `verify` runs both and names every check that passes an untouched state or fails a solved one.
 
 The agent's calls go through a tap (`src/tap.ts`) that records them, keeps the budget, and denies a method outside the
-groups the agent is given (exec on a phone is the bench's, not the agent's). A backend whose agent's calls are recorded
-elsewhere (serve's journal) reports them as steps instead.
+groups the agent is given (exec on a phone is the bench's, not the agent's). After each act it takes a frame on the
+bench's channel: the whole screen where the computer has the screen group, else the front window's image through
+`ui.observe` where `ui.image` is on. A backend whose agent's calls are recorded elsewhere (serve's journal) reports them
+as steps instead.
 
 ## The run record
 
@@ -132,8 +139,9 @@ arm's paired difference against the first; the failure loci; and a table per tas
 | suite | tasks | what |
 | --- | --- | --- |
 | [fake](suites/fake) | 6 | the fake world's: what the tests run |
-| [mac-dev](suites/mac-dev/README.md) | 20 (10 dev, 10 held out) | Notes, Calendar, Finder, Safari, TextEdit, System Settings, Reminders on macOS 26 |
-| [android-dev](suites/android-dev/README.md) | 20 (10 dev, 10 held out) | Settings, Clock, Contacts, Files, Chrome on an unrooted phone, checked through `settings get`, `content query` and the ui tree |
+| [ui-fixture](suites/ui-fixture) | 3 | the protocol's ui fixture app, run by its fake ui driver (`@parcha/agentrun-computer/fake-ui-driver`) in the tests, and by a real driver wherever the fixture app is installed |
+| [mac-dev](suites/mac-dev/README.md) | 20 (10 dev, 10 held out) | Notes, Calendar, Finder, Safari, TextEdit, System Settings, Reminders on macOS 26; four tasks cross two apps |
+| [android-dev](suites/android-dev/README.md) | 20 (10 dev, 10 held out) | Settings, Clock, Contacts, Files, Chrome, and two tasks through Chrome's share sheet, on an unrooted phone, checked through `settings get`, `content query` and the ui tree |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |
 | [mobileworld](suites/mobileworld/PORT.md) | 8 | ported from MobileWorld (Apache-2.0): the 8 of its 201 that port faithfully to an unrooted phone |
 
@@ -188,4 +196,7 @@ the dev split; then the held-out split once, for the numbers a report states.
 `npm test` runs `test/*.test.mjs` against `dist` at $0: the schema and every suite; the runner on the fake world
 (passes and fails, the record, checks before release, infra re-runs, refusals, grants, the three budgets, images,
 stale steps, null and oracle, parallel); the grader with fake judges and a fake fetch; the statistics, the report,
-labels, verify and the command line; and the serve backend on a fake serve.
+labels, verify and the command line; the serve backend on a fake serve; and the runner on the protocol's own fake ui
+driver over its line stream (the fixture suite's verify, right and wrong agents, each act's routes, verified count,
+states and window frames, a stale ref, and oracles that fail in words). The last needs `@parcha/agentrun-computer`
+built: it is a dev dependency, and the package's source imports nothing from it.
