@@ -7,7 +7,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as modal from "../dist/modal.js";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 
@@ -100,7 +101,7 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		mount: ["archil"],
 		vendorAgentPorts: [],
 		// A GPU computer is gVisor's (Modal's one GPU runtime), preemptible, and takes no mount yet.
-		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], fence: "userns-netns" },
+		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], unmounted: { why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true }, fence: "userns-netns" },
 	});
 	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
@@ -250,7 +251,7 @@ test("check() refuses a GPU with an Archil mount on Modal: its gVisor runtime ha
 	const mount = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-modal-archil-0123456789abcdef" };
 	const spec = { ...SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "1" }, mount, gpu: { type: "T4", count: 1 } };
 	const refusals = provider.check(spec);
-	assert.ok(refusals.some((r) => r.field === "gpu" && /a GPU computer here takes no archil mount: it is not proven/.test(r.message)), JSON.stringify(refusals));
+	assert.ok(refusals.some((r) => r.field === "gpu" && /a GPU computer here takes no archil mount: Archil's FUSE mount isn't proven on Modal's gVisor runtime \(#2279\)/.test(r.message)), JSON.stringify(refusals));
 	assert.ok(!JSON.stringify(refusals).includes(mount.token));
 });
 
@@ -1110,7 +1111,7 @@ test("release never terminates a sandbox that is not this provider's", async () 
 test("release: a terminate that fails is an error unless the sandbox has finished", async () => {
 	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", running: false })], terminate: "fail" });
 	const failed = await provider.release(refOf(fake), "delete");
-	assert.equal(failed.error?.code, "modal");
+	assert.deepEqual([failed.error?.code, failed.error?.vendor], ["vendor", "modal"]);
 	assert.match(failed.error.message, /terminate failed/);
 	assert.deepEqual(await provider.release(refOf(fake, "computer-000000000002"), "delete"), { ok: true, value: undefined });
 });

@@ -88,13 +88,6 @@ export type Recording = { id: string; startedAt: string | null; durationS: numbe
 /** `downloading`: the browser is still writing it; it is listed so the caller can say so, and is not read. */
 export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null; downloading?: true };
 
-export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
-export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };
-export type SearchRequest = { query: string; n: number };
-/** `snippet`: an excerpt of the page the search provider chose, when it gives one; web_search bounds it before the model sees it. */
-export type SearchHit = { url: string; title: string | null; author?: string | null; published?: string | null; snippet?: string | null };
-export type SearchResult = { results: SearchHit[]; usage?: ToolUsage };
-
 /** What a session vault may keep of this provider's sessions. Absent: nothing (a browser the package cannot read, or one the host shares). */
 export type ProviderVault =
   | { kind: "cdp" }
@@ -124,25 +117,11 @@ export interface BrowserProvider {
   liveView?(ref: LeaseRef): Promise<LiveView | null>;
   recordings?: { list(ref: LeaseRef): Promise<Recording[]>; open(ref: LeaseRef, id: string): Promise<ReadableStream<Uint8Array>> };
   downloads?: { list(ref: LeaseRef): Promise<RemoteFile[]>; read(ref: LeaseRef, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>> };
-  fetch?(request: FetchRequest, signal?: AbortSignal): Promise<FetchResult>;
-  search?(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult>;
 }
 
 /** The host owns the file boundary for `browser_upload`: a path the model names is resolved here or refused. */
 export interface WorkspaceFiles {
   resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }>;
-}
-
-/** A site use_website can open: configuration, never model input. */
-export type SiteInfo = { site: string; title: string; description: string };
-/** Runs one child agent that has the browser tools and no use_website, and answers its final text. The durable adapter
- *  supplies it: a task-owned conversation. */
-export type ChildRunner = (task: { site: string; requestId: string; prompt: string }, signal: AbortSignal) => Promise<string>;
-/** Runs a granted site's task and reports it, idempotent by `requestId`: exactly one of `run` (a task started elsewhere)
- *  or `report` (the result). A port that runs the child itself uses `ctx.runChild`; a broker ignores it. */
-export interface SiteRunPort {
-  list(signal: AbortSignal): Promise<SiteInfo[]>;
-  use(input: { site: string; requestId: string; instructions: string }, ctx: { signal: AbortSignal; runChild: ChildRunner }): Promise<{ run: { id: string; state: string } } | { report: string }>;
 }
 
 export type HandoffOutcome = "done" | "cancelled" | "expired";

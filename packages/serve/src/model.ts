@@ -313,15 +313,16 @@ export type FauxHelpers = {
 /** The models for a run, and its model of each tier it uses and of no other: an agentic revision's `ref` (or the
  *  default) is its `default` (a claimed run's: its pin, chooseModel), and a workflow's tiers are the ones its nodes name.
  *  The faux module's replies, the gateway in the environment, or pi-ai's providers. `unpriced`: the ids of its models
- *  serve has no price for (a gateway model the catalog does not list, with no price set), which a cap cannot be kept on. */
-export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS) {
+ *  serve has no price for (a gateway model the catalog does not list, with no price set), which a cap cannot be kept on.
+ *  `tierRefs`: a model named for another tier (a subagent's model_tiers), chosen for it in place of the host's. */
+export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tiers: readonly Tier[] = ["default"], harness: string = DEFAULT_HARNESS, tierRefs: Readonly<Partial<Record<Tier, string>>> = {}) {
   const ai = await import("@earendil-works/pi-ai");
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
   const faux = env[FAUX_ENV];
   const byTier = new Map<Tier, ModelRef>();
   const namedBy = new Map<Tier, string>();
   for (const tier of new Set(tiers)) {
-    const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier, harness);
+    const chosen = await chooseModel(env, tier === "default" ? ref : tierRefs[tier], tier, harness);
     if ("why" in chosen) throw new Error(chosen.why);
     byTier.set(tier, chosen.model);
     if (chosen.namedProvider) namedBy.set(tier, chosen.namedProvider);
@@ -341,6 +342,9 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: Tokens | "unknown"; contextWindow?: number; maxTokens?: number; usage?: (context: unknown, usage: Tokens) => Tokens };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
+    // A faux model with no price ("unknown"), as a provider that does not price it: unpriced, so the runner's route books
+    // its requests at no known price (null), never at the placeholder cost's $0 (model-route.ts routeOf).
+    if (mod.cost === "unknown") for (const id of ids) unpriced.add(id);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
     // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact; `maxTokens` its

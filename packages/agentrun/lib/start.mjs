@@ -35,9 +35,9 @@ export const API_ONLY_LINE = /^API only \(AGENTRUN_API_ONLY=1\)/;
 export const TAIL_LINES = 20;
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
- *  box, or why not), the Docker box image's first build, as it starts and ends, and, on a server with a public address
- *  and no password yet, the setup link with its code, which setup at that address asks for. */
-export const SAID = /^(Boxes: |Preparing the Docker box image |The Docker box image |Set up this server: )/;
+ *  box, or why not), and, on a server with a public address and no password yet, the setup link with its code, which
+ *  setup at that address asks for. */
+export const SAID = /^(Boxes: |Set up this server: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link

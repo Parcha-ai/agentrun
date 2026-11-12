@@ -18,6 +18,7 @@ import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
+import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { monidTool } from "./monid.js";
@@ -41,6 +42,7 @@ import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 
@@ -111,9 +113,9 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
    *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
-  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
-   *  and the sign-in verify the runner saves. */
-  store?: LiveViewerStore & Pick<Store, "runs" | "signIns">;
+  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
+   *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
   /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
    *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
@@ -249,6 +251,30 @@ export const evidenceIn = (work: Workspace) => {
   };
 };
 
+/** What browser_upload may choose: a file of the run's Workspace, the one its read opens, by a path relative to it. The
+ *  Workspace refuses a path that would leave it (absolute, "..", a link anywhere on the way), so nothing outside the run's
+ *  folder is ever read; a file must be a regular one of at most `maxBytes`. `mime` names its media type by its name. */
+export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: string) => string) => ({
+  async resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }> {
+    if (typeof rel !== "string" || !rel.trim()) return { refused: "path must name a file in the workspace" };
+    const refusal = (error: unknown) => (isWorkspaceError(error, "ESCAPE") ? `${rel} resolves outside the workspace` : isWorkspaceError(error, "NOT_FOUND") ? `no file at ${rel} in the workspace` : `${rel} cannot be opened`);
+    try {
+      const info = await work.stat(rel);
+      if (!info) return { refused: `no file at ${rel} in the workspace` };
+      if (info.kind !== "file") return { refused: `${rel} is not a regular file` };
+      if (info.size > maxBytes) return { refused: `${rel} is ${info.size} bytes, over the ${maxBytes}-byte limit` };
+      // The file as its stat sized it, and nothing past that: one that shrank, or grew before or while it was read, is
+      // refused, never chosen in part.
+      const bytes = await work.read(rel, { length: info.size });
+      if (bytes.byteLength !== info.size || (await work.read(rel, { offset: info.size, length: 1 })).byteLength > 0) return { refused: `${rel} changed while it was read; try again` };
+      const name = rel.split("/").at(-1) ?? rel;
+      return { bytes, name, mime: mime(name) };
+    } catch (error) {
+      return { refused: refusal(error) };
+    }
+  },
+});
+
 /** The Browserbase contexts a run's browser may open: its agent's saved sign-in's alone, by its profile name, never one
  *  made here (nothing a run makes is kept for its agent). */
 export const keptContexts = (ref: string | undefined) => ({
@@ -336,10 +362,10 @@ const browserTool: ToolEntry = {
   // (its reconcile, its release and drain, its live view hang off that run's lifecycle). A node naming it is refused when
   // its definition is saved (runnable.ts), never accepted and then failed at its run.
   nodes: false,
-  // Its downloads and uploads go through work/ by path (pi-browser), which a box's command could turn through a link.
+  // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, workspaceFiles }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -403,6 +429,11 @@ const browserTool: ToolEntry = {
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
       redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
+      // session opens (onSessions, below).
+      waitEnded: (at, why) => {
+        if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
+      },
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
@@ -448,10 +479,15 @@ const browserTool: ToolEntry = {
     // On the runner, the run's ledger (host.ledger): each call held and settled on its booking, and a session's release one
     // more request there, never this process's own spend. Undefined on the old per-run process: browserSpend's own then.
     const spend = browserSpend(providerName, price, DEFAULT_BROWSER_POLICY.idleReleaseS, (conversation, at) => browser.release(conversation as never, "close", at), undefined, { paid: host.ledger?.paid, pause: host.ledger?.pause, flush: host.ledger?.flush });
-    // browser_downloads is listed only with a workspace to copy into, and only a provider that keeps a session's downloads
-    // (Browserbase's; Kernel's keeps none) has any: without one, uploads still read the run's work/, through `files`.
-    const downloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
-    const files = downloads ? { workspace: () => host.where.work } : { files: workspaceFiles(host.where.work) };
+    // The run's own Workspace, the one its read opens (on the runner: Mode 1's local folder, Mode 2's folder on the run's
+    // disk): the browser files its evidence there, and browser_upload chooses from it.
+    const work = host.workspace ?? localWorkspace(host.where.work);
+    // browser_downloads copies into a folder by its local path (pi-browser fetchDownloads), so it is listed only where the
+    // run's Workspace is a folder of this machine (never on Mode 2's disk, where the run's read would not find what it
+    // copied), and only for a provider that keeps a session's downloads (Browserbase's; Kernel's keeps none).
+    const folder = localFolderOf(work);
+    const keepsDownloads = typeof (parts.provider as { downloads?: unknown } | undefined)?.downloads === "object";
+    const files = { files: uploadsFrom(work, MAX_UPLOAD_BYTES, uploadMime), ...(folder !== undefined && keepsDownloads ? { workspace: () => folder } : {}) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
     const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
@@ -464,6 +500,8 @@ const browserTool: ToolEntry = {
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
+      if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
       await saved?.(row, change);
       await onSession(row, change);
     };
@@ -471,7 +509,7 @@ const browserTool: ToolEntry = {
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(localWorkspace(host.where.work)) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
@@ -528,14 +566,19 @@ const browserTool: ToolEntry = {
     // (live, or held for a hand-over), the run waits for the answer in its claim, so the session, its live viewer and its
     // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
     // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
-    // the cap for that time, the run parks (its release lets the browser go).
+    // the cap for that time, the run parks (its release lets the browser go). While it waits, pi-browser's idle release
+    // keeps its hands off those sessions (keepForPerson): the person's window (AGENTRUN_BROWSER_PERSON_WAIT_MIN), not the
+    // browser's few-minute idle window, decides when the browser goes.
     host.personWait?.(async (harness, callId, since) => {
       if (refused) return undefined;
       const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
       const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
       if (!open.length) return undefined;
+      const keeps = open.map((tag) => browser.keepForPerson(tag));
+      const letGo = () => { for (const keep of keeps.splice(0)) keep(); };
       const waited = await hands.wait(callId, open, since);
-      return "refused" in waited ? undefined : waited;
+      if ("refused" in waited) { letGo(); return undefined; }
+      return { lapsed: waited.lapsed, confirmed: waited.confirmed, drop: () => { waited.drop(); letGo(); } };
     });
     host.beforeRelease(async (harness) => {
       try {
@@ -591,6 +634,14 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
+  // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
+  // (adapter-run-spec.ts), never by this table; not a host tool (host-tools.ts REPLAY), so another harness refuses it.
+  subagent: {
+    summary: "Run a subagent: a fresh conversation with only the call's prompt, on the agent's own model (or one of its model tiers, fast or strong, when the call names one), with a subset of the agent's own tools (bash among them, under the agent's bash policy), under the run's permissions and cap; answers with its final text. A call may narrow its child's tool-call budget (max_tool_calls) and set its effort (low, medium, high). Several calls in a turn run at once, at most 4 at a time; a subagent starts none of its own. pi only.",
+    needs: [],
+    nodes: false,
+    bind: async () => ({ tools: [], extensions: [] }),
+  },
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
     (args, run) => pdfPages(args, { work: localWorkspace(run.work), documents: run.env[DOCUMENTS_ENV], signal: run.signal }),

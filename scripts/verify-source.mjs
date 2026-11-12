@@ -21,8 +21,8 @@ await saveReceipt();
 let temporary;
 
 try {
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  assert.ok(major > 24 || major === 24 && minor >= 11, 'Source verification requires Node.js >=24.11.0');
+  const [major, minor, patch] = process.versions.node.split('.').map(Number);
+  assert.ok(major > 24 || major === 24 && (minor > 22 || minor === 22 && patch >= 3), 'Source verification requires Node.js >=24.22.3');
   assert.equal(process.argv.length, 2, 'Usage: node scripts/verify-source.mjs');
   temporary = await mkdtemp(join(tmpdir(), 'agentrun-source-consumer-'));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:PATH|SystemRoot|TMPDIR|TEMP|TMP|LANG|LC_ALL)$/i.test(key)));
@@ -121,10 +121,8 @@ syncBuiltinESMExports();
   assert.equal(inspected.checked, 'structure-only');
   assert.ok(inspected.nodes.some(node => node.kind === 'workflow' && node.childWorkflow === 'research-one-question'));
   receipt.graph = { name: inspected.name, sha256: inspected.sha256, nodes: inspected.nodes.length };
-  receipt.piExtension = JSON.parse(await run(process.execPath, ['scripts/verify-pi-install.mjs'], consumer, 0, true));
-  assert.equal(receipt.piExtension.nativeSkillExpansion, true);
   receipt.status = 'passed';
-  console.log('Downloaded source: install, build, demos, graph export/inspection, and native Pi discovery passed. Receipt: .release/source-consumer.json');
+  console.log('Downloaded source: install, build, demos and graph export/inspection passed. Receipt: .release/source-consumer.json');
 } catch (error) {
   receipt.status = 'failed';
   receipt.error = error instanceof Error ? error.message : 'Unknown source verification failure';

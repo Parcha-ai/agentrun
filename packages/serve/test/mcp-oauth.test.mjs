@@ -414,7 +414,7 @@ test("a run (server constructor): its launch refreshes an expired token and the 
   // Its calls allowed, so they run with no one asked (the gate's own cases are in mcp-gate-wired.test.mjs and below).
   assert.equal((await api("PUT", "/settings/tools", { [`mcp:${name}/*`]: { permission: "allow" } })).status, 200);
   const run = async () => {
-    const made = await api("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
+    const made = await retried(api)("POST", "/agents/adder/runs", { input: { content: `Call mcp__${name}__add with {"a":2,"b":3}` } });
     assert.equal(made.status, 202, JSON.stringify(made.body));
     await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
     return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer;
@@ -812,7 +812,7 @@ for (const down of ["503", "timeout"]) {
     if (down === "503") as.fail(503);
     else as.hang();
     const run = async () => {
-      const made = await api("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
+      const made = await retried(api)("POST", "/agents/adder/runs", { input: { content: 'Call mcp__docs__add with {"a":2,"b":3}' } });
       assert.equal(made.status, 202, JSON.stringify(made.body));
       await follow(api, made.body.run_id, ["completed", "failed"], { deadlineMs: 150_000 });
       return (await api("GET", `/runs/${made.body.run_id}`)).body.result?.final_answer ?? "";

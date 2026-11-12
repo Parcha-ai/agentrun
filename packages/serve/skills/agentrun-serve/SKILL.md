@@ -17,7 +17,7 @@ If `AGENTRUN_BASE_URL` is set, check it:
 curl -sf "$AGENTRUN_BASE_URL/health"
 ```
 
-If it is not set, or nothing answers, start the server from a checkout of the repository (Node 22.19 or later), in the
+If it is not set, or nothing answers, start the server from a checkout of the repository (Node 24.22.3 or later), in the
 background, with its data in a directory you name:
 
 ```sh

@@ -14,10 +14,8 @@ const HISTORY = [/(^|\/)CHANGELOG\.md$/, /^changes\/[^/]+\.md$/];
 const ALLOWED = new Map([
   ['scripts/lease-file-gone.test.mjs', 'this check'],
   ['packages/serve/src/openapi/agentrun-v2.openapi.json', "a refusal: a home pack never carries a run's run.json"],
-  ['packages/pi-durable-disk/test/store-record.test.ts', 'a refusal test: no lease file is written, and a leftover one is neither read nor written'],
   ['packages/dsl/test/graph-status-escalated.test.mjs', 'a fixture named escalated-run.json'],
   ['packages/dsl/test/validation-issues.test.mjs', 'a fixture named not-run.json'],
-  ['packages/pi/test/native-journey.test.mjs', 'a fixture named dry-run.jsonl'],
 ]);
 
 function hits() {
