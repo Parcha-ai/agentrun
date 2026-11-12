@@ -27,7 +27,7 @@ async function fakeRun() {
   dirs.push(dir);
   const connection = await fakeUiConnection();
   closing.push(() => connection.close());
-  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connection.client }, groups: connection.hello.groups }, { mode: 1, context: ctx });
+  const run = await runTools(localWorkspace(dir), { kind: "desktop", computer: { client: connection.client }, hello: connection.hello }, { mode: 1, context: ctx });
   const tools = run.hostTools(run.kindTools);
   const opened = await call(tools, "computer_script", { code: `await computer.apps.open(${JSON.stringify(UI_FIXTURE.id)});` });
   assert.equal(opened.isError, false, opened.text);

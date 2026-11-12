@@ -282,7 +282,7 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   const created = await provider.create(spec, signal ? { signal } : {});
@@ -303,7 +303,7 @@ async function providerLaunch(
     groups: hello.groups,
     // What the machine says it is (a phone's android or ios): its live view's input platform.
     machine: hello.kind,
-    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
+    hello,
     client,
     async readBack(): Promise<Result<MountReadBack>> {
       const attached = await provider.attach({ id: ref.id });
@@ -347,7 +347,7 @@ async function ownedLaunch(
   spec: ComputerSpec,
   context: OwnedContext,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const { store, agentId } = context;
   // One run at a time, taken in the store before anything is listed or made (agent-computer.ts holdAgentComputer): two
   // runs of the agent that claim at once never both make a computer. With no run rows to read, a holder is still going.
@@ -380,7 +380,7 @@ async function ownedStart(
   context: OwnedContext,
   hold: AgentComputerHold,
   signal: AbortSignal | undefined,
-): Promise<LaunchedComputer & { machine: string; hello: ComputerSaid["hello"]; watch?: (signal: AbortSignal) => unknown }> {
+): Promise<LaunchedComputer & { machine: string; hello: HelloResult; watch?: (signal: AbortSignal) => unknown }> {
   const call = signal ? { signal } : {};
   const { store, agentId, note } = context;
   const older = await releaseOlder(provider, claim.runId, claim.epoch, call);
@@ -461,7 +461,7 @@ async function ownedStart(
     id: ref.id,
     groups: hello.groups,
     machine: hello.kind,
-    hello: { os: hello.os, ...(hello.osVersion ? { osVersion: hello.osVersion } : {}), arch: hello.arch },
+    hello,
     client,
     // An agent's own computer mounts no run's folder (resolve-computer.ts refuses one that would).
     async readBack(): Promise<Result<MountReadBack>> {
@@ -553,7 +553,8 @@ export async function computerForClaim(
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch } : {}) };
       madeBy = entry;
-      deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: launched.hello });
+      const { os, osVersion, arch } = launched.hello;
+      deps.onConnected?.({ provider: entry.label, kind: kind as Exclude<ComputerSettingKind, "none">, hello: { os, ...(osVersion ? { osVersion } : {}), arch } });
       return launched;
     },
   };

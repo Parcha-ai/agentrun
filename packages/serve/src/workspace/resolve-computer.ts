@@ -19,7 +19,7 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import type { MountCheck } from "./attach.js";
@@ -43,13 +43,15 @@ export type KindRegistry = {
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
- *  phone), the read-back of its mount (when mounted), and its release. A browser is started by none: the claim gives
- *  the run's browser tool its provider (`browser`), which opens each session at the tool's first call, and the release
- *  lets go of any the tool left open. */
+ *  phone), the hello it answered when the claim connected it (a desktop's or a phone's surface is made from it), the
+ *  read-back of its mount (when mounted), and its release. A browser is started by none: the claim gives the run's
+ *  browser tool its provider (`browser`), which opens each session at the tool's first call, and the release lets go
+ *  of any the tool left open. */
 export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
+  readonly hello?: HelloResult;
   readBack?(): Promise<Result<MountReadBack>>;
   readonly browser?: ClaimBrowser;
   release(): Promise<void>;
@@ -369,15 +371,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 
 /** The started computer as runTools takes it, or what it lacks, in words. */
 function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
-  const groups = launched.groups as readonly Group[];
   // The run's browser tool opens a browser's sessions through its provider.
   if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
-  const { client } = launched;
+  const { client, hello } = launched;
   if (!client) return "it gave no computer protocol client";
-  if (kind === "phone") return { kind, computer: { client }, groups };
+  if (kind === "phone") return hello ? { kind, computer: { client }, hello } : "it gave no hello";
   if (check && !launched.readBack) return "it gave no read-back of its mount";
   const readBack = launched.readBack ? () => launched.readBack!() : async (): Promise<Result<MountReadBack>> => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } });
   const computer = { id: launched.id, client, readBack };
   if (kind === "sandbox") return check ? { kind, computer, check } : "a sandbox mounts the run's folder";
-  return { kind, computer, groups, ...(check ? { check } : {}) };
+  return hello ? { kind, computer, hello, ...(check ? { check } : {}) } : "it gave no hello";
 }

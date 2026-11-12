@@ -43,7 +43,7 @@ export type Processes = {
   list(): Promise<readonly ProcessInfo[]>;
 };
 
-/** A computer's kind past files and a shell: each adds its own tools to the run's (defs.ts capabilityToolDefs). */
+/** A computer's kind past files and a shell: each adds the computer's tools to the run's (computer.ts COMPUTER_TOOLS). */
 export type CapabilityKind = "desktop" | "phone";
 
 /** A kind's tool refused in a run whose computer is not of that kind (or lacks the port): the words name the setting. */

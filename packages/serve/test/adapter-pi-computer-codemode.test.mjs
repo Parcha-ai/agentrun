@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { createSurface } from "@parcha/agentrun-computer/surface";
 import { closeOpenSessions, hostTools, MODEL, offeredTools, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -17,7 +18,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { computerCodemode, PI_CODEMODE_TOOL } = await import("../dist/runner/adapters/pi-computer.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
-const { portOf, surfaceOf } = await import("../dist/workspace/index.js");
+const { portOf } = await import("../dist/workspace/index.js");
 const { deniedText, settingsKeyOf } = await import("../dist/tool-gate.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -37,7 +38,7 @@ async function desktop() {
   const size = Buffer.from(PNG, "base64").length;
   computer.overrides["screen.shot"] = () => ({ id: "s1", size, data: PNG, eof: true, width: 1280, height: 800, scale: 1 });
   computer.overrides["input.actions"] = ({ actions }) => ({ done: actions.length });
-  const surface = await surfaceOf(computer.client, "desktop", GROUPS);
+  const surface = createSurface(computer.client, { protocol: "0.2", version: "0", os: "linux", kind: "desktop", arch: "amd64", groups: GROUPS });
   return { computer, script: { card: surface.card, port: portOf(surface) } };
 }
 
