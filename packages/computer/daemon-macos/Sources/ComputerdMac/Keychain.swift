@@ -4,7 +4,7 @@ import Foundation
 import Security
 
 /// The attach token, in the user's keychain under the app's name. Only the executable that wrote it reads it without
-/// a prompt, so pairing runs in the app's own executable.
+/// a prompt, and only a process in the login session may write it, so pairing runs in the agent.
 public enum Keychain {
 	static let service = "ai.parcha.computerd.attach"
 

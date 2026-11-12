@@ -7,7 +7,9 @@
 //   computerd pair SERVER CODE [NAME]  pair this Mac with a server, by the code its console shows, so the app dials it
 //   computerd unpair                   forget the server and the token
 //
-// Pairing runs in the app's own executable, so the token it puts in the keychain is the app's to read.
+// pair and unpair are control calls on the app's socket: the agent pairs, in the login session, so its token goes into
+// the keychain even when this command runs over SSH, where the keychain refuses a write ("User interaction is not
+// allowed"). The control calls are served on the socket only, never over attach.
 import ComputerdKit
 import Foundation
 #if canImport(Darwin)
@@ -76,38 +78,15 @@ func hello() -> Never {
 	exit(0)
 }
 
-/// The app's executable: $COMPUTERD_APP, else Contents/MacOS/Computerd of the bundle this command sits in
-/// (Contents/Helpers/computerd), through any symlink to it.
-func appExecutable() -> String {
-	if let given = ProcessInfo.processInfo.environment["COMPUTERD_APP"], !given.isEmpty { return given }
-	var me = URL(fileURLWithPath: CommandLine.arguments[0])
-	#if canImport(Darwin)
-	var size: UInt32 = 4096
-	var buffer = [CChar](repeating: 0, count: Int(size))
-	if _NSGetExecutablePath(&buffer, &size) == 0 {
-		me = URL(fileURLWithPath: String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
-	}
-	#endif
-	let contents = me.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
-	return contents.appendingPathComponent("MacOS/Computerd").path
-}
-
-/// Runs the app's executable with these arguments and exits with its status.
-func runApp(_ arguments: [String]) -> Never {
-	let path = appExecutable()
-	guard FileManager.default.isExecutableFile(atPath: path) else {
-		fail("cannot find Computerd.app's executable at \(path): run the computerd inside Computerd.app/Contents/Helpers")
-	}
-	let task = Process()
-	task.executableURL = URL(fileURLWithPath: path)
-	task.arguments = arguments
+/// One control call to the app (Control), its reply.
+func control(_ method: String, _ params: JSON?) -> JSON {
 	do {
-		try task.run()
+		return try LocalCall.call(method, params)
+	} catch let error as RPCError {
+		fail(error.message)
 	} catch {
-		fail("cannot run \(path): \(error)")
+		fail("\(error)")
 	}
-	task.waitUntilExit()
-	exit(task.terminationStatus)
 }
 
 let usage = "usage: computerd [stdio] | hello | pair SERVER CODE [NAME] | unpair"
@@ -117,8 +96,14 @@ case nil, "stdio": relay()
 case "hello": hello()
 case "pair":
 	guard args.count == 3 || args.count == 4 else { fail("usage: computerd pair https://<server> <code from its console> [a name for this Mac]") }
-	runApp(["--pair"] + args.dropFirst())
-case "unpair": runApp(["--unpair"])
+	let params = PairParams(server: args[1], code: args[2], name: args.count == 4 ? args[3] : nil)
+	let reply = control(Control.pair, try? Coders.json(params))
+	print("paired with \(reply["server"]?.stringValue ?? "?") as computer \(reply["computer"]?.stringValue ?? "?")")
+	exit(0)
+case "unpair":
+	_ = control(Control.unpair, .object([:]))
+	print("unpaired")
+	exit(0)
 case "-h", "--help", "help":
 	print(usage)
 	exit(0)

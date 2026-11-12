@@ -75,7 +75,9 @@ macOS 14 or later.
    ```
 
 Computerd trades the code for its computer id and a token, keeps the token in your keychain, and dials the server. The
-console then lists the Mac as online. A run that names it gets it, one run at a time.
+console then lists the Mac as online. A run that names it gets it, one run at a time. The command hands the server and
+code to the running app, which pairs in your login session, so it works over SSH too. If the server paired the Mac but
+the token could not be kept, Computerd says so: remove the Mac in the console's Computers page and pair again.
 
 - **Unpair:** `computerd unpair`, and remove the computer in the console (which revokes its token).
 - **Offline:** Computerd dials again after any drop, waiting 1 s, then doubling to a minute. It stops only when the server

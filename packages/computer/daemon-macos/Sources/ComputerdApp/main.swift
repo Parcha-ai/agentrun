@@ -4,7 +4,7 @@
 // grants and to pair.
 //
 //   Computerd                       run (the LaunchAgent starts it so)
-//   Computerd --pair SERVER CODE [NAME]
+//   Computerd --pair SERVER CODE [NAME]   hands the server and code to the running agent, which pairs
 //   Computerd --unpair
 //   Computerd --until-granted       the grants window, closing once every grant is on
 #if os(macOS)
@@ -18,35 +18,27 @@ func fail(_ words: String) -> Never {
 	exit(1)
 }
 
-/// Restarts the LaunchAgent, so the app dials with its new settings.
-func restartAgent() {
-	let task = Process()
-	task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-	task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(AttachSettings.agentLabel)"]
-	try? task.run()
-	task.waitUntilExit()
+/// One control call to the agent, which pairs in the login session and owns the keychain (Control).
+func control(_ method: String, _ params: JSON?) -> JSON {
+	do {
+		return try LocalCall.call(method, params)
+	} catch let error as RPCError {
+		fail(error.message)
+	} catch {
+		fail("\(error)")
+	}
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case "--pair":
 	guard arguments.count == 3 || arguments.count == 4 else { fail("usage: computerd pair https://<server> <code> [name]") }
-	Task {
-		do {
-			let settings = try await Pairing.pair(server: arguments[1], code: arguments[2], name: arguments.count == 4 ? arguments[3] : nil)
-			restartAgent()
-			print("paired with \(settings.server) as computer \(settings.computer)")
-			exit(0)
-		} catch let error as RPCError {
-			fail(error.message)
-		} catch {
-			fail("\(error.localizedDescription)")
-		}
-	}
-	dispatchMain()
+	let params = PairParams(server: arguments[1], code: arguments[2], name: arguments.count == 4 ? arguments[3] : nil)
+	let reply = control(Control.pair, try? Coders.json(params))
+	print("paired with \(reply["server"]?.stringValue ?? "?") as computer \(reply["computer"]?.stringValue ?? "?")")
+	exit(0)
 case "--unpair":
-	Pairing.unpair()
-	restartAgent()
+	_ = control(Control.unpair, .object([:]))
 	print("unpaired")
 	exit(0)
 case "--version":

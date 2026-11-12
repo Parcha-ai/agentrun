@@ -25,17 +25,19 @@ enum LogFile {
 }
 
 /// The app's unix socket: the stdio binding over a socket only this user's Computerd binaries may open. Each
-/// connection gets a driver of its own.
+/// connection gets a driver of its own, and the local control calls (pairing), which attach never offers.
 public final class SocketServer: @unchecked Sendable {
 	let path: String
 	let auth: PeerAuth
 	let makeDriver: @Sendable () -> Driver
+	let controls: @Sendable (inout Router) -> Void
 	var listener: Int32 = -1
 
-	public init(path: String = Paths.socket, auth: PeerAuth, makeDriver: @escaping @Sendable () -> Driver) {
+	public init(path: String = Paths.socket, auth: PeerAuth, makeDriver: @escaping @Sendable () -> Driver, controls: @escaping @Sendable (inout Router) -> Void) {
 		self.path = path
 		self.auth = auth
 		self.makeDriver = makeDriver
+		self.controls = controls
 	}
 
 	public func start() throws {
@@ -63,7 +65,9 @@ public final class SocketServer: @unchecked Sendable {
 
 	func serve(_ fd: Int32) async {
 		let driver = makeDriver()
-		let connection = Connection(router: driver.router(), output: FDOutput(fd: fd))
+		var router = driver.router()
+		controls(&router)
+		let connection = Connection(router: router, output: FDOutput(fd: fd))
 		await connection.serve(FDLines.read(fd: fd))
 		await driver.close()
 		close(fd)

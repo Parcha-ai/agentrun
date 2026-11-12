@@ -28,7 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			showOnboarding()
 			return
 		}
-		let server = SocketServer(auth: PeerAuth(), makeDriver: { MacPlatform.driver() })
+		let controls = Pairing.controls(hello: { MacPlatform.driver().hello() }, changed: { [weak self] in
+			Task { @MainActor in self?.startAttach() }
+		})
+		let server = SocketServer(auth: PeerAuth(), makeDriver: { MacPlatform.driver() }, controls: controls)
 		do {
 			try server.start()
 		} catch {
@@ -46,11 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !serving }
-
-	/// After pairing: the serving app dials again, and the settings copy restarts the agent so it does.
-	func paired() {
-		if serving { startAttach() } else { restartAgent() }
-	}
 
 	/// Dials the paired server, if there is one.
 	func startAttach() {
@@ -282,13 +280,15 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		let code = codeField.stringValue
 		pairButton.isEnabled = false
 		pairState.stringValue = "Pairing…"
-		Task {
+		// The agent pairs, as for the command line: it owns the keychain, and dials once paired.
+		Task.detached {
 			do {
-				let settings = try await Pairing.pair(server: server, code: code, name: nil)
+				let reply = try LocalCall.call(Control.pair, try Coders.json(PairParams(server: server, code: code)))
+				let settings = try Coders.decoder().decode(AttachSettings.self, from: try Coders.encode(reply))
 				await MainActor.run {
 					self.pairState.stringValue = "Paired with \(settings.server)"
 					self.pairButton.isEnabled = true
-					self.app?.paired()
+					self.refresh()
 				}
 			} catch {
 				let words = (error as? RPCError)?.message ?? error.localizedDescription
