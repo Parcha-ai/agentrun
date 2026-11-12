@@ -35,7 +35,8 @@ to drop, effort per reviewer, and the `CODEREVIEW.md`.
 
 ## 6. Lock it in
 
-Turn every PR that taught you something into an eval case under `evals/`, then run:
+Copy the template's folder, [`packages/serve/templates/code-review/`](../../packages/serve/templates/code-review/), into
+your repo as `my-code-review/`. Turn every PR that taught you something into an eval case under its `evals/`, then run:
 
 ```sh
 npx @parcha/agentrun template eval ./my-code-review
