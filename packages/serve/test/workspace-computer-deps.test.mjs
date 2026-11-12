@@ -289,6 +289,29 @@ test("a Daytona or an E2B sandbox under the server's default box_allow asks for 
   }
 });
 
+// AGENTRUN_DAYTONA_SNAPSHOT names the snapshot of every Daytona computer (one of box/Dockerfile, which an Archil mount
+// needs), as AGENTRUN_DOCKER_IMAGE names Docker's image; Daytona's provider sends it as the create's snapshot
+// (computer/test/daytona-provider.test.mjs). Serve reads the variable Daytona's descriptor declares (imageEnv), never
+// Daytona's id. Unset or blank, the registry's default stands. No other provider reads it.
+test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no other provider's; unset or blank, Daytona's default snapshot", async () => {
+  const snapshot = "agentrun-archil-0123456789ab";
+  const spec = computerSpecOf({ AGENTRUN_DAYTONA_SNAPSHOT: ` ${snapshot} ` });
+  const provider = await providerFor("daytona", { apiKey: "fake-test-key" });
+  const { network: networks, maxLifetimeMs } = provider.capabilities();
+  const asked = spec(entryOf("daytona"), "sandbox", { networks, maxLifetimeMs });
+  assert.equal(asked.image, snapshot, "the snapshot the owner named, trimmed");
+  assert.deepEqual(provider.check(asked), [], "Daytona's check takes it");
+  assert.equal(spec(entryOf("e2b"), "sandbox", {}).image, entryOf("e2b").defaultImage.sandbox, "E2B keeps its own default");
+  assert.equal(spec(entryOf("modal"), "sandbox", {}).image, entryOf("modal").defaultImage.sandbox, "Modal keeps its own default");
+  assert.equal(spec(entryOf("docker"), "sandbox", {}).image, DEFAULT_DOCKER_IMAGE, "Docker keeps its recipe");
+  for (const env of [{}, { AGENTRUN_DAYTONA_SNAPSHOT: "" }, { AGENTRUN_DAYTONA_SNAPSHOT: "  " }]) {
+    assert.equal(computerSpecOf(env)(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT, JSON.stringify(env));
+  }
+  // Any provider whose descriptor declares an imageEnv gets the same, by its variable alone.
+  const declared = { ...entryOf("e2b"), imageEnv: "AGENTRUN_FIXTURE_IMAGE" };
+  assert.equal(computerSpecOf({ AGENTRUN_FIXTURE_IMAGE: "fixture-template" })(declared, "sandbox", {}).image, "fixture-template");
+});
+
 // A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]):
 // under a list, the server's default or the operator's own, it runs open, never refused for the list (this server's
 // list can't reach it); under an explicit none, the operator's word for no network at all, it is refused in words.
