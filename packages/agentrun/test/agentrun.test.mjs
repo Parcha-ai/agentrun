@@ -517,6 +517,16 @@ test("the server's own commands the bin passes on are exactly those the server's
   assert.deepEqual([...start.SERVER_COMMANDS].sort(), [...new Set(own)].sort());
 });
 
+test("the public launcher forwards native discovery without starting a server or asking for a model key", (t) => {
+  const {env}=bare(t);
+  const project=mkdtempSync(join(tmpdir(),'agentrun-native-launcher-'));removeAtEnd(project);
+  writeFileSync(join(project,'AGENTS.md'),'Keep existing native project instructions.\n');
+  const result=spawnSync(process.execPath,[BIN,'native','discover','--project',project,'--runtime','codex'],{env,encoding:'utf8',timeout:30_000});
+  assert.equal(result.status,0,result.stderr);
+  const report=JSON.parse(result.stdout);assert.equal(report.targets[0].project,project);assert.equal(report.targets[0].runtime,'codex');
+  assert.doesNotMatch(result.stderr,/model key|API key|running at/);
+});
+
 test("the server's refusals and ignored webhook deliveries reach the person in plain words, route and reason, each once; nothing else of its log does", () => {
   const told = start.tellerOf();
   assert.equal(told("at=2026-11-08T20:00:00.000Z event=auth_failed route=/v2/agents reason=wrong_token"), "AgentRun refused a request to /v2/agents: the API token is not this server's. (Each route and reason is said once.)");

@@ -1,3 +1,5 @@
+import type { NativeBinding } from "./native/types.js";
+import { nativeOf } from "./native/binding.js";
 // A run's launch record: the one JSON body the server writes when it starts a run (start = INSERT run, design 2.1), and
 // the runner reads at its claim to build the run's spec. It replaces the per-run `serve.json` the old per-run process read
 // (app.ts meta.input, place, effort, cap): no process, no door, no marker file, one body written once. What a person sees
@@ -19,6 +21,7 @@ import type { Place } from "./workspace/place.js";
  *  names (a learning run's `{ runId }`). `model`, `plane`, `approvers`, `documents` and `boxAllow` are the per-run choices
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
+  readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
   readonly title: string;
@@ -118,6 +121,7 @@ export function keepInputOrigin(stored: unknown, trigger: RunTrigger | null): Me
 export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
+    ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     place: launch.place,
     ...(launch.harness !== undefined ? { harness: launch.harness } : {}),
@@ -165,6 +169,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const archilDisk = readDisk(stored.archil_disk);
   return {
     input: stored.input,
+    ...(nativeOf(stored) ? {native:nativeOf(stored)}:{}),
     title: typeof stored.title === "string" ? stored.title : "",
     place,
     ...(typeof stored.harness === "string" ? { harness: stored.harness } : {}),

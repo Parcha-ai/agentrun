@@ -151,6 +151,7 @@ function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknow
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
 interface StoreRun {
+  readonly native?: Record<string, unknown>;
   readonly row: NonNullable<Awaited<ReturnType<typeof readRun>>>;
   readonly runRow: RunRow;
   readonly launch: RunLaunch | undefined;
@@ -266,6 +267,10 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // (a CLI session's own conversation skipped) and the input submissions, with the end-of-run turn's entries left out
   // (runReflect). progressAt reads the latest tick, so a working run's last_progress_at advances as today.
   const records = await journalRecords(store.readJournal(runId), context);
+  const nativeConfiguration = records.entries.findLast(e=>e.kind === "agentrun.native.configuration")?.data as Record<string,unknown>|undefined;
+  const nativeEvents = records.entries.filter(e=>e.kind === "agentrun.native.usage").map(e=>e.data as {phase:string;model?:string;usage:unknown;session_id:string});
+  const nativeSession = records.entries.findLast(e=>e.kind === "agentrun.native.session")?.data as {session_id:string}|undefined;
+  const native = launch?.native ? {runtime:launch.native.runtime,project:launch.native.project,selector:launch.native.selector,machine_id:launch.native.machine_id,fingerprint:nativeConfiguration?.fingerprint ?? launch.native.fingerprint,session_id:nativeSession?.session_id??null,model:nativeEvents.at(-1)?.model??launch.native.model,learning_revision:launch.learning?.seed??null,usage:{task:nativeEvents.find(e=>e.phase==="task")?.usage??null,reflection:nativeEvents.filter(e=>e.phase==="reflection").map(e=>e.usage)},model_requests:null} : undefined;
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
   const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
   // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given, read
@@ -365,7 +370,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  return { row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
+  return { ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -451,6 +456,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const settled = terminal;
 
   return {
+    ...(run.native && !unshown ? {native:redactedOutput(run.native,values)}:{}),
     run_id: row.id,
     agent_id: row.agent,
     agent_version: run.version,
@@ -498,6 +504,7 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
   const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
+    ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),
     created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,

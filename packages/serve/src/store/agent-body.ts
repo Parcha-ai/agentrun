@@ -6,6 +6,8 @@
 // argument `pin` form in tool settings (the lead's ruling): at most 8 arguments mapped to JSON scalars, keys sorted, so
 // two equal pins are one revision.
 import { createHash } from "node:crypto";
+import type { NativeBinding } from "../native/types.js";
+import { nativeBindingOf } from "../native/binding.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
 export class AgentBodyInvalid extends Error {
@@ -56,13 +58,13 @@ export type RevisionComputer = { kind: string; provider?: string; image?: string
 export type ToolSettings = Record<string, unknown>;
 /** The model of each tier an agentic revision names (its definition's `model_tiers`: fast, strong), each "provider/model-id". */
 export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" };
+export type AgenticBody = { native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" }
+  | { kind: "agentic"; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never"; outputSchema?: Record<string, unknown>; maxToolCalls?: number; checkout?: "pull_request" }
   | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; capMode?: string; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
@@ -142,6 +144,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (input.maxToolCalls !== undefined && !(Number.isSafeInteger(input.maxToolCalls) && input.maxToolCalls > 0)) invalid("the maxToolCalls is not a whole number above 0");
     const body: AgenticBody = {
       instructions: input.instructions,
+      ...(input.native !== undefined ? { native: nativeBindingOf(input.native) } : {}),
       skills: skillShas,
       tools: [...tools],
       ...(input.model !== undefined ? { model: input.model } : {}),

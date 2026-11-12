@@ -7,6 +7,8 @@ runner starts beside the server. The capabilities document (`GET /v2/capabilitie
 
 `npx @parcha/agentrun` starts it, with its console, on your machine; the container image runs it on a server (below).
 
+To connect an existing Claude Code project/named agent or Codex project/profile with its native sign-in and configuration, see [Native agents](../../docs/native-agents.md). The source-machine connection uses ordinary agent revisions and the existing checked learning pipeline; it does not change managed adapter isolation.
+
 ## Quick start (no key, no network)
 
 Node 24.22.3 or later. In a checkout of this repository:

@@ -28,6 +28,7 @@ export interface LearningDispatchDeps {
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
   /** The server's data directory: each agent's learning folder. */
   readonly data: string;
+  readonly sourceInstructions?: (runId:string) => Promise<string>;
   /** The runner's one model route (its pi runs take the same): where a grade goes, on which model, at what price; under
    *  --faux, the faux model's. GraderRoute moves to runner/model-route.ts with the route. */
   readonly routeOf: (grade: GradeRouteAsk) => GraderRoute | Promise<GraderRoute>;
@@ -85,7 +86,7 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       const bound = deps.gradeBound ? deps.gradeBound() : AbortSignal.timeout(GRADE_TIMEOUT_MS);
       return bookedAsk(route)(request, AbortSignal.any([signal, bound]), run);
     };
-    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.sourceInstructions ? {sourceInstructions:deps.sourceInstructions} : {}), ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
     return {
       start: (claim) => {
         claimed = claim.runId;

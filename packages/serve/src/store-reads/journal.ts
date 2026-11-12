@@ -224,6 +224,7 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
  *  past its model proxy): its usage row says its cost is unknown, its model's work one charge with no price, so its view,
  *  live or ended, reads unknown, never $0. */
 function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
+  const nativeAggregate = entries.some(entry => entry.kind === 'runner.request' && (entry.data as {aggregate?:boolean})?.aggregate);
   const model = bookedSpend(entries, "model");
   const paid = bookedSpend(entries, "paid");
   const at = rows.findIndex((row) => row.kind === "usage");
@@ -241,10 +242,12 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
   const spent = usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
   const charges = paid.requests ? ` and ${paid.requests} paid tool call${paid.requests === 1 ? "" : "s"}` : "";
-  const summary = unbooked
+  const summary = nativeAggregate
+    ? `${costLabel(options.ended === true)}: ${spent}; native model request count unavailable${charges}`
+    : unbooked
     ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${charges}`
     : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${charges}`;
-  const usage = { usd, requests: model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
+  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

@@ -1,3 +1,5 @@
+import { createNativeLoop, nativeLearningLoop, nativeSourceInstructions } from "./native-loop.js";
+import { nativeOf } from "../native/binding.js";
 // The runner's dispatch switch (design 2.1: "the runner takes every run"): which loop a claimed run runs, by its revision
 // and the harness its launch names. The runner holds one dispatch loop (dispatch.ts) for every run; at the claim the
 // dispatch reads the launch and asks this switch for the run's inner loop:
@@ -42,12 +44,16 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
       return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
     }
+    if (harness !== "learning" && launch.native) return createNativeLoop(launch, deps);
     if (harness === "learning") {
+      const native = nativeOf(revision?.body);
+      if (native && !launch.model) return nativeLearningLoop(deps, native);
       // A built-in learning run on the learning loop: its grade goes through the runner's one model route, on the grade
       // model its launch names (none: the agent's own), at that route's price (learning-dispatch.ts).
       return learningLoopOf({
         store: deps.store,
         data: deps.data,
+        ...(native ? {sourceInstructions:(runId:string)=>nativeSourceInstructions(deps.store,runId)} : {}),
         // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
         // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
         // A grade model whose vendor this host reaches only through OpenRouter goes there as main's grade does

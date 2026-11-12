@@ -1,3 +1,5 @@
+import { nativeOf } from "./native/binding.js";
+import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
 // model (runs.ts: a child process, an HTTP door, serve.json, carry-back) is gone; the server only writes rows. A start is an
@@ -153,6 +155,7 @@ export async function message(
   { requestId, answers = true, origin, queue }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void> } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
+  if (nativeOf((await store.runs.launch(moment.id)).body)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
@@ -457,7 +460,7 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
 async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
-  const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
+  const notesOnly = rbody.learning === "notes" || nativeOf(revision.body) ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
   const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
@@ -595,10 +598,13 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // Each a ready file, before anything starts: checked ready here, then named in the launch (in order) for the runner to
   // copy into the run's work/inputs/ at its claim.
   const fileIds = Array.isArray(body.file_ids) ? (body.file_ids as string[]) : [];
-  if (fileIds.length) await deps.readyFiles(fileIds);
   const pinned = await pinnedOf();
   if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
   const { revision } = pinned;
+  const native = nativeOf(revision.body);
+  if (native && !nativeOf(entry.revision?.body)?.connected) throw new ApiError("agent_not_runnable", "This native connection is disconnected. Reconnect its source project before starting any revision.");
+  if(native && (body.effort!==undefined || fileIds.length || body.archil_disk!==undefined))throw new ApiError("input_invalid","Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.");
+  if (fileIds.length) await deps.readyFiles(fileIds);
   const rbody = revision.body as StartBody;
   const input = body.input as Json;
   const wrong = await deps.inputIssuesOf(revision, input);
@@ -635,8 +641,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
-  const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  const effort = native ? undefined : typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  const nativeLaunch = native ? await launchNative(native) : undefined;
   const launch: RunLaunch = {
+    ...(nativeLaunch ? { native: nativeLaunch } : {}),
     input,
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
     place,

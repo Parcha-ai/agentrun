@@ -133,6 +133,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   return {
     kind: "agentic",
     instructions: definition.instructions as string,
+    ...(isObject(definition.native) ? { native: definition.native as unknown as import("./native/types.js").NativeBinding } : {}),
     ...(typeof definition.model === "string" ? { model: definition.model } : {}),
     ...(isObject(definition.model_tiers) ? { modelTiers: definition.model_tiers as ModelTiers } : {}),
     ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
@@ -319,6 +320,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
   if (files === undefined) files = (isObject(current?.skills) ? (current!.skills as Record<string, string>) : {});
   const carried = current
     ? {
+        ...((currentBody as AgenticBody).native && definition.native === undefined ? { native: (currentBody as AgenticBody).native } : {}),
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
@@ -388,6 +390,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     name: agent.name,
     ...(agent.description !== null && agent.description !== undefined ? { description: agent.description } : {}),
     ...kindBody,
+    ...((body as AgenticBody).native ? { native: (body as AgenticBody).native } : {}),
     // Its approvals, of either kind: "ask" where none is set, as the definition read says it (definitionOf).
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),

@@ -102,6 +102,9 @@ export type GradeInput = {
   /** The agent's standing instructions, as the host keeps them: the prompt holds their first GRADE_CAPS.instructions
    *  characters. */
   readonly instructions?: string;
+  /** Native source policy must be supplied whole. A fixed larger bound accommodates layered project configuration;
+   * it does not change the managed instruction cap or the overall grader prompt bound. */
+  readonly nativeInstructions?: true;
   /** Every active note on main, as the index lists it: the prompt holds each one's index line, cut to
    *  GRADE_CAPS.indexLine. */
   readonly active: readonly IndexEntry[];
@@ -137,6 +140,7 @@ export type GradeInput = {
  *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
 export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000 });
+export const NATIVE_GRADE_INSTRUCTION_BYTES = 65_536;
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
  *  OK (a risky note, whoever's idea it was), and
@@ -402,7 +406,8 @@ function promptWithin(input: GradeInput, budget: number): string {
   const sent = triggered ?? [];
   const fromTriggers = askedOf(sent.map(({ text }) => text), Math.max(0, budget - messages.reduce((n, { text }) => n + text.length, 0)), false);
 
-  const told = instructions === undefined ? undefined : cut(instructions, GRADE_CAPS.instructions);
+  if(input.nativeInstructions && instructions!==undefined && Buffer.byteLength(instructions,'utf8')>NATIVE_GRADE_INSTRUCTION_BYTES)throw new Error('Native standing instructions exceed the 64 KiB grading evidence limit.');
+  const told = instructions === undefined ? undefined : input.nativeInstructions ? instructions : cut(instructions, GRADE_CAPS.instructions);
   const index = lines.map((line) => `${line}\n`).join("");
   const said = messages.map(({ at, text }) => `${at}. ${text}`).join("\n\n");
   // The file names are in the fence lines' labels; each is checked with the texts so the token is nowhere but in its own lines.
