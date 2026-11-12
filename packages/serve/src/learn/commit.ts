@@ -167,7 +167,9 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
       if (!Array.isArray(text)) holding.add(ruleOf(text.body));
     }
     for (const [path, text] of files) {
-      const one = isNote(path) && !held.has(path) ? parseNoteFile(path, text) : undefined;
+      // A replacement written here counts held or not: a pending note retires its skill as before (the owner's OK makes it
+      // the rule); only one that is not written at all (left out, or gone from main) must find another holder.
+      const one = isNote(path) ? parseNoteFile(path, text) : undefined;
       if (one && !Array.isArray(one)) holding.add(ruleOf(one.body));
     }
   }

@@ -400,6 +400,13 @@ test("the merge retires a re-filed skill only while an active note holds its rul
     const two = await learningCommit(folder.workspace, { kind: "merge", runId: "run-b", reason: "r", graded: {}, files: [{ path: other.file, text: other.text }], retire });
     assert.equal(two.ok, true, JSON.stringify(two));
     assert.deepEqual(await status(), [["report-format", "retired"]], "a note holds the rule: the skill retires");
+    // A replacement saved pending in the merge retires its skill too: the rule is the note's once the owner approves.
+    const again = { file: SKILL.file.replace("report-format", "other-format"), text: SKILL.text.replace("report-format", "other-format").replace("Start every report", "Begin every report") };
+    assert.equal((await learningCommit(folder.workspace, { kind: "merge", runId: "run-c", reason: "r", graded: {}, files: [{ path: again.file, text: again.text }] })).ok, true);
+    const pending = skillAsNote(again.file, again.text);
+    const three = await learningCommit(folder.workspace, { kind: "merge", runId: "run-d", reason: "r", graded: {}, files: [{ path: pending.file, text: pending.text }], held: [pending.file], retire: [{ skill: again.file, note: pending.file, rule: ruleOf(parseNoteFile(pending.file, pending.text).body) }] });
+    assert.equal(three.ok, true, JSON.stringify(three));
+    assert.deepEqual((await status()).find(([name]) => name === "other-format"), ["other-format", "retired"], "a pending replacement retires its skill");
   } finally {
     await folder.end();
   }
