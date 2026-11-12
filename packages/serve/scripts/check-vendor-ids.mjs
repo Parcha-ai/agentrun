@@ -22,18 +22,21 @@ export const BASELINE = {
 	// S7, DEL-03: the old box stack (pi-transport's Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
 	"place.ts": { ids: { docker: 4, daytona: 1, modal: 1 }, why: "DEL-03 (S7): the old box stack's places" },
 	"place-offers.ts": { ids: { docker: 7, daytona: 5, modal: 4 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
-	"openapi.ts": { ids: { kernel: 2 }, why: "CP-4 (S6): the browser plane's provider enum in the API" },
-	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 4 }, why: "DEL-03 (S7) and CP-4 (S6): the box stack's wiring, and the browser tool's default provider" },
-	// S6, CP-4: the browser tool and sign-in profiles on pi-browser, beside the computer package's browser kind.
-	"tool-plane.ts": { ids: { browserbase: 11, kernel: 14 }, why: "CP-4 (S6): the browser tool's providers on pi-browser" },
-	"tools.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool on pi-browser" },
-	"sign-ins.ts": { ids: { kernel: 3 }, why: "CP-4 (S6): sign-in profiles over the browser vendors' REST" },
-	"handed-values.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser vendors that keep a sign-in, for a learning read's cut" },
-	"sign-ins-store.ts": { ids: { browserbase: 4, kernel: 3 }, why: "CP-4 (S6): sign-in profiles over the browser vendors' REST" },
-	"key-words.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool's keys on pi-browser" },
-	"key-check.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool's key checks on pi-browser" },
-	"browser-cost.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4 (S6): the browser tool's list prices by pi-browser provider" },
-	"run-reads-over-store.ts": { ids: { browserbase: 1 }, why: "CP-4 (S6): a run's browser plane, Browserbase by default" },
+	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },
+	// The browser plane's default vendor, Browserbase (a run kept from before the pick, or a plane that names none); its
+	// vendors are the registry's browser providers that need a key. `kernel` in tool-plane.ts is web_fetch's guarded
+	// fetch, not the provider.
+	"tool-plane.ts": { ids: { browserbase: 3, kernel: 3 }, why: "the browser plane's default vendor; web_fetch's guarded fetch named kernel, a false positive" },
+	"tools.ts": { ids: { browserbase: 1 }, why: "the browser plane's default vendor, for a plane that names none" },
+	// S6, CP-4's follow-up: sign-in profiles over the browser vendors' REST (the computer package's profiles take their
+	// place), and the browser tool's keys, key checks and list prices by vendor, beside the descriptors.
+	"sign-ins.ts": { ids: { kernel: 3 }, why: "CP-4's follow-up (S6): sign-in profiles over the browser vendors' REST" },
+	"handed-values.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser vendors that keep a sign-in, for a learning read's cut" },
+	"sign-ins-store.ts": { ids: { browserbase: 4, kernel: 3 }, why: "CP-4's follow-up (S6): sign-in profiles over the browser vendors' REST" },
+	"key-words.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser tool's keys by vendor" },
+	"key-check.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser tool's key checks by vendor" },
+	"browser-cost.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser tool's list prices by provider" },
+	"run-reads-over-store.ts": { ids: { browserbase: 1 }, why: "CP-4's follow-up (S6): a run's browser plane, Browserbase by default" },
 };
 
 /** The calls whose first argument is a command a child process runs, not an id. */

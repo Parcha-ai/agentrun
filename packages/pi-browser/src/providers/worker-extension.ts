@@ -5,7 +5,7 @@
 // browser starts, because its path decides the extension's id and so the one Origin the browser's socket is opened to.
 import { cp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { cdpCall } from "./cdp-call.js";
+import { cdpCall } from "../core/cdp-call.js";
 import { extensionDirectory, extensionOrigin } from "./chrome-args.js";
 
 export const COPY = "stagehand-extension";

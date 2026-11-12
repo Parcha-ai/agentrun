@@ -2144,19 +2144,40 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
 
 Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
-(neither vendor moves a running session's timeout). Neither declares `downloads` yet: Browserbase keeps a session's
-downloads, but the protocol has no method that reads them, so the group waits for one. Both call the vendor endpoints
-pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
-the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
+(neither vendor moves a running session's timeout). Neither declares the `downloads` group yet: the kind registry's
+entry does not, so Browserbase's downloads are read through its `downloads` member (below). `check()` refuses an image
+other than `chromium`, a lifetime past the cap, a network other than open, any size, user, workdir or mount, and a
+browser option the provider does not declare (below), before a vendor call. `list` and attach by
 labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
 first label a query carries as it is, and match every label themselves. They show every browser that has not ended:
 Browserbase's `RUNNING` and `PENDING`, Kernel's `status=all` with the deleted dropped (Kernel's filter takes one value,
 and `active` may leave out a browser still starting). A release is idempotent: one already ended or
 unknown to the vendor is released.
 
+A browser session's own options ride the spec, `spec.browser`: `viewport`, `profile: { pointer, save }` (a saved
+profile the session opens, and whether it writes back to it), `stealth` and `headless`. `capabilities().browser`
+declares what a provider's sessions offer: `timeout` (`"wall-clock"` or `"inactivity"`), `profiles: { settleMs }` (how
+long after a saving session ends the vendor may still write the profile back), `stealth`, `headless`, and
+`downloads: { path }` (the folder a driver points `Browser.setDownloadBehavior` at). An option asks for a declared
+feature or is refused in words; a flag set `false` asks for nothing; a viewport needs no feature. No browser loads an
+extension: the driver is raw CDP, with nothing loaded into Chrome. `isBrowserProvider(p)` is true for a provider of
+kind browser that declares them.
+
+| | Browserbase | Kernel | Local Chrome |
+| --- | --- | --- | --- |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
+| `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
+| `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
+| `profiles { create, remove }` | `POST /v1/contexts`, `DELETE /v1/contexts/{id}` | `POST /profiles` under a random name (the pointer), `DELETE /profiles/{name}` | none |
+| `downloads { list, read }` | `GET /v1/downloads?sessionId=` (paged), `GET /v1/downloads/{id}`, cut at `maxBytes` | none | none |
+
+A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
+
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
-call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor (pi-browser's SDK
-client) passes its own transport: `BrowserbaseApi` or `KernelRequest`. Its thrown error rides the failure as a hidden
+call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor passes its own
+transport: `BrowserbaseApi` (its optional calls back the features of the same name: one without them declares none of
+those) or `KernelRequest`. Its thrown error rides the failure as a hidden
 cause (`causeOf(result)`), not enumerable, so it is in no JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
@@ -2227,8 +2248,9 @@ The fence and the sandbox are PR #1718's:
   (`--webrtc-ip-handling-policy=disable_non_proxied_udp`). The proxy and its relay live in the supervisor, so the fence
   holds for a browser driven from another process, and a browser whose supervisor is gone reaches nothing.
 
-Capabilities: `network: ["open"]` (public addresses), `isolation: "host"`, `daemon: "none"`, groups `cdp` only (no
-live view: run it headed to watch), `release: ["delete"]`, no mount.
+Capabilities: `network: ["open", "allow"]` (public addresses, or a list's hosts among them), `isolation: "host"`,
+`daemon: "none"`, groups `cdp` only (no live view: run it headed to watch), `release: ["delete"]`, no mount, and
+`browser: { timeout: "wall-clock" }`: `spec.browser.viewport` sizes its window, and it takes no other session option.
 
 Known limits, so it is for local and development use:
 
@@ -2241,9 +2263,9 @@ Known limits, so it is for local and development use:
   processes. Through it they reach public addresses, which they can reach anyway.
 - No proxy of your own, no extensions, no saved profiles: each browser starts from an empty profile that goes with it.
 
-Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser with the same
-`snapshot` and `run` actions the vendor browsers take, with no Stagehand and nothing loaded into Chrome. `run` code is
-refused there; navigation is a `goto` action. Its snapshot does not read a frame another site runs in its own
+Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser, as it drives the vendor
+browsers, with the `snapshot` and `run` actions and nothing loaded into Chrome. `run` code is refused; navigation is a
+`goto` action. Its snapshot does not read a frame another site runs in its own
 process (a cross-origin iframe). The snapshot names each frame it left out, so an agent knows the page has more.
 
 The conformance module starts a real Chrome, so it waits for its switch:

@@ -106,6 +106,9 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
 	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, "PATH"]);
+	// The cloud browsers read the gateway a server reaches them through.
+	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
+	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
@@ -115,7 +118,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
 		if (id !== "docker") assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (id !== "local-chrome") assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	const kinds = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.kinds]));

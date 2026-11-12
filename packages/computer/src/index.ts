@@ -71,7 +71,13 @@ export {
 	syncingClient,
 } from "./mount-archil.js";
 export {
+	type BrowserComputerProvider,
+	type BrowserDownloads,
+	type BrowserFile,
+	type BrowserProfiles,
+	browserSpecRefusals,
 	type BrowserStream,
+	isBrowserProvider,
 	BrowserVendorError,
 	CREATE_LABEL,
 	causeOf,

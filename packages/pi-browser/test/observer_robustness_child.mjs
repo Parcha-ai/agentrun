@@ -1,7 +1,7 @@
 // The process under test in observer_robustness.test.mjs: it talks to a fake CDP endpoint that sends garbage frames, and prints ALIVE
 // if it is still running afterwards.
 import { EffectObserver } from "@parcha/pi-browser";
-import { cdpCall } from "../dist/providers/cdp-call.js";
+import { cdpCall } from "../dist/core/cdp-call.js";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 
 const [mode, url] = process.argv.slice(2);

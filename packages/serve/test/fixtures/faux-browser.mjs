@@ -1,17 +1,20 @@
-// The `browser` tool's provider and driver for the tests: pi-browser's fake backend, with one page and no network or
-// key. Each call it answers is appended to $FAUX_BROWSER_LOG, so a test reads what the run's process did; its first
-// line says whether the Browserbase variables reached it in the env the real provider gets (never their values), its
-// second which vendor the run's plane named (`browserbase`, `kernel`, or why it is unavailable) and whether Kernel's key
-// reached it. The page names the vendor too, so the run's answer says which browser it got. Kernel's provider keeps
-// no downloads, and neither does this one when the vendor is Kernel. Its provider is named for the vendor, so the run
-// prices its session time as that vendor's, or $FAUX_BROWSER_PROVIDER's. A run handed its agent's saved sign-in (over
-// its pipe) gets a line naming it, and whether that ref is anywhere in its environment (process.env, the env the
-// provider gets with its hidden properties, and the environment the kernel shows); each session that asks for a
-// profile logs the profile's name and whether it saves. Profiles are kept, as Browserbase's and Kernel's are.
+// The `browser` tool's sessions and driver for the tests: a browser computer provider (the computer protocol's shape,
+// as computer/src/browserbase.ts and kernel.ts give it, which serve's browser-computer.ts drives) over pi-browser's fake
+// backend, with one page and no network or key, and the backend's driver. Each call it answers is appended to
+// $FAUX_BROWSER_LOG, so a test reads what the run's process did; its first line says whether the Browserbase variables
+// reached it in the env the real provider gets (never their values), its second which vendor the run's browser is
+// (`browserbase`, `kernel`, or why it is unavailable) and whether Kernel's key reached it. The page names the vendor too,
+// so the run's answer says which browser it got. Kernel's provider keeps no downloads, and neither does this one when the
+// vendor is Kernel. Its provider is named for the vendor, so the run prices its session time as that vendor's, or
+// $FAUX_BROWSER_PROVIDER's. A run handed its agent's saved sign-in gets a line naming it, and whether that ref is anywhere
+// in its environment (process.env, the env the provider gets with its hidden properties, and the environment the kernel
+// shows); each session that opens on a saved sign-in logs the vendor's object it opens on (`pointer`) and whether it saves.
+// Its driver dials whichever of this process's fake backends the CDP URL names, so a test whose agent's computer is a
+// browser can hand the claim a provider of this module's own and have the run's driver drive the sessions it made.
 //
 // A session's DevTools address (what the live view streams from) is a fake DevTools endpoint of this module's own, on
 // loopback in the run's process, never the backend's sentinel vendor address: it has one page, and sends one screencast
-// frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first attach. Each
+// frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first connect. Each
 // Input command it gets (the person's input, through the live view) is logged by its name alone.
 //
 // With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
@@ -19,7 +22,6 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { BrowserFailureError, browserFailure } from "@parcha/pi-browser";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
 
 /** The screencast frame the fake DevTools endpoint sends: its bytes, and the page's size it reports. */
@@ -86,6 +88,10 @@ const devtoolsUrl = () => (devtools ??= new Promise((resolve) => {
   });
 }));
 
+/** Every backend this process made, by its number: a CDP URL names its backend, so the driver of one call dials a session
+ *  another call's provider made (the agent's browser computer, made from its saved keys, and the run's faux driver). */
+const backends = new Map();
+
 export default function browser(env = process.env, vendor = "browserbase", signIn = undefined) {
   const log = process.env.FAUX_BROWSER_LOG;
   const seen = (name) => (env[name] ? "set" : "unset");
@@ -108,27 +114,105 @@ export default function browser(env = process.env, vendor = "browserbase", signI
   const echoed = (name) => (name ? String(env[name] ?? "") : "");
   const pageEcho = echoed(process.env.FAUX_BROWSER_PAGE_ECHO);
   const backend = new FakeBackend({ name: process.env.FAUX_BROWSER_PROVIDER || vendor, start, caps: { profiles: true }, pages: { [start]: fixturePage(start, `The answer is forty-two. This browser is ${vendor}'s.${pageEcho ? ` The page shows ${pageEcho} here.` : ""}`, "Example") }, ...(log ? { logFile: log } : {}) });
+  const number = String(backends.size + 1);
+  backends.set(number, backend);
   // The vendor's sessions as the last process left them.
   const stateFile = process.env.FAUX_BROWSER_STATE;
   const saved = stateFile ? (() => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return []; } })() : [];
   for (const { id, tag, url } of saved) backend.sessions.set(id, { id, tag, metadata: {}, state: "running", url, broker: false, plane: "default" });
   const save = () => { if (stateFile) writeFileSync(stateFile, JSON.stringify(backend.live().map(({ id, tag }) => ({ id, tag, url: backend.sessions.get(id)?.url ?? start })))); };
-  const { downloads: _, ...withoutDownloads } = backend.provider;
-  const provider = vendor === "kernel" ? withoutDownloads : backend.provider;
-  const create = (spec, signal) => {
-    if (log && spec.profile) appendFileSync(log, `${JSON.stringify({ op: "profile", name: spec.profile.name, save: spec.profile.save })}\n`);
-    // A saving session refused in the words pi-browser's one-saver rule uses, which name the vendor's profile (Kernel's
-    // name is the run's pointer).
-    if (signIn && spec.profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) throw new BrowserFailureError(browserFailure("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`));
-    if (process.env.FAUX_BROWSER_CREATE_401_ECHO) throw Object.assign(new Error(`401 Unauthorized: the API key ${echoed(process.env.FAUX_BROWSER_CREATE_401_ECHO)} is not valid for this project`), { status: 401 });
-    return provider.create(spec, signal).then((ref) => (save(), ref));
+  const fake = backend.provider;
+  const keeps = vendor !== "kernel";
+  const id = process.env.FAUX_BROWSER_PROVIDER || vendor;
+  // The label a session's custody tag rides on, as the claim's browser writes it (workspace/computer-for-claim.ts).
+  const TAG = "agentrun.session";
+  const ok = (value) => ({ ok: true, value });
+  const fail = (code, message) => ({ ok: false, error: { code, message } });
+  /** A fake vendor's failure as the computer protocol answers it: its code by status, its words as they are. */
+  const failed = (error) => {
+    const status = error?.status;
+    return fail(status === 401 || status === 403 ? "denied" : status === 404 ? "not_found" : "unreachable", error instanceof Error ? error.message : String(error));
   };
-  const release = (ref, signal) => provider.release(ref, signal).finally(save);
-  // The session's id stays in the address's query, where the fake driver reads it.
-  const attach = async (ref, signal) => {
-    const target = await provider.attach(ref, signal);
-    const id = new URL(target.sdkCdpUrl).searchParams.get("sessionId") ?? "";
-    return { ...target, sdkCdpUrl: `${await devtoolsUrl()}?sessionId=${encodeURIComponent(id)}` };
+  const refOf = (sessionId) => ({ id: sessionId, tag: backend.sessions.get(sessionId)?.tag ?? "" });
+  const hello = { version: "0.0.0-faux", os: "linux", kind: "browser", arch: "unknown", groups: ["cdp", "stream", ...(keeps ? ["downloads"] : [])] };
+  const computer = {
+    id,
+    version: "0.0.0-faux",
+    capabilities: () => ({
+      kind: "browser", lifetime: "vendor", network: ["open"], isolation: "vm", os: "linux", daemon: "none", groups: [...hello.groups], maxLifetimeMs: 6 * 3_600_000, release: ["delete"],
+      browser: { timeout: "wall-clock", stealth: true, profiles: { settleMs: 0 }, ...(keeps ? { downloads: { path: "downloads" } } : { headless: true }) },
+    }),
+    check: () => [],
+    async create(spec, { signal } = {}) {
+      const browser = spec.browser ?? {};
+      const tag = spec.labels?.[TAG] ?? "";
+      const profile = browser.profile;
+      if (log && profile) appendFileSync(log, `${JSON.stringify({ op: "profile", pointer: profile.pointer, save: profile.save })}\n`);
+      // A saving session refused in words a vendor's refusal might use, which name the vendor's object (Kernel's name is
+      // the run's pointer).
+      if (signIn && profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) return fail("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`);
+      if (process.env.FAUX_BROWSER_CREATE_401_ECHO) return fail("denied", `401 Unauthorized: the API key ${echoed(process.env.FAUX_BROWSER_CREATE_401_ECHO)} is not valid for this project`);
+      try {
+        const made = await fake.create({ tag, maxLifetimeS: spec.lifetimeMs / 1000, idleTimeoutS: 0, proxies: false, verified: browser.stealth === true, captcha: false, viewport: browser.viewport ?? { width: 1288, height: 711 }, metadata: {}, ...(profile ? { profile: { name: profile.pointer, save: profile.save } } : {}) }, signal ?? new AbortController().signal);
+        save();
+        return ok({ id: made.id, name: made.id });
+      } catch (error) {
+        return failed(error);
+      }
+    },
+    async attach(ref) {
+      const found = backend.sessions.get(ref.id);
+      if (!found) return fail("not_found", `no faux browser ${ref.id}`);
+      if (found.state !== "running") return fail("gone", `the faux browser ${ref.id} has ended`);
+      return ok({ id: ref.id, name: ref.id, spec: { image: "chromium", user: "unknown", network: "open", kind: "browser" } });
+    },
+    async list(labels) {
+      try {
+        const refs = await fake.findByTag(labels[TAG] ?? "");
+        return ok(refs.map((ref) => ({ ref: { id: ref.id, name: ref.id }, labels: { [TAG]: ref.tag }, state: "running", network: "open" })));
+      } catch (error) {
+        return failed(error);
+      }
+    },
+    async network() { return ok("open"); },
+    async connect(ref) {
+      try {
+        const target = await fake.attach(refOf(ref.id));
+        // The session's id stays in the address's query, where the fake driver reads it, beside its backend's number.
+        const sessionId = new URL(target.sdkCdpUrl).searchParams.get("sessionId") ?? "";
+        const client = { call: async () => ok(hello), close() {} };
+        return ok({ client, hello, cdp: { url: `${await devtoolsUrl()}?sessionId=${encodeURIComponent(sessionId)}&backend=${number}` }, close: async () => {} });
+      } catch (error) {
+        return failed(error);
+      }
+    },
+    async release(ref) {
+      try {
+        await fake.release(refOf(ref.id));
+        return ok(undefined);
+      } catch (error) {
+        return failed(error);
+      } finally {
+        save();
+      }
+    },
+    profiles: { create: async () => ok(`faux-profile-${Date.now().toString(16)}`), remove: async () => ok(undefined) },
+    ...(keeps ? {
+      downloads: {
+        list: async (ref) => { try { return ok(await fake.downloads.list(refOf(ref.id))); } catch (error) { return failed(error); } },
+        read: async (ref, name, maxBytes) => { try { return ok(await fake.downloads.read(refOf(ref.id), name, maxBytes)); } catch (error) { return failed(error); } },
+      },
+    } : {}),
   };
-  return { provider: { ...provider, create, attach, release }, driver: fakeDriver(backend) };
+  // The driver dials the backend the URL names: this call's, or another call's whose provider made the session.
+  const driver = async (target, ...rest) => {
+    let named;
+    try {
+      named = backends.get(new URL(target.sdkCdpUrl).searchParams.get("backend") ?? "");
+    } catch {
+      named = undefined;
+    }
+    return fakeDriver(named ?? backend)(target, ...rest);
+  };
+  return { computer, driver };
 }

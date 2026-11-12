@@ -27,7 +27,7 @@ import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browserClient, browserHello, carries, labelsProblem } from "./browser.js";
+import { browserClient, browserHello, browserSpecRefusals, carries, labelsProblem } from "./browser.js";
 import { alive, answeringPath, CHROME_FLAGS, checkChrome, findChrome, killTree, NO_CHROME, AS_ROOT, runsWith, singletonDir } from "./chrome.js";
 import { LOCAL } from "./descriptors/local-chrome.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
@@ -118,7 +118,7 @@ export interface LocalBrowserOptions {
 const ID = /^lb-[0-9a-f]{16}$/;
 const idProblem = (id: unknown) => (typeof id === "string" && ID.test(id) ? undefined : `${typeof id === "string" ? JSON.stringify(id) : String(id)} is not a local browser's id`);
 const refOf = (id: string): ComputerRef => ({ id, name: id });
-const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels"]);
+const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "browser"]);
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const readJson = async <T>(file: string): Promise<T | undefined> => {
 	try {
@@ -152,7 +152,9 @@ export class LocalBrowserProvider implements ComputerProvider {
 	 * A browser: our supervisor ends it at its deadline, and list reads that deadline, so the janitor sweeps one whose
 	 * supervisor is gone (lifetime janitor); it reaches public addresses only, through its egress proxy (network open), or
 	 * only a list's hosts among them (network allow);
-	 * it runs on this host, as this user, isolated by Chrome's sandbox alone (isolation host).
+	 * it runs on this host, as this user, isolated by Chrome's sandbox alone (isolation host). Its sessions (browser) end
+	 * at their deadline, a wall clock, and take a viewport (spec.browser.viewport, its window); no profile, no stealth,
+	 * and headless is the provider's option, not a session's.
 	 */
 	capabilities(): ComputerCapabilities {
 		return {
@@ -165,6 +167,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 			groups: [...(CAPABILITIES[0] as KindCapabilities).groups],
 			maxLifetimeMs: LOCAL_MAX_LIFETIME_MS,
 			release: ["delete"],
+			browser: { timeout: "wall-clock" },
 		};
 	}
 
@@ -191,6 +194,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 		refusals.push(...checkTenure({ lifetimeMs, owner }, this.capabilities(), LOCAL.label));
 		const net = browserNetworkOf(network);
 		if ("problem" in net) refusals.push({ field: "network", message: net.problem });
+		refusals.push(...browserSpecRefusals(given.browser, { timeout: "wall-clock" }, LOCAL.label));
 		if (labels !== undefined) {
 			const problem = labelsProblem(labels);
 			if (problem) refusals.push({ field: "labels", message: problem });
@@ -235,7 +239,7 @@ export class LocalBrowserProvider implements ComputerProvider {
 			created: new Date(now).toISOString(),
 			deadline: new Date(now + runLifetimeMs(spec)).toISOString(),
 			executablePath: this.executable() as string,
-			args: [...CHROME_FLAGS, ...(this.#headed ? [] : ["--headless=new"]), WINDOW],
+			args: [...CHROME_FLAGS, ...(this.#headed ? [] : ["--headless=new"]), spec.browser?.viewport ? `--window-size=${spec.browser.viewport.width},${spec.browser.viewport.height}` : WINDOW],
 			...networkRecord(spec.network),
 		};
 		try {

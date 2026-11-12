@@ -14,8 +14,8 @@
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
-import type { ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
-import { ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import type { BrowserSpec, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result } from "@parcha/agentrun-computer";
+import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -211,25 +211,37 @@ const labelValue = (value: string) => value.replace(/[^A-Za-z0-9_.:-]+/g, "_").s
 const failed = (error: { readonly code: string; readonly message: string }) => Object.assign(new Error(error.message), { code: error.code });
 
 /** A browser computer's provider as the run's browser tool opens its sessions through it (ClaimBrowser): nothing is made
- *  at the claim. A session's computer is made at the tool's call, under the run's labels (`spec`'s) and the tool's tag;
- *  its release lets go of every one the tool left open. */
-function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { readonly browser: ClaimBrowser; release(): Promise<void> } {
+ *  at the claim. A session's computer is made at the tool's call, under the run's labels (`spec`'s) and the tool's tag,
+ *  with the session's own options (spec.browser) where the provider declares them (capabilities().browser); its release
+ *  lets go of every one the tool left open. The claim's browser (the agent's computer) and the tool plane's vendor's
+ *  (browser-computer.ts planeBrowser) are each one of these. */
+export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { readonly browser: ClaimBrowser; release(): Promise<void> } {
   // A run's browser: the claim's spec always carries its lifetime (computerSpecOf); an agent's computer (owner) has none.
   const lifetime = spec.lifetimeMs;
   if (lifetime === undefined) throw new TypeError("a run's browser needs lifetimeMs: the claim's spec carries none");
+  // A provider of kind browser that declares no session features is opened as one that ends its sessions on a wall clock
+  // and takes no option but a viewport.
+  const features = provider.capabilities().browser ?? { timeout: "wall-clock" as const };
+  const kept = isBrowserProvider(provider) ? provider.downloads : undefined;
   const open = new Set<string>();
   const release = async (id: string) => {
     const released = await provider.release({ id, name: id }, "delete");
     if (!released.ok) throw failed(released.error);
     open.delete(id);
   };
+  const valueOf = async <T>(result: Promise<Result<T>>): Promise<T> => {
+    const answered = await result;
+    if (!answered.ok) throw failed(answered.error);
+    return answered.value;
+  };
   return {
     browser: {
       provider: provider.id,
       maxLifetimeS: Math.floor(lifetime / 1000),
-      async open(tag, lifetimeS, signal) {
+      features: structuredClone(features),
+      async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) } }, signal ? { signal } : {});
+        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, signal ? { signal } : {});
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -239,8 +251,22 @@ function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { readonl
         if (!listed.ok) throw failed(listed.error);
         return listed.value.map((one) => one.ref.id);
       },
+      async running(id, signal) {
+        const found = await provider.attach({ id }, signal ? { signal } : {});
+        if (found.ok) return true;
+        if (found.error.code === "not_found" || found.error.code === "gone") return false;
+        throw failed(found.error);
+      },
       url: (id) => cdpUrlOf(provider, { id, name: id }),
       close: release,
+      ...(kept && features.downloads
+        ? {
+            downloads: {
+              list: (id: string) => valueOf(kept.list({ id, name: id })),
+              read: (id: string, name: string, maxBytes: number) => valueOf(kept.read({ id, name: id }, name, maxBytes)),
+            },
+          }
+        : {}),
     },
     async release() {
       for (const id of [...open]) await release(id).catch(() => undefined);
