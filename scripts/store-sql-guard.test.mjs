@@ -13,39 +13,17 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STORE = "packages/serve/src/store/";
 /** The files outside the store that held SQL when the store landed. Each goes at the cutover. */
 const TODAY = [
-  "packages/pi-durable-agent/src/agent-store.ts",
-  "packages/pi-durable-agent/src/pack-shared.ts",
-  "packages/pi-durable-agent/src/serve/read.ts",
-  "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-agent/src/workflow.ts",
-  "packages/pi-durable-disk/src/barriers.ts",
-  "packages/pi-durable-disk/src/run.ts",
-  "packages/pi-durable-disk/src/status.ts",
-  "packages/pi-durable-disk/src/store.ts",
-  "packages/pi/src/durable/readers.ts",
-  "packages/pi/src/durable/recording.ts",
   "packages/serve/src/cap.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
+  // The copy of pi/src/durable/readers.ts serve runs (its workflow code moved into serve; pi's copy goes with pi).
+  "packages/serve/src/workflow/readers.ts",
 ];
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
 const SQLITE_FILE = /\.sqlite\b/;
 /** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
  *  cutover; the list only shrinks. */
 const TODAY_FILE = [
-  "packages/pi-durable-agent/src/agent-store.ts",
-  "packages/pi-durable-agent/src/home.ts",
-  "packages/pi-durable-agent/src/pack-shared.ts",
-  "packages/pi-durable-agent/src/pack.ts",
-  "packages/pi-durable-agent/src/runs.ts",
-  "packages/pi-durable-agent/src/serve/store.ts",
-  "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-agent/src/unpack.ts",
-  "packages/pi-durable-agent/src/vault.ts",
-  "packages/pi-durable-disk/src/barriers.ts",
-  "packages/pi-durable-disk/src/confine.ts",
-  "packages/pi-durable-disk/src/run.ts",
-  "packages/pi-durable-disk/src/status.ts",
   "packages/serve/src/import.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server.ts",
@@ -151,19 +129,10 @@ const withDriver = roots.flatMap(sources).filter((file) => driversIn(readFileSyn
  *  the list only shrinks. One file joined it after: pi/src/durable/readers.ts loads node:sqlite through createRequire,
  *  which the guard first saw when it learnt that form. */
 const TODAY_DRIVER = [
-  "packages/pi-durable-agent/src/agent-store.ts",
-  "packages/pi-durable-agent/src/home.ts",
-  "packages/pi-durable-agent/src/pack-shared.ts",
-  "packages/pi-durable-agent/src/pack.ts",
-  "packages/pi-durable-agent/src/serve/read.ts",
-  "packages/pi-durable-agent/src/store.ts",
-  "packages/pi-durable-disk/src/run.ts",
-  "packages/pi-durable-disk/src/status.ts",
-  "packages/pi-durable-disk/src/store.ts",
-  "packages/pi/src/durable/readers.ts",
-  "packages/pi/src/signin/store.ts",
   "packages/serve/src/run-db.ts",
   "packages/serve/src/server-lock.ts",
+  // The copy of pi/src/durable/readers.ts serve runs, as on TODAY.
+  "packages/serve/src/workflow/readers.ts",
 ];
 
 test("no SQLite driver taken outside the store, but for today's files on the list", () => {

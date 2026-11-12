@@ -1,7 +1,8 @@
+import { WorkflowInvalidError } from '../dist/workflow.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { runWorkflow, validateWorkflow, WorkflowInvalidError } from '../dist/index.js';
+import { runWorkflow, validateWorkflow } from '../dist/index.js';
 
 const workflow = code => ({
   v: 2, name: 'synchronous-code', schemas: { Result: { type: 'object' } },
