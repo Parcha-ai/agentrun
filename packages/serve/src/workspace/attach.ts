@@ -357,6 +357,7 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     // started), and once it ends its guard kills whatever it left, so nothing it started outlives it.
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
       if (options.stdin !== undefined) throw new WorkspaceError("REFUSED", "exec with stdin runs on the run's folder, not in a computer: a computer's exec takes no stdin");
+      if (options.network !== undefined) throw new WorkspaceError("REFUSED", "a command in a computer has the computer's own network: its exec takes no network of its own, and nothing ran");
       const { timeoutMs, signal } = options;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
       const cap = options.maxOutput ?? EXEC_OUTPUT_MAX;

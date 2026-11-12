@@ -1288,6 +1288,11 @@
           "$ref": "#/definitions/ComputerOs",
           "title": "os"
         },
+        "osVersion": {
+          "description": "The OS's own version as the computer says it: a phone's Android release (getprop ro.build.version.release), such\nas \"15\". Absent where the computer does not say one.",
+          "type": "string",
+          "title": "osVersion"
+        },
         "kind": {
           "$ref": "#/definitions/ComputerKind",
           "title": "kind"

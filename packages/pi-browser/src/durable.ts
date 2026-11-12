@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { configure, defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
-import { BROWSER_TOOL_NAMES, browserSection, browserToolsFor, listedFor, WEB_TOOL_NAMES } from "./core/contract.js";
+import { browserSection, browserToolsFor, listedFor } from "./core/contract.js";
 import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput, NO_HANDOFF } from "./core/custody.js";
 import { forModel } from "./durable/result.js";
 import type { Decisions } from "./core/decisions.js";
@@ -18,11 +18,10 @@ import { drivingGates, keptFor, keptReason, personOn, rearmWhenLeft, type Drivin
 import { captureFor, planRestore, untilQuiet, vaultRuntime, type VaultOptions, type VaultRuntime } from "./vault-session.js";
 import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type BrowserToolImpls, type PageDriver, type ToolImpl } from "./core/tools.js";
-import type { AttachTarget, BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionCharge, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
-import { useWebsite, useWebsiteContract } from "./core/sites.js";
+import type { AttachTarget, BrowserConfig, BrowserProvider, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionCharge, SessionRecord, SessionRow, SessionsState, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, hostLiveView, redactContent, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
-import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker, type KeyedSerializer } from "./core/session-control.js";
+import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, providerKeyValues, type IdleTracker, type KeyedSerializer } from "./core/session-control.js";
 import { custodyStore, now } from "./durable/store.js";
 import { answerOf, clearJournal, cutOf, cutsOf, inChain, journalOf, owed } from "./durable/journal.js";
 import { withinDeadline } from "./core/unanswered.js";
@@ -54,9 +53,6 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   handoff?: HandoffPort;
   /** Resolves `browser_upload` paths; defaults to files under `workspace`. */
   files?: WorkspaceFiles;
-  /** `use_website`'s sites; absent, the tool is not listed. `listing` is the port's `list()`, read once at host setup:
-   *  the tool's description renders from it. Each local child runs in a conversation this call owns. */
-  sites?: { port: SiteRunPort; listing: readonly SiteInfo[] };
   /** Live view and session status; a throw here never fails a call. */
   onSession?: (row: SessionRow, change: SessionChange) => void | Promise<void>;
   /** The person/model mutex shared with the live view (`createLiveView`'s `gates`); the default, the package's process-wide `drivingGates`, is the one the live view
@@ -97,8 +93,7 @@ type Crossing = "browser.between-actions" | "browser.action-returned";
 export type BrowserExtensionHandle = {
   /** Install once per Harness, before `resume()`; select per conversation. */
   extension: Extension;
-  /** `Children`: the conversation each `use_website` request ran its child in, by `<site>:<request_id>`. */
-  docs: { Config: ConversationDocToken<BrowserConfig>; Sessions: ConversationDocToken<SessionsState>; Inventory: SessionDocToken<{ rows: Record<string, InventoryRow> }>; Children: ConversationDocToken<{ byRequest: Record<string, number> }> };
+  docs: { Config: ConversationDocToken<BrowserConfig>; Sessions: ConversationDocToken<SessionsState>; Inventory: SessionDocToken<{ rows: Record<string, InventoryRow> }> };
   tools: readonly ToolRegistration[];
   /** Shutdown path (pi has no conversation-end event): closes the conversation's drivers and commits `releasing` and a
    *  release task; it does not wait for the task. A commit that throws still releases the conversation's sessions at
@@ -115,9 +110,13 @@ export type BrowserExtensionHandle = {
   close(): Promise<void>;
   /** How many conversations the extension still holds in-memory state for: a repeat guard, an idle timer or a queued call. */
   retained(): number;
+  /** Keeps session `tag` from its idle release while the run waits for its person's answer (the host bounds that wait):
+   *  an idle window that ends meanwhile releases nothing. The returned function lets it go, once; when the last keep on
+   *  the tag goes, its idle window starts again from then. Releases for any other reason (the tool, a close, its end)
+   *  are not held. */
+  keepForPerson(tag: string): () => void;
 };
 
-export { createWebExtension, type WebExtensionOptions } from "./durable/web.js";
 export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./durable/store.js";
 export { HANDOFF_POLL_MS } from "./core/custody.js";
 
@@ -147,9 +146,6 @@ async function drainReleases(name: string, harness: Harness, context: Context, s
 const open = (record: SessionRecord | null | undefined) => record?.state === "live" || record?.state === "creating";
 const releasable = (record: SessionRecord | null | undefined, reason: ReleaseReason) => open(record) || (record?.state === "held" && reason !== "idle");
 const waiting = (record: SessionRecord) => new BrowserFailureError(waitingForHuman(record.handoff!));
-// A child gets the browser and web tools only: never use_website, so it cannot start children of its own, and never
-// browser_upload or browser_downloads, since its report is all that crosses back (invariant 10) and a site run has no files.
-const CHILD_TOOLS = new Set<string>([...BROWSER_TOOL_NAMES, ...WEB_TOOL_NAMES].filter((name) => name !== "browser_upload" && name !== "browser_downloads"));
 
 /** How long a release the store could not record may take at the provider. */
 const DIRECT_RELEASE_MS = 30_000;
@@ -169,7 +165,6 @@ type Readers<D extends PageDriver> = { options: BrowserExtensionOptions<D>; reda
 type Custody<D extends PageDriver> = Readers<D> & {
   name: string;
   Sessions: ConversationDocToken<SessionsState>;
-  Children: ConversationDocToken<{ byRequest: Record<string, number> }>;
   store: ReturnType<typeof custodyStore>;
   bill: Bill;
   held: Attachments<D>;
@@ -177,11 +172,11 @@ type Custody<D extends PageDriver> = Readers<D> & {
   vault: VaultRuntime | null;
   fences: Map<string, FenceMark>;
   serial: KeyedSerializer;
-  /** Children whose provider shares one browser run one at a time. */
-  childTurns: <T>(run: () => Promise<T>) => Promise<T>;
   idle: IdleTracker<ConversationId>;
   /** The poll of each session an idle release kept for a person (#1098), by tag: stopped when the session is released. */
   leaving: Map<string, () => void>;
+  /** Sessions kept from an idle release while the run waits for its person's answer (keepForPerson), by tag: how many keeps. */
+  waiting: Map<string, number>;
   guards: Map<number, RepeatGuard>;
   /** By tag; an entry ends when the store confirms the session released. */
   owned: Map<string, Owned>;
@@ -747,6 +742,9 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
       const state = await tx.doc(c.Sessions, conversation.id);
       const record = still() ? currentRecord(state, PLANE) : null;
       if (!record || !releasable(record, reason)) return [];
+      // A run waiting for its person's answer keeps the session from an idle release; letting the keep go starts the idle
+      // window again (keepForPerson).
+      if (reason === "idle" && c.waiting.has(record.tag)) return [];
       // A person driving or watching the session through the live view keeps it from an idle release (#1098); it is
       // released one idle window after they leave.
       kept.gate = reason === "idle" ? personOn(c.options.gates ?? drivingGates, record.tag) : null;
@@ -844,67 +842,6 @@ function sectionFor<D extends PageDriver>(c: Custody<D>, names: ReadonlySet<stri
   };
 }
 
-function childConversation<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, context: Context): ChildRunner {
-  return async (task) => {
-    const config = await api.snapshot(c.Config, api.conversationId, context);
-    const childTools = (await api.agent(context)).tools.filter((tool) => CHILD_TOOLS.has(tool.name));
-    // One child per request, recorded in the commit that creates it: a replay or a repeated call finds it again, and
-    // its submission is deduplicated by request_id.
-    const id = await api.commit(async (tx) => {
-      const children = await tx.doc(c.Children, api.conversationId);
-      const key = `${task.site}:${task.requestId}`;
-      const known = children.byRequest[key];
-      if (known !== undefined) return known as ConversationId;
-      const child = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
-      await configure(tx, child.id, { tools: childTools, instructions: null });
-      Object.assign(await tx.doc(c.Config, child.id), config ?? UNCONFIGURED);
-      children.byRequest[key] = child.id as number;
-      return child.id;
-    }, context);
-    const child = await api.conversation(id, context);
-    if (!child) throw new Error("the child conversation is gone");
-    // Children on a provider whose sessions share one browser would drive the same pages, so there they take turns. One
-    // whose provider cannot be looked up waits its turn too: its own browser calls ask the factory again.
-    const shared = await providerOf(c, api, id, PLANE, context).then((provider) => provider.caps.sharedBrowser === true, () => true);
-    // The turn covers the report and the release too: on a shared browser the next child attaches only once this one has let go.
-    const run = async (): Promise<string> => {
-      try {
-        const settled = await (await child.submit({ type: "input", content: task.prompt, requestId: task.requestId }, context)).wait(context);
-        const report = await api.commit(async (tx) => {
-          for (const entry of (await tx.scanEntries({ conversationId: id, order: "descending" }, 50)).items) {
-            for (const message of [...(entry.model ?? [])].reverse()) {
-              if (message.role !== "assistant") continue;
-              const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
-              if (text) return text;
-            }
-          }
-          return "";
-        }, context);
-        if (settled.status !== "done" || !report) throw new Error("the child finished without a report");
-        return report;
-      } finally {
-        await releasePlane(c, { id, commit: (change, ctx) => api.commit(change, ctx) }, "close", context).catch(() => undefined);
-      }
-    };
-    return await (shared ? c.childTurns(run) : run());
-  };
-}
-
-function siteTool<D extends PageDriver>(c: Custody<D>, sites: NonNullable<BrowserExtensionOptions<D>["sites"]>): ToolRegistration {
-  const contract = useWebsiteContract(sites.listing);
-  return defineTool({
-    name: contract.name,
-    description: contract.description,
-    parameters: contract.parameters as unknown as TSchema,
-    replay: contract.replay,
-    executionMode: contract.executionMode,
-    execute: async (args, api, context) => {
-      const out = await useWebsite(args as Record<string, unknown>, sites.port, sites.listing, { signal: context.abortSignal ?? new AbortController().signal, runChild: childConversation(c, api, context) });
-      return { ...forModel(redactContent(out.content, c.redact)), ...(out.isError ? { isError: true } : {}) };
-    },
-  });
-}
-
 /** A Session that a storage error failed ends `{ kind: "failed" }` (`closed`, pi-durable's SessionEnd), and close begins
  *  at once (`subscribeClose`). */
 function endingOf(harness: Harness): Custody<PageDriver>["ending"] {
@@ -921,7 +858,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   const redact = createRedactor(() => [...providerKeyValues(process.env, options.redact?.values), ...tracked]);
   const vault = vaultRuntime(options, (secret) => { tracked.add(secret); }, (message) => process.emitWarning(`pi-browser: ${redact(message)}`, { code: "PI_BROWSER_VAULT" }));
   const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED), checkpointWhen: () => false });
-  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }), checkpointWhen: () => false });
   // A fork starts with no sessions: it never shares a live browser.
   const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptySessions, checkpointWhen: () => false });
   const readers: Readers<D> = { options, redact, Config };
@@ -962,7 +898,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   });
 
   const c: Custody<D> = {
-    ...readers, name, Sessions, Children, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, stops: new Map(), ending: null, opened: null, incarnation: randomUUID(),
+    ...readers, name, Sessions, store, bill, held: new Attachments<D>(), vault, fences: new Map(), leaving, waiting: new Map(), serial: keyedSerializer(), guards: new Map(), owned, failed: false, stops: new Map(), ending: null, opened: null, incarnation: randomUUID(),
     idle: idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(c, cid, fired, idleMs).catch(() => undefined) }),
   };
   // Every browser tool is a model call on its session's driving gate: refused while a person drives the live view, and the viewer's input is held while it runs. The host's own
@@ -971,12 +907,11 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   // pi checks a call's arguments against the tool's schema before execute, so each implementation receives its own shape.
   const tools = toolsFor(c, own as Partial<Record<string, ToolImpl<D>>>);
   const names = new Set(tools.map((tool) => tool.name));
-  const siteTools = options.sites ? [siteTool(c, options.sites)] : [];
 
   return {
-    extension: defineExtension({ name, tools: [...tools, ...siteTools], sections: [sectionFor(c, names)], tasks: [store.ReleaseTask, store.HandoffTask] }),
-    docs: { Config, Sessions, Inventory: store.Inventory, Children },
-    tools: [...tools, ...siteTools],
+    extension: defineExtension({ name, tools, sections: [sectionFor(c, names)], tasks: [store.ReleaseTask, store.HandoffTask] }),
+    docs: { Config, Sessions, Inventory: store.Inventory },
+    tools,
     release: (conversation, reason, context) => releasePlane(c, conversation, reason, context),
     async reconcile(harness, isActive, context) {
       c.opened = { harness, context };
@@ -1011,5 +946,19 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       c.owned.clear();
     },
     retained: () => new Set<number>([...c.guards.keys(), ...c.idle.keys(), ...c.serial.keys().map((key) => Number(key.slice(0, key.indexOf(":"))))]).size,
+    keepForPerson(tag) {
+      c.waiting.set(tag, (c.waiting.get(tag) ?? 0) + 1);
+      let kept = true;
+      return () => {
+        if (!kept) return;
+        kept = false;
+        const left = (c.waiting.get(tag) ?? 1) - 1;
+        if (left > 0) { c.waiting.set(tag, left); return; }
+        c.waiting.delete(tag);
+        // The idle window starts again from now, for a session still owned here.
+        const cid = c.owned.get(tag)?.cid;
+        if (cid !== undefined && c.idle.keys().includes(cid)) c.idle.activity(cid, 0);
+      };
+    },
   };
 }

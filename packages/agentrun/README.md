@@ -12,14 +12,13 @@ It starts [AgentRun Server](https://github.com/Parcha-ai/agentrun/tree/main/pack
 7340 on this machine's loopback, keeps its data in `~/.agentrun`, prints the address the server says to open and opens
 it in your browser (`--no-open`, a CI run or a machine with no display skips that). The server,
 `@parcha/agentrun-serve`, is this package's one dependency, at its exact version, so `npx` installs the two together and
-each version of this command runs the server it was released with. Node.js 22.19 or newer on 22, or 24.2 or newer, on
-macOS or Linux.
+each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
+Node gets one line naming that floor.
 
 Where Docker answers on this machine, a new agent runs in a Docker box of its own with a shell, and a line on stderr,
 after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why
-and that new agents run on the runner. The box image's first build takes a few minutes, said as it starts (`Preparing
-the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.`)
-and as it ends (`The Docker box image is ready.`). `AGENTRUN_BOXES=none` turns boxes off.
+and that new agents run on the runner. A Docker box's image is built on its first run, which shows that on its
+timeline. `AGENTRUN_BOXES=none` turns boxes off.
 
 pi runs every agent out of the box. The Claude Code and Codex harnesses need their own packages beside the server; when
 one is missing, AgentRun says so with the one command to paste: `npx` with this package, the server and that harness's

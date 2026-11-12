@@ -7,7 +7,7 @@ import { toolOffers } from "@/lib/agentForm";
 // The server sends its tools as objects ({name, available, missing}): the Tools step lists them by name, and one the
 // server can't run now can't be newly picked.
 describe("AgentEditor's Tools step, on a server that sends tool objects", () => {
-  const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] }]) };
+  const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] }]) };
   it("lists each tool by its name, and the one it can't run is disabled", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "tools" }));
     expect(html).toContain('value="read"');
@@ -15,6 +15,7 @@ describe("AgentEditor's Tools step, on a server that sends tool objects", () => 
     expect(html).toMatch(/value="browser"[^>]*disabled=""|disabled=""[^>]*value="browser"/);
   });
   it("takes the server's tool objects", () => {
-    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
+    // No `harnesses` served: no harness runs it here.
+    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true, harnesses: [] }]);
   });
 });

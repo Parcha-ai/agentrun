@@ -1,11 +1,7 @@
-// A box's settings as the server reads them at its start: the hosts a box may reach (AGENTRUN_BOX_ALLOW) and what a
-// server's Docker boxes reach from them, and, under `--faux` only, the tests' faux box provider. A setting that is not one
-// throws, naming it: the start checks each, so no run meets one. A Docker computer's size (AGENTRUN_BOX_CPUS, _MEMORY,
-// _PIDS) is workspace/computer-deps.ts dockerLimitsOf.
-import { pathToFileURL } from "node:url";
-import type { BoxProvider } from "@parcha/pi-transport";
-import { type DockerNetwork, egressBlockedBy } from "./box-egress.js";
-import { vmDocker } from "./box-egress-vm.js";
+// The hosts a run's computer may reach (AGENTRUN_BOX_ALLOW), as the server reads them at its start: a run's launch keeps
+// them (box_allow) and its computer is made with them (workspace/computer-deps.ts). A setting that is not one throws,
+// naming it: the start checks it, so no run meets one. A Docker computer's size (AGENTRUN_BOX_CPUS, _MEMORY, _PIDS) is
+// workspace/computer-deps.ts dockerLimitsOf.
 
 /** The setting that names the hosts a box may reach: a comma list of hosts, each a name or `*.` and a name, which
  *  replaces the default list; `none` for no network at all. Unset or empty, the default. */
@@ -37,26 +33,3 @@ export function boxAllowOf(env: NodeJS.ProcessEnv): readonly string[] | "none" {
   if (hosts.length > MAX_BOX_ALLOW) throw new Error(`${BOX_ALLOW_ENV} names ${hosts.length} hosts; it takes at most ${MAX_BOX_ALLOW}`);
   return Object.freeze(hosts);
 }
-
-/** What a server's Docker boxes reach, resolved once at its start: the setting's list (boxAllowOf) where egressBlockedBy
- *  (box-egress.ts) finds the daemon is this Linux machine's own, else none with the reason; `none` from the setting, with
- *  it as the reason. */
-export async function boxNetworkOf(env: NodeJS.ProcessEnv, options: Parameters<typeof egressBlockedBy>[1] = {}): Promise<DockerNetwork> {
-  const allow = boxAllowOf(env);
-  if (allow === "none") return { allow: "none", reason: `${BOX_ALLOW_ENV} is none` };
-  const blocked = await egressBlockedBy(env, options);
-  if (!blocked) return { allow };
-  // On a Mac only: a Docker that docker info names as a VM runtime this server knows gets the proxy container
-  // (box-egress-vm.ts); any other stays none, saying why.
-  if ((options.platform ?? process.platform) !== "darwin") return { allow: "none", reason: blocked };
-  const vm = await vmDocker(env, { ...(options.platform ? { platform: options.platform } : {}), ...(options.kernel ? { kernel: options.kernel } : {}), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) });
-  return "runtime" in vm ? { allow, vm: vm.runtime } : { allow: "none", reason: vm.reason };
-}
-
-/** Under `--faux` only: a module whose default export, given the data root, is the provider the tests' faux box comes
- *  from in place of Docker. */
-export const FAUX_BOX_ENV = "AGENTRUN_SERVE_FAUX_BOX";
-
-/** The tests' faux box provider, from its module. */
-export const fauxBoxes = async (module: string, root: string): Promise<BoxProvider> =>
-  ((await import(pathToFileURL(module).href)) as { default: (root: string) => BoxProvider }).default(root);

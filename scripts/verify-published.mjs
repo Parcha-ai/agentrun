@@ -149,9 +149,10 @@ export async function verifyPublished(root, selected, { allowAbsent = false, can
       receipt.registryVisible = await waitForRegistryVersions(plan.registry, plan.packages, { fetchImpl, wait, now });
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
-        // The Pi packages are optional peers of @parcha/agentrun-pi: a host supplies them, so the consumer does, at the versions the package is tested with.
-        const piDev = JSON.parse(await readFile(join(root, 'packages/pi/package.json'), 'utf8')).devDependencies ?? {};
-        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox'].map(name => { assert.ok(piDev[name], `packages/pi has no dev dependency ${name}`); return `${name}@${piDev[name]}`; });
+        // The Pi packages are peers of @parcha/agentrun-serve (pi-ai, pi-durable, chord) and of pi-browser: a host supplies
+        // them, so the consumer does, at the versions the repository's lockfile holds.
+        const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
+        const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', '@earendil-works/pi-durable', '@earendil-works/chord', 'typebox'].map(name => { const version = rootLock.packages?.[`node_modules/${name}`]?.version; assert.ok(version, `the lockfile holds no ${name}`); return `${name}@${version}`; });
         const lock = await installRegistryConsumer(consumer, { requested: [...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`), ...peers], root, registry: plan.registry });
         for (const pkg of plan.packages) assert.equal(lock.packages[`node_modules/${pkg.name}`].integrity, pkg.integrity, 'Installed archive integrity mismatch');
         await writeFile(join(consumer, 'deny-network.mjs'), `import net from 'node:net'; import http from 'node:http'; import https from 'node:https'; import {syncBuiltinESMExports} from 'node:module';
@@ -159,9 +160,8 @@ export async function verifyPublished(root, selected, { allowAbsent = false, can
     globalThis.fetch=deny;net.Socket.prototype.connect=deny;http.request=deny;http.get=deny;https.request=deny;https.get=deny;syncBuiltinESMExports();\n`);
         await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
     import {runTriageDemo} from '@parcha/agentrun-dsl/demo';
-    import {createJevRunner} from '@parcha/agentrun-jev'; import {createPiRunner} from '@parcha/agentrun-pi';
-    import {openDurableRun} from '@parcha/pi-durable-disk';
-    assert.equal(typeof createJevRunner,'function');assert.equal(typeof createPiRunner,'function');assert.equal(typeof openDurableRun,'function');
+    import {createJevRunner} from '@parcha/agentrun-jev'; import {startServe} from '@parcha/agentrun-serve';
+    assert.equal(typeof createJevRunner,'function');assert.equal(typeof startServe,'function');
     for(const scenario of ['billing','technical','ambiguous']){const {result}=await runTriageDemo(scenario);assert.equal(result.status,scenario==='ambiguous'?'escalated':'complete');}\n`);
         await exec(process.execPath, ['--import', './deny-network.mjs', 'smoke.mjs'], { cwd: consumer, timeout: 30_000, maxBuffer: 1024 * 1024 });
       } finally { await rm(consumer, { recursive: true, force: true }); }
@@ -181,7 +181,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, can
 /** The command's arguments (`argv` as process.argv): `--package <directory|all>`, then `--allow-absent` and `--canary` in any
  *  order, each at most once (--canary: the plan is a canary from main, not a release). Anything else throws the usage line. */
 export function commandArgs(argv) {
-  const usage = 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent] [--canary]';
+  const usage = 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi-browser|serve|all [--allow-absent] [--canary]';
   const flags = argv.slice(4);
   assert.ok(argv[2] === '--package' && argv.length >= 4 && flags.every(flag => ['--allow-absent', '--canary'].includes(flag)) && new Set(flags).size === flags.length, usage);
   return { selected: argv[3], allowAbsent: flags.includes('--allow-absent'), canary: flags.includes('--canary') };

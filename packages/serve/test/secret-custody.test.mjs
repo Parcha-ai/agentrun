@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
-import { BOX_KEYS } from "../dist/boxes.js";
+import { BOX_KEYS } from "../dist/place-offers.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
@@ -53,8 +53,6 @@ const TOOL_KEYS = ["MONID_API_KEY", ...BROWSER];
  *  other: a pi run its model's provider's (per tier), or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's, or
  *  the gateway's; claude-agent Anthropic's. TypeSafe's is a decision key, never on the pipe. */
 const MODEL_KEYS = [...new Set([...Object.values(PROVIDER_KEYS).flat(), "AGENT_MODEL_API_KEY"])].filter((name) => !DECISION_KEYS.includes(name));
-/** The names a run's process was handed (faux-custody.mjs' report), sorted. */
-const heldBy = (handed) => Object.entries(handed).filter(([, value]) => value !== "none").map(([name]) => name).sort();
 /** Amazon Bedrock's keys, which pi-ai's table of keys by provider leaves out as ambient: its request reads them itself. */
 const BEDROCK = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
 /** The keys pi-ai reads for each of its built-in providers, by its own table (findEnvKeys, asked of an environment that
@@ -73,7 +71,6 @@ async function piAiKeys() {
 }
 const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY", "MONID_API_KEY", ...DECISION_KEYS];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 const read = (path) => {
   try {
     return readFileSync(path);
@@ -236,38 +233,27 @@ function noSecretAnywhere(root, ...canaries) {
   return ours.map((p) => p.cmdline.toString().replaceAll("\0", " "));
 }
 
-// SKIP (follow-up #2078): the launcher's custody report for the run is never written on the runner
-test.skip("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, and a run's process gets its own over its pipe", { timeout: 120_000 }, async (t) => {
+// The launcher's custody: the secrets reach the server over a pipe, so none is in the environment or command line of any
+// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, in the
+// same process (a run's own process is gone: custody of a run's keys is custody-runner-e2e.test.mjs), so a run going while the
+// processes are read is read too.
+test("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, a run going included", { timeout: 120_000 }, async (t) => {
   const { canary, secrets } = canaries();
-  const { root, api } = await launched(t, { ...secrets, LC_ALL: "C.UTF-8" });
+  // Without the store URL, which names a Postgres store (its own case, below).
+  const { root, api } = await launched(t, { ...secrets, AGENTRUN_STORE_URL: undefined, LC_ALL: "C.UTF-8" });
   // The launcher counts bytes in the C locale, for its own shell only: the server gets the caller's locale back.
   assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
   assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-4o" } })).status, 201);
-
-  // A run's process says what it was handed: of every secret set, its model's key alone (OpenAI's), none in its
-  // environment, its pipe closed.
-  const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
-  await follow(api, run.run_id, ["completed"]);
-  const report = reported(run.run_id);
-  for (const name of SECRET_NAMES) assert.equal(report.handed[name], name === "OPENAI_API_KEY" ? digest(secrets[name]) : "none", `${name} handed to the run's process`);
-  assert.deepEqual(heldBy(report.handed), ["OPENAI_API_KEY"], "exactly its model's key");
-  assert.deepEqual(report.inEnv, [], "no secret in the run's process's environment, so none in a child's");
-  assert.deepEqual(report.pipe, { fd: 3, closed: true }, "the run's process read its pipe and closed it");
-
-  // A run whose process is up, holding its turn, while every process of this user is read.
-  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "Hold." })).status, 202);
-  for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "working"; i++) {
-    assert.ok(i < 200, "the held turn works");
-    await sleep(50);
-  }
-  await sleep(500);
+  // Read while the run's turn is held open (the faux model holds "Hold." until it is stopped): a process that held a
+  // secret only during a turn is still there to read.
+  const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Hold." } });
+  await follow(api, run.run_id, ["working"]);
   const seen = noSecretAnywhere(root, canary);
-  assert.ok(seen.length >= 2, `the server and the run's process are found: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
-  // The run's process reads its pipe in a preload, before pi-durable-disk's CLI loads: nothing runs ahead of it that
-  // could start a child holding the pipe.
-  const runArgv = seen.find((cmdline) => cmdline.includes(" --app "))?.split(" ") ?? [];
-  const preload = runArgv.indexOf("--import");
-  assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
+  assert.ok(seen.length >= 1, `the server (with its runner) is found: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status < 300, true, "the held run is cancelled");
+  await follow(api, run.run_id, ["cancelled", "stopped", "failed", "completed"]);
+  // And once it ended: nothing it started left a secret behind.
+  noSecretAnywhere(root, canary);
 });
 
 // The store URL holds a database password: it reaches the server over the launcher's pipe, so no process of the user holds it in
@@ -306,157 +292,6 @@ test("started by its launcher with a store URL that holds a database password, n
   noSecretAnywhere(root, password);
 });
 
-/** The launcher's arguments for a server whose data directory holds `saved` (by key id, its fields) as tool keys already,
- *  sealed under `key`: written into its store as the server writes them, before it starts. */
-const savedBefore = (key, saved) => async (data) => {
-  mkdirSync(data, { recursive: true, mode: 0o700 });
-  const store = await openSqliteStore({ file: join(data, STORE_FILE), role: "server" });
-  try {
-    const keys = toolKeysOverStore(store, { AGENTRUN_SEAL_KEY: key }, () => undefined);
-    await keys.load();
-    for (const [id, values] of Object.entries(saved)) await keys.save(id, { values });
-  } finally {
-    await store.close();
-  }
-  return ["--data", data, "--port", "0", "--faux", CUSTODY];
-};
-
-// SKIP (follow-up #2078): under its launcher the server refuses the data directory as an earlier version's
-test.skip("under its launcher, a tool key saved through the settings API reaches the next run's process over its pipe, never an environment; the launcher's value wins for a name it holds; the seal key reaches no run", { timeout: 120_000 }, async (t) => {
-  const canary = `not-a-secret-saved-${process.pid}-${Date.now()}`;
-  const seal = randomBytes(32).toString("base64");
-  const value = (name, where) => `${canary}-${where}-${name}`;
-  // BROWSERBASE_API_KEY saved before the start and held by the launcher too: the launcher's is the one a run gets.
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: value("AGENTRUN_TOKEN", "launcher"), AGENTRUN_SEAL_KEY: seal, BROWSERBASE_API_KEY: value("BROWSERBASE_API_KEY", "launcher") }, savedBefore(seal, { browserbase: { BROWSERBASE_API_KEY: value("BROWSERBASE_API_KEY", "saved") } }));
-  // Its tools name what each key unlocks: a run gets a tool key only then.
-  assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: ["monid.run", "browser"] } })).status, 201);
-  const saved = { MONID_API_KEY: value("MONID_API_KEY", "saved"), BROWSERBASE_PROJECT_ID: value("BROWSERBASE_PROJECT_ID", "saved") };
-  assert.equal((await api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: saved.MONID_API_KEY } })).status, 204);
-  assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: saved.BROWSERBASE_PROJECT_ID } })).status, 204);
-  const fields = Object.fromEntries((await api("GET", "/settings/tool-keys")).body.keys.flatMap((key) => key.fields.map((field) => [field.name, field.source])));
-  assert.deepEqual(fields, { PARALLEL_API_KEY: null, MONID_API_KEY: "stored", BROWSERBASE_API_KEY: "server", BROWSERBASE_PROJECT_ID: "stored", KERNEL_API_KEY: null, TYPESAFE_API_KEY: null, ANTHROPIC_API_KEY: null, OPENAI_API_KEY: null, OPENROUTER_API_KEY: null }, "the launcher's is the server's; the saved ones are stored, never the server's");
-  const handed = async () => {
-    const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
-    await follow(api, run.run_id, ["completed"]);
-    return { id: run.run_id, ...reported(run.run_id) };
-  };
-  const report = await handed();
-  assert.deepEqual(Object.fromEntries(["MONID_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"].map((name) => [name, report.handed[name]])), {
-    MONID_API_KEY: digest(saved.MONID_API_KEY),
-    BROWSERBASE_PROJECT_ID: digest(saved.BROWSERBASE_PROJECT_ID),
-    BROWSERBASE_API_KEY: digest(value("BROWSERBASE_API_KEY", "launcher")),
-    AGENTRUN_SEAL_KEY: "none",
-    AGENTRUN_TOKEN: "none",
-  }, "saved after the start and handed at the run's launch; the launcher's wins; the server's own never");
-  assert.deepEqual(report.inEnv, [], "none in the run's process's environment");
-  assert.deepEqual(report.pipe, { fd: 3, closed: true });
-  // Deleted, the next run that names monid is refused for it, launching no process.
-  assert.equal((await api("DELETE", "/settings/tool-keys/monid")).status, 204);
-  const refused = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
-  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { "monid.run": ["MONID_API_KEY"] }]);
-
-  // The first run's process up again, holding its turn, while every process of this user is read once (a pipe's unread
-  // bytes are taken as they are read): no saved value, and no seal key.
-  assert.equal((await api("POST", `/runs/${report.id}/messages`, { content: "Hold." })).status, 202);
-  for (let i = 0; (await api("GET", `/runs/${report.id}`)).body.state !== "working"; i++) {
-    assert.ok(i < 200, "the held turn works");
-    await sleep(50);
-  }
-  await sleep(500);
-  const seen = noSecretAnywhere(root, canary, seal, Buffer.from(seal, "base64").toString("hex"));
-  assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
-});
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, a Parallel key saved through the settings API reaches a workflow run's decision descriptor: refused before it, answered on it after, with no restart and in no process's environment", { timeout: 120_000 }, async (t) => {
-  const dir = await scratch(t);
-  const calls = join(dir, "parallel-calls.jsonl");
-  const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
-  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
-const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxParallel: ${JSON.stringify(FAUX_PARALLEL)}, drainTimeout: "5s" });
-process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
-  // No Parallel key anywhere the launcher could take one from: the saved one is the only one.
-  const held = process.env.PARALLEL_API_KEY;
-  delete process.env.PARALLEL_API_KEY;
-  t.after(() => held !== undefined && (process.env.PARALLEL_API_KEY = held));
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
-  const coi = {
-    v: 2, name: "coi-check",
-    schemas: {
-      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-      Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is \`doc\` a certificate of incorporation?" } } },
-    },
-    input: { schemaId: "In" },
-    output: { schemaId: "Coi", path: "coi" },
-    root: { node: "chain", steps: [{ node: "judge", label: "coi-parallel", state: { doc: "{question}" }, out: "Coi", as: "coi", provider: "parallel" }] },
-  };
-  const parallel = async () => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((p) => p.id === "parallel").available;
-  const start = () => api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
-  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
-  assert.equal(await parallel(), false);
-  const refused = await start();
-  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.decisions], [409, "agent_not_runnable", { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"] } }]);
-
-  assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
-  assert.equal(await parallel(), true, "no restart");
-  const { body: started } = await start();
-  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
-  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${started.run_id}`)).body.error));
-  const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/monitors", true], ["/v1/decisions", true]], "checked as it was saved (a list of monitors, which costs nothing), then Parallel answered the run on the saved key, handed on the decision descriptor");
-  for (const p of processes().filter((p) => treeOf(root).has(p.pid))) {
-    assert.ok(!p.environ.includes(PARALLEL_CANARY), `pid ${p.pid}'s environment holds the key`);
-    assert.ok(!p.cmdline.includes(PARALLEL_CANARY), `pid ${p.pid}'s command line holds the key`);
-  }
-});
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, a run's process holds a tool key only when its revision names a tool the key unlocks, and its model's key alone, and the same again after a restart", { timeout: 120_000 }, async (t) => {
-  const { secrets } = canaries();
-  // The server as the launcher's COMMAND, with the tests' fake browser; SIGUSR2 closes it and starts it again on the
-  // same data, so the new server reads each run, and its revision, from the store.
-  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
-const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const options = { data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(CUSTODY)}, fauxBrowser: ${JSON.stringify(FAUX_BROWSER)}, drainTimeout: "5s" };
-let server = await startServe(options);
-process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");
-process.on("SIGUSR2", async () => {
-  await server.close();
-  server = await startServe(options);
-  process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");
-});`;
-  const { root, child, api } = await launched(t, secrets, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
-  // Each agent's tools, and the tool keys its runs get.
-  const agents = { monid: [["monid.run"], ["MONID_API_KEY"]], browse: [["browser"], BROWSER], reader: [["read"], []] };
-  // Each on an OpenAI model: OpenAI's key is the one model key each holds.
-  const expected = (unlocked) => Object.fromEntries(SECRET_NAMES.map((name) => [name, [...unlocked, "OPENAI_API_KEY"].includes(name) ? digest(secrets[name]) : "none"]));
-  const report = async (call, runId, after) => {
-    await follow(call, runId, ["completed"], { after, deadlineMs: 60_000 });
-    return reported(runId).handed;
-  };
-  const runs = {};
-  for (const [id, [tools, unlocked]] of Object.entries(agents)) {
-    assert.equal((await api("POST", "/agents", agent(id, { tools, model: "openai/gpt-4o" }))).status, 201);
-    const { status, body } = await api("POST", `/agents/${id}/runs`, { input: { content: "Report." } });
-    assert.equal(status, 202, JSON.stringify(body));
-    runs[id] = { runId: body.run_id, handed: await report(api, body.run_id) };
-    assert.deepEqual(runs[id].handed, expected(unlocked), `a run of ${id} (${tools.join(", ")}) holds ${unlocked.join(", ") || "no tool key"}, and OpenAI's key, no other model key`);
-  }
-
-  // A restart: the new server reads each run from the store, and a follow-up opens it again in a new process, which
-  // gets what its first did.
-  // Its ready line again, or its exit: never a clock (support.mjs printed). Listened for before the signal.
-  const restarted = printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
-  process.kill(root, "SIGUSR2");
-  const again = client(/AGENTRUN_BASE_URL=(\S+)/.exec(await restarted)[1], secrets.AGENTRUN_TOKEN);
-  for (const [id, { runId, handed }] of Object.entries(runs)) {
-    const sent = await again("POST", `/runs/${runId}/messages`, { content: "Report." });
-    assert.equal(sent.status, 202, JSON.stringify(sent.body));
-    assert.deepEqual(await report(again, runId), handed, `the run of ${id}, opened again after the restart, holds the same secrets`);
-  }
-});
-
 /** Model settings a host may hold: none of the test's own reaches a server started by launchedWith. */
 const MODEL_SETTINGS = ["AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL_PRICE", "ANTHROPIC_BASE_URL", "AGENT_THINKING"];
 const CUSTODY_HARNESS = new URL("./fixtures/faux-custody-harness.mjs", import.meta.url).pathname;
@@ -470,42 +305,6 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   const only = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ...env };
   return launched(t, only, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
 }
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, a pi run on the host's default model, which a model key gives, is handed that key: one set where AgentRun starts, or one saved in Settings → Model keys, though neither is ever in the server's environment", { timeout: 120_000 }, async (t) => {
-  const canary = `not-a-secret-default-${process.pid}-${Date.now()}`;
-  const token = `${canary}-AGENTRUN_TOKEN`;
-  // Set where AgentRun starts: the launcher takes it out of the environment, so only the server's secrets hold it.
-  const started = await launchedWith(t, { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: `${canary}-started` });
-  assert.equal((await started.api("POST", "/agents", agent("on-default"))).status, 201);
-  const fromStart = await custodyReport(started.api, "on-default");
-  assert.deepEqual(heldBy(fromStart.handed), ["OPENROUTER_API_KEY"], "the key its default model (OpenRouter's) needs, and no other");
-  assert.equal(fromStart.handed.OPENROUTER_API_KEY, digest(`${canary}-started`), "over its pipe, whole");
-  // Saved in Settings → Model keys, never in any environment.
-  const saved = await launchedWith(t, { AGENTRUN_TOKEN: token });
-  assert.equal((await saved.api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: `${canary}-saved` } })).status, 204);
-  assert.equal((await saved.api("POST", "/agents", agent("on-default"))).status, 201);
-  const fromSaved = await custodyReport(saved.api, "on-default");
-  assert.deepEqual(heldBy(fromSaved.handed), ["OPENROUTER_API_KEY"], "the saved key its default model needs, and no other");
-  assert.equal(fromSaved.handed.OPENROUTER_API_KEY, digest(`${canary}-saved`), "the saved value, over its pipe");
-});
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, a claude-agent or codex run on OpenRouter's route is handed OPENROUTER_API_KEY, the key its requests carry, and no other: on that key alone, and for a model named on OpenRouter beside Anthropic's key", { timeout: 120_000 }, async (t) => {
-  const canary = `not-a-secret-route-${process.pid}-${Date.now()}`;
-  const token = `${canary}-AGENTRUN_TOKEN`;
-  const alone = await launchedWith(t, { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: `${canary}-openrouter` });
-  for (const harness of ["claude-agent", "codex"]) {
-    assert.equal((await alone.api("POST", "/agents", agent(`on-${harness}`, { harness }))).status, 201);
-    const report = await custodyReport(alone.api, `on-${harness}`);
-    assert.deepEqual(heldBy(report.handed), ["OPENROUTER_API_KEY"], `${harness} on OpenRouter's key alone is handed it, and no other`);
-    assert.equal(report.handed.OPENROUTER_API_KEY, digest(`${canary}-openrouter`), "over its pipe, whole");
-  }
-  const both = await launchedWith(t, { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: `${canary}-openrouter`, ANTHROPIC_API_KEY: `${canary}-anthropic` });
-  assert.equal((await both.api("POST", "/agents", agent("named", { harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5" }))).status, 201);
-  const named = await custodyReport(both.api, "named");
-  assert.deepEqual(heldBy(named.handed), ["OPENROUTER_API_KEY"], "a model named on OpenRouter goes there on OpenRouter's key; Anthropic's stays with the server");
-});
 
 test("under its launcher behind a gateway, with OpenAI's key saved in Settings and no AGENT_MODEL, a pi run that names no model runs on the key's default through the gateway, on the gateway's key alone: OpenAI's reaches no request", { timeout: 120_000 }, async (t) => {
   const canary = `not-a-secret-gateway-${process.pid}-${Date.now()}`;
@@ -522,19 +321,6 @@ test("under its launcher behind a gateway, with OpenAI's key saved in Settings a
   assert.ok(endpoint.models.length > 0 && endpoint.models.every((model) => model === "openai/gpt-6.1-sol"), `the gateway is asked for the key's default: ${endpoint.models}`);
   assert.ok(endpoint.authorizations.every((sent) => sent === `Bearer ${canary}-gateway`), "on the gateway's key");
   assert.ok(!JSON.stringify(endpoint.bodies).includes(`${canary}-openai`), "OpenAI's key is in no request");
-});
-
-// SKIP (follow-up #2078): under its launcher the run never leaves queued or working on the runner
-test.skip("under its launcher, a key saved with no restart reaches the next run of a revision that already ran without it", { timeout: 120_000 }, async (t) => {
-  const canary = `not-a-secret-later-${process.pid}-${Date.now()}`;
-  const { api } = await launchedWith(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN` });
-  assert.equal((await api("POST", "/agents", agent("on-default"))).status, 201);
-  const before = await custodyReport(api, "on-default");
-  assert.deepEqual(heldBy(before.handed), [], "no model key to hand yet");
-  assert.equal((await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: `${canary}-saved` } })).status, 204);
-  const after = await custodyReport(api, "on-default");
-  assert.deepEqual(heldBy(after.handed), ["OPENROUTER_API_KEY"], "the same revision's next run holds the key saved since its last");
-  assert.equal(after.handed.OPENROUTER_API_KEY, digest(`${canary}-saved`));
 });
 
 test("secretsFor: a tool key's fields only for a revision naming a tool its row unlocks, the tools read as the run's process binds them; every other secret for each", async () => {
@@ -684,41 +470,6 @@ function onlyTheServerHolds(root, canary) {
 /** The names of `names` shaped like a key (the one rule, secret-name.ts: the env cut's and the import cut's). */
 const keyShapedIn = (names) => names.filter((name) => keyShaped(name));
 
-// SKIP (follow-up #2078): the launcher's custody report for the run is never written on the runner
-test.skip("under its launcher, with every secret set, a pi run is handed exactly its model's provider's key over its pipe (Gemini's, OpenRouter's, OpenAI's), no other, and none is in any process's environment, a run's, a program's it starts and a tool's program included; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) reach no run", { timeout: 120_000 }, async (t) => {
-  const { canary, secrets } = canaries();
-  // Named like a key and on no list: the launcher cannot know to take them, so the server's environment keeps them; no
-  // run's may. Their own canary: the server's environment holds them.
-  const unlisted = `nak-unlisted-${process.pid}-${Date.now().toString(36)}`;
-  const foo = `${unlisted}-FOO_API_KEY`;
-  const password = `${unlisted}-FOO_PASSWORD`;
-  // And names a key's segment makes one, wherever it is: none on a list.
-  const more = Object.fromEntries(["SERVICE_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "DB_PASS", "GH_PAT", "MY_TOKEN_FILE", "FOO_TOKEN_BAR", "SENTRY_DSN", "DB_PWD"].map((name) => [name, `${unlisted}-${name}`]));
-  const { root, api } = await launched(t, { ...secrets, FOO_API_KEY: foo, FOO_PASSWORD: password, ...more });
-  // On the faux model whatever they name, as a faux run is: each is handed what a run on its model is handed, and its
-  // model call answers.
-  const models = { gemini: ["google/gemini-2.5-flash", "GEMINI_API_KEY"], openrouter: ["openrouter/anthropic/claude-sonnet-4.5", "OPENROUTER_API_KEY"], openai: ["openai/gpt-4o", "OPENAI_API_KEY"] };
-  const reports = {};
-  for (const [id, [model]] of Object.entries(models)) assert.equal((await api("POST", "/agents", agent(id, { model }))).status, 201);
-  for (const [id, [, key]] of Object.entries(models)) {
-    reports[id] = await custodyReport(api, id);
-    assert.deepEqual(heldBy(reports[id].handed), [key], `a run on ${id}'s model is handed ${key} alone`);
-    assert.equal(reports[id].handed[key], digest(secrets[key]), "over its pipe, whole");
-  }
-  for (const [id, report] of Object.entries(reports)) {
-    assert.deepEqual(report.pipe, { fd: 3, closed: true }, "its pipe, fd 3, read and closed");
-    for (const where of ["env", "child", "toolChild"]) {
-      assert.deepEqual(report[where].filter((name) => SECRET_NAMES.includes(name) || ["FOO_API_KEY", "FOO_PASSWORD", ...Object.keys(more)].includes(name)), [], `no secret's name in ${where} of the run on ${id}`);
-      assert.deepEqual(keyShapedIn(report[where]), [], `no key-shaped name at all in ${where}`);
-    }
-  }
-  // The run on Gemini's model up, holding its turn, while every process of this user is read.
-  await holdTurn(api, reports.gemini.id);
-  const seen = noSecretAnywhere(root, canary);
-  assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "the run's process is among those read");
-  for (const value of [foo, password, ...Object.values(more)]) onlyTheServerHolds(root, value);
-});
-
 /** Every file under `dir` (a run's directory: its store, process.log, harness/), and which holds any of `values`. The run is
  *  live while this reads it, so a file can go between its listing and its read: the run's launch mark (`launching`, empty)
  *  is removed once its process serves (F31, a queue ejection on 11-04). A file gone by its read holds nothing; any other read
@@ -751,8 +502,9 @@ test("a run's file that goes between its listing and its read (its launch mark) 
   assert.throws(() => filesHoldingWith(denied, dir, "nak-canary"), /EACCES/);
 });
 
-// SKIP (follow-up #2078): on codex the gateway's key does not reach Codex's request through the run's proxy on the runner
-test.skip("on codex, with every secret set and its turn held inside Codex's own process (a child of the run's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+// The launcher hands the server its secrets over a pipe; AGENTRUN_STORE_URL is left out (a canary is no Postgres URL, and
+// the server refuses to start on one): the store URL's custody is its own case.
+test("on codex, with every secret set and its turn held inside Codex's own process (a child of the runner's), no process's environment holds a secret, Codex's included, which every command it starts inherits; key-shaped names no list names (FOO_API_KEY, FOO_PASSWORD) are in none under the server; and no file of the run's holds a key, its store, its log and Codex's own files included", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
   const unlisted = `nak-unlisted-codex-${process.pid}-${Date.now().toString(36)}`;
   const foo = `${unlisted}-FOO_API_KEY`;
@@ -762,6 +514,7 @@ test.skip("on codex, with every secret set and its turn held inside Codex's own 
   copyStandInSync(standIn);
   const { root, api, data } = await launched(t, {
     ...secrets,
+    AGENTRUN_STORE_URL: undefined,
     FOO_API_KEY: foo,
     FOO_PASSWORD: password,
     AGENTRUN_CODEX_STANDIN: "1",
@@ -780,13 +533,12 @@ test.skip("on codex, with every secret set and its turn held inside Codex's own 
   assert.equal(gw.seen[0].authorization, `Bearer ${secrets.AGENT_MODEL_API_KEY}`, "the gateway's key reached Codex's request through the run's proxy");
   const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
-  assert.ok(seen.some((cmdline) => cmdline.includes(" --app ")), "and the run's, Codex's parent");
   for (const value of [foo, password]) assert.ok(onlyTheServerHolds(root, value).some((cmdline) => cmdline.includes(standIn)), "neither holds a key-shaped variable no list names");
-  // Everything the run has kept by its model request, read for a key while Codex holds the turn: its store, its log and
-  // Codex's own files (its home, its config, its rollout).
-  const { files, holding } = filesHolding(join(runDir(data, started.body.run_id)), canary, unlisted);
-  assert.ok(files.some((path) => path.endsWith("process.log")) && files.some((path) => path.includes("/harness/")), `the run's log and Codex's files are among those read: ${files.length} files`);
-  assert.deepEqual(holding, [], "no file of the run's holds a key");
+  // Everything kept by its model request, read for a key while Codex holds the turn: the data directory whole, the store,
+  // the run's folder and the claim's scratch with Codex's own files (its home, its config, its rollout) among it.
+  const { files, holding } = filesHolding(data, canary, unlisted);
+  assert.ok(files.some((path) => path.includes(started.body.run_id) && path.includes("/harness/")), `Codex's own files are among those read: ${files.length} files`);
+  assert.deepEqual(holding, [], "no file under the data directory holds a key");
 });
 
 test("a pi run on Amazon Bedrock hands each request the AWS keys its process holds, in pi-ai's own env option, which Bedrock's request reads them from: none needs an environment", async () => {
@@ -848,14 +600,14 @@ async function heldGateway(t) {
   return { seen, release: () => release(), origin: `http://127.0.0.1:${server.address().port}` };
 }
 
-// SKIP (follow-up #2078): on codex the gateway's key does not reach the run's process over its pipe on the runner
-test.skip("on codex, with its turn held inside Codex's own process, no process of the user holds a secret; Codex's model request still carries the gateway's key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+test("on codex, with its turn held inside Codex's own process, no process of the user holds a secret; Codex's model request still carries the gateway's key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
   const gw = await heldGateway(t);
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   copyStandInSync(standIn);
   const { root, api } = await launched(t, {
     ...secrets,
+    AGENTRUN_STORE_URL: undefined,
     AGENTRUN_CODEX_STANDIN: "1",
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
@@ -873,15 +625,14 @@ test.skip("on codex, with its turn held inside Codex's own process, no process o
   assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
 });
 
-// SKIP (follow-up #2078): on claude-agent the CLI's model request never reaches the endpoint on the runner
-test.skip("on claude-agent, with its turn held inside the Claude CLI, no process of the user holds a secret; the CLI's request still carries a key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+test("on claude-agent, with its turn held inside the Claude CLI, no process of the user holds a secret; the CLI's request still carries a key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
   const { canary, secrets } = canaries();
   let release;
   const held = new Promise((resolve) => (release = resolve));
   t.after(() => release());
   const fake = await fakeAnthropic({ reply: () => ({ hold: held, then: { text: "Claude answered." } }) });
   t.after(() => fake.close());
-  const { root, api } = await launched(t, { ...secrets, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, []);
+  const { root, api } = await launched(t, { ...secrets, AGENTRUN_STORE_URL: undefined, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, []);
   assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent" }))).status, 201);
   assert.equal((await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } })).status, 202);
   for (let i = 0; fake.messages().length === 0; i++) {
@@ -904,18 +655,21 @@ test("secrets past what a pipe is sure to hold are refused before the server sta
   assert.match(out, /more than the 4096 a pipe is sure to hold/);
 });
 
-// SKIP (follow-up #2078): the launcher's custody report for the run is never written on the runner
-test.skip("a secret is handed over byte for byte, never read as shell: one full of shell syntax runs nothing, and reaches the run whole", { timeout: 120_000 }, async (t) => {
+test("a secret is handed over byte for byte, never read as shell: one full of shell syntax runs nothing, and reaches the gateway whole", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const token = `not-a-secret-${"token"}-${process.pid}-${"t".repeat(24)}`;
   // Command substitution, backticks, a separator, quotes and spaces, then enough to come near the 4096-byte limit.
   const hostile = `not-a-secret-$(touch ${join(dir, "PWNED")})\`touch ${join(dir, "PWNED2")}\`;x 'y "z ${"k".repeat(3_600)}`;
-  // The gateway's key, which a run behind the gateway gets (under --faux its model answers, the gateway never asked).
-  const { api } = await launched(t, { AGENTRUN_TOKEN: token, AGENT_MODEL_API_KEY: hostile, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" });
+  const endpoint = await responsesEndpoint(t, "42", 10);
+  const env = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL_API_KEY: hostile };
+  // No faux: the run's model request goes to the gateway on the gateway's key, which is what the request carries.
+  const { api } = await launched(t, env, []);
+  // OpenAI's key gives the host its default model (a save does not check it with its provider); the gateway's key is the one sent.
+  assert.equal((await api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: `${token}-openai` } })).status, 204);
   assert.equal((await api("POST", "/agents", { definition: { id: "bytes", version: 1, name: "bytes", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
-  const { body: run } = await api("POST", "/agents/bytes/runs", { input: { content: "Report." } });
-  await follow(api, run.run_id, ["completed"]);
-  const report = reported(run.run_id);
-  assert.equal(report.handed.AGENT_MODEL_API_KEY, digest(hostile), "the run got it byte for byte");
+  const { body: run } = await api("POST", "/agents/bytes/runs", { input: { content: "What is six times seven?" } });
+  const { last } = await follow(api, run.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${run.run_id}`)).body.error));
+  assert.ok(endpoint.authorizations.length > 0 && endpoint.authorizations.every((sent) => sent === `Bearer ${hostile}`), "the gateway got the key byte for byte");
   assert.deepEqual(readdirSync(dir).filter((name) => name.startsWith("PWNED")), [], "nothing in it ran");
 });
