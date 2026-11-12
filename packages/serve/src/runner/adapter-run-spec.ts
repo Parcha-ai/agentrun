@@ -386,11 +386,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
-    // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)) } : {}) },
+    // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
+    // became of the agent's own computer (a persistent setting) is said on the run's timeline.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(archil ? { revokeMount: () => archil.revoke() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
