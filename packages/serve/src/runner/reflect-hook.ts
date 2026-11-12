@@ -56,6 +56,14 @@ export interface ReflectDeps {
   /** The grade model the server names (learning.ts gradeModelOf: --grade-model, AGENTRUN_SERVE_GRADE_MODEL, else
    *  AGENT_MODEL_STRONG), carried on the learning run's launch; none, the agent's own model grades it, as main's. */
   readonly gradeModel?: string;
+  /** Which end of the run this is: 1, its first (the default); an end after a follow-up opened the run again is the next
+   *  round, asked anew (its prompt says it looked back before), kept as a proposal of its own beside the earlier rounds'
+   *  (every row the hook gives carries it), graded and merged by a learning run of its own. */
+  readonly round?: number;
+  /** A later round's: what the round before it kept of the run's spend (its job's and its look-back's), so the follow-up's
+   *  own share, between that look-back and this one, is kept apart (`follow_up_usd`); and whether it was asked its turn
+   *  (`looked`: a round cut before it was asked says nothing of looking back before). */
+  readonly before?: { readonly job_cost_usd?: number | null; readonly look_back_usd?: number | null; readonly looked?: boolean };
   /** The turn's deadline. Default REFLECT_TIMEOUT_MS. Its re-ask is inside it. */
   readonly deadlineMs?: number;
   /** For tests: the clock the turn's deadline is measured by. Default Date.now. */
@@ -80,9 +88,14 @@ function dryRunFailure(checked: Checked): { path: string; detail: string } | und
   return found ? { path: found.path as string, detail: found.detail as string } : undefined;
 }
 
+/** `rows` with round `round` on each learning row (none on a run's first, round 1). */
+const roundOf = (rows: { readonly also: readonly AlsoRow[] } | undefined, round: number): { readonly also: readonly AlsoRow[] } | undefined =>
+  !rows || round === 1 ? rows : { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" || row.table === "learning_run" ? ({ ...row, row: { ...row.row, round } } as AlsoRow) : row)) };
+
 /** The end-of-run turn for runs that learn. */
 export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
-  return async (input) => {
+  const round = deps.round ?? 1;
+  const hook: EndOfRunTurn = async (input) => {
     const facts = await deps.facts(input.runId);
     if (!facts.learns) return undefined;
     // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
@@ -99,18 +112,22 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // spend so far is the job's.
     const answeredAt = new Date(now()).toISOString();
     const job = facts.costUsd;
+    // A later round's: the follow-up's own spend, the run's spend now less what the round before it kept (its job's and
+    // its look-back's), unknown when any is.
+    const earlier = deps.before;
+    const followUp = round === 1 ? {} : { follow_up_usd: job === null || typeof earlier?.job_cost_usd !== "number" || typeof earlier.look_back_usd !== "number" ? null : Math.max(0, Math.round((job - earlier.job_cost_usd - earlier.look_back_usd) * 1e9) / 1e9) };
     // closeLearning: what looking back cost, the run's spend once the turn closed (its re-ask included) less the job's,
     // unknown when either is. Kept with every end the turn reaches from here, beside when the job answered and its cost.
     const looked = async (rows: { readonly also: readonly AlsoRow[] }) => {
       const total = (await deps.facts(input.runId)).costUsd;
-      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9) };
+      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9), ...followUp };
       return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
     };
     // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
     // new to learn: it is not asked (no model request), and looking back cost nothing, $0 whether or not the job's own
     // cost is known. Its words are the server's own.
     if (input.outcome === "completed" && deps.nothingNew && (await deps.nothingNew(input.runId).catch(() => false))) {
-      return { also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 })] };
+      return { also: [droppedRow(null, "empty", said.onlyWorkflow, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0, ...followUp })] };
     }
     // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
     // nothing, never over a shorter one.
@@ -123,7 +140,8 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     const { active, tools, draftFor, described } = await deps.promptFacts(input.runId, input.agentId);
     const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
     const started = now();
-    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}) }), { origin: "reflect", deadlineMs });
+    const ask = { origin: "reflect", ...(round > 1 ? { round } : {}) } as const;
+    const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, tools, ...(draftFor?.length ? { draftFor, ...(described?.length ? { described } : {}) } : {}), ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs });
     // closeLearning: how the turn ended.
     if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
     if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);
@@ -144,7 +162,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
     if (checked.state === "dropped" && checked.reason === "unparsed") {
       const left = deadlineMs - (now() - started);
-      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { ...ask, deadlineMs: left, again: true }) : undefined;
       if (again && "ended" in again) {
         turn = turnOf(again.answer);
         checked = await checkOf(turn);
@@ -157,7 +175,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // never costs a note the first answer kept). Never a third time (a turn asks again once, for either reason).
       const dry = dryRunFailure(checked);
       const left = deadlineMs - (now() - started);
-      const again = dry && left > 0 ? await input.ask(reflectDryRun(dry.path, dry.detail), { origin: "reflect", deadlineMs: left, again: true }) : undefined;
+      const again = dry && left > 0 ? await input.ask(reflectDryRun(dry.path, dry.detail), { ...ask, deadlineMs: left, again: true }) : undefined;
       if (again && "ended" in again) {
         const second = turnOf(again.answer);
         const kept = await checkOf(second);
@@ -176,4 +194,5 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}) } },
     ]);
   };
+  return async (input) => roundOf(await hook(input), round);
 }

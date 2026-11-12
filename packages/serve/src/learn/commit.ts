@@ -8,14 +8,16 @@ import { isHeld, held } from "./skills.js";
 import { buildIndex, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, supersede } from "./notes.js";
 import { mergeProblems, type Problem, supersededBy } from "./check.js";
 import type { IndexEntry, NoteText } from "./grade.js";
-import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
+import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, runDiffKey, type Snapshot, snapshotNotes, topOf, writeLearning } from "./folder.js";
 import type { Workspace } from "../workspace/index.js";
 
 export type LearningChange =
   | {
       kind: "merge";
-      /** The run that learned: the commit's Run-Id trailer and the diff file's name. */
+      /** The run that learned: the commit's Run-Id trailer and, with `round`, the diff file's name (runDiffKey). */
       runId: string;
+      /** Which of the run's looks back merges (absent: its first): a follow-up's later round merges once of its own. */
+      round?: number;
       /** The grader's reason: the commit's message and the log's `reason`. */
       reason: string;
       /** What merges, already checked: notes, a skill's files, a draft's files, each whole. */
@@ -91,7 +93,7 @@ type Computed = LearningCommitResult | { pending: true };
 export async function learningCommit(ws: Workspace, change: LearningChange, opts: { retries?: number } = {}): Promise<LearningCommitResult> {
   try {
     if (change.kind === "merge") {
-      const known = await readRunDiff(ws, change.runId);
+      const known = await readRunDiff(ws, runDiffKey(change.runId, change.round));
       if (known) {
         return { ok: true, main: (await readSnapshot(ws))?.main ?? known.merge, commit: known.merge, files: known.files.map((file) => file.path) };
       }
@@ -165,7 +167,7 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   return {
     result: { pending: true },
     change: {
-      by: { run: change.runId, reason: change.reason },
+      by: { run: change.runId, reason: change.reason, ...(change.round !== undefined && change.round > 1 ? { round: change.round } : {}) },
       writes: [...files].map(([path, text]) => ({ path, text })),
       absent: added.map((note) => note.file),
       ...(change.seed ? { same: change.files.filter(({ path }) => !isNote(path)).map(({ path }) => ({ commit: change.seed!, path })) } : {}),

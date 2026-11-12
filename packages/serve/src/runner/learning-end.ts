@@ -42,7 +42,7 @@ import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
-import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
+import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
@@ -71,11 +71,14 @@ export interface LearningEndDeps {
  *  does not learn is asked nothing and keeps nothing), else the reflect hook over the run's store. */
 export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndOfRunTurn | undefined {
   const start = learningStartOf(launch);
-  if (!start) return undefined;
+  // A run that only uses what its agent learned (`learning: "use"`) is asked nothing and keeps nothing, at every end.
+  if (!start || start.use) return undefined;
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
-  const hookFor = (runId: string) => createReflectHook({
+  const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => createReflectHook({
+    round,
+    ...(before ? { before } : {}),
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
     // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
     // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
@@ -119,22 +122,33 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
       return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse });
     },
-    // The learning run's id, one per run: a replayed end queues the same one (the store adds it once).
-    newRunId: () => `${runId}-learning`,
+    // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
+    newRunId: () => learningRunIdOf(runId, round),
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
+    // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
+    // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
+    const prior = await deps.store.learning.proposal(input.runId);
+    const round = prior ? prior.round + 1 : 1;
     // No seed, no end-of-run turn (seedFailed): a run that started from no commit of main has nothing to propose against,
     // so it is never asked to look back (no model request). Why, as its start recorded it: a folder that could not be
     // read, or a start that could not be made from it; a start that records none names no reason.
     if (seedFailed(start)) {
       const failed = start.seedFailed;
       const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
-      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) }, ...(round > 1 ? { round } : {}) } }] };
     }
-    return hookFor(input.runId)(input);
+    const kept = prior?.proposal as { job_cost_usd?: unknown; look_back_usd?: unknown } | null | undefined;
+    const spent = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const before = prior ? { job_cost_usd: spent(kept?.job_cost_usd), look_back_usd: spent(kept?.look_back_usd), looked: prior.turn !== null } : undefined;
+    return hookFor(input.runId, round, before)(input);
   };
 }
+
+/** The learning run of round `round` of run `runId`'s learning: `<runId>-learning` for its first, `<runId>-learning-<n>`
+ *  for each later one. */
+export const learningRunIdOf = (runId: string, round = 1): string => (round > 1 ? `${runId}-learning-${round}` : `${runId}-learning`);
 
 /** learned_workflow by every name a harness calls it: its own, and claude-agent's host-tool alias (`mcp__hands__<name>`).
  *  A harness that names it another way reads as another tool, so its run is asked as before. */

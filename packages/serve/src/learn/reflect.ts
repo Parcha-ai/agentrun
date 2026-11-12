@@ -25,6 +25,10 @@ export const DRAFT_AFTER_RUNS = 3;
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP_TOOL.test(tool);
 
+/** What a later round's end-of-run prompt says first (reflectPrompt's `later`): the run looked back before, at an end a
+ *  follow-up opened it again from, so only what came since is new. */
+export const LATER_LOOK = "You looked back on this run before. Since then the conversation went on: keep only what the messages since then teach (a reviewer's word on your answer included), and never repeat a note you kept then.";
+
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
  *  is how many notes are active in it, so how many lines the index has left. `tools`, the tools a workflow draft's
@@ -33,9 +37,10 @@ const printable = (tool: string): boolean => TOOL_NAME.test(tool) || LEARNED_MCP
  *  name: the prompt gains one line asking for that job as a workflow draft. None when not given. `described`, with a
  *  draft asked for: what each of `tools` takes and gives a call node, in the server's own words (tools.ts ToolEntry
  *  summary), said under the ask, one line each (at most DESCRIBED_MAX characters, unseen characters and line breaks made
- *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. */
-export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[] }): string {
-  const { dir, active, tools = [], draftFor = [], described = [] } = options;
+ *  spaces); one for a tool not in `tools` is left out. Nothing is described unless a draft is asked for. `later`, a later
+ *  round's (a follow-up opened the run again after it looked back): the prompt says so (LATER_LOOK) after its first line. */
+export function reflectPrompt(options: { dir: string; active: number; tools?: readonly string[]; draftFor?: readonly string[]; described?: readonly { readonly name: string; readonly does: string }[]; later?: boolean }): string {
+  const { dir, active, tools = [], draftFor = [], described = [], later = false } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string" || !printable(tool))) throw new Error("each tool must be a tool's name");
@@ -44,6 +49,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
     "",
+    ...(later ? [LATER_LOOK, ""] : []),
     "Look back over the whole conversation: what the user asked, anything they asked you to remember (even if you said you",
     "saved it), what you tried, and what worked. Only what you answer now is kept: files you wrote during the task are not.",
     "Use no tool in this turn.",

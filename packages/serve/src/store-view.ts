@@ -273,7 +273,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // run that learns is seeded, then looking back once its end-of-run turn starts (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
   const read = started?.given.length ? notesReadOf(started.given, reflectRange, await runTimeline(store, runId, context, { settled: terminal })) : [];
-  const under = !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
+  const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
   const sofar = ended ?? under;
   const shownEnd = sofar && withNotes(sofar, started, read);
   const turns = new Turns();
@@ -379,6 +379,12 @@ function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: 
  *  many notes its seed held, until its end-of-run turn starts; then looking back. */
 function underWay(started: NonNullable<RunLaunch["learning"]>, reflect: Reflect | undefined, at: string): RunLearning {
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
+}
+
+/** The learning of a run that only uses what its agent learned (`learning: "use"`): seeded while it runs, as a run that
+ *  learns is; dropped `use` once it ended, since it is never asked what to keep. */
+function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: boolean, at: string): RunLearning {
+  return terminal ? { state: "dropped", reason: "use", detail: said.use, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
 }
 
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept; a cap's room noted when it has

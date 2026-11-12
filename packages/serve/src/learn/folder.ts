@@ -330,7 +330,9 @@ function learnedItem(kind: "skill" | "workflow", name: string, files: SnapFile[]
  *  under `.agentrun/`. `absent`: paths that must not be on main, as git holds it (any file, any mode); `same`: paths
  *  that must be on main as they are on another commit (a run's seed). The script checks both on main as it commits. */
 export type FolderChange = {
-  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string };
+  /** A run's merge names the run and the grader's reason, and its `round` past the first (a follow-up's look-back): its
+   *  diff is kept under runDiffKey. */
+  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number };
   writes: readonly { path: string; text: string }[];
   deletes?: readonly string[];
   absent?: readonly string[];
@@ -564,6 +566,10 @@ export async function readLearning<T>(ws: Workspace, read: (folder: FolderRead) 
 }
 
 /** Run `run`'s merge as its diff file keeps it, or undefined when the folder has none (it never merged here). */
+/** The key a run's merge keeps its diff under (`.agentrun/diffs/<key>.json`), and that tells a merge already made: the run's
+ *  id for its first round, `<run>.r<round>` for each later one (a follow-up's look-back), so each round merges once. */
+export const runDiffKey = (runId: string, round = 1): string => (round > 1 ? `${runId}.r${round}` : runId);
+
 export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff | undefined> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(run)) return undefined;
   let bytes: Uint8Array;
@@ -711,7 +717,7 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
   for (const { commit } of change?.same ?? []) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
   const ref = `refs/agentrun/import-${randomBytes(8).toString("hex")}`;
-  const run = change && "run" in change.by ? change.by.run : undefined;
+  const run = change && "run" in change.by ? runDiffKey(change.by.run, change.by.round) : undefined;
   const header = [
     `ref ${ref}`,
     `snapshot ${snapshotLine(snapshot, snapshot.log[0]?.commit === PLACEHOLDER ? 2 : 1)}`,

@@ -73,7 +73,11 @@ export function learningBudgetOf(env: NodeJS.ProcessEnv, given?: number): number
  *  checks and is kept (propose.ts), `merged` once it is on main (runner/learning-loop.ts), or `dropped` with a
  *  reason from the closed list. A learning fault never refuses a run: it starts with nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "proposed", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] as const;
+/** A run's own `learning` on its start (POST /agents/{agent_id}/runs): it starts from what its agent learned, as a run that
+ *  learns does, and keeps nothing (no end-of-run turn, no proposal, no grade, no merge, at any end), so runs of one agent
+ *  read one learned state however many run at once. Its learning ends `dropped`, reason `use`. */
+export const RUN_LEARNING_USE = "use";
 export type LearningState = (typeof LEARNING_STATES)[number];
 export type LearningReason = (typeof LEARNING_REASONS)[number];
 /** Tokens by the platform's names, as a run's metrics and /v2/stats count them: `input` is the input neither read from
@@ -844,6 +848,9 @@ export async function readPin(runDir: string): Promise<Pin | undefined> {
 
 /** The heading of what a run learned, in its instructions. */
 export const LEARNED_HEADING = "# Learned";
+/** What a run that only uses what its agent learned (RUN_LEARNING_USE) is told first under it, in place of LEARNS: it is
+ *  never asked what to keep. */
+const USES = "You learned from earlier runs, below. This run keeps nothing new: when the person asks you to remember something, tell them in one short sentence that this run can't keep it.";
 /** What every run that learns is told first under it, notes or none: a run not told it learns saves what the person
  *  asks it to remember in a file, or says it cannot, and that is never kept. */
 const LEARNS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them in one short sentence at the start of your reply that you will keep it for later runs. When what they asked sets how your reply starts or ends, follow it from your reply's first line to its last and leave that sentence out. A secret (a password, key or token) is never kept, so say so instead.";
@@ -851,11 +858,11 @@ const LEARNS = "You learn from your runs. When this run ends you are asked what 
 const NOTHING_YET = "Nothing learned yet.";
 
 /** A run's instructions with its # Learned section laid in main's position: the revision's instructions, then the heading,
- *  LEARNS, and the section text — "Nothing learned yet." when the run learns but its section is empty (no notes yet, or a
- *  seed that could not be read). Shared so the runner (laying launch.learning.section, read with no folder) and app.ts
- *  (withLearned) lay the same bytes. */
-export const laidLearned = (instructions: string, section: string | undefined): string =>
-  `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${LEARNS}\n\n${section || NOTHING_YET}`;
+ *  LEARNS (USES for a run that only `use`s what its agent learned), and the section text — "Nothing learned yet." when the
+ *  run learns but its section is empty (no notes yet, or a seed that could not be read). Shared so the runner (laying
+ *  launch.learning.section, read with no folder) and app.ts (withLearned) lay the same bytes. */
+export const laidLearned = (instructions: string, section: string | undefined, use = false): string =>
+  `${instructions.trim()}\n\n${LEARNED_HEADING}\n\n${use ? USES : LEARNS}\n\n${section || NOTHING_YET}`;
 
 /** A run's instructions, with `# Learned` after them when its pin in `runDir` says it learns: that it learns, then what
  *  the pin says it learned, or that it has learned nothing yet. A run with no pin (its agent does not learn, its seed

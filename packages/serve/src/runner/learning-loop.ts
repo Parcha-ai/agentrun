@@ -60,6 +60,8 @@ export type Problem = { readonly rule: string; readonly path?: string; readonly 
 export interface MergeChange {
   readonly kind: "merge";
   readonly runId: string;
+  /** The round of the run's looks back it merges, past the first (learn/folder.ts runDiffKey). */
+  readonly round?: number;
   readonly reason: string;
   readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly held?: readonly string[];
@@ -82,10 +84,11 @@ export interface GraderRun {
 }
 
 export interface LearningLoopDeps {
-  /** The run that learned, from the learning run's launch row (its input's runId). */
-  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly agentId: string; readonly instructions?: string } | undefined>;
-  /** Its kept proposal (store.learning.proposal). */
-  proposal(runId: string): Promise<LearningProposal | undefined>;
+  /** The run that learned, from the learning run's launch row (its input's runId), and the round of its looks back the
+   *  learning run grades (its input's round; absent, the first). */
+  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly round?: number; readonly agentId: string; readonly instructions?: string } | undefined>;
+  /** Its kept proposal of that round (store.learning.proposal). */
+  proposal(runId: string, round: number): Promise<LearningProposal | undefined>;
   /** The agent's learning folder (learn/folder.ts learningWorkspace): its Workspace, and its end, called once the run is
    *  done with it, whichever way it goes out. */
   folder(agentId: string): { readonly workspace: unknown; end(): Promise<void> };
@@ -127,7 +130,7 @@ export function keptOf(proposal: KeptProposal, verdict: Verdict): KeptProposal {
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
  *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
-export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
+export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>, round = 1): MergeChange {
   const judged = new Map(verdict.items.map((item) => [item.file, item]));
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
   const files = (merging.files ?? []).map(({ file, text }) => ({ path: file, text }));
@@ -136,7 +139,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
     ...files.filter(({ path }) => learnedPlace(path)?.kind !== "workflow" && judged.get(itemOf(path))?.pending === true).map(({ path }) => path),
   ];
   return {
-    kind: "merge", runId, reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
+    kind: "merge", runId, ...(round > 1 ? { round } : {}), reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
     ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}),
   };
 }
@@ -225,7 +228,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
           return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
         }
-        const kept = await learning.proposal(source.runId);
+        const round = source.round ?? 1;
+        const kept = await learning.proposal(source.runId, round);
         if (!kept) {
           await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
           return { state: "ended" };
@@ -318,7 +322,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             return { state: "ended" };
           }
           const merging = keptOf(proposal, graded.verdict);
-          const result = await learning.commit(ws, mergeChangeOf(source.runId, merging, graded.verdict, graded.graded));
+          const result = await learning.commit(ws, mergeChangeOf(source.runId, merging, graded.verdict, graded.graded, round));
           if (result.ok) {
             const detail = mergedWords(merging, graded.verdict, checked);
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail } satisfies MergedData, "ended");
