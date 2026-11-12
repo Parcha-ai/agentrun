@@ -59,7 +59,7 @@ export type TimelineEvent = {
   usage?: { usd: number | null; requests: number; so_far_usd?: number; unpriced?: number; not_metered?: number };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
-  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number }[];
+  learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -101,7 +101,9 @@ function proxyCapRefusal(errorMessage: unknown): boolean {
   const at = errorMessage.indexOf("{");
   if (at < 0) return false;
   const head = errorMessage.slice(0, at);
-  if (!/^\d{3}\s*$/.test(head) && !/^[\w.-]+ API error \(\d{3}\):\s*$/.test(head)) return false;
+  // The provider's name is any word with no space (agentrun-session today; a route's own, such as openrouter/anthropic):
+  // the body's fields, never the name, say whose refusal it is.
+  if (!/^\d{3}\s*$/.test(head) && !/^\S+ API error \(\d{3}\):\s*$/.test(head)) return false;
   try {
     const body = JSON.parse(errorMessage.slice(at)) as { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } } | null;
     const error = body?.error ?? body;
@@ -1011,7 +1013,7 @@ export function endedOnTurnEndingTool(entries: readonly EntryLike[]): string | u
   return last.tool_use_id ?? undefined;
 }
 
-/** A workflow's decision receipt as its run's store keeps it (`@parcha/agentrun-pi/durable`'s DecisionRow): the fields
+/** A workflow's decision receipt as its run's store keeps it (workflow/decisions.ts's DecisionRow): the fields
  *  runMetricsOf reads. */
 export type DecisionLike = { usage?: unknown; model?: unknown; provider?: unknown; status?: unknown; driver_spend?: unknown };
 

@@ -13,10 +13,9 @@ export { bindingDigests, bindingMismatch, LEDGER_FORMAT } from "./binding.js";
 export { canonicalHash, canonicalSha256 } from "./canonical-hash.js";
 export { callKey, CALL_KEY_BYTES } from "./call-key.js";
 export {
-  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, DECISION_REQUEST, validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot, emptyPathFrame, stateDelta, applyStateDelta, itemState, partialResults, canonicalJson,
-  frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
+  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, DECISION_REQUEST, validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot, emptyPathFrame, stateDelta, applyStateDelta, itemState, partialResults,
+  frozenStepId, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta, type Sha256, type PartialSlot, type PathFrame, type RouteDecision, type DecisionRequest, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow, type FrozenShape,
 } from "./frozen-snapshot.js";
 export { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, pathSegments, topLevelCompletion } from "./execution-path.js";
 export { effectRetryClass, transportFactOf, type TransportFact } from "./transport-facts.js";
-export { gatewayIntentOf, returnedFailure, type InheritedReceipt, type InheritedUnknown } from "./handoff-receipts.js";

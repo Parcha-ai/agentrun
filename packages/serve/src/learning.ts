@@ -92,7 +92,7 @@ export type NoteRuns = Map<string, { given: number; read: number }>;
 export type NoteUsed = { file: string; name: string };
 /** A note a run's learning added to the folder (`learned`): its file, its name, and the notes it superseded. */
 export type NoteLearned = NoteUsed & { supersedes: string[] };
-/** A run's learning as serve.json keeps it. Past the view's four fields: the checker's `problems` (printable), the
+/** A run's learning as the store keeps it. Past the view's four fields: the checker's `problems` (printable), the
  *  grader's `verdict` and the blob of each note it read superseded (`graded`, by file), both kept before the merge, the
  *  merge commit, and what the grade cost (null when unknown, never 0), which is in no run's totals; the notes the run
  *  started with (`given`: each note its # Learned section names, whole or as an index line, set as it is seeded) and read
@@ -149,7 +149,7 @@ const isText = (value: unknown): value is string => typeof value === "string";
 /** The notes a run read and learned, as a view or a list shows them, each name cut of the host's secrets (`shown`):
  *  `given` from its start, `read` once the run settled, `learned` and `pending` (what waits for the owner's OK) once it merged, and the skill
  *  and the workflow draft it merged (`skills`, `workflows`, each `pending` while it waits), each only when it holds one.
- *  serve.json's are read as untrusted: an entry out of shape is left out. */
+ *  the stored ones are read as untrusted: an entry out of shape is left out. */
 export function notesView({ state, given, read: opened, learned, pending, skills, workflows }: Learning, shown: Shown, settled: boolean): { given?: NoteUsed[]; read?: NoteUsed[]; learned?: NoteLearned[]; pending?: NoteUsed[]; skills?: LearnedFile[]; workflows?: LearnedFile[] } {
   const refs = (list: NoteUsed[] | undefined) => (Array.isArray(list) ? list.filter((note) => isText(note?.file) && isText(note.name)).map(({ file, name }) => ({ file: shown.name(file), name: shown.text(name) })) : []);
   const started = refs(given);

@@ -42,6 +42,7 @@ import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 
@@ -112,9 +113,9 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
    *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
-  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`)
-   *  and the sign-in verify the runner saves. */
-  store?: LiveViewerStore & Pick<Store, "runs" | "signIns">;
+  /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
+   *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
+  store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
   /** The claim this run is held under: the live-viewer rows are written under it (its epoch fences them), and the run's
    *  saved sign-in is read and its hand kept under it. Present, the run is on the runner: never the process's own pipe. */
   claim?: Claim;
@@ -428,6 +429,11 @@ const browserTool: ToolEntry = {
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
       redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
+      // session opens (onSessions, below).
+      waitEnded: (at, why) => {
+        if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
+      },
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
@@ -494,6 +500,8 @@ const browserTool: ToolEntry = {
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
+      if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
       await saved?.(row, change);
       await onSession(row, change);
     };
@@ -558,14 +566,19 @@ const browserTool: ToolEntry = {
     // (live, or held for a hand-over), the run waits for the answer in its claim, so the session, its live viewer and its
     // page stay for the person and for the agent's next turn, as main's process kept them; the person's time on each such
     // session is held under the run's cap the way a hand-over's is (personHands.wait). With none open, or no room under
-    // the cap for that time, the run parks (its release lets the browser go).
+    // the cap for that time, the run parks (its release lets the browser go). While it waits, pi-browser's idle release
+    // keeps its hands off those sessions (keepForPerson): the person's window (AGENTRUN_BROWSER_PERSON_WAIT_MIN), not the
+    // browser's few-minute idle window, decides when the browser goes.
     host.personWait?.(async (harness, callId, since) => {
       if (refused) return undefined;
       const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
       const open = rows.filter((row) => (row.state === "live" || row.state === "held") && row.resourceId !== null).map((row) => row.tag);
       if (!open.length) return undefined;
+      const keeps = open.map((tag) => browser.keepForPerson(tag));
+      const letGo = () => { for (const keep of keeps.splice(0)) keep(); };
       const waited = await hands.wait(callId, open, since);
-      return "refused" in waited ? undefined : waited;
+      if ("refused" in waited) { letGo(); return undefined; }
+      return { lapsed: waited.lapsed, confirmed: waited.confirmed, drop: () => { waited.drop(); letGo(); } };
     });
     host.beforeRelease(async (harness) => {
       try {
@@ -621,6 +634,14 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   "monid.discover": monidTool("discover"),
   "monid.inspect": monidTool("inspect"),
   "monid.run": monidTool("run"),
+  // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
+  // (adapter-run-spec.ts), never by this table; not a host tool (host-tools.ts REPLAY), so another harness refuses it.
+  subagent: {
+    summary: "Run a subagent: a fresh conversation with only the call's prompt, on the agent's own model (or one of its model tiers, fast or strong, when the call names one), with a subset of the agent's own tools (bash among them, under the agent's bash policy), under the run's permissions and cap; answers with its final text. A call may narrow its child's tool-call budget (max_tool_calls) and set its effort (low, medium, high). Several calls in a turn run at once, at most 4 at a time; a subagent starts none of its own. pi only.",
+    needs: [],
+    nodes: false,
+    bind: async () => ({ tools: [], extensions: [] }),
+  },
   [PDF_PAGES_TOOL]: callOnly(
     "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
     (args, run) => pdfPages(args, { work: localWorkspace(run.work), documents: run.env[DOCUMENTS_ENV], signal: run.signal }),

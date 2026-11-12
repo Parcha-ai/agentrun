@@ -5,7 +5,7 @@ export { capRule, noteFor, type Judged, type JudgeState, type NoteState } from "
 export { beforeRequestOf, type BeforeRequestOptions } from "./port.js";
 export { DECISION_SESSION, overCapOf, paidCalls, runCap, TOOL_SESSION, type RunCap, type RunCapOptions, type RunDecisions, type RunTools } from "./run-cap.js";
 export { ANSWER_TOKENS_LEAST, CACHE_WARM_MS, CAP_TOLERANCE, FIT_TOLERANCE, STOP_ALLOWANCE_TOKENS, THINKING_BUDGET_LEAST, expectedInput, inputBound, mostOutput, pricingOf, ratesFor, requestPrice } from "./price.js";
-export { CAP_REFUSAL_CODE, SPEND_CAP_REACHED, SUGGESTED_RAISE_FACTOR, centsMoney, leastMoney, money, OVER_CAP_END, overCapEnd, overCapMessage, overCapWords, raiseFigure, raiseTo, spentMoney, suggestedRaise } from "./words.js";
+export { CAP_REFUSAL_CODE, SPEND_CAP_REACHED, SUGGESTED_RAISE_FACTOR, centsMoney, leastMoney, money, OVER_CAP_END, overCapEnd, overCapMessage, overCapWords, paidRefusal, raiseFigure, raiseTo, spentMoney, suggestedRaise } from "./words.js";
 export { checkRaise, followUpOf, parkOf, takeRaises, type BudgetPending, type Park, type RaiseCheck, type RaiseState } from "./park.js";
 export { WRAP_UP_FACTOR, WRAP_UP_LEAST_FACTOR, WRAP_UP_STEP0_ANSWER_TOKENS, typicalCost, wrapUpDue, wrapUpWords } from "./wrap-up.js";
 export { CapStop, createStepWaits, type StepWaits } from "./steps.js";

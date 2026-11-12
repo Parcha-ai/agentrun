@@ -21,7 +21,7 @@ function open(start: string) {
   act(() => root!.render(createElement(Host)));
   const shape = () => picker(host, "Runs")!;
   const time = () => host.querySelector<HTMLInputElement>('input[type="time"]');
-  const line = () => host.querySelector<HTMLInputElement>('input[aria-label="Cron line"]');
+  const line = () => host.querySelector<HTMLInputElement>('input[aria-label="Custom schedule"]');
   const type = async (el: HTMLInputElement | null, value: string) => {
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value); el!.dispatchEvent(new Event("input", { bubbles: true })); });
   };
@@ -48,7 +48,7 @@ describe("the schedule picker", () => {
 
   it("offers every shape and a custom line, Monday first among the days", async () => {
     const t = open("0 8 * * 1");
-    expect((await optionsOf(t.shape())).map((o) => o.text)).toEqual(["Every hour", "Every day", "Every weekday (Monday to Friday)", "Every week", "Every month", "Custom cron line"]);
+    expect((await optionsOf(t.shape())).map((o) => o.text)).toEqual(["Every hour", "Every day", "Every weekday (Monday to Friday)", "Every week", "Every month", "Custom schedule"]);
     expect((await optionsOf(picker(t.host, "Day of the week")!)).map((o) => o.text)).toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
   });
 
