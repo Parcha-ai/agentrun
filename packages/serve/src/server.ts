@@ -135,7 +135,7 @@ import { PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from 
 import { capabilityToolDefs, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { archilRoute, createArchilRoutes } from "./archil-routes.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
-import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, type KindRegistry, settingsComputerRoute } from "./computers.js";
+import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { FAUX_VIEW_PATH, type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
@@ -1141,12 +1141,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { up: false, absent: false, reason: box?.reason ?? `${provider} is not a box this server has` };
   };
   let computerRoutes: ComputerRoutes | undefined;
+  // The programs a provider runs on this machine (the phone's adb), looked for on PATH once, at the start, as the boxes
+  // probe Docker: a provider whose program is missing is not ready, and its words say what to install.
+  const hostWhy = hostCommandRefusals(COMPUTER_PROVIDERS, process.env.PATH);
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     store, sealKey, tools: kindTools, mode: folderModeOf(store), env: process.env,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
+        hostWhy,
         kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
@@ -1158,11 +1162,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  runner composes with: runner/main.ts gives it no faux, so the package's, under --faux too), in the folder mode of
    *  now, with keys read as the runner reads them (the secrets this process was started with, withSecrets "own", as
    *  runner/main.ts runEnv hands them; else the saved one). What runnable.ts checks for an agent with
-   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers'. */
+   *  a computer setting, in place of the box check; whether Docker answers here is dockerAnswers', and whether a
+   *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store)()) === "disk" ? 2 : 1);
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) =>
-    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow);
+    computerReadiness(setting, await modeNow(), claimKinds({}), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
