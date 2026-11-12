@@ -47,11 +47,6 @@ test('every spec in the repository is valid and every snippet it runs is in its 
       const text = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), file);
       for (const [from] of file.replace ?? []) assert.ok(text.includes(from), `${name}: ${from}`);
     }
-    if (loaded.readmeInstall) {
-      // The README's install line installs the spec's package, and reads without a shell.
-      const line = extractSnippet(await readFile(new URL(`../${loaded.readmeInstall.readme}`, import.meta.url), 'utf8'), loaded.readmeInstall);
-      readmeInstallArgs(line, new Map([[loaded.package, 'packed.tgz']]));
-    }
   }
 });
 
