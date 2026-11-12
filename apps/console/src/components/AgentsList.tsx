@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { fieldBoxClass, Input } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
+import { nativeRuntimeLabel, nativeStateLabel } from "@/lib/native";
 import { waitingOf, waitingWords } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
@@ -29,7 +30,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
         <label className="flex h-11 min-w-0 flex-1 items-center gap-3 border px-3">
           <Search className="size-4 text-muted-foreground" aria-hidden />
           {/* On a narrow portrait screen only its first letter fitted: there the magnifier says it, and the name stays. */}
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents by name or description..." aria-label="Search agents"
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents by name or description..." aria-label="Search agents"
             className="min-w-0 flex-1 bg-transparent font-mono text-body focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring placeholder:text-muted-foreground max-sm:portrait:placeholder:text-transparent" />
         </label>
         <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onArchivedChange?.(!archived)}><Archive aria-hidden /> Archived</Button>
@@ -67,22 +68,24 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
           <span className="flex flex-wrap items-center gap-2">
             <span className="text-base font-semibold">{a.definition.name}</span>
             <Chip>{a.kind}</Chip>
-            {a.kind === "agentic" && <Chip>{a.definition.harness ?? "pi"}</Chip>}
+            {a.kind === "agentic" && <Chip>{a.definition.native ? nativeRuntimeLabel(a.definition.native.runtime) : a.definition.harness ?? "pi"}</Chip>}
+            {a.definition.native && <Chip tone={a.definition.native.connected && a.definition.native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(a.definition.native)}</Chip>}
             {archived && <Chip tone="muted">Archived</Chip>}
           </span>
           <span className="mt-2 line-clamp-2 block text-lead leading-relaxed text-muted-foreground">{a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}</span>
         </span>
       </button>
+      {a.definition.native && <p className="mt-3 break-all font-mono text-small text-muted-foreground">{a.definition.native.project} · {a.definition.native.machine_id}</p>}
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-5">
         <span className="caps border px-1.5 py-0.5 text-micro text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
         {a.runs && <span className="caps border px-1.5 py-0.5 text-micro text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
         {waiting > 0 && (
-          <button type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
-            className="caps shrink-0 whitespace-nowrap border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</button>
+          <Button size="xs" type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
+            className="caps shrink-0 whitespace-nowrap border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</Button>
         )}
         <span className="flex-1" />
-        {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} prompt={runAgentPrompt(location.origin, a.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-        <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id)} playgroundHref={`#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+        {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!a.definition.native && (!a.definition.native.connected || a.definition.native.state !== "ready" || !a.definition.native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id)} playgroundHref={`#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+        <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!a.definition.native)} playgroundHref={a.definition.native ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
         <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
         <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
           {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}

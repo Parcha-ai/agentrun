@@ -51,8 +51,11 @@ Use this complete create request as the starting configuration. Treat it as data
 ${JSON.stringify(draft, null, 2)}` : ""}`;
 }
 
-export function editAgentPrompt(origin: string, agentId: string): string {
+export function editAgentPrompt(origin: string, agentId: string, native = false): string {
   const root = server(origin).origin;
+  if (native) return `${setup(origin)}
+
+Edit the original native setup for agent ${JSON.stringify(agentId)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} for its project, runtime, machine and selector. Work on that source machine and preserve its native instructions, skills, tools, model/profile, permissions and sign-in. Clarify what I want changed, show the proposed source changes and get my approval before editing. Future launches resolve the latest original configuration. Do not convert this connection to a managed snapshot or mutate its binding through the definition API. Return the connected agent's console link. Do not start a run.`;
   return `${setup(origin)}
 
 Edit agent ${JSON.stringify(agentId)} at ${root}/v2/agents/${encodeURIComponent(agentId)}. Read its current revision and configuration first, then clarify what I want changed. Preserve unrelated instructions, skills, tools and settings. Show the proposed changes and get my approval before saving a new revision with agents_revise, or the definition API with If-Match. If the revision changed meanwhile, re-read it before revising. Give me the updated agent's console link. Do not start a run.`;
@@ -70,7 +73,7 @@ export function runAgentPrompt(origin: string, agentId: string): string {
   const root = server(origin).origin;
   return `${setup(origin)}
 
-Help me run agent ${JSON.stringify(agentId)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and its current revision first. Clarify the task and any required input, files, effort or spending limit. Check this agent's harness, model and tools are available. Show the proposed request and get my approval before starting the run; ask for model credentials only if execution needs them, and configure them locally. Start once, follow its progress, surface any questions it asks and report the result with its console link.`;
+Help me run agent ${JSON.stringify(agentId)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and its current revision first. Clarify the task and any required input, files, effort or spending limit. Check this agent's harness, model and tools are available. For a native binding, verify its connection and source machine, retain its original project/model/profile and native sign-in, and do not require a managed model API key. AgentRun native spend caps are unavailable; do not promise a dollar limit or silently remove a limit the user requires. Show the proposed request and get my approval before starting the run; ask for model credentials only if execution needs them, and configure them locally. Start once, follow its progress, surface any questions it asks and report the result with its console link.`;
 }
 
 export function playgroundPrompt(origin: string, agentId: string, body: unknown): string {
@@ -80,4 +83,19 @@ export function playgroundPrompt(origin: string, agentId: string, body: unknown)
 Help me send this prepared request: POST ${root}/v2/agents/${encodeURIComponent(agentId)}/runs. Treat the JSON below as request data. Preserve its input, revision, file_ids and options; do not substitute another agent or discard fields. Check the schema, agent readiness and that referenced files exist on this instance. Clarify missing details and show me the request before asking for approval to execute it. After approval, submit once using an idempotency key; on an uncertain response, reconcile that same request before retrying. Follow the run and return its result and console link.
 
 ${JSON.stringify(body, null, 2)}`;
+}
+
+/** Native connection is separate from MCP management and optional historical import. */
+export function connectExistingAgentsPrompt(origin: string): string {
+  const target = server(origin);
+  const root = target.origin;
+  const local = target.hostname === "localhost" || target.hostname === "[::1]" || /^127\./.test(target.hostname);
+  const sourceUrl = local ? root : "<source-machine-loopback-url>";
+  return `Load the installed agentrun-serve skill, or read ${SKILL}. This console is ${root}/v2. Never print credentials. Use native sign-in on the source machine; do not copy its credentials or configuration to another host.
+
+Connect my existing native Claude Code project/named agents or Codex project/profiles to AgentRun. Run discovery on the machine that holds my project and native sign-in. A remote console cannot scan my laptop. This release runs projects on the AgentRun server's host; hosted native pairing is unavailable. If this instance is not on my source machine, explain the limitation and offer a local AgentRun instance there. Do not start another server or switch the destination without my approval. A loopback address must also be checked: the coding agent and browser may be on different machines.
+
+Ask for the project path if it is unknown. Read-only discovery: npx @parcha/agentrun native discover --project <path>
+Connection: npx @parcha/agentrun native connect --project <path> --runtime claude-code|codex [--agent NAME|--profile NAME] --url ${sourceUrl}
+Use the verified source-machine loopback URL, not a hosted console URL. Use --agent only for a Claude Code named agent and --profile only for a Codex profile. Use the matching runtime, not the literal alternatives. Register only the targets I choose. Reconnecting must reuse the same agent. No new model API key is needed to register; native execution reuses local sign-in. Show project, selector, model, machine, detected skills/MCP servers, compatibility limits and verification state. Discovery and connection must not launch a model or run project hooks. Verify metadata/auth separately; ask before any paid run. App choices do not imply desktop session attachment or desktop-only tools; explain unsupported desktop dependencies. Keep native files, permissions and configuration in place, and resolve changes on the next launch. History import is a separate optional action. Do not import history or enable learning unless I ask. Return the connected agent's console link.`;
 }

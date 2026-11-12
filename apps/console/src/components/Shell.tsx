@@ -60,7 +60,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
   const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
   const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
+    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
       <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 md:hidden">
         <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
         <Button size="icon" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-4" aria-hidden /></Button>

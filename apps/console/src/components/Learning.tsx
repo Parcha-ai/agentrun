@@ -1,9 +1,10 @@
-import { BookOpen, ChevronDown, Hourglass, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
+import { BookOpen, Layers, ChevronDown, Hourglass, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { workflowGraph } from "@dsl/graph";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
+import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -38,7 +39,7 @@ const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator
 /** The most pages of notes, or of changes, the tab reads past the first on its own (for a link's note, or a note's source). */
 const MORE_PAGES = 20;
 const REFRESH_MS = 15_000;
-const field = "w-full border bg-background px-3 py-2 font-mono text-[13px] outline-none placeholder:text-muted-foreground focus:border-border-strong";
+const field = "w-full border bg-background px-3 py-2 font-mono text-body outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
 /** Keep the version a person is editing, reviewing or confirming stable until they finish. Take/release the hold
  * in the state setter: a reply can arrive before React commits, or it can batch a quick operation's start and end. */
@@ -220,7 +221,7 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
           <ul className="space-y-3 p-4">
             {waiting.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} approves={approves} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} approves={approves} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
@@ -243,7 +244,7 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
           <ul className="space-y-3">
             {active.map((x) => (
               <li key={x.file}>
-                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} />
+                <NoteCard note={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} focused={focus.includes(x.file)} from={from.get(x.file)} runs={byRun} onChanged={changed} refreshHolds={refreshHolds} replaces={replaced.get(x.file)} />
               </li>
             ))}
           </ul>
@@ -374,7 +375,11 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
 
 /** The learning switch on the tab: a new revision with `learning` on or off, made on the agent as the server has it
  *  now, shown as it goes and put back if the save fails. */
-function SavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+function SavedSwitch(props: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
+  return props.agent.definition.native ? <div className="p-4"><NativeLearningSwitch agent={props.agent} v2={props.v2} learning={props.server} onAgent={props.onAgent} /></div> : <ManagedSavedSwitch {...props} />;
+}
+
+function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { agent: Agent; v2: Client; onAgent?: (a: Agent) => void; server?: "on" | "off" | null; disabled?: boolean; quiet?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [trouble, setTrouble] = useState<unknown>(null);
   const [shown, setShown] = useState<boolean | null>(null);
@@ -430,7 +435,8 @@ type Replaced = { file: string; name: string | null };
  *  `replaces`: the older notes it replaces (its `supersedes`, and each `superseded_by` it), said in its footer and listed
  *  on expand, by name, or by file while the page that names one is not read yet.
  */
-function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, refreshHolds }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; refreshHolds: RefreshHolds }) {
+function NoteCard({ note, v2, agentId, readOnly, focused, from, runs, onChanged, approves, refreshHolds, replaces = [] }: { note: LearningNote; v2: Client; agentId: string; readOnly: boolean; focused: boolean; from: From; runs: Map<string, Run>; onChanged: () => void | Promise<void>; approves?: Approval; refreshHolds: RefreshHolds; replaces?: Replaced[] }) {
+  const [older, setOlder] = useState(false);
   const [editing, setEditing] = useRefreshState(refreshHolds);
   const [retiring, setRetiring] = useRefreshState(refreshHolds);
   const [flash, setFlash] = useState(focused);
@@ -528,6 +534,9 @@ function LearnedCard({ item, kind, v2, agentId, readOnly, runs, approves, onChan
   const [said, setSaid] = useState<ReactNode>(null);
   const waits = item.status === "pending";
   // Only an active workflow, and only for the owner signed in: a pending one waits for their OK first.
+  const [promoting, setPromoting] = useRefreshState(refreshHolds);
+  const promoteKeys = useRef(keeper()).current;
+  const [made, setMade] = useState<Agent | null>(null);
   const promotes = kind === "workflow" && item.status === "active" && approves === "yes";
   const load = async () => {
     setReadError(null);

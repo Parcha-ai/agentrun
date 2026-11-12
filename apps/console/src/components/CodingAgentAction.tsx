@@ -1,3 +1,4 @@
+import { Input, Textarea } from "@/components/ui/field";
 import { Check, ChevronDown, Code, Copy, MousePointer2, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -33,11 +34,11 @@ function usePreferredAgent() {
   return { agent, choose };
 }
 
-export type CodingAgentActionProps = { label: string; prompt: string; playgroundHref?: string; disabled?: boolean; compact?: boolean; compactIcon?: ReactNode };
+export type CodingAgentActionProps = { label: string; prompt: string; playgroundHref?: string; playgroundLabel?: string; disabled?: boolean; compact?: boolean; compactIcon?: ReactNode };
 
 /** A remembered handoff destination. Selecting a destination only saves the preference; the main button opens or
  * copies the prompt. The menu lives above scroll containers and stays inside the viewport. */
-export function CodingAgentAction({ label, prompt, playgroundHref, disabled, compact = false, compactIcon }: CodingAgentActionProps) {
+export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLabel = "API playground", disabled, compact = false, compactIcon }: CodingAgentActionProps) {
   const { agent, choose } = usePreferredAgent();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -118,7 +119,7 @@ export function CodingAgentAction({ label, prompt, playgroundHref, disabled, com
         <CodingAgentIcon agent={value} />{codingAgentLabels[value]}{agent === value && <Check className="ml-auto size-3.5" aria-hidden />}
       </button>)}
       <div role="separator" className="my-1 border-t" />
-      {playgroundHref && <a role="menuitem" tabIndex={-1} href={playgroundHref} className={itemStyle} onClick={() => setOpen(false)}><Code className="size-4" aria-hidden />API playground</a>}
+      {playgroundHref && <a role="menuitem" tabIndex={-1} href={playgroundHref} className={itemStyle} onClick={() => setOpen(false)}><Code className="size-4" aria-hidden />{playgroundLabel}</a>}
       <button type="button" role="menuitem" tabIndex={-1} className={itemStyle} onClick={() => { trigger.current?.focus(); void copy(); }}><Copy className="size-4" aria-hidden />Copy prompt</button>
     </div>, document.body)}
     {fallback && createPortal(<div className="fixed inset-0 z-popover grid place-items-center bg-overlay/70 p-4" onClick={(event) => { if (event.target === event.currentTarget) { setFallback(false); trigger.current?.focus(); } }}>
@@ -132,7 +133,7 @@ export function CodingAgentAction({ label, prompt, playgroundHref, disabled, com
       }}>
         <div className="mb-3 flex items-center justify-between gap-3"><p className="font-semibold">Copy prompt</p><Button size="icon" variant="ghost" aria-label="Close prompt" onClick={() => { setFallback(false); trigger.current?.focus(); }}><X aria-hidden /></Button></div>
         <p className="mb-3 text-body text-muted-foreground">Clipboard access is unavailable. Copy this prompt into your coding agent.</p>
-        <textarea ref={field} readOnly aria-label="Prompt to copy" value={prompt} rows={9} className="w-full resize-y border bg-card p-3 font-mono text-small" onFocus={(event) => event.currentTarget.select()} />
+        <Textarea ref={field} readOnly aria-label="Prompt to copy" value={prompt} rows={9} className="w-full resize-y border bg-card p-3 font-mono text-small" onFocus={(event) => event.currentTarget.select()} />
       </div>
     </div>, document.body)}
   </div>;

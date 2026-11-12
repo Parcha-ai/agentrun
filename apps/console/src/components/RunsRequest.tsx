@@ -1,3 +1,4 @@
+import { Input, Textarea } from "@/components/ui/field";
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Copy, Play } from "lucide-react";
 import { CodingAgentAction } from "./CodingAgentAction";
@@ -65,11 +66,11 @@ export function RunsRequest({ v2, origin, agentId, filter = {} }: { v2: Client; 
       <header className="flex h-12 shrink-0 items-center border-b px-6"><span className="text-lead font-semibold">Request</span></header>
       <div className="min-h-0 flex-1 space-y-6 overflow-auto p-6">
         <div><h2 className="text-xl font-semibold">List runs</h2><p className="mt-2 text-lead leading-relaxed text-muted-foreground">Inspect server-run sessions and imported history. This request only reads data.</p></div>
-        <label className="block space-y-2"><span className="text-lead">Agent</span><input className={field} value={agentId ?? "All agents"} readOnly /></label>
+        <label className="block space-y-2"><span className="text-lead">Agent</span><Input className={field} value={agentId ?? "All agents"} readOnly /></label>
         <label className="block space-y-2"><span className="text-lead">Status</span><Picker label="Run status" value={status} disabled={sending} onChange={(value) => { setStatus(value as RunStatus | ""); changed(); }} options={[{ value: "", label: "All statuses" }, ...RUN_STATUSES.map((value) => ({ value, label: value.replaceAll("_", " ") }))]} /></label>
         <label className="block space-y-2"><span className="text-lead">Archive</span><Picker label="Archived runs" value={String(archived)} disabled={sending} onChange={(value) => { setArchived(value === "true"); changed(); }} options={[{ value: "false", label: "Current runs" }, { value: "true", label: "Archived runs" }]} /></label>
         <label className="block space-y-2"><span className="text-lead">Page size</span><Picker label="Page size" value={String(limit)} disabled={sending} onChange={(value) => { setLimit(Number(value)); changed(); }} options={[10, 25, 50, 100].map((size) => ({ value: String(size), label: String(size) }))} /></label>
-        <label className="block space-y-2"><span className="text-lead">Cursor</span><input aria-label="Cursor" className={`${field} font-mono text-small`} value={cursor} disabled={sending} placeholder="First page" onChange={(event) => { generation.current++; setCursor(event.target.value); setPage(null); setResult(null); }} /></label>
+        <label className="block space-y-2"><span className="text-lead">Cursor</span><Input aria-label="Cursor" className={`${field} font-mono text-small`} value={cursor} disabled={sending} placeholder="First page" onChange={(event) => { generation.current++; setCursor(event.target.value); setPage(null); setResult(null); }} /></label>
       </div>
       <footer className="flex flex-wrap items-center justify-end gap-2 border-t p-4"><CodingAgentAction label="Use your agent" prompt={prompt} /><Button variant="primary" disabled={sending} onClick={() => void send()}><Play aria-hidden />{sending ? "Sending" : "Send request"}</Button></footer>
     </section>

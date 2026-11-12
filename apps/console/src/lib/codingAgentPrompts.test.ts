@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentPrompt, connectAgentPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
+import { buildAgentPrompt, connectAgentPrompt, connectExistingAgentsPrompt, editAgentPrompt, importAgentsPrompt, playgroundPrompt, queryRunsPrompt, runAgentPrompt } from "./codingAgentPrompts";
 
 describe("coding-agent handoffs", () => {
+  it("gives a hosted native handoff a source-local command without promising remote pairing", () => {
+    const prompt = connectExistingAgentsPrompt("https://console.example.test");
+    expect(prompt).toContain("npx @parcha/agentrun native discover --project <path>");
+    expect(prompt).toContain("--url <source-machine-loopback-url>");
+    expect(prompt).not.toContain("--url https://console.example.test");
+    expect(prompt).toContain("hosted native pairing is unavailable");
+    expect(prompt).toContain("Never print credentials");
+  });
+
   it("targets the current server without carrying credentials or page parameters into the prompt", () => {
     // Build the credential-bearing input at runtime: the repository's session-import scan must not
     // mistake a literal credential URL in this regression for a secret printed by a coding agent.

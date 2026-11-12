@@ -1,3 +1,4 @@
+import { ConnectExistingAgents } from "@/components/NativeConnections";
 import { ChevronDown, FileText, Globe, ListChecks, X } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -40,7 +41,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-base font-semibold">Bring your agents into view</h2>
-          <p className="mt-1 text-lead text-muted-foreground">Use Import agents to bring in your local Claude Code, Codex and pi history. No model key needed.</p>
+          <p className="mt-1 text-lead text-muted-foreground">Connect existing agents to run your native Claude Code or Codex setup with AgentRun history and controls. No model key needed to connect. Import history separately when you want past conversations.</p>
           {imported > 0 && <p className="mt-2 text-body text-muted-foreground">{imported} imported {imported === 1 ? "session" : "sessions"} · <a href="#/runs" className="text-primary-text underline-offset-4 hover:underline">Browse history</a></p>}
         </div>
         <button type="button" aria-label="Dismiss introduction" className="shrink-0 p-1 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => {
@@ -49,6 +50,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
         }}><X className="size-4" aria-hidden /></button>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-3">
+        <ConnectExistingAgents />
         {importAction}
         <button type="button" className="flex items-center gap-1.5 text-body text-muted-foreground hover:text-foreground" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
           Run an agent here <ChevronDown className={`size-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden />

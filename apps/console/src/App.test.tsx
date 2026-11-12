@@ -592,16 +592,16 @@ describe("App, the playground when its agents can't be read", () => {
 describe("App, the no-model bar", () => {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   // `keys`: whether the server keeps tool keys (features.tool_keys, always sealed), or has no key routes at all.
-  const serve = (models: () => Record<string, unknown>, keys = true, stats?: unknown) => {
+  const serve = (models: () => Record<string, unknown>, keys: boolean | "unavailable" = true, stats?: unknown, listed: Agent[] = []) => {
     const asked: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
-      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: "sealed" } } : {}) }, models: models() });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...(keys ? { tool_keys: { routes: true, at_rest: keys === "unavailable" ? "unavailable" : "sealed" } } : {}) }, models: models() });
       if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
       if (path === "/v2/stats") return stats ? json(200, stats) : json(404, { error: { code: "not_found", message: "no route GET /v2/stats", retryable: false } });
-      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: listed, next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
     });
     return asked;
@@ -632,7 +632,7 @@ describe("App, the no-model bar", () => {
   });
 
   it("sits above the run request panels, leaving their footer in view, and is absent from the build page", async () => {
-    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }));
+    serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/playground");
     const request = () => host.querySelector('section[aria-label="Request"]');
     await until(() => !!bar(host) && !!request());

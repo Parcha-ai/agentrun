@@ -1,3 +1,4 @@
+import { Input, Textarea } from "@/components/ui/field";
 import { ArrowRight, FileText, Globe, ListChecks } from "lucide-react";
 import { useId, useState } from "react";
 import { CodingAgentAction } from "./CodingAgentAction";
@@ -22,9 +23,9 @@ export function BuildAgent({ origin }: { origin: string }) {
     <div className="mx-auto mt-9 max-w-page">
       <div className="overflow-hidden border border-border-strong bg-card transition-colors focus-within:border-primary/60">
         <label htmlFor={`${id}-brief`} className="sr-only">Describe your agent</label>
-        <textarea id={`${id}-brief`} value={brief} onChange={(event) => setBrief(event.target.value)} rows={2}
+        <Textarea id={`${id}-brief`} value={brief} onChange={(event) => setBrief(event.target.value)} rows={2}
           placeholder="A support agent that answers questions from our docs and escalates to Slack when it’s stuck…"
-          className="block min-h-[96px] w-full resize-y border-0 bg-transparent px-5 pb-2 pt-5 text-base leading-relaxed text-foreground outline-none placeholder:text-muted-foreground md:min-h-[100px]" />
+          className="block min-h-[96px] w-full resize-y border-0 bg-transparent px-5 pb-2 pt-5 text-base leading-relaxed text-foreground focus-visible:outline-offset-0 placeholder:text-muted-foreground md:min-h-[100px]" />
         <div className="flex justify-end px-4 pb-4 pt-2">
           <CodingAgentAction label="Build an agent" prompt={prompt} playgroundHref={agentDraftHref(draft)} />
         </div>
@@ -32,7 +33,7 @@ export function BuildAgent({ origin }: { origin: string }) {
       <details className="mt-3 text-small text-muted-foreground">
         <summary className="ml-auto w-fit cursor-pointer hover:text-foreground">View coding-agent prompt</summary>
         <label htmlFor={`${id}-prompt`} className="sr-only">Coding-agent prompt</label>
-        <textarea id={`${id}-prompt`} value={prompt} readOnly rows={8} spellCheck={false}
+        <Textarea id={`${id}-prompt`} value={prompt} readOnly rows={8} spellCheck={false}
           className="mt-3 w-full border bg-card p-4 font-mono text-small leading-relaxed text-foreground" />
       </details>
     </div>

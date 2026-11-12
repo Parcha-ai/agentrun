@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Picker, Button } from "@/components/ui";
+import { Picker } from "@/components/ui";
 import { Code, RefreshCw } from "lucide-react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentPage } from "@/components/AgentPage";
@@ -28,6 +28,7 @@ import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { importAgentsPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
+import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
@@ -60,12 +61,13 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { section: Section; template?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { nativeConnect?: boolean; section: Section; template?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
+  if (h === "#/agents/connect") return { section: "agents", nativeConnect: true };
   if (h === "#/agents/new") return { section: "agents", agent: null };
   // An agent's notes, pointed at from a run: its Learning tab with each `note` to show.
   m = h.match(/^#\/agents\/([^/?]+)\/learning\?(.*)$/);
@@ -586,12 +588,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
-  // While no model is ready, or a box's image is still coming, the capabilities are read again every MODEL_CHECK_MS and
-  // whenever the page comes back into view, so the bar and the box status goes by itself
-  // once a key is set where the server starts, or saved, or once the box is ready.
+  // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
+  // so execution setup clears once a model is configured. Native connections use their own authentication.
   const modelsReady = caps?.models?.ready;
-  const boxComing = preparingBox(placesOf(caps));
-  const preparing = !!boxComing;
   useEffect(() => {
     if (modelsReady !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
@@ -606,7 +605,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
     const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
-  }, [v2, modelsReady, preparing]);
+  }, [v2, modelsReady]);
+  const nativePlayground = agents?.find((agent) => agent.agent_id === pick)?.definition.native;
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
@@ -623,7 +623,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       {imported && (
         <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-body md:px-8" role="status">
           <span className="flex-1">{importLine(imported)}</span>
-          {imported.state !== "running" && <button type="button" className="caps border px-2 py-1 text-label hover:bg-accent" onClick={() => setImported(null)}>Dismiss</button>}
+          {imported.state !== "running" && <Button size="xs" type="button" onClick={() => setImported(null)}>Dismiss</Button>}
         </p>
       )}
     </>}>
@@ -642,10 +642,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         : where.section === "mission"
         // Observation never requires a provider key or a run started on this server.
         ? <div className="flex h-full flex-col">
-            {boxComing && <BoxImageBanner box={boxComing} />}
             <div className="min-h-0 flex-1">
               <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-                actions={<><CodingAgentAction label="Import agents" prompt={importAgentsPrompt(location.origin)} /><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} /><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></Button></>}
+                actions={<><ConnectExistingAgents /><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} /><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></Button></>}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
@@ -673,14 +672,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
               <span className="caps ml-auto text-micro text-muted-foreground">Live API</span>
             </div>
             {where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} /> : <>
-              {caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
-              {startError ? <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-small hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
+              {!nativePlayground && caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} />}
+              {startError ? <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>
               : agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>
         : where.section === "agents"
-        ? where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+        ? where.nativeConnect ? <NativeConnections v2={v2} go={go} />
+          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
           : where.agent === null ? <BuildAgent origin={location.origin} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} notes={where.notes} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).

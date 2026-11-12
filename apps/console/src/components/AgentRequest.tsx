@@ -1,3 +1,4 @@
+import { Input, Textarea } from "@/components/ui/field";
 import { cloneElement, useEffect, useId, useState, type ReactElement } from "react";
 import { ArrowUpRight, Copy, Play } from "lucide-react";
 import { CodingAgentAction } from "./CodingAgentAction";
@@ -118,13 +119,13 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
       <div className="min-h-0 flex-1 space-y-6 overflow-auto p-6">
         <div><h2 className="text-xl font-semibold">{editing ? "Edit agent" : "Create an agent"}</h2><p className="mt-2 text-lead leading-relaxed text-muted-foreground">{editing ? "Save a new version of this agent’s configuration." : "Configure an agent on this server. You can run it once it is created."}</p></div>
         {draft && !initial && !editing && <p role="alert" className="text-lead text-warning-text">The linked draft could not be read. Fill in the definition before sending.</p>}
-        {view === "json" ? <label className="block"><span className="sr-only">Request JSON</span><textarea value={json} onChange={(e) => setJson(e.target.value)} className={`${field} min-h-[360px] font-mono text-small`} spellCheck={false} /></label> : <>
-          <Field name="Name"><input value={body.definition.name} readOnly={editing} onChange={(e) => update("name", e.target.value)} className={field} /></Field>
-          <Field name="Description"><input value={body.definition.description ?? ""} readOnly={editing} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
+        {view === "json" ? <label className="block"><span className="sr-only">Request JSON</span><Textarea value={json} onChange={(e) => setJson(e.target.value)} className={`${field} min-h-[360px] font-mono text-small`} spellCheck={false} /></label> : <>
+          <Field name="Name"><Input value={body.definition.name} readOnly={editing} onChange={(e) => update("name", e.target.value)} className={field} /></Field>
+          <Field name="Description"><Input value={body.definition.description ?? ""} readOnly={editing} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
           {body.definition.workflow ? <Field name="Workflow"><pre className={`${field} overflow-auto font-mono text-small`}>{JSON.stringify(body.definition.workflow, null, 2)}</pre></Field> : <>
-            <Field name="Instructions"><textarea value={body.definition.instructions ?? ""} rows={5} onChange={(e) => update("instructions", e.target.value)} className={field} /></Field>
+            <Field name="Instructions"><Textarea value={body.definition.instructions ?? ""} rows={5} onChange={(e) => update("instructions", e.target.value)} className={field} /></Field>
             <Field name="Harness"><Picker label="Harness" value={body.definition.harness ?? "pi"} onChange={(value) => update("harness", value)} options={[...new Set([body.definition.harness ?? "pi", ...harnesses.map((h) => h.id)])].map((id) => ({ value: id, label: `${id}${harnesses.find((h) => h.id === id)?.available === false ? " (not set up)" : ""}` }))} /></Field>
-            <Field name="Model"><input value={body.definition.model ?? ""} onChange={(e) => update("model", e.target.value)} placeholder="Server default" className={field} /></Field>
+            <Field name="Model"><Input value={body.definition.model ?? ""} onChange={(e) => update("model", e.target.value)} placeholder="Server default" className={field} /></Field>
           </>}
           <button className="text-lead text-primary-text" onClick={() => setView("json")}>Edit all fields in JSON →</button>
         </>}

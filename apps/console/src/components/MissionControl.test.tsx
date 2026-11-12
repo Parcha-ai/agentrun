@@ -132,6 +132,13 @@ describe("MissionControl's analytics", () => {
     expect(html).not.toContain("Imported from");
   });
 
+  it("makes native model request counts explicitly unknown when telemetry cannot report them", () => {
+    const a = analytics({ totals: { ...analytics().totals, requests: null, unmetered: null } });
+    const html = render(withA(a), scope);
+    expect(html).toContain("Model request counts unavailable");
+    expect(html).not.toContain("0 requests with no token count");
+  });
+
   it("says when tokens leave runs out, when requests were unmetered, and when runs were at work", () => {
     const a = analytics({ totals: { ...analytics().totals, runs_with_metrics: 9, unmetered: 2 }, time: { ended_runs: 11, wall_ms: 5_400_000, active_runs: 3, active_ms: 1_800_000 } });
     const html = render(withA(a), scope);

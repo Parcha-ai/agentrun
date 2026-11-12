@@ -10,8 +10,8 @@ import type { AgentLearning, LearningNote } from "@/lib/learning";
 let root: Root | undefined;
 let host: HTMLDivElement;
 const agent = (id: string, learning = true): Agent => ({ agent_id: id, kind: "agentic", revision: "v1", revisions: 1, archived_at: null, definition: { version: 1, name: id, learning, harness: "pi", instructions: "Research a topic.", tools: [], skills: [] } });
-const note = (file: string, status: LearningNote["status"] = "active"): LearningNote => ({ file, status, name: file, description: "A useful note", type: "feedback", text: "A useful note", superseded_by: null, runs: { given: 0, read: 0 } });
-const view = (id: string, fields: Partial<AgentLearning> = {}): AgentLearning => ({ agent: id, main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, ...fields });
+const note = (file: string, status: LearningNote["status"] = "active"): LearningNote => ({ file, status, etag: "v1", origin: "run", name: file, description: "A useful note", type: "feedback", text: "A useful note", superseded_by: null, runs: { given: 0, read: 0 } });
+const view = (id: string, fields: Partial<AgentLearning> = {}): AgentLearning => ({ agent: id, main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null, ...fields });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 type Call = { path: string; query: URLSearchParams; method: string };
 async function mount(answer: (call: Call) => Response | Promise<Response>, server: "on" | "off" | null | undefined = "on") {
@@ -84,7 +84,7 @@ describe("Learning Dojo", () => {
   });
 
   it("makes old-server missing file categories unknown and workflow learning unsupported", async () => {
-    const old = view("old"); delete old.skills; delete old.workflows;
+    const old: Partial<AgentLearning> = view("old"); delete old.skills; delete old.workflows;
     const { calls } = await mount(({ path }) => json(path === "/v2/agents" ? { agents: [agent("old"), { ...agent("flow"), kind: "workflow" }], next_cursor: null } : old));
     expect(metric("Learned skills")).toContain("—");
     expect(metric("Workflow drafts")).toContain("—");

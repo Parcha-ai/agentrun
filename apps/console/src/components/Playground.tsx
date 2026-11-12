@@ -15,6 +15,8 @@ import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
+const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none." } as const;
+
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
 
 /** A start that did not succeed, as the response pane shows it: the server's typed error whole (its `details`
@@ -51,6 +53,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
+  const native = agent?.definition.native;
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
   const example = kind === "workflow" ? exampleInput(agent?.definition.workflow) : null;
@@ -90,8 +93,9 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
     : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+  const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim());
   const send = async () => {
-    if (!built.ok || !onSend || attachments.busy) return;
+    if (nativeBlocked || !built.ok || !onSend || attachments.busy) return;
     setSending(true);
     const r = await submitStart(keys, agentId, built.body, onSend);
     setSending(false); setResult(r); setPane("response"); setShowCode(true);
@@ -99,6 +103,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
+  if (!agents.length) return <section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect existing agents</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section>;
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
@@ -110,7 +115,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>
         <span className="flex-1" />
         <span className="caps text-label text-muted-foreground">Live API</span>
-        <button type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-label text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</button>
+        <Button size="sm" type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-label text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>
       </div>
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
@@ -120,6 +125,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
+            {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable.</p>{nativeBlocked && <p className="text-warning-text">{cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : "Verify a connected native launch before sending a run."}</p>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={`#/agents/${encodeURIComponent(agentId)}`} className="underline underline-offset-2">Open native connection</a></div>}
+
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
               <>
@@ -132,7 +139,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             ) : (
               <>
                 <Label name={kind === "agentic" ? "input.content" : "input"} required error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                  <textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} className={field} />
+                  <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={kind === "agentic" ? 4 : 7} placeholder={placeholder} className={field} />
                   {example && (
                     <p className="mt-1 font-mono text-label text-muted-foreground">
                       {exampleHint(example, "start")}
@@ -151,9 +158,9 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Picker label="Effort" value={effort} onChange={setEffort} className="w-full"
                     options={["", ...efforts].map((value) => ({ value, label: value || "Agent default" }))} />
                 </Label>
-                {kind === "agentic" && (
+                {kind === "agentic" && !native && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                    <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
                   </Label>
                 )}
               </>
@@ -162,8 +169,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
             <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
-              <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={!built.ok || !agentId || attachments.busy} />
-              <Button variant="primary" size="lg" onClick={send} disabled={!built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
+              <CodingAgentAction label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={nativeBlocked || !built.ok || !agentId || attachments.busy} />
+              <Button variant="primary" size="lg" onClick={send} disabled={nativeBlocked || !built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
             </div>
           </footer>
         </section>

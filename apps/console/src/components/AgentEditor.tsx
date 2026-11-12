@@ -5,6 +5,7 @@ import { McpToolPicker } from "@/components/McpToolPicker";
 import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
 import { Button } from "@/components/ui/button";
+import { Field, Input, Textarea } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { ToolCard } from "@/components/ToolCard";
@@ -12,7 +13,7 @@ import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import { type Agent, type AgentFields, capOf, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { harnessDefault, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -271,12 +272,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         <div className="border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
           <p className="flex items-center gap-2 font-mono text-body text-warning-text"><TriangleAlert className="size-4 shrink-0" aria-hidden /> Saved. A run of this revision is refused until the server has what each line names:</p>
           <ul className="mt-2 space-y-1 font-mono text-small">
-            {warnings.map((w, i) => <li key={`${w.field}:${i}`}><span className="text-muted-foreground">{w.field}</span> {w.message}</li>)}
+            {warnings.map((w, i) => {
+              const at = steps.find((step) => step.id === stepOfField(w.field));
+              return <li key={`${w.field}:${i}`}>{at ? <button type="button" title={w.field} onClick={() => goTo(at.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">{at.label}</button> : <span className="text-muted-foreground">{w.field}</span>} {w.message}</li>;
+            })}
           </ul>
         </div>
       )}
-      {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
-      {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <ol className={cn("relative flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
@@ -300,6 +302,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           <p className="caps text-label text-muted-foreground">Step {at + 1}</p>
           <h2 className="caps mb-6 border-b pb-4 text-prose font-semibold">{steps[at].label}</h2>
 
+          <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
           {step === "context" && (
             <div className="max-w-3xl space-y-6">
               <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
@@ -319,10 +322,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (
-                <Field label="Instructions" id={preview ? undefined : "agent-instructions"} required error={fieldError("instructions")} warning={fieldWarning("instructions")}
-                  aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <button key={m} type="button" onClick={() => setPreview(m === "Preview")} className={cn("caps border px-2.5 py-1 text-label", (m === "Preview") === preview ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>{m}</button>)}</span>}>
+                <Field group={preview ? "heading" : undefined} label="Instructions" id={preview ? undefined : "agent-instructions"} required error={fieldError("instructions")} warning={fieldWarning("instructions")}
+                  aside={<span className="flex">{(["Preview", "Edit"] as const).map((m) => <Button key={m} size="xs" type="button" onClick={() => setPreview(m === "Preview")} className={cn("caps border px-2.5 py-1 text-label", (m === "Preview") === preview ? "border-foreground bg-foreground text-background" : "text-muted-foreground")}>{m}</Button>)}</span>}>
                   {preview ? <article className="report min-h-64 border p-4" dangerouslySetInnerHTML={{ __html: markdown(f.instructions || "") }} />
-                    : <textarea id="agent-instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
+                    : <Textarea id="agent-instructions" value={f.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={14} placeholder="Describe what the agent does, how, and its rules." className={cn(input, "resize-y leading-[1.7]")} />}
                   <p className="mt-2 font-mono text-label text-muted-foreground">{(f.instructions ?? "").length} characters</p>
                 </Field>
               )}
@@ -378,11 +381,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     // (cut to one line); the reason in full is its title, and in Details.
                     const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
                     return (
-                      <li key={t.name}><label title={why} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-body", on && "border-foreground", why && !on ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
-                        <input type="checkbox" value={t.name} checked={on} disabled={!!why && !on} onChange={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} className="accent-[hsl(var(--primary))]" />
-                        <span className="min-w-0">{t.name}{why && <span className="ml-2 text-label text-muted-foreground">{why}</span>}
-                          {t.summary && <Summary text={t.summary} />}</span>
-                      </label></li>
+                      <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
+                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
                     );
                   })}
                   {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
@@ -407,7 +407,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <legend className="caps text-small font-semibold">Approvals</legend>
                   {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
                     <label key={value} className={cn("flex items-start gap-3 border px-3 py-2.5", approvals === value && "border-foreground")}>
-                      <input type="radio" name="approvals" value={value} className="mt-1" checked={approvals === value} disabled={saving} onChange={() => set({ approvals: value })} />
+                      <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} disabled={saving} onChange={() => set({ approvals: value })} />
                       <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
                     </label>
                   ))}
@@ -424,7 +424,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "settings" && (
             <div className="max-w-3xl space-y-8">
               {!workflow && (
-                <Field named label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
+                <Field group="heading" label="Harness" note="What runtime runs this agent." error={fieldError("harness")} warning={fieldWarning("harness")}>
                   {/* Cards by a minimum width: they wrap to more rows in a narrow pane (a phone on its side), never squeezed. */}
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
                     {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
@@ -433,7 +433,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     {choices.map((h) => {
                       const row = (
                         <>
-                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => set({ harness: h.id, ...(creating && !toolsTouched ? { tools: defaultTools(h.id, caps.tools, f.place) } : {}) })} className="mt-1 accent-[hsl(var(--primary))]" />
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
                           <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
                         </>
                       );
@@ -463,7 +463,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
               {!workflow && !starting && (
-                <Field named label="Thinking" note="How hard the model thinks before it answers." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
+                <Field group="heading" label="Thinking" note="How hard the model thinks before it answers." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
                   <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Thinking">
                     {caps.thinking.map((t) => (
                       <label key={t} className={cn("caps cursor-pointer border px-3 py-2 text-small", f.thinking === t ? "border-foreground" : "text-muted-foreground")}>
@@ -520,7 +520,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         <Button size="sm" variant="ghost" disabled={at === 0} onClick={() => goTo(steps[at - 1].id)}><ArrowLeft aria-hidden /> Previous</Button>
         {step !== "history" && <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={creating ? "" : "What changed (a note on this revision)"} aria-label="Revision note" className={cn("h-9 min-w-0 flex-1", creating && "invisible")} />}
         {step === "history" && <span className="flex-1" />}
-        {saved && <span className="caps text-label text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
         {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
@@ -540,24 +539,6 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
 
 const input = "w-full border bg-background px-3 py-2.5 font-mono text-body focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring placeholder:text-muted-foreground focus:border-border-strong";
-
-function Field({ label, id, required, optional, note, error, warning, aside, children }: { label: string; id?: string; required?: boolean; optional?: boolean; note?: React.ReactNode; error?: string; warning?: string; aside?: React.ReactNode; children: React.ReactNode }) {
-  // `id`: the one input this field holds, which its label names. A field of several controls (a list, a radio group)
-  // names them its own way, so its heading is no label.
-  const Heading = id ? "label" : "span";
-  return (
-    <div>
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <Heading {...(id ? { htmlFor: id } : {})} className="caps text-small font-semibold">{label}{required && <span className="text-destructive-text"> *</span>}{optional && <span className="font-normal normal-case text-muted-foreground"> (optional)</span>}</Heading>
-        {aside}
-      </div>
-      {note && <p className="-mt-1 mb-2 text-small text-muted-foreground">{note}</p>}
-      {children}
-      {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}
-      {warning && <p className="mt-2 font-mono text-small text-warning-text">{warning}</p>}
-    </div>
-  );
-}
 
 /** A tool's description in its card: two lines, and "more" for the rest when it is longer (a tool's summary is written for
  *  the model, often a paragraph). A <div>-free span pair, so the clamp's own display holds. "more" never ticks the tool. */

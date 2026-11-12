@@ -51,7 +51,7 @@ export type AnalyticsGroup = { runs: number; completed: number; failed: number; 
 /** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write. */
 export type Analytics = {
   filter: { from: string | null; to: string | null; agent: string | null };
-  totals: AnalyticsGroup & { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number };
+  totals: AnalyticsGroup & { input: number; cache_read: number; cache_write: number; output: number; requests: number | null; unmetered: number | null };
   time: { ended_runs: number; wall_ms: number; active_runs: number; active_ms: number };
   by_harness_effort: (AnalyticsGroup & { harness: string; effort: string | null })[];
   by_day: (AnalyticsGroup & { day: string })[];

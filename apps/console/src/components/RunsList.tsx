@@ -1,5 +1,5 @@
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
-import { Archive, ArrowUpRight, History } from "lucide-react";
+import { Archive, ArrowUpRight, History, Play } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
 import { ScheduleChip } from "@/components/ScheduleChip";
@@ -38,6 +38,7 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
+        : !runs.length && !filter.status && !archived ? <div className="p-5 md:p-8"><FirstRun /></div>
         : !runs.length ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
