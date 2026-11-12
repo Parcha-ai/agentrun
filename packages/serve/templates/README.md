@@ -28,7 +28,7 @@ servers the owner saves.
 
 **Writes are bounded.** Every package reads content someone else wrote (web pages, pull requests, form submissions),
 so no package puts a write in its own `allow`. A package whose job runs on triggers (code-review, inbound-lead,
-market-monitor, release-notes) runs unattended (`approvals: never`), so its writes don't ask: each is held by its pin,
+market-monitor, release-notes, upgrade-watch) runs unattended (`approvals: never`), so its writes don't ask: each is held by its pin,
 which the tool gate checks before it allows or asks anything (a review can only COMMENT, a send only reaches the channel
 set at apply, a draft issue is only ever created), or, where no pin can bound it, by a stated rule (a test lists both).
 Apply writes each pin into the agent's own tool settings, so a pinned write never runs without its pin. The unpinned
@@ -59,6 +59,7 @@ the owner grants a write, text the agent read could try to copy what that read r
 | `market-monitor` | A weekly digest of what changed at the companies you watch, posted to one Slack channel or address | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | optional: Slack (`slack`) or Gmail (`gmail`) MCP, to send |
 | `inbound-lead` | Researches a form or CRM lead, scores it against your ICP, writes back to HubSpot or posts to Slack | a webhook (needs the seal key): your form tool or relay signs Standard Webhooks bodies of type `lead.submitted`, each lead its own run (3 at once); or a run | optional: HubSpot (`hubspot`) or Slack (`slack`) MCP |
 | `release-notes` | Turns the merged PRs since the last release into user-facing notes, as a draft issue to edit (no MCP tool makes a draft release) | a run naming the release or tag | the GitHub MCP server `github`; with none, a list of PRs in the message |
+| `upgrade-watch` | Reads what a GitHub repository released since the version you run, checks each breaking or behavior change against your list of what your project uses from it, and answers safe, changes needed (each finding quoted and linked, with what to do), up to date, or incomplete when notes could not be read. It writes nothing | a weekly schedule (its `cron` and `timezone` parameters, Monday 08:00 UTC by default), or a run | nothing; `web_fetch` only |
 
 ## Eval cases
 

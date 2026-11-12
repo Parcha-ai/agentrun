@@ -43,7 +43,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes", "upgrade-watch"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
