@@ -9,6 +9,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
+import { MACHINE_PATH } from './machine-path.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
@@ -21,8 +22,8 @@ const exec = promisify(execFile);
 const requireConsole = process.argv.includes('--console');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
-const [major, minor] = process.versions.node.split('.').map(Number);
-assert.ok(major > 24 || major === 24 && minor >= 11, 'Package verification requires Node.js >=24.11.0');
+const [major, minor, patch] = process.versions.node.split('.').map(Number);
+assert.ok(major > 24 || major === 24 && (minor > 22 || minor === 22 && patch >= 3), 'Package verification requires Node.js >=24.22.3');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
 const receipt = { status: 'running', startedAt: new Date().toISOString(), node: process.version, packages: [], demos: [], checks: [], limitations: ['The content scan is heuristic, not proof of complete secret detection.', 'Smoke tests use fake adapters and prohibit networking; live provider behavior is verified separately.', 'License and publication ownership remain separate release decisions.'] };
 await mkdir(receiptDir, { recursive: true });
@@ -40,8 +41,8 @@ async function run(command, args, cwd = root, allowFailure = false, commandEnv =
 }
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const forbid = [
-  // A /home/ or /Users/ right after a route parameter (`{name}`, not `${...}`) is an API route template (/agents/{agent_id}/home/files/{path}).
-  ['machine-specific path', /(?:(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home|Users)\/[^/\s"']+\/|[A-Za-z]:\\Users\\[^\\\s"']+\\)/],
+  // The one machine-path rule, shared with export-source.mjs (machine-path.mjs says what it takes and what it leaves).
+  ['machine-specific path', MACHINE_PATH],
   ['private service endpoint', /https?:\/\/(?:localhost\b|127\.\d+\.\d+\.\d+\b|10\.\d+\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|169\.254\.\d+\.\d+\b|[a-z0-9.-]+\.(?:internal|local|localhost)\b)/i],
   ['embedded credential value', /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'][A-Za-z0-9_./+=-]{24,}["']/i],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],

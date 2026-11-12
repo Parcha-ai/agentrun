@@ -8,7 +8,7 @@ TypeScript consumers require TypeScript 5.4 or newer.
 
 ## Run a complete example
 
-From the source checkout, with Node 24.11 or newer:
+From the source checkout, with Node 24.22.3 or newer:
 
 ```sh
 npm ci --ignore-scripts

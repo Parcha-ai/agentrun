@@ -33,6 +33,8 @@ import computersKeys from "./computers-keys.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
+import agentCardFooter from "./agent-card-footer.mjs";
+import toolCards from "./tool-cards.mjs";
 
 export const flows = [
   setupOpen,
@@ -57,4 +59,6 @@ export const flows = [
   workspaceArchil,
   triggerRowLabel,
   computerStep,
+  agentCardFooter,
+  toolCards,
 ];

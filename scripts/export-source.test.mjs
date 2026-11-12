@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
+const machinePathRule = await readFile(new URL('./machine-path.mjs', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-source-export-'));
@@ -18,6 +19,7 @@ async function fixture(t) {
     await writeFile(join(root, path), content);
   };
   await write('scripts/export-source.mjs', exporter);
+  await write('scripts/machine-path.mjs', machinePathRule);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
@@ -222,6 +224,20 @@ test('a /home/ or /Users/ right after a path parameter is an API route, not a ma
     await assert.rejects(f.run(), /Source export blocked/);
     const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
     assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'machine_path']]);
+    await rm(join(f.root, path));
+  }
+});
+
+test('/Users/Shared/ is macOS\'s folder shared by every user, not a machine path; any other /Users/ or /home/ name still stops the export', async t => {
+  const f = await fixture(t);
+  const shared = 'packages/x/lib/shared.mjs';
+  await f.write(shared, `export const labels = "${['', 'Users', 'Shared', 'agentrun', 'labels.json'].join('/')}";\n`);
+  await f.run();
+  for (const [path, owner] of [['packages/x/lib/alice.mjs', ['', 'Users', 'alice', 'x'].join('/')], ['packages/x/lib/bob.mjs', ['', 'home', 'bob', 'x'].join('/')], ['packages/x/lib/shared-like.mjs', ['', 'Users', 'Sharedfolks', 'x'].join('/')]]) {
+    await f.write(path, `"${owner}"\n`);
+    await assert.rejects(f.run(), /Source export blocked/);
+    const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+    assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'machine_path']], owner);
     await rm(join(f.root, path));
   }
 });
