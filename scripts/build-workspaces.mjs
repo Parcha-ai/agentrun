@@ -83,11 +83,9 @@ export function subsetOrder(packages, names, built = (p) => existsSync(join(p.di
  *  reads none when the package has no dist, so a build that clears or rewrites the dist (`rm -rf dist`) leaves a stamp that no longer matches it. */
 export const STAMP = join('node_modules', '.cache', 'agentrun-build-stamp');
 const stampPath = (pkg) => join(pkg.dir, STAMP);
-/** What a build reads beyond its own folder, and what in its folder it only writes: the console's build, which serve copies into
- *  its dist; the example and scripts that generate pi's src/demo-data.ts (rewritten by every pi build, so its own time is no input). */
+/** What a build reads beyond its own folder: the console's build, which serve copies into its dist. */
 const READS = {
   '@parcha/agentrun-serve': { also: ['apps/console/dist'] },
-  '@parcha/agentrun-pi': { also: ['examples', 'scripts/build-pi-demo.mjs', 'scripts/render-pi-skill.mjs'], ignore: ['src/demo-data.ts'] },
 };
 /** The files outside a package that every build reads: the shared compiler settings and the lockfile that fixes what it compiles against. */
 const SHARED = ['tsconfig.base.json', 'package-lock.json'];
@@ -102,7 +100,7 @@ export function inputsOf(pkg, root = ROOT) {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((x, y) => (x.name < y.name ? -1 : 1))) {
       if (entry.isDirectory()) {
         if (!skip.includes(entry.name)) walk(join(dir, entry.name), `${rel}${entry.name}/`, skip);
-      } else if (!(reads.ignore ?? []).includes(`${rel}${entry.name}`)) {
+      } else {
         const st = statSync(join(dir, entry.name));
         lines.push(`${rel}${entry.name}\t${st.size}\t${st.mtimeMs}`);
       }
