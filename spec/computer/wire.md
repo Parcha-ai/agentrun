@@ -219,7 +219,8 @@ The result:
 - **A point is bound to its state.** A step at a point is refused `stale` when its state is no longer held, the window
   is another one, the window changed size, or what is under the point changed. Where no element is under the point
   (always so with `ui.tree` off), any change to what the window shows makes it stale. A point outside the window is
-  `invalid`. A window that only moved keeps its points good, because they are window points.
+  `invalid`. A window that only moved keeps its points good, because they are window points. Every point a step
+  touches is held to this, each point of a drag's path as much as its first.
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition.

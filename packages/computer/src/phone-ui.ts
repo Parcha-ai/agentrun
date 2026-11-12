@@ -204,10 +204,12 @@ export class AdbUiSource implements UiSource {
 				return done(await input({ type: "tap", at: at(step.set) }));
 			}
 			if (target.role !== "textbox" && target.role !== "searchbox") return fail("unsupported", `set ${step.set}: a ${target.role} has no value a phone driven over adb can set`);
+			// The tap leaves the caret anywhere in the text (on any line of a multiline field), and adb presses no
+			// select-all or ctrl+end: as many deletes back and forward as the text is long clear it from any caret.
 			const erase = [...(target.value ?? "")].length;
 			const keys: InputAction[] = [];
-			for (let left = erase; left > 0; left -= 100) keys.push({ type: "key", keys: ["backspace"], repeat: Math.min(100, left) });
-			return done(await input({ type: "tap", at: at(step.set) }, { type: "key", keys: ["end"] }, ...keys, ...(step.value === "" ? [] : [{ type: "type" as const, text: step.value }])));
+			for (const key of ["backspace", "delete"]) for (let left = erase; left > 0; left -= 100) keys.push({ type: "key", keys: [key], repeat: Math.min(100, left) });
+			return done(await input({ type: "tap", at: at(step.set) }, ...keys, ...(step.value === "" ? [] : [{ type: "type" as const, text: step.value }])));
 		}
 		if ("type" in step) return done(await input(...(step.into === undefined ? [] : [{ type: "tap" as const, at: at(step.into) }]), { type: "type", text: step.type }));
 		if ("key" in step) {

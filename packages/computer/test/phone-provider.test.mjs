@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
+import { AdbUiSource, kindRefusals, PHONE_GROUPS, parseUiElements, UiEngine } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, ITEMS, KEY, SCREEN, SEARCH_FIELD, SETTINGS } from "./fake-phone-harness.mjs";
 
@@ -940,6 +940,34 @@ test("a list row in the same place showing other content, or the same layout in 
 	assert.equal(bluetoothLabel, wifiLabel, "a label nothing taps keeps its ref while its text changes");
 	assert.deepEqual(keys(row("com.android.settings", "Wi-Fi")), keys(row("com.android.settings", "Wi-Fi")), "the same row read again keeps its key");
 	assert.notEqual(keys(row("com.example", "Wi-Fi"))[1], wifi, "another app's row is not this app's");
+});
+
+test("set clears a multiline field's whole text wherever the tap leaves the caret, then types the value", async () => {
+	// A field holding two lines, the caret left by the tap at the end of the first (where MOVE_END would stop).
+	let text = "first line\nsecond line";
+	let caret = text.indexOf("\n");
+	const phone = {
+		scale: () => 1,
+		dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }),
+		async input(action) {
+			if (action.type === "key") {
+				for (let i = 0; i < (action.repeat ?? 1); i++) {
+					const [key] = action.keys;
+					if (key === "backspace" && caret > 0) [text, caret] = [text.slice(0, caret - 1) + text.slice(caret), caret - 1];
+					else if (key === "delete") text = text.slice(0, caret) + text.slice(caret + 1);
+					else if (key === "end") caret = text.indexOf("\n", caret) === -1 ? text.length : text.indexOf("\n", caret);
+				}
+			}
+			if (action.type === "type") [text, caret] = [text.slice(0, caret) + action.text + text.slice(caret), caret + action.text.length];
+			return { ok: true, value: undefined };
+		},
+	};
+	const source = new AdbUiSource(phone, () => [400, 400]);
+	const element = { key: "k", role: "textbox", name: "Notes", value: text, bounds: [0, 0, 400, 200] };
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [element] };
+	const ran = await source.run({ set: "@e1", value: "new" }, { element, view, foreground: true }, new AbortController().signal);
+	assert.equal(ran.ok, true, JSON.stringify(ran));
+	assert.equal(text, "new");
 });
 
 test("ui.observe never sends a secure field's value", async () => {

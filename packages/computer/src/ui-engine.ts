@@ -152,12 +152,15 @@ export function stepRef(step: UiStep): UiRef | undefined {
 	return undefined;
 }
 
-/** The point a step lands on, if it is aimed at one: a click or scroll at a point, a drag's first point. */
-export function stepPoint(step: UiStep): Point | undefined {
-	if ("click" in step) return isPoint(step.click) ? step.click : undefined;
-	if ("scroll" in step) return isPoint(step.scroll) ? step.scroll : undefined;
-	if ("drag" in step) return step.drag[0];
-	return undefined;
+/**
+ * Every point a step touches, in order: a click or scroll at a point, each point of a drag's path. Each one is held to
+ * the same checks (inside the window, nothing changed under it since the state), so a drag's end is no freer than its start.
+ */
+export function stepPoints(step: UiStep): Point[] {
+	if ("click" in step) return isPoint(step.click) ? [step.click] : [];
+	if ("scroll" in step) return isPoint(step.scroll) ? [step.scroll] : [];
+	if ("drag" in step) return step.drag;
+	return [];
 }
 
 /** A key chord's words: undefined when it is one, else why not. */
@@ -268,7 +271,7 @@ export function checkUiAct(params: unknown): Result<UiActParams> {
 	const dragMs = steps.reduce((sum, step) => sum + ("drag" in step ? (step.ms ?? 0) : 0), 0);
 	if (dragMs > MAX_BATCH_WAIT_MS) return fail("limit", `ui.act: the drags ask for ${dragMs} ms, more than the ${MAX_BATCH_WAIT_MS} ms one act may`);
 	if (params.state === undefined) {
-		const index = steps.findIndex((step) => stepPoint(step) !== undefined);
+		const index = steps.findIndex((step) => stepPoints(step).length > 0);
 		if (index >= 0) return fail("invalid", `ui.act: steps[${index}] is at a point, and a point needs the state it was read from: pass state`);
 	}
 	const wrongExpect = expectWrong(params.expect);
@@ -578,11 +581,14 @@ export class UiEngine {
 		if (ref !== undefined) {
 			if (this.#elementOf(view, ref) === undefined) return { kind: "stale", message: `${ref} is gone: its element is no longer in the window. Observe again for fresh refs` };
 		}
-		const point = stepPoint(step);
-		if (point !== undefined) {
+		const points = stepPoints(step);
+		if (points.length > 0) {
 			if (held === undefined) return { kind: "stale", message: `state ${stateId} is no longer held: observe again, and read the point from the new state` };
-			const [x, y] = point;
 			if (held.window.id !== view.window.id) return { kind: "stale", message: `the window of state ${stateId} is no longer the one in front: observe again` };
+		}
+		for (const point of points) {
+			if (held === undefined) break;
+			const [x, y] = point;
 			if (!sameSize(held.window.bounds, view.window.bounds)) return { kind: "stale", message: `the window changed size since state ${stateId}, so (${x}, ${y}) may not land on what it showed: observe again` };
 			if (!contains([0, 0, view.window.bounds[2], view.window.bounds[3]], point)) return { kind: "invalid", message: `(${x}, ${y}) is outside the window, which is ${view.window.bounds[2]} by ${view.window.bounds[3]} points` };
 			const then = under(held, point);

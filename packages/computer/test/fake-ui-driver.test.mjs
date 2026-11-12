@@ -172,6 +172,23 @@ test("an expect never matches a secure field's value", async () => {
 	await c.close();
 });
 
+test("every point of a drag is held to its state: an end outside the window is invalid, an end on what changed is stale", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const wifi = seen.nodes.find((n) => n.id === "wifi");
+	const [x, y, w, h] = wifi.bounds;
+	const onWifi = [Math.floor(x + w / 2), Math.floor(y + h / 2)];
+	const out = await c.client.call("ui.act", { state: seen.state, steps: [{ drag: [[300, 300], [310, 310], [1000, 1000]] }] });
+	assert.equal(out.value.steps[0].error?.kind, "invalid", JSON.stringify(out.value.steps));
+	assert.match(out.value.steps[0].error.message, /\(1000, 1000\) is outside the window/);
+	assert.deepEqual((await c.client.call("ui.act", { steps: [{ press: wifi.ref }] })).value.steps, [{ route: "semantic", verified: true }]);
+	const moved = await c.client.call("ui.act", { state: seen.state, steps: [{ drag: [[300, 300], onWifi] }] });
+	assert.equal(moved.value.steps[0].error?.kind, "stale", JSON.stringify(moved.value.steps));
+	assert.match(moved.value.steps[0].error.message, new RegExp(`what is at \\(${onWifi[0]}, ${onWifi[1]}\\) changed`));
+	await c.close();
+});
+
 test("a fake desktop with no app in front shows its desktop", async () => {
 	const c = await fakeUiConnection();
 	const seen = (await c.client.call("ui.observe", {})).value;
