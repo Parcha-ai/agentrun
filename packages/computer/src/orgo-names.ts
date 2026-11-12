@@ -45,6 +45,8 @@ export interface OrgoLedgerEntry {
 	labels: Record<string, string>;
 	/** When the computer was detached, ISO time; absent while a run holds it. */
 	detachedAt?: string;
+	/** While a failed attach puts the computer back to sleep (underPutBack), when it began, ISO time: no attach takes it. */
+	puttingBackAt?: string;
 }
 
 /** Where the provider keeps its agents' computers' labels. Each call may be sync or async. */
@@ -97,10 +99,13 @@ export async function takeEntry(ledger: OrgoLedger, ref: ComputerRef, ownerHash:
 		if (!read.ok) return read;
 		const entry = read.value;
 		if (entry === undefined) return fail("refused", lostEntry(ref.name));
+		if (puttingBack(entry)) return fail("refused", `${ref.name} is being put back to sleep by an attach that failed: attach it again in a moment`);
 		if (claim === undefined) return ok(entry);
 		const fenced = claimProblem(ref.name, ownerHash, entry, claim);
 		if (fenced !== undefined) return fail("refused", fenced);
-		const taken = { ...entry, labels: { ...entry.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) } };
+		// A put-back marker older than PUT_BACK_MS is a put-back that died: the claim takes the entry without it.
+		const { puttingBackAt: _stale, ...unmarked } = entry;
+		const taken = { ...unmarked, labels: { ...entry.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) } };
 		if (sameEntry(taken, entry)) return ok(taken);
 		const swapped = await ledgerCall("written", () => ledger.swap(entry, taken));
 		if (!swapped.ok) return swapped;
@@ -132,13 +137,34 @@ export async function settleEntry(ledger: OrgoLedger, ref: ComputerRef, taken: O
 	}
 }
 
+/** How long a put-back's marker keeps every other attach off the computer: the most its suspend or stop is waited on. A
+ *  marker older is a put-back that died, and is ignored. */
+export const PUT_BACK_MS = 15 * 60_000;
+
+/** Whether an entry carries a put-back's marker still in force. */
+const puttingBack = (entry: OrgoLedgerEntry) => entry.puttingBackAt !== undefined && Date.now() - Date.parse(entry.puttingBackAt) < PUT_BACK_MS;
+
 /**
- * Whether the ledger entry of an agent's computer still carries the labels an attach gave it (takeEntry): a failed attach
- * puts back only a computer no other claim has taken since. A ledger that cannot be read says no: nothing is touched.
+ * A failed attach's put-back of an agent's computer it woke (suspend or stop again), run under the ledger entry: `power`
+ * runs only once the entry, still carrying the labels this attach gave it (takeEntry), is swapped to carry a put-back
+ * marker. Until the marker is cleared after `power`, every other attach is refused at takeEntry, so a newer claim never
+ * takes the computer between the check and the power call and then has it put to sleep under it. Undefined, with
+ * nothing run, when another claim has taken it since (it runs on as that claim's) or the ledger can't be read or written.
  */
-export async function stillTaken(ledger: OrgoLedger, ref: ComputerRef, taken: OrgoLedgerEntry): Promise<boolean> {
+export async function underPutBack<T>(ledger: OrgoLedger, ref: ComputerRef, taken: OrgoLedgerEntry, power: () => Promise<T>): Promise<T | undefined> {
 	const read = await ledgerCall("read", () => ledger.get(ref.id));
-	return read.ok && read.value !== undefined && sameEntry({ id: read.value.id, labels: read.value.labels }, { id: taken.id, labels: taken.labels });
+	const entry = read.ok ? read.value : undefined;
+	if (entry === undefined || !sameEntry({ id: entry.id, labels: entry.labels }, { id: taken.id, labels: taken.labels })) return undefined;
+	const marked = { ...entry, puttingBackAt: new Date().toISOString() };
+	const swapped = await ledgerCall("written", () => ledger.swap(entry, marked));
+	if (!swapped.ok || !swapped.value) return undefined;
+	try {
+		return await power();
+	} finally {
+		// Cleared only from the marked entry: one a stale marker let another claim take is that claim's.
+		const { puttingBackAt: _done, ...cleared } = marked;
+		await ledgerCall("written", () => ledger.swap(marked, cleared));
+	}
 }
 
 /**

@@ -26,7 +26,7 @@ import { type ComputerInfo, type ComputerProvider, epochOf, ok, ownerOf, RUN_HAS
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { FAUX_ENV } from "../model.js";
 import type { Store } from "../store/index.js";
-import { deleteUnderHold, ownerGoneOf, serverIdOf } from "./agent-computer.js";
+import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
@@ -98,7 +98,7 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
   // The agents' own computers the list kept, by id: their delete goes under the agent's hold (deleteUnderHold), which
   // also clears the agent's record of it, so its view no longer shows it deleting.
   const ownedBy = new Map<string, string>();
-  const { settings } = store;
+  const { settings, agents } = store;
   return {
     id: provider.id,
     version: provider.version,
@@ -111,7 +111,10 @@ function thisServers(provider: ComputerProvider, store: JanitorDeps["store"], by
     release(ref, how) {
       const agent = ownedBy.get(ref.id);
       if (how !== "delete" || agent === undefined || settings === undefined) return provider.release(ref, how);
-      return deleteUnderHold({ settings, runs: store.runs }, agent, ref.id, () => provider.release(ref, how));
+      // Asked again under the hold: the agent may want it back since ownerGone was read (this server's owners carry no
+      // idle TTL, so that is the one reason the sweep deletes one).
+      const due = async () => !agents || !(await wantsOn({ agents }, agent, provider.id));
+      return deleteUnderHold({ settings, runs: store.runs }, agent, ref.id, due, () => provider.release(ref, how));
     },
     async list(labels, context) {
       const listed = await provider.list(labels, context);

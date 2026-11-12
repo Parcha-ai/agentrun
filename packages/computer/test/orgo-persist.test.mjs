@@ -499,6 +499,45 @@ test("Orgo: an attach that wakes an agent's computer and then fails a check susp
 	}
 });
 
+test("Orgo: while a failed attach puts an agent's computer back to sleep, a newer claim's attach is refused, so the put-back never sleeps a computer that claim took; once it is done, the newer claim attaches (Linux and Windows)", async () => {
+	const other = "computer-0123456789ab-oaaaaaaaaaaaaaaaa";
+	const kinds = [
+		["linux", () => {
+			const made = linux();
+			return { ...made, spec: linuxSpec(), sleep: "suspend", tamper: (id) => { const box = made.channel.boxOf(id); const file = box.labels; box.labels = JSON.stringify({ ...JSON.parse(file), name: other }); return () => void (box.labels = file); } };
+		}],
+		["windows", () => {
+			const made = desktop("windows");
+			return { ...made, api: made.fake.api, spec: windowsSpec(), sleep: "stop", tamper: (id) => { const files = made.fake.boxOf(id).files; const file = files.get(WINDOWS_LABELS); files.set(WINDOWS_LABELS, Buffer.from(JSON.stringify({ ...JSON.parse(file.toString("utf8")), name: other }))); return () => void files.set(WINDOWS_LABELS, file); } };
+		}],
+	];
+	for (const [os, make] of kinds) {
+		const { api, provider, ledger, spec, sleep, tamper } = make();
+		const ref = (await provider.create(spec)).value;
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+		const restore = tamper(ref.id);
+		// The newer claim lands the moment the put-back has marked the entry, before its suspend or stop.
+		const swap = ledger.swap.bind(ledger);
+		let newer;
+		ledger.swap = async (was, entry) => {
+			const swapped = await swap(was, entry);
+			if (entry.puttingBackAt !== undefined && newer === undefined) newer = await provider.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
+			return swapped;
+		};
+		const failed = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+		ledger.swap = swap;
+		assert.match(failed.error?.message ?? "", /again, as it was found/, `${os}: the failed attach put it back`);
+		assert.match(newer?.error?.message ?? "", /being put back to sleep by an attach that failed/, `${os}: the newer claim was kept off meanwhile`);
+		assert.equal(ledger.rows.get(ref.id).puttingBackAt, undefined, `${os}: the marker is cleared`);
+		restore();
+		const sleeps = calls(api, sleep).length;
+		const attached = await provider.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
+		assert.equal(attached.ok, true, `${os}: ${attached.error?.message}`);
+		assert.equal(calls(api, sleep).length, sleeps, `${os}: nothing put the newer claim's computer to sleep`);
+		assert.equal(ledger.rows.get(ref.id).labels["agentrun.run"], "run-3", os);
+	}
+});
+
 // provider.persistence (Full) runs in the computer (env, files, a process): the Linux fake has no daemon to run it, and
 // the case is written for a POSIX shell, so on Windows it skips. It runs live; the tests above cover the same steps.
 test("the conformance suite's Core persistence cases, provider.owner and provider.detach, pass on the Linux, Windows and macOS fakes", async () => {

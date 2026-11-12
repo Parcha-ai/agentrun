@@ -162,9 +162,17 @@ export async function holdAgentComputer(store: Holding, agentId: string, run: st
 /**
  * `remove` (a provider's delete of the agent's computer `id`) under the agent's hold, taken as a delete of this server's,
  * so no run attaches the computer while it goes and none has it deleted from under it; then the agent's record goes,
- * where it still names that computer. Not taken (a run holds it): refused in words, and nothing is deleted.
+ * where it still names that computer. Not taken (a run holds it): refused in words, and nothing is deleted. `due` is
+ * asked again under the hold, since what decided the delete was read before it: an agent that wants its computer again
+ * meanwhile (unarchived, persistent turned back on) keeps it, refused in words.
  */
-export async function deleteUnderHold(store: Holding & { readonly runs?: Pick<Store["runs"], "get"> | undefined }, agentId: string, id: string, remove: () => Promise<Result<void>>): Promise<Result<void>> {
+export async function deleteUnderHold(
+  store: Holding & { readonly runs?: Pick<Store["runs"], "get"> | undefined },
+  agentId: string,
+  id: string,
+  due: () => Promise<boolean>,
+  remove: () => Promise<Result<void>>,
+): Promise<Result<void>> {
   let hold: AgentComputerHold;
   try {
     hold = await holdAgentComputer(store, agentId, `${DELETER}${randomBytes(6).toString("hex")}`, liveHolderOf(store), { until: Date.now() + HOLD_RELEASE_MS });
@@ -173,6 +181,7 @@ export async function deleteUnderHold(store: Holding & { readonly runs?: Pick<St
     throw error;
   }
   try {
+    if (!(await due())) return { ok: false, error: { code: "refused", message: `the agent ${agentId} wants its computer again, so it is kept` } };
     const removed = await remove();
     if (removed.ok) {
       const record = await agentComputerOf(store, agentId);
@@ -247,9 +256,14 @@ async function heldNow(store: Holding & Runs, agentId: string): Promise<boolean>
 export function ownerGoneOf(store: Agents & Holding & Runs, serverId: string, provider: string): (owner: ComputerOwner) => Promise<boolean> {
   return async (owner) => {
     if (owner.server !== serverId) return false;
-    if ((await wantedSetting(store, owner.agent))?.provider === provider) return false;
+    if (await wantsOn(store, owner.agent, provider)) return false;
     return !(await heldNow(store, owner.agent));
   };
+}
+
+/** Whether the agent still has a use for a computer of `provider`: it is here, not archived, and persistent there. */
+export async function wantsOn(store: Agents, agentId: string, provider: string): Promise<boolean> {
+  return (await wantedSetting(store, agentId))?.provider === provider;
 }
 
 /**

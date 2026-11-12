@@ -395,6 +395,26 @@ test("the server's janitor sweeps an agent's own computer by its owner: kept whi
   assert.deepEqual([...computers.keys()], ["c-other"], "another server's agent's computer is left");
 });
 
+test("an agent that wants its computer back after the janitor judged its owner gone keeps it: the janitor asks again under the hold, and deletes nothing", async () => {
+  const { store, computers, provider, claim } = await setup();
+  await (await claim("run-1")).release();
+  store.agents.archive("agent-1");
+  // The agent is unarchived just as the janitor takes its delete hold: after ownerGone said gone, before the delete.
+  const putIfAbsent = store.settings.putIfAbsent;
+  store.settings.putIfAbsent = async (key, value) => {
+    if (key === "agent_computer_hold:agent-1" && value.run.startsWith("delete:")) (await store.agents.get("agent-1")).archivedAt = null;
+    return putIfAbsent(key, value);
+  };
+  const swept = await sweepServerComputers({ store: { ...store, runs: { ...store.runs, list: async () => [], heldAt: async () => undefined }, computerLedger: store.computerLedger }, computers: { kinds: KINDS, providers: { orgo: () => provider }, keyOf: async (name) => KEYS[name] }, now: () => Date.now() });
+  store.settings.putIfAbsent = putIfAbsent;
+  const orgo = swept.find((one) => one.provider === "orgo").swept;
+  assert.equal(orgo.ok, false);
+  assert.match(orgo.error.message, /wants its computer again, so it is kept/);
+  assert.equal(computers.get("c-1").state, "stopped", "kept, as it was");
+  assert.equal((await agentComputerOf(store, "agent-1")).state, "detached", "its record stands");
+  assert.equal(store.rows.has("agent_computer_hold:agent-1"), false, "the janitor's hold is let go");
+});
+
 test("a janitor sweep that deletes an agent's computer an earlier delete failed on clears the agent's record of it", async () => {
   const { store, computers, provider, claim } = await setup();
   await (await claim("run-1")).release();

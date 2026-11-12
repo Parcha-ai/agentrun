@@ -58,8 +58,8 @@ import {
 	sameComputer,
 	settleEntry,
 	show,
-	stillTaken,
 	takeEntry,
+	underPutBack,
 	withDeadline,
 } from "./orgo-names.js";
 import { encodePng } from "./phone-harness.js";
@@ -907,8 +907,8 @@ export class OrgoDesktopProvider implements ComputerProvider {
 	 * another claim has taken since is that claim's, and runs on. Never signalled: it outlives an abort.
 	 */
 	async #putBack(ref: ComputerRef, taken: OrgoLedgerEntry, error: ComputerError): Promise<Result<never>> {
-		if (!(await stillTaken(this.#ledger, ref, taken))) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since`);
-		const stopped = await this.#stop(ref);
+		const stopped = await underPutBack(this.#ledger, ref, taken, () => this.#stop(ref));
+		if (stopped === undefined) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since`);
 		return fail(error.code, `${error.message}; ${ref.name}, which this attach started, ${stopped.ok ? "was stopped again, as it was found" : `could not be stopped again (${stopped.error.message})`}`);
 	}
 

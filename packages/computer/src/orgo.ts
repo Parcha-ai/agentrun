@@ -47,8 +47,8 @@ import {
 	sameComputer,
 	settleEntry,
 	show,
-	stillTaken,
 	takeEntry,
+	underPutBack,
 	withDeadline,
 } from "./orgo-names.js";
 import type { Group } from "./protocol.js";
@@ -868,8 +868,8 @@ export class OrgoProvider implements ComputerProvider {
 	 * One another claim has taken since is that claim's, and runs on. Never signalled: it outlives an abort.
 	 */
 	async #putBack(ref: ComputerRef, taken: OrgoLedgerEntry, error: ComputerError): Promise<Result<never>> {
-		if (!(await stillTaken(this.#ledger, ref, taken))) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since`);
-		const suspended = await this.#suspend(ref);
+		const suspended = await underPutBack(this.#ledger, ref, taken, () => this.#suspend(ref));
+		if (suspended === undefined) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since`);
 		return fail(error.code, `${error.message}; ${ref.name}, which this attach resumed, ${suspended.ok ? "was suspended again, as it was found" : `could not be suspended again (${suspended.error.message})`}`);
 	}
 

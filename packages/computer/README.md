@@ -2110,7 +2110,8 @@ none.
   the epoch it carries is refused as fenced, and nothing changes. The ledger entry is taken with `swap` before
   anything is done to the computer, and marked held with `swap` last, so of two attaches of one run racing, the lower
   epoch is refused however they interleave, and the ledger never moves back to it. An attach that started or resumed
-  the computer and then fails a check stops or suspends it again, as it was found. Its read-back spec carries `owner`.
+  the computer and then fails a check stops or suspends it again, as it was found, its ledger entry marked meanwhile
+  so every other attach is refused until that is done. Its read-back spec carries `owner`.
 - **Init on Linux.** An owned computer's init ends its programs at its deadline, `maxLifetimeMs` out, and has no
   most in practice: each attach moves the deadline `maxLifetimeMs` out again (`deadline.extend`). A desktop left
   detached past that, or whose daemon is another version (the package was upgraded meanwhile), gets its daemon
