@@ -182,6 +182,8 @@ interface CallInit {
 	retry?: boolean;
 	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
 	anyStatus?: boolean;
+	/** This one status is a value, with its status, not a failure (and not retried). */
+	answerStatus?: number;
 }
 
 /**
@@ -494,7 +496,7 @@ class Rest {
 					signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 				});
 				const bytes = new Uint8Array(await response.arrayBuffer());
-				if (response.ok || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
+				if (response.ok || response.status === init.answerStatus || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				retryable = response.status === 429 || response.status >= 500;
 				failure = errorOf(codeOf(response.status, text), `${what}: ${response.status} ${text}`, "daytona");
@@ -1049,15 +1051,16 @@ export class DaytonaProvider implements ComputerProvider {
 	 */
 	async #upload(toolbox: string, path: string, bytes: Buffer, signal?: AbortSignal): Promise<Result<Answer>> {
 		const query = new URLSearchParams({ path });
-		const send = (route: string) => {
+		const send = (route: string, answerStatus?: number) => {
 			const form = new FormData();
 			form.append("file", new Blob([new Uint8Array(bytes)]), "computerd");
-			return this.#rest.call("POST", `${toolbox}/${route}?${query}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs }, signal);
+			return this.#rest.call("POST", `${toolbox}/${route}?${query}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs, ...(answerStatus === undefined ? {} : { answerStatus }) }, signal);
 		};
-		const current = await send("files/upload-v2");
-		if (current.ok || current.error.code !== "not_found") return current;
+		const current = await send("files/upload-v2", 404);
+		if (!current.ok || current.value.status !== 404) return current;
+		const missing = `POST ${new URL(`${toolbox}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.value.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
 		const older = await send("files/upload");
-		return older.ok ? older : fail(older.error.code, `${current.error.message}, then ${older.error.message}`);
+		return older.ok ? older : fail(older.error.code, `${missing}, then ${older.error.message}`);
 	}
 
 	async #execute(toolbox: string, command: string, signal?: AbortSignal): Promise<Result<{ exitCode: number; result: string }>> {

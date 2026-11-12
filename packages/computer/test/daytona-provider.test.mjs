@@ -514,6 +514,14 @@ test("a toolbox with no files/upload-v2 (404) gets the daemon through files/uplo
 	assert.equal(failed.error.code, "denied", "the older route's refusal is the one that counts");
 	assert.match(failed.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 404 404 page not found, then POST \/toolbox\/[^ ]+\/files\/upload: 403/);
 	assert.equal(refused.fake.sandboxes.size, 0);
+
+	// 410 is not_found to a caller too, but only a 404 says the route is missing: nothing goes to the older route.
+	const gone = setup({ fail: [{ method: "POST", path: /\/files\/upload-v2$/, status: 410 }] });
+	const goneMade = await gone.provider.create(SPEC);
+	assert.equal(goneMade.ok, false);
+	assert.match(goneMade.error.message, /the daemon's upload was refused: POST \/toolbox\/[^ ]+\/files\/upload-v2: 410/);
+	assert.equal(of(gone.fake, "POST", /\/files\/upload$/).length, 0);
+	assert.equal(gone.fake.sandboxes.size, 0);
 });
 
 test("an install the snapshot cannot do, and a daemon that reads back other bytes, are refused and deleted", async () => {
