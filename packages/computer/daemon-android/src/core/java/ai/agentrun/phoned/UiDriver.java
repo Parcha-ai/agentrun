@@ -38,6 +38,12 @@ public final class UiDriver {
 	static final int REPLY_ROOM = 16 * 1024;
 	/** How long a drag takes when it names no ms, and a scroll's swipe at least. */
 	static final long DRAG_MS = 300;
+	/** How long a call waits for the window of a named app that is in front (see start). */
+	static final long APP_WINDOW_MS = 3_000;
+	/** How often it looks for that window. */
+	static final long APP_WINDOW_POLL_MS = 50;
+	/** The windows a not_found names, at most. */
+	static final int WINDOWS_NAMED = 6;
 
 	private final Device device;
 	private final Shots shots;
@@ -107,7 +113,7 @@ public final class UiDriver {
 
 	// --- ui.observe ------------------------------------------------------------------------------------------------
 
-	public Map<String, Object> observe(Params p, Wire.Cancel cancel) {
+	public Map<String, Object> observe(Params p, Wire.Cancel cancel) throws InterruptedException {
 		p.only("target", "full", "image", "since");
 		Target target = target(p);
 		boolean full = p.bool("full", false);
@@ -122,7 +128,7 @@ public final class UiDriver {
 		synchronized (hands) {
 			cancel.check();
 			Device.Accessibility a11y = device.accessibility();
-			Look look = new Look(window(a11y, target), full);
+			Look look = new Look(start(a11y, target, cancel), full);
 			Map<String, Object> image = maxEdge > 0 ? shots.image(look.bounds, maxEdge) : null;
 			cancel.check();
 			State before = since == null ? null : states.get(since);
@@ -195,7 +201,7 @@ public final class UiDriver {
 		}
 		if (target.app != null) {
 			for (Device.AxWindow w : windows) if (target.app.equals(appOf(w))) return w;
-			throw RpcError.notFound(target.app + " has no window on the screen: open it with apps.launch first");
+			throw RpcError.notFound(target.app + " has no window on the screen (" + shown(windows) + "): open it with apps.launch first");
 		}
 		for (Device.AxWindow w : windows) if ("application".equals(w.type()) && w.active()) return w;
 		for (Device.AxWindow w : windows) if ("application".equals(w.type()) && w.focused()) return w;
@@ -203,6 +209,56 @@ public final class UiDriver {
 		for (Device.AxWindow w : windows) if (w.active()) return w;
 		if (!windows.isEmpty()) return windows.get(0);
 		throw RpcError.unsupported("the phone shows no window its accessibility tree can read (is the screen off or locked?)");
+	}
+
+	/**
+	 * The window a look or an act starts from. On a phone an app's task is in front a few hundred ms before its window
+	 * reaches the accessibility tree, so apps.list can already name an app that ui.observe finds no window of. A named
+	 * app that is in front is waited for, up to APP_WINDOW_MS; one that is not is not_found at once.
+	 */
+	Device.AxWindow start(Device.Accessibility a11y, Target target, Wire.Cancel cancel) throws InterruptedException {
+		try {
+			return window(a11y, target);
+		} catch (RpcError e) {
+			if (!"not_found".equals(e.kind) || target.app == null || target.window != null || !inFront(target.app)) throw e;
+		}
+		Device.Clock clock = device.clock();
+		long begun = clock.now();
+		for (;;) {
+			cancel.check();
+			clock.sleep(APP_WINDOW_POLL_MS);
+			List<Device.AxWindow> windows = a11y.windows();
+			for (Device.AxWindow w : windows) if (target.app.equals(appOf(w))) return w;
+			if (clock.now() - begun >= APP_WINDOW_MS) {
+				throw RpcError.notFound(target.app + " is in front, but its window did not reach the accessibility tree within "
+						+ APP_WINDOW_MS + " ms (" + shown(windows) + ")");
+			}
+		}
+	}
+
+	private boolean inFront(String app) {
+		try {
+			return app.equals(device.apps().foreground());
+		} catch (RuntimeException e) {
+			return false;
+		}
+	}
+
+	/** The windows the tree shows, for a not_found: the accessibility tree shows window 3 application "Home" of com.x. */
+	private static String shown(List<Device.AxWindow> windows) {
+		if (windows.isEmpty()) return "the accessibility tree shows no window";
+		StringBuilder s = new StringBuilder("the accessibility tree shows ");
+		for (int i = 0; i < windows.size() && i < WINDOWS_NAMED; i++) {
+			Device.AxWindow w = windows.get(i);
+			if (i > 0) s.append("; ");
+			String title = w.title();
+			s.append("window ").append(w.id()).append(' ').append(w.type());
+			if (title != null && !title.isEmpty()) s.append(" \"").append(title.length() > 40 ? title.substring(0, 40) + "..." : title).append('"');
+			String app = appOf(w);
+			s.append(app == null ? " with no root" : " of " + app);
+		}
+		if (windows.size() > WINDOWS_NAMED) s.append("; and ").append(windows.size() - WINDOWS_NAMED).append(" more");
+		return s.toString();
 	}
 
 	/**
@@ -360,7 +416,7 @@ public final class UiDriver {
 			// The state's app, not its window: an activity the steps open is a new window of the same app.
 			if (target.app == null && target.window == null && held != null && !held.app.isEmpty()) target.app = held.app;
 			Device.Accessibility a11y = device.accessibility();
-			String first = new Look(window(a11y, target), false).fingerprint();
+			String first = new Look(start(a11y, target, cancel), false).fingerprint();
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
 			for (Step s : steps) {

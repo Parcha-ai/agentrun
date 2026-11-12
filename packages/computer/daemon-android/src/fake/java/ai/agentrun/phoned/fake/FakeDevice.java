@@ -79,6 +79,13 @@ public final class FakeDevice implements Device {
 	private long now;
 	/** What an app does later, by when: run as the clock reaches it. */
 	private final List<Later> later = new ArrayList<>();
+	/**
+	 * How long a launched app's window takes to reach the tree, as on a phone: its task is in front at once (apps.list
+	 * names it), and its window shows this much later. 0 shows it at once.
+	 */
+	public long windowLagMs;
+	/** The app launched whose window has not shown yet, or null. */
+	private String starting;
 
 	public FakeNode list;
 	public FakeNode network;
@@ -187,6 +194,7 @@ public final class FakeDevice implements Device {
 		for (FakeWindow w : windows) w.root.gone();
 		windows.clear();
 		later.clear();
+		starting = null;
 		root.pkg(pkg);
 		windows.add(new FakeWindow(id, title, bounds, root));
 		changed();
@@ -662,7 +670,7 @@ public final class FakeDevice implements Device {
 			public String foreground() {
 				synchronized (FakeDevice.this) {
 					due();
-					return front();
+					return starting != null ? starting : front();
 				}
 			}
 
@@ -670,14 +678,33 @@ public final class FakeDevice implements Device {
 			public void launch(String id, String url) {
 				log.add("launch " + id + (url == null ? "" : " " + url));
 				if (apps.stream().noneMatch(a -> a.id.equals(id))) throw RpcError.notFound("no app " + id + " is installed on this phone");
-				if (id.equals(CHROME)) chrome(url);
-				else open(id);
+				Runnable opens = () -> {
+					if (id.equals(CHROME)) chrome(url);
+					else open(id);
+				};
+				synchronized (FakeDevice.this) {
+					if (windowLagMs <= 0) {
+						opens.run();
+						return;
+					}
+					// What the app in front was about to do goes with it; the launched app is in front, its window not yet.
+					later.clear();
+					starting = id;
+					after(windowLagMs, () -> {
+						starting = null;
+						opens.run();
+					});
+				}
 			}
 
 			@Override
 			public void terminate(String id) {
 				log.add("terminate " + id);
 				synchronized (FakeDevice.this) {
+					if (id.equals(starting)) {
+						starting = null;
+						later.clear();
+					}
 					// Its windows go, and with them what it was about to do: the home screen shows where it was.
 					for (Iterator<FakeWindow> it = windows.iterator(); it.hasNext();) {
 						FakeWindow w = it.next();

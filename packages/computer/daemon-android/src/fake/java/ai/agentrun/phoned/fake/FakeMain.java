@@ -20,6 +20,8 @@ public final class FakeMain {
 		OutputStream protocolOut = new FileOutputStream(FileDescriptor.out);
 		System.setOut(System.err);
 		FakeDevice device = new FakeDevice(false);
+		// As a phone does: a launched app is in front before its window reaches the tree.
+		device.windowLagMs = 300;
 		String home = args.length > 0 ? args[0] : "/tmp";
 		Wire.serve(System.in, protocolOut, new Phoned(device, Version.VALUE, new Exec(System.getenv(), home)));
 		System.exit(0);

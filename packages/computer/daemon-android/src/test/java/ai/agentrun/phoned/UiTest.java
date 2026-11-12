@@ -338,4 +338,33 @@ final class UiTest {
 		phone.call("apps.terminate", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
 		eq(FakeDevice.LAUNCHER, map(phone.call("apps.list", "{}")).get("foreground"));
 	}
+
+	static void testANamedAppInFrontIsWaitedForAndOneNotThereIsNamedAtOnce() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		String target = "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}";
+		// As on a phone: apps.list names the launched app before its window reaches the tree. A look waits for it.
+		phone.device.windowLagMs = 400;
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
+		long before = phone.device.clock().now();
+		Map<String, Object> seen = phone.call("ui.observe", target);
+		eq("UI fixture", map(seen.get("window")).get("title"));
+		yes(phone.device.clock().now() - before >= 400, "the look waited for the window");
+		// An app not in front is not_found at once, and the words name what the tree shows.
+		before = phone.device.clock().now();
+		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.CHROME + "\"}}"));
+		eq(before, phone.device.clock().now());
+		yes(missing.contains(FakeDevice.CHROME + " has no window on the screen (the accessibility tree shows window 30 application \"UI fixture\" of " + FakeDevice.FIXTURE + ")"), missing);
+		// One in front whose window never comes is waited for APP_WINDOW_MS, then not_found in its own words.
+		phone.device.windowLagMs = 60_000;
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
+		before = phone.device.clock().now();
+		String late = refuses("not_found", () -> phone.call("ui.act", "{\"target\":{\"app\":\"" + FakeDevice.SETTINGS + "\"},\"steps\":[{\"nav\":\"back\"}]}"));
+		long waited = phone.device.clock().now() - before;
+		yes(waited >= UiDriver.APP_WINDOW_MS && waited < UiDriver.APP_WINDOW_MS + 200, "waited " + waited + " ms");
+		yes(late.contains(FakeDevice.SETTINGS + " is in front, but its window did not reach the accessibility tree within 3000 ms (the accessibility tree shows window 30"), late);
+		// A terminate takes the launch that has not shown yet with it.
+		phone.call("apps.terminate", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
+		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
+	}
 }
