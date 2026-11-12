@@ -815,6 +815,22 @@ test("typing into Settings' search reads back from ui.observe: the field is a se
 	assert.equal(typed.ref, empty.ref, "the field keeps its ref while its text changes");
 });
 
+test("a ui step the phone cannot finish runs nothing: a set to text adb cannot type leaves the field as it was", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC);
+	const { client } = (await provider.connect(ref)).value;
+	await client.call("apps.launch", { id: SETTINGS });
+	await client.call("input.actions", { actions: [{ type: "tap", at: [100, 40] }, { type: "type", text: "wifi" }] });
+	const field = await searchField(client);
+	assert.equal(field.value, "wifi");
+	const before = fake.shells().length;
+	const set = await client.call("ui.act", { steps: [{ set: field.ref, value: "café" }], foreground: true });
+	assert.equal(set.value.steps[0].error?.kind, "unsupported", JSON.stringify(set));
+	assert.match(set.value.steps[0].error.message, /printable ASCII/);
+	assert.deepEqual(fake.shells().slice(before).filter((command) => command.startsWith("input ")), [], "no tap, no delete");
+	assert.equal((await searchField(client)).value, "wifi", "the field keeps its text");
+});
+
 test("a literal %s is typed as %s, not as a space: input text's escape never meets text that holds it", async () => {
 	const { provider } = await setup();
 	const { value: ref } = await provider.create(SPEC);
@@ -949,7 +965,11 @@ test("set clears a multiline field's whole text wherever the tap leaves the care
 	const phone = {
 		scale: () => 1,
 		dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }),
-		async input(action) {
+		async input(actions) {
+			for (const action of actions) this.one(action);
+			return { ok: true, value: undefined };
+		},
+		one(action) {
 			if (action.type === "key") {
 				for (let i = 0; i < (action.repeat ?? 1); i++) {
 					const [key] = action.keys;
@@ -959,7 +979,6 @@ test("set clears a multiline field's whole text wherever the tap leaves the care
 				}
 			}
 			if (action.type === "type") [text, caret] = [text.slice(0, caret) + action.text + text.slice(caret), caret + action.text.length];
-			return { ok: true, value: undefined };
 		},
 	};
 	const source = new AdbUiSource(phone, () => [400, 400]);

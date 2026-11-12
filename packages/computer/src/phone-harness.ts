@@ -957,7 +957,7 @@ class AdbClient implements ComputerClient {
 	/** The ui group over uiautomator and adb's input; a dump waits for the phone to be idle, so every look is settled. */
 	readonly #ui = new UiEngine(
 		new AdbUiSource(
-			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), input: (action, signal) => this.#input(action, signal) },
+			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), input: (actions, signal) => this.#input(actions, signal) },
 			() => this.#size,
 		),
 		{ quietMs: 0 },
@@ -1403,11 +1403,12 @@ class AdbClient implements ComputerClient {
 	}
 
 	/** One input action, as input.actions runs it: its refusal in words. */
-	async #input(action: InputAction, signal: AbortSignal): Promise<Result<void>> {
-		const ran = await this.#actions([action], signal);
+	/** A ui step's actions, as one batch: every action is checked before the first runs. */
+	async #input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>> {
+		const ran = await this.#actions(actions, signal);
 		if (!ran.ok) return ran;
 		const { failed } = ran.value as InputActionsResult;
-		return failed === undefined ? ok(undefined) : fail(failed.kind, failed.message.replace(/^action 0: /, ""));
+		return failed === undefined ? ok(undefined) : fail(failed.kind, failed.message.replace(/^action \d+: /, ""));
 	}
 }
 

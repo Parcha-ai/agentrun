@@ -178,7 +178,7 @@ test("a phone's tree is its ui.observe, the nodes a model can tap or type into, 
     // Window points; the screenshot is 720x1280 pixels.
     nodes: [
       { ref: "@e1", role: "generic", bounds: [0, 0, 360, 640] },
-      { ref: "@e2", role: "textbox", id: "com.example.mail:id/to", name: "To", value: "", bounds: [10, 75, 340, 40], parent: "@e1", flags: ["focused"] },
+      { ref: "@e2", role: "textbox", id: "com.example.mail:id/to", name: "To", value: "ada@example.com", bounds: [10, 75, 340, 40], parent: "@e1", flags: ["focused"] },
       { ref: "@e3", role: "group", bounds: [0, 550, 360, 90], parent: "@e1" },
       { ref: "@e4", role: "button", name: "Send", bounds: [250, 575, 100, 40], parent: "@e3" },
       { ref: "@e5", role: "text", name: "New message", bounds: [10, 30, 200, 30], parent: "@e1" },
@@ -190,7 +190,7 @@ test("a phone's tree is its ui.observe, the nodes a model can tap or type into, 
   const tools = run.hostTools(["phone_tree", "phone_key"]);
   assert.deepEqual(await call(tools, "phone_tree", {}), { isError: false, text: [
     "2 nodes you can tap or type into, of 6 on the screen. Coordinates are a phone_screen screenshot's pixels.",
-    '- textbox "To" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
+    '- textbox "To" holding "ada@example.com" [com.example.mail:id/to]: a field, focused; center (360, 190), bounds 20,150 680x80',
     '- button "Send": center (600, 1190), bounds 500,1150 200x80',
   ].join("\n") });
   for (const key of ["back", "home", "enter"]) await call(tools, "phone_key", { key });

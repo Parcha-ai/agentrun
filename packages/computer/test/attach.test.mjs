@@ -99,6 +99,37 @@ test("a second socket from the same computer replaces the first", async () => {
 	driver.close();
 });
 
+test("an older dial whose hello answers after a newer one went live is closed, never put in its place", async () => {
+	const hub = new AttachHub();
+	let answer;
+	const gate = new Promise((resolve) => {
+		answer = resolve;
+	});
+	class Slow extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "hello") await gate;
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const slow = new Slow();
+	const quick = new FakeUiDriver();
+	const paired = pairedFor(quick);
+	const [olderServe, olderComputer] = socketPair();
+	serveUiSocket(slow, olderComputer);
+	const older = hub.accept(paired, olderServe);
+	const newer = await dial(hub, paired, quick);
+	assert.equal(newer.accepted.ok, true);
+	answer();
+	const late = await older;
+	assert.equal(late.ok, false);
+	assert.match(late.error.message, /dialed again while this socket said hello, and the newer one is live/);
+	assert.equal(olderServe.closed.code, ATTACH_CLOSE.replaced);
+	assert.equal(newer.serve.closed, undefined, "the newer socket stays open");
+	assert.equal((await hub.connection(paired.id).client.call("ping", {})).ok, true, "and stays the live one");
+	slow.close();
+	quick.close();
+});
+
 test("a hello that is not what the computer paired as is closed: another kind with mismatch, another protocol with protocol", async () => {
 	const hub = new AttachHub();
 	const phone = new FakeUiDriver({ os: "android", kind: "android" });

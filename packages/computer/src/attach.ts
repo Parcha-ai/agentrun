@@ -157,6 +157,8 @@ interface Live {
 	socket: AttachSocket;
 	client: ComputerClient;
 	hello: HelloResult;
+	/** The order the computer dialed in: a socket replaces only one dialed before it. */
+	dial: number;
 }
 
 /**
@@ -171,9 +173,16 @@ export class AttachHub {
 	readonly #pending = new Map<string, Set<AttachSocket>>();
 	/** Each computer's connections given out, by the function that closes one. */
 	readonly #given = new Map<string, Set<() => void>>();
+	/** The dials taken so far, in order, across every computer: a dial's number is taken before its hello is awaited. */
+	#dials = 0;
 
-	/** Takes a computer's new socket: calls hello on it, and keeps it when the hello is what the computer paired as. */
+	/**
+	 * Takes a computer's new socket: calls hello on it, and keeps it when the hello is what the computer paired as. The
+	 * newest dial wins whichever hello answers first: a socket whose hello ends after a newer one went live is closed,
+	 * never put in its place.
+	 */
 	async accept(paired: PairedComputer, socket: AttachSocket): Promise<Result<HelloResult>> {
+		const dial = ++this.#dials;
 		const pending = this.#pending.get(paired.id) ?? new Set<AttachSocket>();
 		this.#pending.set(paired.id, pending);
 		pending.add(socket);
@@ -196,7 +205,12 @@ export class AttachHub {
 			return fail("refused", wrong.message);
 		}
 		const older = this.#live.get(paired.id);
-		const live: Live = { socket, client, hello: hello.value };
+		if (older !== undefined && older.dial > dial) {
+			const why = `${paired.name} dialed again while this socket said hello, and the newer one is live`;
+			socket.close(ATTACH_CLOSE.replaced, why);
+			return fail("refused", why);
+		}
+		const live: Live = { socket, client, hello: hello.value, dial };
 		this.#live.set(paired.id, live);
 		older?.socket.close(ATTACH_CLOSE.replaced, "the computer dialed again");
 		socket.onClose(() => {

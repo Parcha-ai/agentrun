@@ -10,7 +10,11 @@ export interface AdbUiPhone {
 	scale(): number;
 	/** uiautomator's dump, its XML. */
 	dump(signal: AbortSignal): Promise<Result<string>>;
-	input(action: InputAction, signal: AbortSignal): Promise<Result<void>>;
+	/**
+	 * One step's actions as one batch: the phone checks every action (its text, its keys, its points, the batch's
+	 * limits) before it runs the first, so a step that would fail part way (after a set's deletes, say) changes nothing.
+	 */
+	input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>>;
 }
 
 const FEATURES: Features = {
@@ -181,7 +185,7 @@ export class AdbUiSource implements UiSource {
 		const scale = this.phone.scale();
 		const px = ([x, y]: Point): [number, number] => [Math.round(x * scale), Math.round(y * scale)];
 		const at = (target: Point | string | undefined) => px(Array.isArray(target) ? (target as Point) : centre((element as UiElement).bounds));
-		const input = (...actions: InputAction[]) => this.#all(actions, signal);
+		const input = (...actions: InputAction[]) => this.phone.input(actions, signal);
 		const done = (ran: Result<void>): Result<UiRun> => (ran.ok ? ok({ route: "foreground", verified: false }) : ran);
 		if ("press" in step) return done(await input({ type: "tap", at: at(step.press) }));
 		if ("click" in step) {
@@ -227,13 +231,5 @@ export class AdbUiSource implements UiSource {
 		}
 		if ("drag" in step) return done(await input({ type: "swipe", path: step.drag.map(px), ...(step.ms === undefined ? {} : { ms: step.ms }) }));
 		return fail("unsupported", "this step is not one a phone driven over adb takes");
-	}
-
-	async #all(actions: InputAction[], signal: AbortSignal): Promise<Result<void>> {
-		for (const action of actions) {
-			const ran = await this.phone.input(action, signal);
-			if (!ran.ok) return ran;
-		}
-		return ok(undefined);
 	}
 }

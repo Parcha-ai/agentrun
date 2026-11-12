@@ -112,7 +112,8 @@ A person's installed app updates on its own schedule, so it can lag the server. 
   WebSocket control frames, not JSON-RPC, so the wire is unchanged and a NAT keeps the path open.
 - A side that hears nothing for 60 s (`ATTACH_IDLE_MS`), not a message and not a pong, closes the socket with `4408`.
 - A computer has one socket. When the same computer dials again (its network changed and the old socket is half dead),
-  the server keeps the new socket and closes the old one with `4409`.
+  the server keeps the new socket and closes the old one with `4409`. New means dialed later, whichever `hello`
+  answers first: a socket whose `hello` ends after a socket dialed later went live is closed with `4409` too.
 
 ## Close codes and redialing
 

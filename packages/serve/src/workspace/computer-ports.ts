@@ -84,10 +84,12 @@ function flattened(nodes: readonly UiNode[], scale: number): PhoneNode[] {
     const clickable = usable && ((node.actions?.length ?? 0) > 0 || ACTIONABLE.has(node.role));
     const own = node.name || node.value;
     const inner = clickable && !own ? innerName(node, children) : undefined;
+    // Both, never one for the other: a labeled field shows its label and the text in it.
     return {
       role: node.role,
       ...(node.id ? { id: node.id } : {}),
-      ...(own ? { text: own } : {}),
+      ...(node.name ? { label: node.name } : {}),
+      ...(node.value ? { text: node.value } : {}),
       bounds: { x: px(x), y: px(y), w: px(w), h: px(h) },
       clickable,
       editable,
