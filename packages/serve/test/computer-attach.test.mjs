@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, PairTries } = await import("../dist/computer-attach.js");
-const { pairedEntry, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
+const { helloLacks, pairedEntry, servesNoKind, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
+const { resolveComputer } = await import("../dist/workspace/resolve-computer.js");
 const { PAIRING_CODE_PATTERN, PROTOCOL_VERSION, PROVIDERS, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
 
 const HELLO = { protocol: PROTOCOL_VERSION, version: "0.2.0", os: "macos", kind: "desktop", arch: "arm64", groups: ["apps", "ui", "screen", "input.pointer", "input.keys"] };
@@ -86,6 +87,24 @@ test("a paired computer is one more provider of the registry: its id, its name, 
   assert.equal(withPaired(registry, []), registry, "none paired: the registry as it is");
   assert.deepEqual(withPaired(registry, [row]).PROVIDERS.map((one) => one.id), [...PROVIDERS.map((one) => one.id), "cmp-abc"]);
   assert.throws(() => pairedProvider(row, undefined), (error) => error.code === "computer_unavailable" && error.message === ONE_PROCESS_WORDS);
+});
+
+test("a hello that serves no kind is said in words naming what its driver lacks, at pairing and at a run's start", async () => {
+  const screenOnly = { ...HELLO, groups: ["screen"] };
+  assert.equal(helloLacks(HELLO, "desktop"), undefined);
+  assert.equal(helloLacks(screenOnly, "desktop"), "it says desktop but declares no input.pointer, input.keys");
+  assert.equal(helloLacks(HELLO, "phone"), "it says desktop, which no phone computer is");
+  assert.equal(servesNoKind("vesper-mac", HELLO), undefined);
+  assert.equal(servesNoKind("vesper-mac", screenOnly), "vesper-mac's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on vesper-mac");
+  assert.equal(servesNoKind("pixel", { ...HELLO, kind: "android", groups: ["screen"] }), "pixel's driver serves no kind: it says android but declares no input.touch, apps: update the driver on pixel");
+  assert.equal(servesNoKind("box", { ...HELLO, kind: "toaster" }), "box's driver serves no kind: it says toaster, which no kind of computer is: update the driver on box");
+
+  // Paired before its driver lost a group: its run is refused saying why, then the providers to pick instead.
+  const registry = withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [{ id: "cmp-abc", name: "vesper-mac", hello: screenOnly, driver: "0.2.0", labels: {}, createdAt: 1, seenAt: null, revokedAt: null }]);
+  const { refused } = await resolveComputer({ kind: "desktop", provider: "cmp-abc" }, 1, registry, {});
+  assert.match(refused, /^vesper-mac is a computer of your own, and its driver gives no desktop computer: it says desktop but declares no input\.pointer, input\.keys\. Update the driver on vesper-mac, or pick one of /);
+  const cloud = PROVIDERS.find((entry) => entry.kinds.includes("desktop"));
+  assert.match(refused, new RegExp(cloud.label), "the cloud computers to pick instead");
 });
 
 test("a paired computer is listed as its hello says, the live one's while attached, with the run that holds it and the deadline its hold ends by", () => {

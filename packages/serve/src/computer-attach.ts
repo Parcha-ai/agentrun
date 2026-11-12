@@ -21,7 +21,7 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { peerKey } from "./owner.js";
 import { registerNotSecretWrite } from "./secret-writes.js";
 import type { PairedComputerRow, PairedComputers } from "./store/index.js";
-import { pairedOf, PAIRED_ID_PREFIX } from "./workspace/attached-computers.js";
+import { pairedOf, PAIRED_ID_PREFIX, servesNoKind } from "./workspace/attached-computers.js";
 
 // Routes under /computers, where a provider's keys are a secret write (computers.ts): these three write none of the
 // owner's secrets, so the API token may call them as the console's session does.
@@ -283,7 +283,10 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     }
     const { code, name, hello } = pairBodyOf(body);
     const refused = pairRefusal(name, hello);
-    if (refused) throw invalid([{ field: "hello.protocol", reason: "protocol", message: refused }]);
+    if (refused) throw invalid([{ field: "hello.protocol", reason: "invalid", message: refused }]);
+    // A hello that serves no kind pairs a computer no agent could pick: refused, the code kept for the updated driver.
+    const unserved = servesNoKind(name, hello);
+    if (unserved) throw invalid([{ field: "hello.groups", reason: "invalid", message: unserved }]);
     const id = newPairedId();
     const token = newAttachToken();
     const made = await paired.pair(sha256Hex(code), { id, name, hello: hello as unknown as Record<string, unknown>, labels: {}, tokenSha256: sha256Hex(token) });

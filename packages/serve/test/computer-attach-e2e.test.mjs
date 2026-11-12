@@ -72,8 +72,11 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   assert.match(pairing.body.code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
   assert.equal((await pairDriver({ address, code: "ZZZZ-ZZZZ", name: NAME })).status, 404, "a wrong code");
   assert.equal((await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, protocol: "0.1" } })).status, 422, "another protocol version");
+  const lacking = await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, groups: ["screen"] } });
+  assert.equal(lacking.status, 422, "a hello that serves no kind");
+  assert.equal(lacking.body.error.fields?.[0]?.message, `${NAME}'s driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on ${NAME}`);
   const paired = await pairDriver({ address, code: pairing.body.code.toLowerCase(), name: NAME });
-  assert.equal(paired.status, 201, `the code stays good after the protocol refusal: ${JSON.stringify(paired.body)}`);
+  assert.equal(paired.status, 201, `the code stays good after the protocol and kind refusals: ${JSON.stringify(paired.body)}`);
   const { computer, token } = paired.body;
   assert.match(computer, /^cmp-[a-z2-9]{16}$/);
   assert.match(token, /^art_/);
