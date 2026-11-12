@@ -3014,7 +3014,8 @@ no cap fixes, its error), as a person who has never seen a model request reads t
 least $0.03, and this run's cap is $0.01. Raise the cap to at least $0.03 to continue.", and once a run has spent:
 "Not sent: this run has spent $0.45 of its $0.50 cap, and the next step needs at least $0.03. Raise the cap to at least
 $0.48 to continue." What was spent, and what steps still running hold (named when it is a cent or more), read to the
-nearest cent ($0.0237416 reads $0.02); the exact amounts are `pending.spent_usd`. The cap to raise to is what was
+nearest cent ($0.0237416 reads $0.02); a spend above $0 that rounds to $0 reads "less than a cent" ("this run has spent
+less than a cent of its $0.105 cap"), never "$0"; the exact amounts are `pending.spent_usd`. The cap to raise to is what was
 spent, what steps still running hold, and the next step's least, rounded up to the cent so that it is enough. The words
 name no model. The refusal's timeline row is an `error` row with
 `paused: true`: the request was not sent and the run waits on a raise, so it reads as a pause, never as a failure. The error's code is `spend_cap_reached (out of budget): ` before those words: pi-ai's
