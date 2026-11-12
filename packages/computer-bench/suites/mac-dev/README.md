@@ -1,8 +1,9 @@
 # mac-dev
 
 Twenty tasks on an attached macOS 26 Mac, driven by Computerd.app in the user's GUI session: Notes, Calendar, Finder,
-Safari, TextEdit, System Settings and Reminders, two of them across two apps. Ten are `dev`, ten `heldout`; every app has
-tasks in both splits.
+Safari, TextEdit, System Settings and Reminders, four of them across two apps (tagged `cross-app`; two also `demo`: a
+note's plan into Calendar, a web invitation into Calendar). Ten are `dev`, ten `heldout`; every app has tasks in both
+splits, and each split has two cross-app tasks.
 
 Each task makes what it needs under a name holding its `{{nonce}}` (a note title, a calendar or list name, a folder
 `~/Documents/computer-bench-<nonce>/` or `/tmp/computer-bench-<nonce>/`), so runs on the shared Mac never meet each
@@ -15,10 +16,10 @@ inlined with `{{file:NAME}}`; each script takes a mode (`start`, `count`, `teard
 | --- | --- | --- | --- | --- |
 | mac.notes.new-note | Notes | dev | Notes: count of live notes with the title; the note's plaintext lines | verify live |
 | mac.notes.append-line | Notes | heldout | Notes: count of live notes; the note's plaintext lines, in order | verify live |
-| mac.notes.move-to-folder | Notes | dev | Notes: the note's `container` name; its plaintext lines | verify live |
+| mac.notes.note-to-event | Notes + Calendar | dev | Calendar: count of events by summary; start date and length, day relative to today. Notes: the note's lines unchanged | verify live |
 | mac.calendar.new-event | Calendar | dev | Calendar: count of events by summary in the task's calendar; start date, end date, allday event | verify live |
 | mac.calendar.move-event | Calendar | heldout | Calendar: count of events; start date and length, day relative to today | verify live |
-| mac.calendar.set-location | Calendar | heldout | Calendar: count of events; location; start date and length | verify live |
+| mac.safari.page-to-event | Safari + Calendar | heldout | Calendar: count of events by summary; start date and length, day relative to today (the page's date is tomorrow when setup ran) | verify live: as new-event; `date -v+1d` is BSD date |
 | mac.finder.rename-file | Finder | dev | shell: the new file's text, the old name gone, the other file kept | sure |
 | mac.finder.sort-into-folder | Finder | heldout | shell: `ls` of the new folder and of the top folder | sure |
 | mac.finder.color-tag | Finder | dev | AppleScriptObjC: NSURLTagNamesKey of the target and of the other files | verify live |

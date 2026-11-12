@@ -1,0 +1,85 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "mac.notes.note-to-event",
+  "version": 1,
+  "title": "Put tomorrow's plan from a note into Calendar",
+  "split": "dev",
+  "tags": ["notes", "calendar", "cross-app", "dates", "demo"],
+  "needs": { "os": "macos", "osVersion": "26", "kind": "desktop", "groups": ["screen", "input.pointer", "input.keys"], "apps": ["com.apple.Notes", "com.apple.iCal"] },
+  "params": {
+    "title": { "pick": ["Dentist", "Team lunch", "Bike service", "Parent-teacher meeting"] },
+    "slot": {
+      "pick": [
+        { "say": "9:00 to 10:00 AM", "h": 9, "m": 0, "len": 60, "want": "09:00 60m" },
+        { "say": "11:30 AM to 12:00 PM", "h": 11, "m": 30, "len": 30, "want": "11:30 30m" },
+        { "say": "2:00 to 3:30 PM", "h": 14, "m": 0, "len": 90, "want": "14:00 90m" },
+        { "say": "4:15 to 5:00 PM", "h": 16, "m": 15, "len": 45, "want": "16:15 45m" }
+      ]
+    }
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "No note of this title is left from an earlier run, in Recently Deleted either.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The note with the day's plans: one line for today, the event for tomorrow, one line for Friday.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "The calendar exists and is empty, so the event is not there yet.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "start"], "timeoutMs": 60000 }
+    },
+    { "method": "apps.launch", "params": { "id": "com.apple.Notes" } }
+  ],
+  "instruction": "My note \"Plans {{nonce}}\" in Notes says what I have tomorrow. Put that event into Calendar, in the calendar \"computer-bench {{nonce}}\", with the title and time the note gives.",
+  "budget": { "steps": 40, "usd": 2, "wall_s": 500 },
+  "checks": [
+    {
+      "id": "one-event",
+      "kind": "exec",
+      "why": "Exactly one event of the calendar has the note's title for it.",
+      "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "count"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "1" }
+    },
+    {
+      "id": "when",
+      "kind": "exec",
+      "why": "The event starts tomorrow (one day after today, computed when the check runs) at the note's time and lasts until the note's end time; an all-day event fails.",
+      "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "when"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "+1d {{slot.want}}" }
+    },
+    {
+      "id": "note-kept",
+      "kind": "exec",
+      "why": "The note is unchanged: the agent read it without editing it.",
+      "argv": ["osascript", "-e", "{{file:notes.applescript}}", "lines"],
+      "timeoutMs": 60000,
+      "stdout": { "equals": "Plans {{nonce}}|Today: groceries after work|Tomorrow, {{slot.say}}: {{title}} {{nonce}}|Friday: call the landlord" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Delete the calendar and its events.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "teardown"], "timeoutMs": 60000 }
+    },
+    {
+      "method": "exec.run",
+      "why": "Delete the note, and again from Recently Deleted.",
+      "params": { "argv": ["osascript", "-e", "{{file:notes.applescript}}", "purge"], "timeoutMs": 60000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "exec.run",
+      "why": "Make the event at tomorrow's date, computed from the Mac's clock.",
+      "params": { "argv": ["osascript", "-e", "{{file:calendar.applescript}}", "make"], "timeoutMs": 60000 }
+    }
+  ]
+}

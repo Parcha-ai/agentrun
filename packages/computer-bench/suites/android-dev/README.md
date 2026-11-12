@@ -3,7 +3,8 @@
 Twenty tasks on an unrooted Android 14-16 phone, driven by phoned as adb's shell user (uid 2000). The agent gets `ui` and
 `screen`; setup, checks, teardown and the oracle use the bench's own channel (`exec.run` and `am start` intents). Five
 apps, ten dev and ten heldout, every app in both splits. Four tasks are information tasks: the agent answers in words and
-an `answer` check reads the final answer.
+an `answer` check reads the final answer. Two are sharing tasks (tagged `share` and `demo`), one per split: they go
+through Chrome's share sheet, one into another app (Contacts) and one into the print service's Save as PDF.
 
 | id | app | split | what the checks read | confidence |
 |---|---|---|---|---|
@@ -13,7 +14,7 @@ an `answer` check reads the final answer.
 | android.clock.set-alarm | Clock | dev | `dumpsys alarm`, "Next alarm clock information" | verify live: the dumpsys line format (AOSP's `yyyy-MM-dd HH:mm:ss.SSS`), and Google Clock's DISMISS_ALARM by label in teardown |
 | android.clock.alarm-time | Clock | dev | answer: the alarm's time, AM/PM strict (a decoy alarm shares digits) | verify live: setup's SET_ALARM with SKIP_UI and teardown's DISMISS_ALARM on Google Clock |
 | android.contacts.add-contact | Contacts | dev | `content query` of contacts and data rows by display name | verify live: a phone-local (no account) contact inserted by `content` as shell, and whether Google Contacts lists it |
-| android.contacts.delete-contact | Contacts | dev | `content query` count of both contacts, one read | verify live: same as add-contact |
+| android.share.link-to-contact | Chrome, Contacts | dev | `content query` of the contact's website and phone rows, one read | verify live: as add-contact and read-page; the address Chrome's share sheet copies for `http://127.0.0.1:port/` (the check takes it with or without the scheme and slash) |
 | android.files.rename-file | Files | dev | `ls -1` of the run's folder, `cat` of the file | sure |
 | android.chrome.open-article | Chrome | dev | ui: a node named the article title, the address bar's value on wikipedia.org | verify live: how phoned's tree names Chrome nodes (heading text as name, the address bar's text as value) |
 | android.chrome.read-page | Chrome | dev | answer: the code on a page setup serves on 127.0.0.1 | verify live: toybox `nc -L` on the vendor build, and Chrome's HTTPS upgrade and warnings for http://127.0.0.1 |
@@ -26,18 +27,18 @@ an `answer` check reads the final answer.
 | android.contacts.add-email | Contacts | heldout | `content query` of the contact's email and phone rows, one read | verify live: same as add-contact |
 | android.files.move-file | Files | heldout | `find . -type f \| sort` under the run's folder | sure |
 | android.files.delete-file | Files | heldout | `ls -1` of the run's folder (a trashed file's `.trashed-` name is hidden) | sure |
-| android.chrome.download-pdf | Chrome | heldout | `head -c 4` of `rfcNNNN*.pdf` in /sdcard/Download | sure for the check; the oracle is a stand-in (below) |
+| android.share.page-to-pdf | Chrome, print service | heldout | `head -c 4` of a `*<nonce>*.pdf` in Download or Documents | verify live: that the print dialog suggests the page's title as the name, and where the save dialog starts on each vendor; the oracle is a stand-in (below) |
 
 ## What the two rules rest on
 
 - Every check fails after setup alone. No check is a guard that passes on the untouched state: a guard is folded into
-  the check it guards (delete-contact counts both contacts in one read, add-email reads email and phone rows together).
+  the check it guards (add-email and link-to-contact read the new row and the phone row together).
 - After setup and the oracle every check passes, with three limits:
   - The four answer tasks (device-name, battery-level, alarm-time, read-page) have no oracle: an oracle is calls, and an
     answer isn't one. `verify` has to skip their answer checks or feed the answer the rubric's "Done means" names.
     Their nonce or pinned value makes the answer unknowable without reading the phone.
-  - download-pdf's oracle writes a PDF header to the file the check looks for. No shell command makes Chrome download,
-    so it proves the check reads a solved state, not that Chrome can download.
+  - page-to-pdf's oracle writes a PDF header to the file the check looks for. No shell command makes Chrome print, so
+    it proves the check reads a solved state, not that Chrome can print.
   - The Clock checks read AlarmManager's next alarm clock, which is the phone's soonest enabled alarm. They hold only on
     a phone with no other enabled alarm ringing sooner. A phone with one breaks both rules for set-alarm, alarm-off and
     change-alarm.
@@ -61,9 +62,10 @@ What teardown undoes:
   ZenModeHelper reverts a plain `settings put`) and location. Battery: `dumpsys battery reset`.
 - Contacts: every raw contact whose name holds the nonce is deleted. Phone-local ones go at once; one the agent saved
   to a Google account is marked deleted and its sync adapter removes it from the account.
-- Files: `/sdcard/Download/computer-bench-<nonce>` goes, trashed files with it; download-pdf deletes `rfcNNNN*.pdf`.
-- read-page: the `nc` server on the run's port is killed and its files under `/data/local/tmp` deleted. Setup kills a
-  server left on the same port first.
+- Files: `/sdcard/Download/computer-bench-<nonce>` goes, trashed files with it; page-to-pdf deletes `*<nonce>*.pdf`
+  from Download and Documents.
+- read-page, link-to-contact and page-to-pdf: the `nc` server on the run's port is killed and its files under
+  `/data/local/tmp` deleted. Setup kills a server left on the same port first.
 
 What it can't undo:
 
