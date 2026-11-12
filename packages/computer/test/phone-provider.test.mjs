@@ -930,6 +930,16 @@ test("parseUiElements: Android's classes as the protocol's roles, an editable fi
 	assert.equal(parseUiElements("<hierarchy/>", 1, [10, 10]).ok, false, "a dump with no node");
 });
 
+test("a list row in the same place showing other content, or the same layout in another app, is another element", () => {
+	const row = (app, label) => `<hierarchy><node index="0" class="android.widget.ListView" package="${app}" bounds="[0,0][100,200]"><node index="0" class="android.widget.LinearLayout" package="${app}" clickable="true" bounds="[0,0][100,50]"><node index="0" class="android.widget.TextView" package="${app}" text="${label}" bounds="[0,0][100,50]" /></node></node></hierarchy>`;
+	const keys = (xml) => parseUiElements(xml, 1, [100, 200]).value.elements.map((one) => one.key);
+	const [, wifi] = keys(row("com.android.settings", "Wi-Fi"));
+	const [, bluetooth] = keys(row("com.android.settings", "Bluetooth"));
+	assert.notEqual(wifi, bluetooth, "a scrolled list's next row in the old row's place: the old ref goes stale, never taps it");
+	assert.deepEqual(keys(row("com.android.settings", "Wi-Fi")), keys(row("com.android.settings", "Wi-Fi")), "the same row read again keeps its key");
+	assert.notEqual(keys(row("com.example", "Wi-Fi"))[1], wifi, "another app's row is not this app's");
+});
+
 test("ui.observe never sends a secure field's value", async () => {
 	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="hunter2" password="true" bounds="[0,0][100,50]" /></hierarchy>`;
 	const view = parseUiElements(xml, 1, [100, 50]).value;

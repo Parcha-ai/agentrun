@@ -5,12 +5,17 @@
 // takes no fixture file the observation's shape is checked on Settings, with its rows found (settings.ts).
 import { MAX_UI_NODES, type Rect, UI_FLAGS, UI_ROLES, type UiNode } from "../../protocol.js";
 import { FIXTURE_BUTTON } from "../fixture.js";
+import { featureOff } from "../../ui-engine.js";
 import type { Case, CaseContext } from "../types.js";
 import { shoot } from "./screen.js";
 import { namesOf, observe, openSettings, rowsOf, settingsApp, throughSettings } from "./settings.js";
 
 /** Whether the provider and the computer both declare group. */
 const declares = (t: CaseContext, group: "ui" | "screen") => t.provider.capabilities().groups.includes(group) && t.hello.groups.includes(group);
+/** Why ui.observe gives no elements here (ui.tree is off), or undefined when it gives them. */
+const treeOff = (t: CaseContext) => featureOff(t.hello.features ?? {}, "ui.tree");
+/** Whether ui.observe shows the screen's elements: the ui group, with ui.tree on. */
+const readsTree = (t: CaseContext) => declares(t, "ui") && treeOff(t) === undefined;
 
 /** A screenshot's pixels sampled on a 16 x 16 grid, with its size: two different screens differ in it. */
 async function screenPrint(t: CaseContext): Promise<string> {
@@ -23,12 +28,13 @@ async function screenPrint(t: CaseContext): Promise<string> {
 }
 
 /**
- * What the screen shows now, as the case compares it: ui.observe's names and values when the phone has the ui group,
- * else a screenshot's print. Undefined when it has neither, and the launch cannot be seen.
+ * What the screen shows now, as the case compares it: ui.observe's names and values when it reads the elements, else a
+ * screenshot's print, else (ui.tree off, no screen group) ui.observe's image. Undefined when the launch cannot be seen.
  */
 async function shown(t: CaseContext): Promise<string | undefined> {
-	if (declares(t, "ui")) return JSON.stringify(namesOf(await observe(t)));
+	if (readsTree(t)) return JSON.stringify(namesOf(await observe(t)));
 	if (declares(t, "screen")) return screenPrint(t);
+	if (declares(t, "ui")) return (await observe(t)).image?.data;
 	return undefined;
 }
 
@@ -62,7 +68,7 @@ export function observeWrong(result: unknown): string | undefined {
 		if (typeof n.ref !== "string" || !n.ref.startsWith("@") || n.ref.length < 2) return `${at}.ref is ${show(n.ref)}, not a ref ("@e12")`;
 		if (refs.has(n.ref)) return `${at}.ref ${n.ref} is a ref an earlier node has`;
 		if (typeof n.role !== "string" || !ROLES.has(n.role)) return `${at}.role is ${show(n.role)}, not one of the protocol's roles (UI_ROLES)`;
-		for (const field of ["name", "value", "id"]) if (n[field] !== undefined && typeof n[field] !== "string") return `${at}.${field} is ${show(n[field])}, not a string`;
+		for (const field of ["name", "value", "desc", "id"]) if (n[field] !== undefined && typeof n[field] !== "string") return `${at}.${field} is ${show(n[field])}, not a string`;
 		if (!isRect(n.bounds)) return `${at}.bounds is ${show(n.bounds)}, not [x, y, w, h]`;
 		const [x, y, w, h] = n.bounds;
 		if (x < 0 || y < 0 || x + w > width || y + h > height) return `${at}.bounds ${show(n.bounds)} reach outside the window's ${width}x${height} points`;
@@ -115,13 +121,13 @@ export const appsCases: Case[] = [
 			t.deepEqual(await t.call("apps.launch", { id: app }), {}, `apps.launch ${app}`);
 			await t.until(async () => (await foreground(t)) === app, `${app} in front after apps.launch`);
 			// apps.list's word is not enough: the screen must show it.
-			if (declares(t, "ui")) {
+			if (readsTree(t)) {
 				await t.until(async () => {
 					const seen = await observe(t);
 					return rowsOf(seen).length > 0 && JSON.stringify(namesOf(seen)) !== before;
 				}, `${app} shown after apps.launch: Settings' list in ui.observe, not the screen before it`);
 			} else {
-				await t.until(async () => (await screenPrint(t)) !== before, `${app} shown after apps.launch: a screenshot other than the one before it`);
+				await t.until(async () => (await shown(t)) !== before, `${app} shown after apps.launch: ${declares(t, "screen") ? "a screenshot" : "ui.observe's image"} other than the one before it`);
 			}
 			t.deepEqual(await t.call("apps.terminate", { id: app }), {}, `apps.terminate ${app}, launched`);
 			await t.until(async () => (await foreground(t)) !== app, `${app} no longer in front after apps.terminate`);
@@ -138,6 +144,19 @@ export const appsCases: Case[] = [
 			const settings = throughSettings(t);
 			if (settings) await openSettings(t);
 			else await t.fixture();
+			const off = treeOff(t);
+			if (off !== undefined) {
+				// With ui.tree off the observation is image-only: no nodes, the reason in empty, and the window's image.
+				const seen = await observe(t);
+				const wrong = observeWrong(seen);
+				t.assert(wrong === undefined, `ui.observe: ${wrong}`);
+				t.deepEqual(seen.nodes, [], "with ui.tree off, ui.observe gives no nodes");
+				const why = (t.hello.features?.["ui.tree"] as { off: string }).off;
+				t.assert(typeof seen.empty === "string" && seen.empty.includes(why), `empty says why with ui.tree's declared sentence "${why}": ${show(seen.empty)}`);
+				const image = t.present(seen.image, "with ui.tree off, ui.observe gives the window's image unasked");
+				t.assert(image.width > 0 && image.height > 0 && typeof image.data === "string" && image.data !== "", `the image is ${show({ ...image, data: `${image.data?.length} chars` })}, not one with pixels`);
+				return;
+			}
 			// Settings comes up, or the fixture's button, before the shape is read: a phone draws its window after the launch.
 			const seen = await t.until(async () => {
 				const one = await observe(t);

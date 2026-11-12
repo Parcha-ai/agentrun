@@ -59,7 +59,11 @@ export interface UiView {
 	app: { id: string; name: string; pid?: number };
 	window: { id: string; title?: string; bounds: Rect };
 	elements: UiElement[];
-	/** Whatever else a person would see change (a hash of the window's pixels), so a redraw with the same tree counts. */
+	/**
+	 * Whatever else a person would see change (a hash of the window's pixels), so a redraw with the same tree counts.
+	 * A point with no element under it, and every point while ui.tree is off, stays good only while the frame is the
+	 * same. A source that can run with ui.tree off gives one: without it the engine cannot see a redraw under a point.
+	 */
 	frame?: string;
 }
 
@@ -531,6 +535,12 @@ export class UiEngine {
 				if (!looked.ok) return looked;
 				last = looked.value;
 			}
+			// A poll can meet the expect mid-transition: the state handed back is the window once it settles.
+			if (last !== settled.value) {
+				const calm = await this.#settle(target, signal);
+				if (!calm.ok) return calm;
+				last = calm.value;
+			}
 		}
 		const state = this.#remember(last);
 		return ok({ steps, state, changed: fingerprint(first.value) !== fingerprint(last), ...(met === undefined ? {} : { expect: met }) });
@@ -558,6 +568,11 @@ export class UiEngine {
 			const now = under(view, point);
 			if (then?.key !== now?.key || (then !== undefined && now !== undefined && (!sameRect(then.bounds, now.bounds) || looksOf(then) !== looksOf(now)))) {
 				return { kind: "stale", message: `what is at (${x}, ${y}) changed since state ${stateId}: observe again` };
+			}
+			// With no element under the point (always so with ui.tree off), only the frame can say the window still shows
+			// what the state did.
+			if (then === undefined && held.frame !== view.frame) {
+				return { kind: "stale", message: `the window shows something else than at state ${stateId}, so (${x}, ${y}) may not land on what it showed: observe again` };
 			}
 		}
 		return undefined;

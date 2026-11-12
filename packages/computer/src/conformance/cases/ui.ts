@@ -198,17 +198,33 @@ export const uiCases: Case[] = [
 			t.equal(pressed.route, "semantic", "a press on a switch with an accessibility action goes the semantic route");
 			const after = await look(t);
 			t.assert(byId(t, after, "wifi").flags?.includes("checked"), `Wi-Fi is checked after its press: ${show(byId(t, after, "wifi").flags)}`);
-			// The canvas takes foreground input only: refused without the call's leave, run by the foreground route with it.
+			// The canvas takes foreground input only, and its value counts the clicks that reached it. A driver need not
+			// know that: without foreground: true it may refuse the click, or post it the background way, which never
+			// reaches the canvas. Either is right. What is never right is answering verified for a click that did not land.
 			const canvas = byId(t, after, "canvas").ref;
-			const refused = refusedStep(t, await act(t, { steps: [{ click: canvas }] }), "a click on the canvas, which only foreground input reaches, without foreground: true", ["denied", "unsupported"]);
+			const count = (seen: UiObserveResult) => {
+				const value = byId(t, seen, "canvas").value;
+				t.assert(value !== undefined && /^\d+$/.test(value), `the canvas's value counts the clicks that reached it: ${show(value)}`);
+				return Number(value);
+			};
 			const off = featureOff(t.hello.features ?? {}, "ui.foreground");
-			if (off !== undefined) {
-				t.equal(refused.kind, "unsupported", "with ui.foreground off, the canvas is refused as unsupported");
-				return t.skip(`the foreground route is not tested: ${off}`);
+			const before = count(after);
+			const posted = await act(t, { steps: [{ click: canvas }] });
+			const first = posted.steps[0];
+			if (first !== undefined && "error" in first) {
+				const refused = refusedStep(t, posted, "a click on the canvas without foreground: true", ["denied", "unsupported"]);
+				if (off === undefined) t.equal(refused.kind, "denied", "with ui.foreground on, a foreground-only step in a call that does not allow it is denied");
+			} else {
+				const step = ran(t, first, "a click on the canvas without foreground: true");
+				t.assert(step.route !== "foreground", "a call without foreground: true never takes the foreground route");
+				const landed = count(await look(t)) > before;
+				t.assert(!step.verified || landed, `the click answered verified, and the canvas's count did not move: a driver never verifies an effect that did not happen`);
 			}
-			t.equal(refused.kind, "denied", "with ui.foreground on, a call that does not allow it is denied");
+			if (off !== undefined) return t.skip(`the foreground route is not tested: ${off}`);
+			const ready = count(await look(t));
 			const allowed = ran(t, (await act(t, { steps: [{ click: canvas }], foreground: true })).steps[0], "a click on the canvas with foreground: true");
-			t.equal(allowed.route, "foreground", "the canvas is reached by the foreground route");
+			t.equal(count(await look(t)), ready + 1, "the click with foreground: true reached the canvas: its count went up by one");
+			t.equal(allowed.verified, true, "the driver verified the click by reading the canvas's count back");
 		},
 	},
 	{

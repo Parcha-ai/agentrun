@@ -53,9 +53,9 @@ const unescape = (text: string) =>
 	);
 
 /**
- * uiautomator's dump as a look: its elements in order, bounds in points, each keyed by its place in the tree, its class
- * and its resource-id (so a text field keeps its key while its text changes). A clickable row with no name of its own is
- * a button named by the texts inside it, as a person reads it.
+ * uiautomator's dump as a look: its elements in order, bounds in points, each keyed by its app, its place in the tree,
+ * its class, its resource-id and what it shows (a text field's text aside, so it keeps its key while its text changes).
+ * A clickable row with no name of its own is a button named by the texts inside it, as a person reads it.
  */
 export function parseUiElements(xml: string, scale: number, screen: [number, number]): Result<UiView> {
 	const elements: UiElement[] = [];
@@ -64,7 +64,8 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 	/** The classes of the open elements, as open holds them. */
 	const openClasses: string[] = [];
 	const texts = new Map<string, string[]>();
-	const pt = (px: number) => Math.round(px / scale);
+	const shows = new Map<string, string[]>();
+	const pt =(px: number) => Math.round(px / scale);
 	let app: string | undefined;
 	for (const tag of xml.matchAll(/<(\/?)node\b([^>]*?)(\/?)>/g)) {
 		const [, closing, body, selfClosing] = tag;
@@ -112,6 +113,9 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		elements.push(element);
 		// Every text is also a text of each element above it, for the rows that have none of their own.
 		if (text ?? label) for (const above of open) if (above !== undefined) texts.set(above.key, [...(texts.get(above.key) ?? []), (text ?? label) as string]);
+		// What the elements above it show, for their keys: a field's text is a person's to change, so it is not part.
+		const fixed = editable ? label : (text ?? label);
+		if (fixed) for (const above of open) if (above !== undefined) shows.set(above.key, [...(shows.get(above.key) ?? []), fixed]);
 		if (selfClosing) path.pop();
 		else {
 			open.push(element);
@@ -125,6 +129,15 @@ export function parseUiElements(xml: string, scale: number, screen: [number, num
 		if (inside !== undefined) element.name = inside.slice(0, 3).join(", ");
 	}
 	const id = app ?? "android";
+	// uiautomator gives no element identity, only a place in the tree, which a list hands to the next row as it scrolls.
+	// So a key is the app's, and holds what the element shows unless that is a field's text, which a person changes:
+	// a row that now shows other content is another element, and its old ref goes stale instead of tapping the new row.
+	const field = (element: UiElement) => element.role === "textbox" || element.role === "searchbox";
+	const rekeyed = new Map(elements.map((element) => [element.key, `${id}|${element.key}|${field(element) ? (element.name ?? "") : [element.name, ...(shows.get(element.key) ?? [])].filter(Boolean).join(", ")}`]));
+	for (const element of elements) {
+		element.key = rekeyed.get(element.key) as string;
+		if (element.parent !== undefined) element.parent = rekeyed.get(element.parent);
+	}
 	const bounds: Rect = [0, 0, pt(screen[0]), pt(screen[1])];
 	return ok({ app: { id, name: id }, window: { id, bounds }, elements });
 }
@@ -169,7 +182,8 @@ export class AdbUiSource implements UiSource {
 		if ("click" in step) {
 			const point = at(step.click);
 			if (step.button === "right") return done(await input({ type: "long_press", at: point }));
-			return done(await input({ type: "tap", at: point, ...(step.count === 2 ? { count: 2 as const } : {}) }, ...(step.count === 3 ? [{ type: "tap" as const, at: point }] : [])));
+			// A triple click is a double tap and then one more tap.
+			return done(await input({ type: "tap", at: point, ...(step.count === 2 || step.count === 3 ? { count: 2 as const } : {}) }, ...(step.count === 3 ? [{ type: "tap" as const, at: point }] : [])));
 		}
 		if ("perform" in step) {
 			if (step.action === "ACTION_CLICK") return done(await input({ type: "tap", at: at(step.perform) }));

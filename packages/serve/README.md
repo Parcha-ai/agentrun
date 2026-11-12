@@ -763,6 +763,23 @@ computer is made with the GPUs asked.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
+**An agent's own computer.** `computer: {"kind": "desktop", "provider": "orgo", "persistent": true}` gives the agent
+one computer that it keeps between runs, instead of a fresh one for each run:
+
+- Its first run makes it. Each run's end detaches it rather than deleting it (an Orgo Linux desktop is suspended, with
+  its memory and disk). The agent's next run attaches it again, with what was on it.
+- The run's timeline says which happened. If the computer was deleted outside this server, the next run makes a new
+  one and says so.
+- One run at a time. A run that finds the computer held by another run that is still going is refused at its start,
+  naming that run.
+- Only where the provider keeps one for the kind and image (`GET /v2/computers`: the provider's `persistent`); anything
+  else is 422. A computer that mounts the run's folder can't be kept, so a persistent computer never mounts it.
+- `GET /v2/agents/{agent_id}` shows it as `own_computer`: its provider, id and name, and whether a run holds it, it is
+  detached, or it is being deleted.
+- Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
+- The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
+  account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold

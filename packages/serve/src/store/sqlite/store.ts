@@ -1143,6 +1143,15 @@ class SqliteStore implements Store {
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);
       },
+      // `was` is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
+      replaceIf: async (key, was, value) => {
+        const [result] = await db.write([{ sql: "UPDATE settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?", params: [json(value), now(), key, json(was)] }]);
+        return result!.changes === 1;
+      },
+      removeIf: async (key, was) => {
+        const [result] = await db.write([{ sql: "DELETE FROM settings WHERE key = ? AND value = ?", params: [key, json(was)] }]);
+        return result!.changes === 1;
+      },
       remove: async (key) => {
         await db.write([{ sql: "DELETE FROM settings WHERE key = ?", params: [key] }]);
       },
@@ -1174,6 +1183,14 @@ class SqliteStore implements Store {
       list: async (provider) => (await db.all<ComputerLedgerRecord>("SELECT provider, session_id, labels, detail, updated_at FROM computer_ledger WHERE provider = ? ORDER BY session_id", provider)).map(ledgerRowOf),
       remove: async (provider, sessionId) => {
         await db.write([{ sql: "DELETE FROM computer_ledger WHERE provider = ? AND session_id = ?", params: [provider, sessionId] }]);
+      },
+      // The row is compared as the JSON text put wrote: a row read and parsed gives the same text back, its keys in order.
+      swap: async (provider, sessionId, was, labels, detail) => {
+        const [result] = await db.write([{
+          sql: "UPDATE computer_ledger SET labels = ?, detail = ?, updated_at = ? WHERE provider = ? AND session_id = ? AND labels = ? AND detail = ?",
+          params: [JSON.stringify(labels), JSON.stringify(detail), now(), provider, sessionId, JSON.stringify(was.labels), JSON.stringify(was.detail)],
+        }]);
+        return (result?.changes ?? 0) === 1;
       },
     };
 

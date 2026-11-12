@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
-import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, UI_FIXTURE } from "../dist/fake-ui-driver.js";
+import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, NEXT_ANIMATE_MS, NEXT_MS, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
 const UI_CASES = ["ui.hello", "ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused"];
@@ -49,12 +49,78 @@ test("with ui.tree off, observe answers the image and the reason with no nodes, 
 	const seen = (await c.client.call("ui.observe", {})).value;
 	assert.deepEqual(seen.nodes, []);
 	assert.equal(seen.empty, `ui.tree is off here: ${why}`);
-	assert.equal(seen.image.width, 480, "the image comes unasked, at the window's size within the default edge");
+	assert.equal(seen.image.width, 320,"the image comes unasked, at the window's size within the default edge");
 	const clicked = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [40, 150] }] });
 	assert.deepEqual(clicked.value.steps, [{ route: "background", verified: false }], "a point from the image-only state still lands");
 	await c.close();
 	const both = await run(fakeUiProvider({ features: { "ui.tree": { off: why }, "ui.image": { off: "Screen Recording is not granted" } } }), ["ui.features-off-refused"]);
 	assert.equal(statuses(both)["ui.features-off-refused"], "pass", reasonOf(both, "ui.features-off-refused"));
+});
+
+test("the canvas: a driver blind to which views background input reaches posts the click unverified and passes; one that verifies a click that never landed fails", { timeout: 60_000 }, async () => {
+	const c = await fakeUiConnection({ blindBackground: true });
+	await c.client.call("apps.launch", { id: APP });
+	const canvasOf = async () => (await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "canvas");
+	const canvas = await canvasOf();
+	assert.equal(canvas.value, "0");
+	const posted = await c.client.call("ui.act", { steps: [{ click: canvas.ref }] });
+	assert.deepEqual(posted.value.steps, [{ route: "background", verified: false }], "posted, and it cannot tell whether it landed");
+	assert.equal((await canvasOf()).value, "0", "it did not land");
+	const real = await c.client.call("ui.act", { steps: [{ click: canvas.ref }], foreground: true });
+	assert.deepEqual(real.value.steps, [{ route: "foreground", verified: true }]);
+	assert.equal((await canvasOf()).value, "1", "real input reached it, and the count read back verifies it");
+	await c.close();
+	const blind = await run(fakeUiProvider({ blindBackground: true }), ["ui.route-reported"]);
+	assert.equal(statuses(blind)["ui.route-reported"], "pass", reasonOf(blind, "ui.route-reported"));
+	class Boasting extends FakeUiDriver {
+		async run(step, context) {
+			const done = await super.run(step, context);
+			return done.ok && "click" in step ? { ok: true, value: { ...done.value, verified: true } } : done;
+		}
+	}
+	const boasting = await run(fakeUiProvider({ blindBackground: true }, (options) => new Boasting(options)), ["ui.route-reported"]);
+	assert.equal(statuses(boasting)["ui.route-reported"], "fail");
+	assert.match(reasonOf(boasting, "ui.route-reported"), /the click answered verified, and the canvas's count did not move/);
+});
+
+test("an act whose expect a poll meets mid-transition hands back the settled window; with ui.tree off, a point goes stale when the frame changes", { timeout: 60_000 }, async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const next = (await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "next");
+	const opened = await c.client.call("ui.act", { steps: [{ press: next.ref }], expect: { text: "Second page" } });
+	assert.equal(opened.value.expect, "met");
+	const blank = await c.client.call("ui.act", { state: opened.value.state, steps: [{ click: [300, 300] }] });
+	assert.deepEqual(blank.value.steps, [{ route: "background", verified: false }], "the state is the settled second page, not a frame of its transition");
+	await c.close();
+	const off = await fakeUiConnection({ features: { "ui.tree": { off: "Accessibility is not granted" } } });
+	await off.client.call("apps.launch", { id: APP });
+	const home = (await off.client.call("ui.observe", {})).value;
+	const atNext = [150, 150];
+	assert.deepEqual((await off.client.call("ui.act", { state: home.state, steps: [{ click: atNext }] })).value.steps, [{ route: "background", verified: false }]);
+	await new Promise((resolve) => setTimeout(resolve, NEXT_MS + NEXT_ANIMATE_MS + 100));
+	const again = await off.client.call("ui.act", { state: home.state, steps: [{ click: atNext }] });
+	assert.equal(again.value.steps[0].error?.kind, "stale", `the window shows the second page now, which the home state's point knows nothing of: ${JSON.stringify(again.value.steps)}`);
+	await off.close();
+});
+
+test("typing and keys take the routes the features allow, refused in the off features' own words", async () => {
+	const features = { "ui.background": { off: "posting input is off" }, "ui.foreground": { off: "the user's pointer is theirs" } };
+	const c = await fakeUiConnection({ features });
+	await c.client.call("apps.launch", { id: APP });
+	const name = (await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "name");
+	for (const step of [{ type: "Ada", into: name.ref }, { key: "enter" }]) {
+		const refused = (await c.client.call("ui.act", { steps: [step] })).value.steps[0].error;
+		assert.equal(refused.kind, "unsupported");
+		assert.match(refused.message, /posting input is off, and ui.foreground is off here: the user's pointer is theirs/);
+	}
+	assert.equal((await c.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "name").value, "", "the field is untouched");
+	await c.close();
+	const canvas = await fakeUiConnection({ features: { "ui.foreground": { off: "the user's pointer is theirs" } } });
+	await canvas.client.call("apps.launch", { id: APP });
+	const ref = (await canvas.client.call("ui.observe", {})).value.nodes.find((n) => n.id === "canvas").ref;
+	const refused = (await canvas.client.call("ui.act", { steps: [{ click: ref }] })).value.steps[0].error;
+	assert.equal(refused.message, "no route reaches it: Canvas takes foreground input only, and ui.foreground is off here: the user's pointer is theirs");
+	await canvas.close();
 });
 
 test("a feature refused without its declared sentence fails ui.features-off-refused", { timeout: 60_000 }, async () => {

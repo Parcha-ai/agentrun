@@ -119,6 +119,47 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.equal(hub.online("c-1"), false);
 });
 
+test("a revoke while the computer says hello closes that socket too: a removed computer never comes back", async () => {
+	const hub = new AttachHub();
+	let answer;
+	const gate = new Promise((resolve) => {
+		answer = resolve;
+	});
+	class Slow extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "hello") await gate;
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const driver = new Slow();
+	const paired = pairedFor(driver);
+	const [serve, computer] = socketPair();
+	serveUiSocket(driver, computer);
+	const accepting = hub.accept(paired, serve);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	hub.revoke(paired.id, "the owner removed this computer");
+	answer();
+	const accepted = await accepting;
+	assert.equal(accepted.ok, false);
+	assert.equal(serve.closed.code, ATTACH_CLOSE.unauthorized);
+	assert.equal(hub.online(paired.id), false, "it is not back in the hub");
+	driver.close();
+});
+
+test("a hello with no protocol or version is closed with protocol and the update words, never left open", async () => {
+	const hub = new AttachHub();
+	const mac = new FakeUiDriver();
+	class Blank extends FakeUiDriver {
+		hello() {
+			return {};
+		}
+	}
+	const blank = await dial(hub, pairedFor(mac), new Blank());
+	assert.equal(blank.accepted.ok, false);
+	assert.equal(blank.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(blank.accepted.error.message, /answered hello without its protocol and version: update the driver on Test Mac/);
+});
+
 test("a driver updated within the protocol is accepted, and the provider's version and groups follow its live hello", async () => {
 	const hub = new AttachHub();
 	const driver = new FakeUiDriver();
