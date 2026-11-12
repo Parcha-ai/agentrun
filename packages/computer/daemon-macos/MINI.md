@@ -108,9 +108,9 @@ Automation grant.
 | Task | App | What it does | How it is checked |
 | --- | --- | --- | --- |
 | mac.notes.new-note | Notes | press Continue on a first-run sheet, then super+n, type a title and a line, in one call | the note's line, then its title in the list |
-| mac.safari.follow-link | Safari | open a local page in the background, press the "Quarterly report" link by its ref, then super+[ to come back | the linked page's heading, then the first page's link |
+| mac.safari.follow-link | Safari | open a local page in the background, press the "Quarterly report" link by its ref, then the toolbar's Back button by its ref | the linked page's heading, then the first page's link |
 | mac.finder.rename-file | Finder | open a folder in the background, show it as a list, select draft.txt by its element, then rename it: set its name field, else enter, type "final", enter in the background, else the same with Finder brought forward (Finder renames only in its key window). Each way is judged by the disk, and the notes say which one renamed it | the folder holds final.txt and other.txt |
-| mac.textedit.edit-number | TextEdit | open totals.txt in the background, set the text to 42 and save with super+s, in one call | the saved file is the new text, the other lines kept |
+| mac.textedit.edit-number | TextEdit | open totals.txt in the background, set the text to 42 (the window marks it Edited), then save with super+s (the mark goes) | the saved file is the new text, the other lines kept |
 | mac.calendar.new-event | Calendar | press Add Event, then type a title into the quick event field and enter, in one call | the event's title on the calendar, and gone after Delete |
 
 ```sh
