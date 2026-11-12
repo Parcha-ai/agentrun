@@ -143,7 +143,8 @@ test("under a spend cap, a search through Parallel is a paid call: sent only whe
   capped(0.0015, 0.0005);
   assert.equal((await webSearch({ query: "widgets", n: 2 }, client)).provider, "parallel", "spent and held $0.0005, plus $0.001, is the cap: sent");
   capped(0.0015, 0.00051);
-  assert.deepEqual(await webSearch({ query: "widgets", n: 2 }, client), { error: capRefusal("Parallel's search", "$0.001", "Parallel's list price for a fast search", "$0", "$0.0015", "$0.01") });
+  // It has spent $0.00051: under a cent, never "$0".
+  assert.deepEqual(await webSearch({ query: "widgets", n: 2 }, client), { error: capRefusal("Parallel's search", "$0.001", "Parallel's list price for a fast search", "less than a cent", "$0.0015", "$0.01") });
   capped(0.0155, 0);
   assert.deepEqual(await webSearch({ query: "widgets", n: 25 }, client), { error: capRefusal("Parallel's search", "$0.016", "Parallel's list price for a fast search of 25 results", "$0", "$0.0155", "$0.02") }, "25 results: $0.001 and 15 more at $0.001");
   capped(0.016, 0);
@@ -167,7 +168,7 @@ test("under a spend cap, a page read through Parallel's extract is a paid call: 
   useSpend({ cap: 0.001, spent: () => 0.0005, add: (usd) => added.push(usd) });
   const web = network();
   const direct = await webFetch("http://public.example/", { ...web, parallel: client });
-  assert.deepEqual([direct.via, direct.title, direct.parallel], ["direct", "Public page", capRefusal("Parallel's extract", "$0.001", "Parallel's list price for one URL", "$0", "$0.001", "$0.01")]);
+  assert.deepEqual([direct.via, direct.title, direct.parallel], ["direct", "Public page", capRefusal("Parallel's extract", "$0.001", "Parallel's list price for one URL", "less than a cent", "$0.001", "$0.01")]);
   assert.deepEqual([sent.length, added, web.dialled], [1, [0.001], ["http://public.example/"]], "Parallel was not asked; the host was");
 }));
 

@@ -25,7 +25,7 @@ const ASK = "Run monid's /person/enrich, called again after a raise.";
 const ALLOWED = { "monid.run": { permission: "allow" } };
 /** The paid call's refusal, held at monid's run allowance ($1, no inspect quoted it), of a $0.5 cap: what the run has
  *  spent (the faux harness's requests cost $0.001 each, pi's faux model nothing) and any model request still held. */
-const WORDS = /^Not sent: this run has spent \$[\d.]+( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
+const WORDS = /^Not sent: this run has spent (?:\$[\d.]+|less than a cent)( and holds \$[\d.]+ for steps still running,)? of its \$0\.50 cap, and the next step, monid_run, could cost up to \$1 \(no price was quoted for it in this run, so it counts at the \$1 allowance; monid_inspect gives its price\)\. Raise the cap to at least \$1\.\d\d to continue\.$/;
 const view = async (api, runId) => (await api("GET", `/runs/${runId}`)).body;
 const monidRuns = async (log) => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((call) => call.path === "/v1/run").length;
 

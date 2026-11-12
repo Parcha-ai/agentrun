@@ -48,8 +48,12 @@ export interface DecisionDriver {
 export interface WorkflowCap {
   /** stepped(gate(capStopped(·)), true): a model node, counted in flight, failing as a cap stop where no raise fixes it. */
   node<F>(fn: F): F;
-  /** stepped(failing(·)): a call node, which waits for a raise on a held effect and goes again. */
+  /** stepped(failing(·)): a call node, before the driver admits its effect: it waits for a raise on a held effect and
+   *  goes again. */
   effect<F>(fn: F): F;
+  /** A call node's effect once the driver has admitted it: held through the kernel cap, run, and settled. Absent: the
+   *  effect runs as given. */
+  admittedEffect?<F>(fn: F): F;
   /** A decision, before the driver admits its request: priced, or parked by a pause. The driver tells a replayed request,
    *  which holds nothing. */
   judge<F>(fn: F, driver?: DecisionDriver): F;
@@ -149,7 +153,8 @@ export function workflowHost(deps: WorkflowHostDeps): { readonly extensions: rea
       const decisions = decisionRecovery({ key, runtime: runtime as never, context });
       const recovered = withRecovery(driver as never, {
         runNode: withModelNode(nodes.on(taskScope(runtime as never), context).runNode, deps.onModelNode),
-        runEffect: deps.runEffect as never,
+        // The effect the driver runs once it has admitted it: the cap holds and settles a paid call there (admittedEffect).
+        runEffect: (cap.admittedEffect ? cap.admittedEffect(deps.runEffect) : deps.runEffect) as never,
         // The judge the driver asks once it has admitted a request: the cap holds, sends and settles it there (admitted).
         ...(deps.decisionProviders ? { runJudge: admitted(judgeFromProviders({ ...deps.decisionProviders, loadImage: deps.loadImage } as never)) as never, decisionProviders: deps.decisionProviders as never } : {}),
         recordDecision: async (receipt: Parameters<typeof decisions.recordDecision>[0], exchange: Parameters<typeof decisions.recordDecision>[1]) => {
