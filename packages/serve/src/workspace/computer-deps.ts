@@ -29,7 +29,7 @@ import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type OpenComputerView } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView } from "./computer-for-claim.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -154,6 +154,9 @@ export interface ComputerDepsOptions {
   /** This machine's Docker daemon, asked when a Docker launch fails (docker-daemon.ts dockerDaemonCheck over `env`
    *  unless given; none under --faux, whose launch is its own). */
   readonly daemon?: ComputerForClaimDeps["daemon"];
+  /** Why this machine cannot run a provider's computers, by its id (computers.ts hostCommandRefusals over this process's
+   *  PATH): the claim refuses such a computer before it rents anything. Absent: not asked. */
+  readonly hostWhy?: Readonly<Record<string, string>>;
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
   readonly openComputerView?: OpenComputerView;
   /** --faux's computers (faux-computers.ts), in place of the computer package's: their kind registry, key table, launch
@@ -225,6 +228,14 @@ function networkOf(entry: ProviderEntry, kind: ComputerKindOf, run: ComputerRun,
  *  image row, the computer's noun for the box's. */
 export const imageWaitWords = (making: "build" | "pull", image: string): string =>
   making === "build" ? `Preparing the computer's image: building it (${DOCKER_RECIPE_HAS})…` : `Preparing the computer's image: pulling ${image}…`;
+
+/** An OS as people write its name. */
+const OS_NAMES: Readonly<Record<string, string>> = { linux: "Linux", windows: "Windows", macos: "macOS", android: "Android", ios: "iOS" };
+
+/** The run's timeline phase once its claim's computer is connected (computerForClaim's onConnected): what it says it
+ *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." */
+export const computerReadyWords = ({ provider, kind, hello }: ComputerSaid): string =>
+  `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
@@ -311,6 +322,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     // Under --faux, its launch makes the computer, with its key table: no provider of the package is built.
     ...(faux ? { keyTable: faux.keyTable, launch: (entry, spec) => faux.launch(entry as never, spec) } : {}),
     ...(options.answers ? { answers: options.answers } : {}),
+    ...(options.hostWhy ? { hostWhy: (provider: string): string | undefined => (Object.hasOwn(options.hostWhy!, provider) ? options.hostWhy![provider] : undefined) } : {}),
     ...(options.daemon ? { daemon: options.daemon } : faux ? {} : { daemon: dockerDaemonOf(env) }),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
   };

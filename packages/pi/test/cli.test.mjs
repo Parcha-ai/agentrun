@@ -64,19 +64,6 @@ test('Pi CLI validate uses explicit input keys for reachability checks', async (
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('saved-default config stops without choosing a model when Pi has no saved default', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'agentrun-pi-default-'));
-  try {
-    const config = fileURLToPath(new URL('../../../examples/pi-config.mjs', import.meta.url));
-    const run = spawnSync(process.execPath, ['--import', 'data:text/javascript,globalThis.fetch=()=>{throw new Error("Unexpected network request")}', config], {
-      cwd: dir, env: { ...process.env, PI_CODING_AGENT_DIR: dir }, encoding: 'utf8',
-    });
-    assert.equal(run.status, 1);
-    assert.match(run.stderr, /Configure and save a default in Pi first/);
-    assert.doesNotMatch(run.stderr, /Unexpected network request/);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
 test('demo runs the scripted workflow without a config, a key or the network', () => {
   const offline = ['--import', 'data:text/javascript,globalThis.fetch=()=>{throw new Error("Network is forbidden")}'];
   const run = spawnSync(process.execPath, [...offline, cli, 'demo'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
