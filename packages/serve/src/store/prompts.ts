@@ -1,4 +1,4 @@
-// The prompt set validator (the P4 fold of pi-durable-agent's home.ts checkPrompts), kept with the store (A). A prompt set
+// The prompt set validator kept with the store (A). A prompt set
 // is what a run's host chooses a starting prompt from before the run's first turn (choosePrompt, the runner's): one `base`,
 // one `generic`, any number of `overlay`s with a Jev rule, and at most one `question` the overlays' rules answer. This is
 // the one check over a set's shape; the choice itself is the runner's. Nothing of the old agent-home model (its doc

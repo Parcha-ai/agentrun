@@ -10,12 +10,6 @@ export { DATA_ENV, SERVER_FILE, TOKEN_FILE, agentFolderOf, defaultData, readJson
  *  request once it is there, however the cancel and the process's start interleave. */
 export const RUN_CANCELLED = "cancelled";
 
-/** The server-wide door token, in the data directory: the door of a run an older server started takes it. */
-export const DOOR_TOKEN_FILE = ".door-token";
-/** A run's own door token, in its directory, made at its first launch and handed to its process alone (its
- *  `--serve-token-file`): the server's calls to that run's door carry it. */
-export const RUN_DOOR_TOKEN = "door-token";
-
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
 /** Why a run fails that the store has running with no launch row or setup: its server went down before it set the run up. */

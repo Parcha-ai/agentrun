@@ -22,8 +22,7 @@ export async function computerView(deps: {
   viewer(): Promise<{ kind: ComputerKind; viewer: string } | undefined>;
   /** The run's computer, read only when no viewer is open. */
   computer(): ComputerOf;
-  /** Who drives now. TODO: hold from computerHoldOf(store, runId), the store-backed take-over; until then the agent
-   *  drives, as no seam answers. */
+  /** Who drives now. */
   hold?(): ComputerHold;
   /** Why the run's browser is not up, read only for a `none` browser: let go while the run waited for its person, and none
    *  opened since (browser-wait-ended.ts), with when; undefined otherwise. */

@@ -1,5 +1,5 @@
-// Red 1, the lead's repro from #1933's read: two commits stored in ONE storage call mixed their steps in pi-durable-disk's
-// live adapter (run_end before the answer, a duplicate message_start, a fake 'interrupted' row). The live view reads the
+// Red 1, the lead's repro from #1933's read: two commits stored in ONE storage call mixed their steps in the
+// old live adapter (run_end before the answer, a duplicate message_start, a fake 'interrupted' row). The live view reads the
 // store commit by commit (journal.commitsAfter), each commit's own writes, so a group commit streams as its commits in
 // their own order.
 //

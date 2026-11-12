@@ -1,5 +1,4 @@
-// The agents this server holds, over the one store (store.agents); pi-durable-agent's agent-store.ts bodyOf and revisionOf
-// are folded into store/agent-body.ts. An agent is a
+// The agents this server holds, over the one store (store.agents); the body check is store/agent-body.ts. An agent is a
 // row with revisions written once; a definition is one revision; an edit commits the next and makes it current. A
 // revision's body is checked by store/agent-body.ts before anything is written; its skill texts ride on the revision's row.
 // The one server per store (the owner lock) is the sole writer of agents and revisions, so a read-then-write here is not
