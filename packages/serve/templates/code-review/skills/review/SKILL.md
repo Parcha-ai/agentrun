@@ -31,6 +31,8 @@ AgentRun checked the pull request out in `repo/` before you began: detached at i
 `cd repo && git rev-parse pr/head pr/merge-base`: the first line must be `head_sha`, the second is `merge_base`. The
 change is `git diff pr/merge-base pr/head`. No `bash`, no `repo/`, or a head that is not `head_sha`: there is no
 checkout (`checkout: none` below); say so in `summary`.
+With a last head you reviewed, `git merge-base --is-ancestor <it> pr/head`: if that fails (a force-push or a rebase
+dropped it), `last_reviewed_sha` is none and the reviewers review the whole change.
 
 ## 3. Eight reviewers, in one turn
 
@@ -55,7 +57,7 @@ head_sha: <sha>
 merge_base: <sha>
 checkout: repo/   (or: none)
 last_reviewed_sha: <sha, or none>
-previous_findings: <one line each: fingerprint, active or dismissed, title; or none>
+previous_findings: <one line each: fingerprint, active or dismissed, priority, title, the failure's first sentence; or none>
 focus: <the owner's focus, or none>
 ```
 
