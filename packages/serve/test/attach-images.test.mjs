@@ -6,10 +6,32 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { attachableImages, notAttached, unattachable } from "../dist/attach-images.js";
+import { redactedAnswer } from "../dist/key-refusal.js";
 import { sessionProvider } from "../dist/port-models.js";
+import { cutAnswer } from "../dist/tools.js";
 
-// A real 640x400 PNG headless Chrome captured of a page.
-const png = readFileSync(new URL("./fixtures/screenshot.png", import.meta.url)).toString("base64");
+// A real 640x400 PNG and a real 640x313 JPEG headless Chrome captured of a page, each's base64 past the 8,192 characters
+// the run's cut reads as one piece.
+const pngBytes = readFileSync(new URL("./fixtures/screenshot.png", import.meta.url));
+const png = pngBytes.toString("base64");
+const jpeg = readFileSync(new URL("./fixtures/screenshot.jpg", import.meta.url)).toString("base64");
+
+test("the run's cut on a tool's answer keeps an image block's data whole only when it is an image, and cuts every other data as text", () => {
+  assert.ok(png.length > 8_192 && jpeg.length > 8_192);
+  const held = `sk-${"k3Yq9".repeat(1_800)}`;
+  const cut = (text) => redactedAnswer(text, [held]);
+  const answer = (block) => cutAnswer({ content: [{ type: "text", text: "url: https://example.test/" }, block] }, cut).content[1];
+  // A real screenshot passes whole, as a PNG and as a JPEG.
+  assert.equal(answer({ type: "image", data: png, mimeType: "image/png" }).data, png);
+  assert.equal(answer({ type: "image", data: jpeg, mimeType: "image/jpeg" }).data, jpeg);
+  // A held key's base64 dressed as an image block, a JPEG's bytes named a PNG, and a PNG with a held key written after
+  // its header are each cut.
+  assert.equal(answer({ type: "image", data: Buffer.from(held).toString("base64"), mimeType: "image/png" }).data, "[redacted]");
+  assert.equal(answer({ type: "image", data: jpeg, mimeType: "image/png" }).data, "[redacted]");
+  assert.equal(answer({ type: "image", data: Buffer.concat([pngBytes, Buffer.from(held)]).toString("base64"), mimeType: "image/png" }).data, "[redacted]");
+  // The key as text, on a block of another type, is cut as before.
+  assert.equal(answer({ type: "resource", data: held }).data, "[redacted]");
+});
 
 test("an image is attachable only with a known type, data that is base64, bytes of the type it names, and a header that says its size", () => {
   assert.equal(unattachable({ data: png, mimeType: "image/png" }), undefined);

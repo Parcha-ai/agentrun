@@ -34,6 +34,7 @@ import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickab
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
+import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
@@ -277,15 +278,26 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
   },
 });
 
+/** An image block's `data` kept whole by the cut: its base64 is an image a model can be sent (attach-images.ts
+ *  unattachable: a PNG, JPEG, GIF or WebP whose bytes are the type it names and whose header says its size), and its
+ *  decoded bytes, read as text, hold nothing the cut takes out (a held value written after a valid header). */
+const wholeImage = (block: { readonly data?: unknown; readonly mimeType?: unknown }, cut: (text: string) => string): boolean => {
+  if (unattachable(block) !== undefined) return false;
+  const bytes = Buffer.from(block.data as string, "base64").toString("latin1");
+  return cut(bytes) === bytes;
+};
+
 /** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. An
- *  image block's `data` is its pixels' base64, not text, and is kept whole: the cut reads a run of more than 8,192
- *  characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), which no model takes as an image. */
-function cutStrings<T>(value: T, cut: (text: string) => string): T {
+ *  image block's `data` that is an image (wholeImage) is its pixels' base64, not text, and is kept whole: the cut reads a
+ *  run of more than 8,192 characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), which no model
+ *  takes as an image. Any other `data`, on a block of any type, is cut like every other string. */
+export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   if (typeof value === "string") return cut(value) as T;
-  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (Array.isArray(value)) return value.map((item) => cutAnswer(item, cut)) as T;
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    const image = (value as { type?: unknown }).type === "image";
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, image && key === "data" ? item : cutStrings(item, cut)])) as T;
+    const block = value as { type?: unknown; data?: unknown; mimeType?: unknown };
+    const keep = block.type === "image" && wholeImage(block, cut);
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, keep && key === "data" ? item : cutAnswer(item, cut)])) as T;
   }
   return value;
 }
@@ -297,7 +309,7 @@ function answersCutInside(tool: ToolRegistration, cut: (text: string) => string)
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
