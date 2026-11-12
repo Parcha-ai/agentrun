@@ -26,7 +26,10 @@ const KEY = `not-a-secret-${"c"}`;
 function holdingOrigin() {
   let started = () => {};
   const streaming = new Promise((resolve) => (started = resolve));
-  const fetch = async (_url, init = {}) => {
+  const fetch = async (url, init = {}) => {
+    // Straight to Anthropic the proxy first asks for the request's token count (count_tokens): that is answered whole, and
+    // only the messages request streams and is held open.
+    if (String(url).endsWith("/count_tokens")) return Response.json({ input_tokens: 100 });
     const body = JSON.parse(String(init.body ?? "{}"));
     const encoder = new TextEncoder();
     const event = (data) => encoder.encode(`event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`);
