@@ -325,7 +325,8 @@ async function ownedLaunch(
   const { store, agentId } = context;
   // One run at a time, taken in the store before anything is listed or made (agent-computer.ts holdAgentComputer): two
   // runs of the agent that claim at once never both make a computer. With no run rows to read, a holder is still going.
-  const hold = await holdAgentComputer(store, agentId, claim.runId, liveHolderOf(store));
+  // The hold is this claim's (its epoch): a later claim of the run takes it over, and this one's end then does nothing.
+  const hold = await holdAgentComputer(store, agentId, claim.runId, liveHolderOf(store), { epoch: claim.epoch });
   let launched: Awaited<ReturnType<typeof ownedStart>>;
   try {
     launched = await ownedStart(provider, claim, spec, context, hold, signal);
@@ -385,9 +386,13 @@ async function ownedStart(
       : `Made this agent's own computer ${ref.name}: later runs get it back.`);
   }
   const computer = { provider: context.provider, image: context.image, ...ref };
+  // A later claim of this run (or another run, this one's row ended) that took the hold over while this one attached
+  // has the computer: its record is that claim's to write.
+  if (!(await hold.holds())) throw new Error(`fenced: this agent's computer ${ref.name} was taken over by a later claim while run ${claim.runId}'s claim at epoch ${claim.epoch} attached it; it is left to that claim`);
   await keepAgentComputer(store, agentId, computer, "held", { run: claim.runId });
-  // The hold is marked letting go first, so no run takes it over while the computer is detached. A run that took it over
-  // since (this run's row ended before its end got here) has the computer now: it is left as it is.
+  // The hold is marked letting go first, so no claim takes it over while the computer is detached. A claim that took it
+  // over since (a later claim of this run, resumed, or another run once this one's row ended) has the computer now: it
+  // is left as it is.
   const detach = async () => {
     if (!(await hold.releasing())) return;
     const released = await provider.release(ref, "detach");

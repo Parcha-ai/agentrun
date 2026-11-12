@@ -97,19 +97,23 @@ export function liveHolderOf(store: { readonly runs?: Pick<Store["runs"], "get">
   return async (holder) => !holder.startsWith(DELETER) && (!runs || LIVE_RUN.has((await runs.get(holder))?.state ?? ""));
 }
 
-/** The hold row: its holder, when it took it, and while it is letting go, until when it keeps others off. */
-type HoldRow = { readonly v: 1; readonly run: string; readonly at: string; readonly until?: string };
+/** The hold row: its holder, the claim's epoch (a run's), this take of it (`id`, so no two takes are one row), when it
+ *  took it, and while it is letting go, until when it keeps others off. */
+type HoldRow = { readonly v: 1; readonly run: string; readonly epoch?: number; readonly id: string; readonly at: string; readonly until?: string };
 
-/** Why a run cannot have the agent's computer: another run, still going, holds it, or a holder is letting it go. */
+/** Why a run cannot have the agent's computer: another run, still going, holds it, a holder is letting it go, or a later
+ *  claim of the same run holds it. */
 class HeldComputer extends Error {}
 const heldBy = (holder: string): Error => new HeldComputer(`this agent's own computer is held by run ${holder}, which is still going: an agent's own computer serves one run at a time. Start this run again once that one ends`);
 const lettingGo = (holder: string): Error =>
-  new HeldComputer(`this agent's own computer is being ${holder.startsWith(DELETER) ? "deleted by this server" : `detached by run ${holder}, which ended`}: start this run again in a moment`);
+  new HeldComputer(`this agent's own computer is being ${holder.startsWith(DELETER) ? "deleted by this server" : `detached by run ${holder}`}: start this run again in a moment`);
+const fencedBy = (run: string, epoch: number, mine: number): Error =>
+  new HeldComputer(`fenced: this agent's own computer is held by run ${run}'s claim at epoch ${epoch}, above this claim's ${mine}; nothing changed`);
 
 /** A run's hold on the agent's computer (holdAgentComputer). */
 export interface AgentComputerHold {
   readonly run: string;
-  /** Whether the hold row is still this one. */
+  /** Whether the hold row is still this take's: not let go, nor taken over (by another run, or a later claim of this one). */
   holds(): Promise<boolean>;
   /** Marks the hold as letting go, before the computer is detached at the run's end: no other run takes it over until it
    *  lets go, or HOLD_RELEASE_MS passes. False, with nothing marked, when another run has taken it over since: the
@@ -120,17 +124,33 @@ export interface AgentComputerHold {
 }
 
 /**
- * Takes the agent's computer for `run`, before anything is listed or made, so two runs of one agent that claim at once
- * never both make one. The hold is one settings row per agent naming its holder, taken with the store's putIfAbsent (of
- * two writers the first wins). A hold of `run`'s own (a later claim of the same run) is kept. A hold of another run
- * still going (`isLive`), or one letting go (until its time), refuses this one in words naming it. A hold of a run that
- * ended is taken over with the store's replaceIf on the row as read: of two runs that find the same ended holder only
- * one replaces it, and one that finds the row changed (taken, or let go) reads it again. `until`: a hold that keeps
- * others off until then from the start (a delete's).
+ * Takes the agent's computer for `run`'s claim at `epoch`, before anything is listed or made, so two runs of one agent
+ * that claim at once never both make one. The hold is one settings row per agent naming its holder and the claim's
+ * epoch, taken with the store's putIfAbsent (of two writers the first wins). A hold of another run still going
+ * (`isLive`), or any hold letting go (until its time: its holder is detaching or deleting the computer), refuses this
+ * one in words naming it. A hold of `run`'s own at a higher epoch refuses this claim (fenced); one at this epoch or
+ * below (a claim this one resumes) is taken over, as is a hold of a run that ended: with the store's replaceIf on the
+ * row as read, so of two that find the same holder only one replaces it, and one that finds the row changed (taken, or
+ * let go) reads it again. Each take is its own row, so a hold taken over is no longer the old take's: its cleanup
+ * (releasing, letGo) finds the row changed and does nothing. `until`: a hold that keeps others off until then from
+ * the start (a delete's, which has no epoch).
  */
-export async function holdAgentComputer(store: Holding, agentId: string, run: string, isLive: (holder: string) => Promise<boolean>, { until }: { readonly until?: number } = {}): Promise<AgentComputerHold> {
+export async function holdAgentComputer(
+  store: Holding,
+  agentId: string,
+  run: string,
+  isLive: (holder: string) => Promise<boolean>,
+  { epoch, until }: { readonly epoch?: number; readonly until?: number } = {},
+): Promise<AgentComputerHold> {
   const key = holdKey(agentId);
-  let mine: HoldRow = { v: 1, run, at: new Date().toISOString(), ...(until === undefined ? {} : { until: new Date(until).toISOString() }) };
+  let mine: HoldRow = {
+    v: 1,
+    run,
+    ...(epoch === undefined ? {} : { epoch }),
+    id: randomBytes(6).toString("hex"),
+    at: new Date().toISOString(),
+    ...(until === undefined ? {} : { until: new Date(until).toISOString() }),
+  };
   const hold: AgentComputerHold = {
     run,
     holds: async () => JSON.stringify((await store.settings.get(key)) ?? null) === JSON.stringify(mine),
@@ -147,13 +167,16 @@ export async function holdAgentComputer(store: Holding, agentId: string, run: st
   for (let tries = 0; tries < 3; tries++) {
     const held = (await store.settings.putIfAbsent(key, mine)) as Partial<HoldRow> | null | undefined;
     const holder = typeof held?.run === "string" ? held.run : undefined;
-    if (holder === run) {
+    // This take's own row, put now: kept as the store reads it back, for the compare-and-sets that follow.
+    if (held?.id === mine.id) {
       mine = held as HoldRow;
       return hold;
     }
+    if (holder === run && epoch !== undefined && typeof held?.epoch === "number" && held.epoch > epoch) throw fencedBy(run, held.epoch, epoch);
     if (holder !== undefined && typeof held?.until === "string" && Date.parse(held.until) > Date.now()) throw lettingGo(holder);
-    if (holder !== undefined && (await isLive(holder))) throw heldBy(holder);
-    // An ended run's hold (or a row that names none): replaced only while it is still the row read.
+    if (holder !== undefined && holder !== run && (await isLive(holder))) throw heldBy(holder);
+    // An ended run's hold, an earlier claim's of this run (or a row that names none): replaced only while it is still the
+    // row read.
     if (await store.settings.replaceIf(key, held ?? null, mine)) return hold;
   }
   throw new Error("this agent's own computer changed hands three times while this run claimed it: start this run again");

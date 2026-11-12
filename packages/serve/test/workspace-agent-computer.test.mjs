@@ -279,11 +279,68 @@ test("while an ended run detaches the computer, a new run is refused in words; o
   };
   const ending = first.release();
   await inDetach;
-  await assert.rejects(claim("run-2"), (error) => error.code === "computer_unavailable" && /being detached by run run-1, which ended/.test(error.message));
+  await assert.rejects(claim("run-2"), (error) => error.code === "computer_unavailable" && /being detached by run run-1: start this run again in a moment/.test(error.message));
   detached();
   await ending;
   await (await claim("run-2")).release();
   assert.deepEqual(calls.filter(([verb]) => verb === "attach").map(([, id, claimed]) => [id, claimed.run]), [["c-1", "run-2"]]);
+});
+
+test("a resume (the run's claim at a higher epoch) that lands between a claim's hold and its cleanup takes the hold over: the older claim's end detaches nothing and leaves the newer's hold; a lower epoch is fenced", async () => {
+  const { store, computers, calls, claim } = await setup();
+  const detaches = () => calls.filter(([verb, , how]) => verb === "release" && how === "detach").length;
+  const older = await claim("run-1", 1);
+  const resumed = await claim("run-1", 2);
+  const before = detaches();
+  await older.release();
+  assert.equal(detaches(), before, "the epoch-1 claim's end detaches nothing");
+  assert.equal(computers.get("c-1").state, "running", "the resumed claim's computer runs on");
+  assert.deepEqual([store.rows.get("agent_computer_hold:agent-1").run, store.rows.get("agent_computer_hold:agent-1").epoch], ["run-1", 2], "the epoch-2 hold stands");
+  const record = await agentComputerOf(store, "agent-1");
+  assert.deepEqual([record.state, record.run], ["held", "run-1"]);
+  await assert.rejects(claim("run-1", 1), (error) => error.code === "computer_unavailable" && /fenced: .* epoch 2, above this claim's 1/.test(error.message));
+  assert.equal(store.rows.get("agent_computer_hold:agent-1").epoch, 2, "the fenced claim changed nothing");
+  await resumed.release();
+  assert.equal(computers.get("c-1").state, "stopped", "the epoch-2 claim's end detaches it");
+  assert.equal(store.rows.has("agent_computer_hold:agent-1"), false);
+});
+
+test("a resume that lands while an older claim attaches fences that claim before it records the computer; one that lands while it detaches waits until it lets go", async () => {
+  const { store, computers, calls, provider, claim } = await setup();
+  await (await claim("run-0")).release();
+  // The epoch-2 claim takes the hold over while the epoch-1 claim's attach is under way.
+  const attach = provider.attach;
+  let resumed;
+  provider.attach = async (ref, context) => {
+    const attached = await attach(ref, context);
+    if (context?.claim?.epoch === 1 && resumed === undefined) resumed = await claim("run-1", 2);
+    return attached;
+  };
+  await assert.rejects(claim("run-1", 1), (error) => /fenced: .* taken over by a later claim while run run-1's claim at epoch 1 attached it/.test(error.message));
+  provider.attach = attach;
+  assert.equal(store.rows.get("agent_computer_hold:agent-1").epoch, 2, "the epoch-1 claim's failure let go of nothing");
+  assert.equal(computers.get("c-1").state, "running");
+  // While the epoch-2 claim detaches at its end, an epoch-3 resume is refused in words; once it lets go, it attaches.
+  const release = provider.release;
+  let detached;
+  const detaching = new Promise((resolve) => (detached = resolve));
+  let started;
+  const inDetach = new Promise((resolve) => (started = resolve));
+  provider.release = async (ref, how) => {
+    if (how === "detach") {
+      started();
+      await detaching;
+    }
+    return release(ref, how);
+  };
+  const ending = resumed.release();
+  await inDetach;
+  await assert.rejects(claim("run-1", 3), (error) => error.code === "computer_unavailable" && /being detached by run run-1/.test(error.message));
+  detached();
+  await ending;
+  provider.release = release;
+  await (await claim("run-1", 3)).release();
+  assert.deepEqual(calls.filter(([verb]) => verb === "attach").map(([, , claimed]) => claimed.epoch), [1, 2, 3]);
 });
 
 test("an archive or an edit while a run holds the computer deletes nothing then, nor does the janitor; the run's end detaches it, then deletes it", async () => {

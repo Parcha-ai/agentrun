@@ -39,6 +39,8 @@ import {
 	orgoMemoryLedger,
 	orgoName,
 	claimProblem,
+	holderOf,
+	inTurn,
 	lostEntry,
 	ownedListing,
 	ownerHashOfLabels,
@@ -48,7 +50,7 @@ import {
 	settleEntry,
 	show,
 	takeEntry,
-	underPutBack,
+	underEntry,
 	withDeadline,
 } from "./orgo-names.js";
 import type { Group } from "./protocol.js";
@@ -307,6 +309,8 @@ export class OrgoProvider implements ComputerProvider {
 	readonly #ledger: OrgoLedger;
 	/** Each computer's extend in flight, by id: the next waits for it, so two never read the same old deadline. */
 	readonly #extending = new Map<string, Promise<unknown>>();
+	/** Each agent's computer's attach or detach in flight, by id: the next waits for it, so two never overlap here. */
+	readonly #owning = new Map<string, Promise<unknown>>();
 
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, ledger = orgoMemoryLedger() }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
@@ -725,10 +729,6 @@ export class OrgoProvider implements ComputerProvider {
 		return entry === undefined ? fail("refused", lostEntry(ref.name)) : ok(entry);
 	}
 
-	/** An agent's computer marked detached in the ledger, now (the janitor's idle clock), or when it was already. */
-	async #detached(entry: OrgoLedgerEntry): Promise<Result<void>> {
-		return entry.detachedAt !== undefined ? ok(undefined) : this.#keep({ ...entry, detachedAt: new Date().toISOString() });
-	}
 
 	/** A deleted computer's ledger entry, gone; best effort, since the computer is gone whatever the ledger says. */
 	async #forget(id: string): Promise<void> {
@@ -824,7 +824,9 @@ export class OrgoProvider implements ComputerProvider {
 	 * for it. Its ledger entry is taken for the claim first (takeEntry), before anything is done to the computer; one a
 	 * detach suspended is then resumed (#wake), its memory and init with it; its daemon is moved on or installed again
 	 * (#ownedInside); and it is marked held in the ledger last (settleEntry), only while the ledger still names this
-	 * claim. An attach that resumed it and then fails suspends it again, as it was found (#putBack).
+	 * claim. An attach that resumed it and then fails suspends it again, as it was found (#putBack). This process's
+	 * attaches and detaches of one agent's computer are taken in turn; another process's are kept off by the ledger
+	 * (underEntry), so no attach ends the programs or sleep of another's.
 	 */
 	async #attached(record: OrgoComputer, signal?: AbortSignal, claim?: ComputerClaim): Promise<Result<AttachedComputer>> {
 		const ref = { id: record.id, name: record.name };
@@ -834,13 +836,19 @@ export class OrgoProvider implements ComputerProvider {
 			if (record.status !== "running") return fail("refused", `${ref.name} is ${record.status}: its labels file and daemon are read from inside, and a read would wake it`);
 			return this.#checked(record, parts, signal);
 		}
-		const taken = await takeEntry(this.#ledger, ref, parts.owner, claim);
-		if (!taken.ok) return taken;
-		const woke = record.status !== "running";
-		const attached = await this.#resumed(record, parts, taken.value, woke, signal, claim);
-		if (!attached.ok) return woke ? this.#putBack(ref, taken.value, attached.error) : attached;
-		const settled = await settleEntry(this.#ledger, ref, taken.value);
-		return settled.ok ? attached : settled;
+		const owner = parts.owner;
+		return inTurn(this.#owning, ref.id, async (waited) => {
+			// Read again after waiting: the attach or detach before this one may have resumed or suspended it.
+			const now = waited ? await this.#own(ref, signal) : ok(record);
+			if (!now.ok) return now;
+			const taken = await takeEntry(this.#ledger, ref, owner, claim);
+			if (!taken.ok) return taken;
+			const woke = now.value.status !== "running";
+			const attached = await this.#resumed(now.value, parts, taken.value, woke, signal, claim);
+			if (!attached.ok) return woke ? this.#putBack(ref, taken.value, attached.error) : attached;
+			const settled = await settleEntry(this.#ledger, ref, taken.value);
+			return settled.ok ? attached : settled;
+		});
 	}
 
 	/**
@@ -859,7 +867,7 @@ export class OrgoProvider implements ComputerProvider {
 			const written = await this.#writeLabels(ref, { ...read.value, labels: taken.labels }, signal);
 			if (!written.ok) return written;
 		}
-		return this.#checked(record, parts, signal);
+		return this.#checked(record, parts, signal, taken);
 	}
 
 	/**
@@ -868,13 +876,14 @@ export class OrgoProvider implements ComputerProvider {
 	 * One another claim has taken since is that claim's, and runs on. Never signalled: it outlives an abort.
 	 */
 	async #putBack(ref: ComputerRef, taken: OrgoLedgerEntry, error: ComputerError): Promise<Result<never>> {
-		const suspended = await underPutBack(this.#ledger, ref, taken, () => this.#suspend(ref));
-		if (suspended === undefined) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since`);
+		const suspended = await underEntry(this.#ledger, ref, taken.labels, "being put back to sleep by an attach that failed", () => this.#suspend(ref));
+		if (suspended === undefined) return fail(error.code, `${error.message}; ${ref.name} runs on: another claim has taken it since, or is working on it`);
 		return fail(error.code, `${error.message}; ${ref.name}, which this attach resumed, ${suspended.ok ? "was suspended again, as it was found" : `could not be suspended again (${suspended.error.message})`}`);
 	}
 
-	/** The labels file, the truth, held to the name, then the daemon and the probe: the drift check of #attached. */
-	async #checked(record: OrgoComputer, parts: Parts, signal?: AbortSignal): Promise<Result<AttachedComputer>> {
+	/** The labels file, the truth, held to the name, then the daemon and the probe: the drift check of #attached. `taken`:
+	 *  an agent's computer's ledger entry as this attach took it, for its daemon's replacement. */
+	async #checked(record: OrgoComputer, parts: Parts, signal?: AbortSignal, taken?: OrgoLedgerEntry): Promise<Result<AttachedComputer>> {
 		const ref = { id: record.id, name: record.name };
 		const file = await this.#readLabels(ref, signal);
 		if (!file.ok) return file;
@@ -891,7 +900,8 @@ export class OrgoProvider implements ComputerProvider {
 		if (parts.owner !== undefined && file.value.deadline !== NO_DEADLINE) found.push(`deadline: an agent's own computer has none, and the labels file reads ${show(file.value.deadline)}`);
 		let notes: string[] = [];
 		if (found.length === 0) {
-			const inside = parts.owner === undefined ? await this.#inside(ref, signal) : await this.#ownedInside(ref, file.value, signal);
+			// taken is given for an agent's own computer alone (#resumed).
+			const inside = taken === undefined ? await this.#inside(ref, signal) : await this.#ownedInside(ref, file.value, taken, signal);
 			if (!inside.ok && inside.error.code !== "refused") return inside;
 			if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
 			else notes = inside.value;
@@ -936,11 +946,11 @@ export class OrgoProvider implements ComputerProvider {
 	 * ending) is installed and started again over the same disk (#replaceDaemon). A run's computer is never replaced
 	 * (#inside): its daemon is its run's, and one that drifts refuses the attach.
 	 */
-	async #ownedInside(ref: ComputerRef, file: LabelsFile, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #ownedInside(ref: ComputerRef, file: LabelsFile, taken: OrgoLedgerEntry, signal?: AbortSignal): Promise<Result<string[]>> {
 		const ports = await this.#rootPorts(ref, signal);
 		if (!ports.ok) return ports;
 		const opened = await this.#open(ref, signal);
-		if (!opened.ok) return opened.notListening ? this.#replaceDaemon(ref, file, "its daemon did not answer (init had ended)", signal) : opened;
+		if (!opened.ok) return opened.notListening ? this.#replaceDaemon(ref, file, taken, "its daemon did not answer (init had ended)", signal) : opened;
 		let stale: string | undefined;
 		try {
 			const { client, hello } = opened.value;
@@ -956,28 +966,34 @@ export class OrgoProvider implements ComputerProvider {
 		} finally {
 			await opened.value.close();
 		}
-		return this.#replaceDaemon(ref, file, stale, signal);
+		return this.#replaceDaemon(ref, file, taken, stale, signal);
 	}
 
 	/**
 	 * An agent's own computer's daemon installed and started again, its disk kept: the old init stopped by its exact
 	 * processes, which ends its programs (STOP_INIT_SCRIPT), then every step create takes (#prepare: the upload, the
 	 * install with its sha256 read back, the X socket, the labels file, root's ports, the lockdown, init, its first
-	 * connection and the drift check). The probe's notes, after one that says the daemon was replaced and why.
+	 * connection and the drift check). The stop and the start run under the ledger entry (underEntry), only while it still
+	 * carries this attach's claim (`taken`): an attach whose claim another has taken since, or that another is working
+	 * on, ends nothing, so an older attach never stops the init a newer one started. The probe's notes, after one that
+	 * says the daemon was replaced and why.
 	 */
-	async #replaceDaemon(ref: ComputerRef, file: LabelsFile, why: string, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #replaceDaemon(ref: ComputerRef, file: LabelsFile, taken: OrgoLedgerEntry, why: string, signal?: AbortSignal): Promise<Result<string[]>> {
 		let daemon: Buffer;
 		try {
 			daemon = readFileSync(this.#daemonPath);
 		} catch {
 			return fail("not_found", `${ref.name}'s daemon needs replacing, since ${why}, and there is no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 		}
-		const stopped = await this.#channel.run(ref.id, ["sh", "-c", STOP_INIT_SCRIPT, "sh", DAEMON_IN_COMPUTER], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
-		if (!stopped.ok) return stopped;
-		if (stopped.value.exitCode !== 0) return fail("refused", `${ref.name}'s daemon needs replacing, since ${why}, and its old init could not be stopped (exit ${stopped.value.exitCode}): ${stopped.value.output.trim().slice(0, 200)}`);
-		const prepared = await this.#prepare(ref, "running", file, daemon, signal, this.#ownedInit(Date.now()));
-		if (!prepared.ok) return fail(prepared.error.code, `replacing ${ref.name}'s daemon, since ${why}, failed: ${prepared.error.message}`);
-		return ok([`the daemon in ${ref.name} was replaced with this provider's ${VERSION}, its disk kept, since ${why}`, ...prepared.value]);
+		const replaced = await underEntry(this.#ledger, ref, taken.labels, "its daemon being replaced by an attach", async (): Promise<Result<string[]>> => {
+			const stopped = await this.#channel.run(ref.id, ["sh", "-c", STOP_INIT_SCRIPT, "sh", DAEMON_IN_COMPUTER], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+			if (!stopped.ok) return stopped;
+			if (stopped.value.exitCode !== 0) return fail("refused", `${ref.name}'s daemon needs replacing, since ${why}, and its old init could not be stopped (exit ${stopped.value.exitCode}): ${stopped.value.output.trim().slice(0, 200)}`);
+			const prepared = await this.#prepare(ref, "running", file, daemon, signal, this.#ownedInit(Date.now()));
+			if (!prepared.ok) return fail(prepared.error.code, `replacing ${ref.name}'s daemon, since ${why}, failed: ${prepared.error.message}`);
+			return ok([`the daemon in ${ref.name} was replaced with this provider's ${VERSION}, its disk kept, since ${why}`, ...prepared.value]);
+		});
+		return replaced ?? fail("refused", `fenced: ${ref.name}'s daemon needs replacing, since ${why}, and another claim has taken it since this attach (${holderOf(taken.labels)}) did, or is working on it: its daemon is left as it is`);
 	}
 
 	/**
@@ -1091,11 +1107,19 @@ export class OrgoProvider implements ComputerProvider {
 		if (!this.#ours(read.value, ref.name)) return fail("not_found", `no Orgo computer of this provider is ${ref.name} (${ref.id}), so it is left as it is`);
 		if (how === "delete") return this.#delete(ref, signal);
 		if (nameParts(read.value.name)?.owner === undefined) return fail("refused", `${ref.name} is a run's computer, not an agent's own: it is deleted at its release, never detached`);
-		const entry = await this.#entry(ref);
-		if (!entry.ok) return entry;
-		if (read.value.status === "suspended") return this.#detached(entry.value);
-		const suspended = await this.#suspend(ref, signal);
-		return suspended.ok ? this.#detached(entry.value) : suspended;
+		// In turn with this process's attaches, and under the ledger entry (underEntry), so no attach resumes it or replaces
+		// its daemon while it is suspended, and none takes the entry before it is marked detached.
+		return inTurn(this.#owning, ref.id, async (waited) => {
+			const entry = await this.#entry(ref);
+			if (!entry.ok) return entry;
+			const suspend = async (): Promise<Result<void>> => {
+				const now = waited ? await this.#own(ref, signal) : ok(read.value);
+				if (!now.ok) return now;
+				return now.value.status === "suspended" ? ok(undefined) : this.#suspend(ref, signal);
+			};
+			const detached = await underEntry(this.#ledger, ref, undefined, "being detached", suspend, (done, kept) => (done.ok ? { ...kept, detachedAt: kept.detachedAt ?? new Date().toISOString() } : kept));
+			return detached ?? fail("refused", `${ref.name} is busy (another attach or detach is working on it): detach it again in a moment`);
+		});
 	}
 
 	/** Orgo's suspend, the computer's memory and disk saved, then the wait until Orgo reads it suspended. */
@@ -1122,18 +1146,7 @@ export class OrgoProvider implements ComputerProvider {
 	 * is refused as earlier, never renaming the computer back to an earlier deadline the janitor would trust.
 	 */
 	extend(ref: ComputerRef, ttlMs: number, context: CallContext = {}): Promise<Result<{ deadline: Date }>> {
-		const key = typeof ref?.id === "string" ? ref.id : "";
-		const before = this.#extending.get(key) ?? Promise.resolve();
-		const turn = before.then(() => this.#extend(ref, ttlMs, context));
-		const settled = turn.then(
-			() => undefined,
-			() => undefined,
-		);
-		this.#extending.set(key, settled);
-		void settled.then(() => {
-			if (this.#extending.get(key) === settled) this.#extending.delete(key);
-		});
-		return turn;
+		return inTurn(this.#extending, typeof ref?.id === "string" ? ref.id : "", () => this.#extend(ref, ttlMs, context));
 	}
 
 	async #extend(ref: ComputerRef, ttlMs: number, { signal }: CallContext = {}): Promise<Result<{ deadline: Date }>> {

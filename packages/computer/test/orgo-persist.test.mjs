@@ -381,26 +381,33 @@ function holdOnce(when) {
 const OWNED_MAX = "9999-12-31T23:59:59.000Z";
 const epochOf = (entry) => entry.labels["agentrun.epoch"];
 
-test("Orgo: two attaches of one agent's computer under one run's claims at epochs 1 and 2 race; whichever ledger write of the epoch-1 attach lands last, the ledger ends at epoch 2 and the epoch-1 attach is refused (Linux and Windows)", async () => {
+test("Orgo: two processes' attaches of one agent's computer under one run's claims at epochs 1 and 2 race; whichever ledger write of the epoch-1 attach lands last, the ledger ends at epoch 2 and the epoch-1 attach is refused (Linux and Windows)", async () => {
+	// Two providers over one ledger and one Orgo: two processes, so nothing but the ledger orders them.
 	const kinds = [
-		["linux", (ledger) => { const made = linux({ ledger }); return { provider: made.provider, api: made.api, spec: linuxSpec(), wake: "resume" }; }],
-		["windows", (ledger) => { const made = desktop("windows", { ledger }); return { provider: made.provider, api: made.fake.api, spec: windowsSpec(), wake: "start" }; }],
+		["linux", (ledger) => {
+			const made = linux({ ledger });
+			return { provider: made.provider, other: linux({ api: made.api, channel: made.channel, ledger }).provider, api: made.api, spec: linuxSpec(), wake: "resume" };
+		}],
+		["windows", (ledger) => {
+			const made = desktop("windows", { ledger });
+			return { provider: made.provider, other: desktop("windows", { fake: made.fake, ledger }).provider, api: made.fake.api, spec: windowsSpec(), wake: "start" };
+		}],
 	];
 	// The epoch-1 attach's take (run-1's entry to run-2's at epoch 1), or its mark as held (after its take and checks).
 	const holds = [
-		["its take", (was, entry) => epochOf(entry) === "1" && was.labels["agentrun.run"] === "run-1"],
+		["its take", (was, entry) => epochOf(entry) === "1" && entry.labels["agentrun.run"] === "run-2" && was.labels["agentrun.run"] === "run-1"],
 		["its mark as held", (was, entry) => epochOf(entry) === "1" && was.labels["agentrun.run"] === "run-2" && was.detachedAt !== undefined && entry.detachedAt === undefined],
 	];
 	for (const [os, make] of kinds) {
 		for (const [what, when] of holds) {
 			const held = holdOnce(when);
 			const ledger = storeLedger({ gate: held.gate });
-			const { provider, api, spec, wake } = make(ledger);
+			const { provider, other, api, spec, wake } = make(ledger);
 			const ref = (await provider.create(spec)).value;
 			assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 			const lower = provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
 			await held.reached;
-			const higher = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+			const higher = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
 			assert.equal(higher.ok, true, `${os}, ${what}: ${JSON.stringify(higher)}`);
 			held.open();
 			const lost = await lower;
@@ -466,6 +473,105 @@ test("Orgo Linux: an attach that finds an agent's computer's daemon of another v
 	assert.equal(channel.boxOf(run.id).stopped, undefined, "a run's daemon is never replaced");
 });
 
+test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs replacing, at epochs 1 and 2: in one process they take turns, in two the ledger keeps them apart; the older never stops the init the newer started", async () => {
+	// One process: both start at once; the epoch-1 attach replaces the daemon, the epoch-2 one waits its turn, then finds
+	// it at this version and keeps it.
+	{
+		const { channel, provider, ledger } = linux();
+		const ref = (await provider.create(linuxSpec())).value;
+		const box = channel.boxOf(ref.id);
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+		box.init.version = "0.0.1";
+		const [older, newer] = await Promise.all([1, 2].map((epoch) => provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch } })));
+		assert.equal(older.ok, true, JSON.stringify(older));
+		assert.equal(newer.ok, true, JSON.stringify(newer));
+		assert.equal(box.stopped, 1, "one init stopped: the old version's");
+		assert.equal(box.init.version, undefined, "the init the epoch-1 attach started runs on, this version");
+		assert.equal(newer.value.notes?.some((note) => /was replaced/.test(note)) ?? false, false, "the epoch-2 attach replaced nothing");
+		assert.deepEqual([epochOf(ledger.rows.get(ref.id)), ledger.rows.get(ref.id).busy], ["2", undefined]);
+	}
+	// Two processes, the epoch-2 attach taking the computer after the epoch-1 one resumed it and before its stop: the
+	// newer replaces the daemon; the older's stop, landing after, finds the entry not its claim's and stops nothing.
+	{
+		const lowerMarks = holdOnce((was, entry) => entry.busy !== undefined && was.labels["agentrun.run"] === "run-2" && epochOf(was) === "1");
+		const ledger = storeLedger({ gate: lowerMarks.gate });
+		const { api, channel, provider } = linux({ ledger });
+		const other = linux({ api, channel, ledger }).provider;
+		const ref = (await provider.create(linuxSpec())).value;
+		const box = channel.boxOf(ref.id);
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+		box.init.version = "0.0.1";
+		const lower = provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+		await lowerMarks.reached;
+		const higher = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+		assert.equal(higher.ok, true, JSON.stringify(higher));
+		assert.match(higher.value.notes[0], /was replaced/);
+		const started = box.init;
+		lowerMarks.open();
+		const lost = await lower;
+		assert.match(lost.error?.message ?? "", /fenced: .*daemon needs replacing.*another claim has taken it since/);
+		assert.equal(box.stopped, 1, "the epoch-1 attach stopped nothing");
+		assert.equal(box.init, started, "the init the epoch-2 attach started runs on");
+		assert.deepEqual([api.computers.get(ref.id).status, epochOf(ledger.rows.get(ref.id)), ledger.rows.get(ref.id).busy], ["running", "2", undefined], "nor did it put the computer back to sleep");
+	}
+	// Two processes, the epoch-1 attach marking first: the epoch-2 attach is refused while the daemon is replaced, and
+	// attaches once it is, the epoch-1 attach's init kept.
+	{
+		const ledger = storeLedger();
+		const { api, channel, provider } = linux({ ledger });
+		const other = linux({ api, channel, ledger }).provider;
+		const ref = (await provider.create(linuxSpec())).value;
+		const box = channel.boxOf(ref.id);
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
+		box.init.version = "0.0.1";
+		const swap = ledger.swap.bind(ledger);
+		let during;
+		ledger.swap = async (was, entry) => {
+			const swapped = await swap(was, entry);
+			if (entry.busy !== undefined && during === undefined) during = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+			return swapped;
+		};
+		const lower = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+		ledger.swap = swap;
+		assert.equal(lower.ok, true, JSON.stringify(lower));
+		assert.match(during?.error?.message ?? "", /busy \(its daemon being replaced by an attach\)/);
+		const started = box.init;
+		const higher = await other.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 2 } });
+		assert.equal(higher.ok, true, JSON.stringify(higher));
+		assert.deepEqual([box.stopped, box.init === started, epochOf(ledger.rows.get(ref.id))], [1, true, "2"]);
+	}
+});
+
+test("Orgo: a detach marks the ledger entry busy while it suspends (Linux) or stops (Windows), so another process's attach is refused meanwhile, and marks it detached from that entry alone (Linux and Windows)", async () => {
+	const kinds = [
+		["linux", () => {
+			const made = linux();
+			return { ...made, second: linux({ api: made.api, channel: made.channel, ledger: made.ledger }).provider, spec: linuxSpec() };
+		}],
+		["windows", () => {
+			const made = desktop("windows");
+			return { ...made, second: desktop("windows", { fake: made.fake, ledger: made.ledger }).provider, api: made.fake.api, spec: windowsSpec() };
+		}],
+	];
+	for (const [os, make] of kinds) {
+		const { provider, second, ledger, spec } = make();
+		const ref = (await provider.create(spec)).value;
+		const swap = ledger.swap.bind(ledger);
+		let during;
+		ledger.swap = async (was, entry) => {
+			const swapped = await swap(was, entry);
+			if (entry.busy !== undefined && during === undefined) during = await second.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
+			return swapped;
+		};
+		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined }, os);
+		ledger.swap = swap;
+		assert.match(during?.error?.message ?? "", /busy \(being detached\)/, `${os}: the attach was kept off while it went to sleep`);
+		const row = ledger.rows.get(ref.id);
+		assert.deepEqual([row.labels["agentrun.run"], typeof row.detachedAt, row.busy], ["run-1", "string", undefined], `${os}: detached, the marker cleared, the labels as they were`);
+		assert.equal((await second.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } })).ok, true, `${os}: attached once detached`);
+	}
+});
+
 test("Orgo: an attach that wakes an agent's computer and then fails a check suspends (Linux) or stops (Windows) it again, as it was found; one refused before the wake wakes nothing", async () => {
 	const other = "computer-0123456789ab-oaaaaaaaaaaaaaaaa";
 	const kinds = [
@@ -499,39 +605,42 @@ test("Orgo: an attach that wakes an agent's computer and then fails a check susp
 	}
 });
 
-test("Orgo: while a failed attach puts an agent's computer back to sleep, a newer claim's attach is refused, so the put-back never sleeps a computer that claim took; once it is done, the newer claim attaches (Linux and Windows)", async () => {
+test("Orgo: while a failed attach puts an agent's computer back to sleep, another process's newer claim is refused, so the put-back never sleeps a computer that claim took; once it is done, the newer claim attaches (Linux and Windows)", async () => {
 	const other = "computer-0123456789ab-oaaaaaaaaaaaaaaaa";
 	const kinds = [
 		["linux", () => {
 			const made = linux();
-			return { ...made, spec: linuxSpec(), sleep: "suspend", tamper: (id) => { const box = made.channel.boxOf(id); const file = box.labels; box.labels = JSON.stringify({ ...JSON.parse(file), name: other }); return () => void (box.labels = file); } };
+			const second = linux({ api: made.api, channel: made.channel, ledger: made.ledger }).provider;
+			return { ...made, second, spec: linuxSpec(), sleep: "suspend", tamper: (id) => { const box = made.channel.boxOf(id); const file = box.labels; box.labels = JSON.stringify({ ...JSON.parse(file), name: other }); return () => void (box.labels = file); } };
 		}],
 		["windows", () => {
 			const made = desktop("windows");
-			return { ...made, api: made.fake.api, spec: windowsSpec(), sleep: "stop", tamper: (id) => { const files = made.fake.boxOf(id).files; const file = files.get(WINDOWS_LABELS); files.set(WINDOWS_LABELS, Buffer.from(JSON.stringify({ ...JSON.parse(file.toString("utf8")), name: other }))); return () => void files.set(WINDOWS_LABELS, file); } };
+			const second = desktop("windows", { fake: made.fake, ledger: made.ledger }).provider;
+			return { ...made, second, api: made.fake.api, spec: windowsSpec(), sleep: "stop", tamper: (id) => { const files = made.fake.boxOf(id).files; const file = files.get(WINDOWS_LABELS); files.set(WINDOWS_LABELS, Buffer.from(JSON.stringify({ ...JSON.parse(file.toString("utf8")), name: other }))); return () => void files.set(WINDOWS_LABELS, file); } };
 		}],
 	];
 	for (const [os, make] of kinds) {
-		const { api, provider, ledger, spec, sleep, tamper } = make();
+		const { api, provider, second, ledger, spec, sleep, tamper } = make();
 		const ref = (await provider.create(spec)).value;
 		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 		const restore = tamper(ref.id);
-		// The newer claim lands the moment the put-back has marked the entry, before its suspend or stop.
+		// The newer claim (another process: a second provider over the same ledger) lands the moment the put-back has
+		// marked the entry, before its suspend or stop.
 		const swap = ledger.swap.bind(ledger);
 		let newer;
 		ledger.swap = async (was, entry) => {
 			const swapped = await swap(was, entry);
-			if (entry.puttingBackAt !== undefined && newer === undefined) newer = await provider.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
+			if (entry.busy !== undefined && newer === undefined) newer = await second.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
 			return swapped;
 		};
 		const failed = await provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
 		ledger.swap = swap;
 		assert.match(failed.error?.message ?? "", /again, as it was found/, `${os}: the failed attach put it back`);
-		assert.match(newer?.error?.message ?? "", /being put back to sleep by an attach that failed/, `${os}: the newer claim was kept off meanwhile`);
-		assert.equal(ledger.rows.get(ref.id).puttingBackAt, undefined, `${os}: the marker is cleared`);
+		assert.match(newer?.error?.message ?? "", /busy \(being put back to sleep by an attach that failed\)/, `${os}: the newer claim was kept off meanwhile`);
+		assert.equal(ledger.rows.get(ref.id).busy, undefined, `${os}: the marker is cleared`);
 		restore();
 		const sleeps = calls(api, sleep).length;
-		const attached = await provider.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
+		const attached = await second.attach({ id: ref.id }, { claim: { run: "run-3", epoch: 1 } });
 		assert.equal(attached.ok, true, `${os}: ${attached.error?.message}`);
 		assert.equal(calls(api, sleep).length, sleeps, `${os}: nothing put the newer claim's computer to sleep`);
 		assert.equal(ledger.rows.get(ref.id).labels["agentrun.run"], "run-3", os);

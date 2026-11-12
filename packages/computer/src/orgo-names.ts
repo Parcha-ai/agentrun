@@ -45,8 +45,11 @@ export interface OrgoLedgerEntry {
 	labels: Record<string, string>;
 	/** When the computer was detached, ISO time; absent while a run holds it. */
 	detachedAt?: string;
-	/** While a failed attach puts the computer back to sleep (underPutBack), when it began, ISO time: no attach takes it. */
-	puttingBackAt?: string;
+	/**
+	 * While something stops, suspends or replaces what runs in the computer (underEntry: a failed attach's put-back, a
+	 * daemon's replacement, a detach), when it began, ISO time, and what it is: no attach takes the computer meanwhile.
+	 */
+	busy?: { since: string; doing: string };
 }
 
 /** Where the provider keeps its agents' computers' labels. Each call may be sync or async. */
@@ -83,7 +86,7 @@ async function ledgerCall<T>(what: "read" | "written", call: () => T | Promise<T
 }
 
 /** The run and epoch these labels say, in words, for a claim that lost its computer to another. */
-const holder = (labels: Record<string, string>) => `run ${JSON.stringify(labels[RUN_LABEL] ?? "")} at epoch ${labels[EPOCH_LABEL] ?? "none"}`;
+export const holderOf = (labels: Record<string, string>) => `run ${JSON.stringify(labels[RUN_LABEL] ?? "")} at epoch ${labels[EPOCH_LABEL] ?? "none"}`;
 
 /**
  * An agent's computer's ledger entry taken for an attach, before anything is done to the computer: read, held to the
@@ -99,12 +102,12 @@ export async function takeEntry(ledger: OrgoLedger, ref: ComputerRef, ownerHash:
 		if (!read.ok) return read;
 		const entry = read.value;
 		if (entry === undefined) return fail("refused", lostEntry(ref.name));
-		if (puttingBack(entry)) return fail("refused", `${ref.name} is being put back to sleep by an attach that failed: attach it again in a moment`);
+		if (busyNow(entry)) return fail("refused", `${ref.name} is busy (${entry.busy?.doing}): attach it again in a moment`);
 		if (claim === undefined) return ok(entry);
 		const fenced = claimProblem(ref.name, ownerHash, entry, claim);
 		if (fenced !== undefined) return fail("refused", fenced);
-		// A put-back marker older than PUT_BACK_MS is a put-back that died: the claim takes the entry without it.
-		const { puttingBackAt: _stale, ...unmarked } = entry;
+		// A busy marker older than BUSY_MS is work that died: the claim takes the entry without it.
+		const { busy: _stale, ...unmarked } = entry;
 		const taken = { ...unmarked, labels: { ...entry.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) } };
 		if (sameEntry(taken, entry)) return ok(taken);
 		const swapped = await ledgerCall("written", () => ledger.swap(entry, taken));
@@ -126,7 +129,7 @@ export async function settleEntry(ledger: OrgoLedger, ref: ComputerRef, taken: O
 		const entry = read.value;
 		if (entry === undefined) return fail("refused", lostEntry(ref.name));
 		if (!sameEntry({ id: entry.id, labels: entry.labels }, { id: taken.id, labels: taken.labels })) {
-			return fail("refused", `fenced: ${ref.name} was taken by ${holder(entry.labels)} while this attach (${holder(taken.labels)}) ran; it is that claim's now, left as it is`);
+			return fail("refused", `fenced: ${ref.name} was taken by ${holderOf(entry.labels)} while this attach (${holderOf(taken.labels)}) ran; it is that claim's now, left as it is`);
 		}
 		if (entry.detachedAt === undefined) return ok(undefined);
 		const { detachedAt: _detachedAt, ...held } = entry;
@@ -137,34 +140,65 @@ export async function settleEntry(ledger: OrgoLedger, ref: ComputerRef, taken: O
 	}
 }
 
-/** How long a put-back's marker keeps every other attach off the computer: the most its suspend or stop is waited on. A
- *  marker older is a put-back that died, and is ignored. */
-export const PUT_BACK_MS = 15 * 60_000;
+/** How long a busy marker keeps every attach off the computer: the most a suspend, stop or daemon replacement is waited
+ *  on. A marker older is work that died, and is ignored. */
+export const BUSY_MS = 15 * 60_000;
 
-/** Whether an entry carries a put-back's marker still in force. */
-const puttingBack = (entry: OrgoLedgerEntry) => entry.puttingBackAt !== undefined && Date.now() - Date.parse(entry.puttingBackAt) < PUT_BACK_MS;
+/** Whether an entry carries a busy marker still in force. */
+const busyNow = (entry: OrgoLedgerEntry) => entry.busy !== undefined && Date.now() - Date.parse(entry.busy.since) < BUSY_MS;
 
 /**
- * A failed attach's put-back of an agent's computer it woke (suspend or stop again), run under the ledger entry: `power`
- * runs only once the entry, still carrying the labels this attach gave it (takeEntry), is swapped to carry a put-back
- * marker. Until the marker is cleared after `power`, every other attach is refused at takeEntry, so a newer claim never
- * takes the computer between the check and the power call and then has it put to sleep under it. Undefined, with
- * nothing run, when another claim has taken it since (it runs on as that claim's) or the ledger can't be read or written.
+ * `work` that stops, suspends or replaces what runs in an agent's computer, run under its ledger entry: only once the
+ * entry, still carrying `labels` (the ones this attach's claim gave it, takeEntry; undefined: whatever it carries, for a
+ * detach, which has no claim) and no busy marker in force, is swapped to carry one saying `doing`. Until the marker is
+ * cleared after `work`, every attach is refused at takeEntry and every other underEntry finds it busy, so a newer claim
+ * never takes the computer between the check and the work and then has its programs ended or the computer put to sleep
+ * under it, and two of these never overlap. The marker is cleared from the marked entry alone (one a stale marker let
+ * another claim take is that claim's), with `after` applied (a detach marks it detached). Undefined, with nothing run,
+ * when another claim has taken it since (it runs on as that claim's), it is busy, or the ledger can't be read or written.
  */
-export async function underPutBack<T>(ledger: OrgoLedger, ref: ComputerRef, taken: OrgoLedgerEntry, power: () => Promise<T>): Promise<T | undefined> {
+export async function underEntry<T>(
+	ledger: OrgoLedger,
+	ref: ComputerRef,
+	labels: Record<string, string> | undefined,
+	doing: string,
+	work: () => Promise<T>,
+	after: (done: T, entry: OrgoLedgerEntry) => OrgoLedgerEntry = (_done, entry) => entry,
+): Promise<T | undefined> {
 	const read = await ledgerCall("read", () => ledger.get(ref.id));
 	const entry = read.ok ? read.value : undefined;
-	if (entry === undefined || !sameEntry({ id: entry.id, labels: entry.labels }, { id: taken.id, labels: taken.labels })) return undefined;
-	const marked = { ...entry, puttingBackAt: new Date().toISOString() };
+	if (entry === undefined || busyNow(entry)) return undefined;
+	if (labels !== undefined && !sameEntry({ id: entry.id, labels: entry.labels }, { id: ref.id, labels })) return undefined;
+	const marked: OrgoLedgerEntry = { ...entry, busy: { since: new Date().toISOString(), doing } };
 	const swapped = await ledgerCall("written", () => ledger.swap(entry, marked));
 	if (!swapped.ok || !swapped.value) return undefined;
+	let done: { value: T } | undefined;
 	try {
-		return await power();
+		done = { value: await work() };
+		return done.value;
 	} finally {
-		// Cleared only from the marked entry: one a stale marker let another claim take is that claim's.
-		const { puttingBackAt: _done, ...cleared } = marked;
-		await ledgerCall("written", () => ledger.swap(marked, cleared));
+		const { busy: _done, ...cleared } = marked;
+		await ledgerCall("written", () => ledger.swap(marked, done === undefined ? cleared : after(done.value, cleared)));
 	}
+}
+
+/**
+ * `work` for one computer, taken in turn with every other of this process's for the same key (`turns` keeps each key's
+ * last): one starts once the one before it has settled, whatever its outcome. `work` is told whether it waited for one,
+ * so it reads again what that one may have changed.
+ */
+export function inTurn<T>(turns: Map<string, Promise<unknown>>, key: string, work: (waited: boolean) => Promise<T>): Promise<T> {
+	const waiting = turns.get(key);
+	const turn = (waiting ?? Promise.resolve()).then(() => work(waiting !== undefined));
+	const settled = turn.then(
+		() => undefined,
+		() => undefined,
+	);
+	turns.set(key, settled);
+	void settled.then(() => {
+		if (turns.get(key) === settled) turns.delete(key);
+	});
+	return turn;
 }
 
 /**
