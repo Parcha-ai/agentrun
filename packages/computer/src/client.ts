@@ -33,6 +33,7 @@ const KINDS: ReadonlySet<string> = new Set<DaemonErrorKind>([
 	"exists",
 	"not_dir",
 	"is_dir",
+	"stale",
 ]);
 
 /** A daemon's error reply as a ComputerError: its kind when it names one, else what its JSON-RPC code means. */
