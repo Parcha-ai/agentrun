@@ -448,7 +448,6 @@
   "packages/serve/test/continue.test.mjs": 0,
   "packages/serve/test/cost-so-far.test.mjs": 5.1,
   "packages/serve/test/cost-view.test.mjs": 0,
-  "packages/serve/test/decision-cap-unit.test.mjs": 8,
   "packages/serve/test/decision-demos-save.test.mjs": 4.3,
   "packages/serve/test/decision-key.test.mjs": 1.6,
   "packages/serve/test/decision-parallel-route.test.mjs": 2.2,
