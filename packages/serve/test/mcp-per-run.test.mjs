@@ -17,13 +17,14 @@ const SECOND = `not-a-secret-${"per-run-second-token"}`;
 const inline = (extra = {}) => ({ external: { source: "grep", kind: "expert", id: "7", version: 1 }, definition: { name: "Expert 7", instructions: "Answer.", skills: [], tools: ["mcp:gw/add"] }, input: { content: "Hi" }, ...extra });
 const bearer = (token) => ({ gw: { headers: { authorization: `Bearer ${token}` } } });
 
-test("mcp_auth: sealed into the run's launch bound to the run, kept out of its body, view, timeline and the idempotency fingerprint; a message's replaces it; a name that is no per_run server is 422", async (t) => {
+test("mcp_auth: a per_run server saved with the API token; sealed into the run's launch bound to the run, kept out of its body, view, timeline and the idempotency fingerprint; a message's replaces it; a name that is no per_run server is 422", async (t) => {
   // Lists its tools only to a caller it knows, as a gateway that scopes a token to one run does.
   const fake = await startFakeMcp({ token: (authorization) => [LIST, FIRST, SECOND].some((token) => authorization === `Bearer ${token}`) });
   t.after(() => fake.close());
   const server = await serve(t, { runner: false });
   const { api, store, data } = server;
-  const saved = await api("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } });
+  // Saved with the API token, as a host's backend saves it: a per_run save keeps no secret, so it is no secret write.
+  const saved = await api("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } }, { authorization: `Bearer ${server.token}` });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual([saved.body.auth.type, saved.body.credential, saved.body.tools.some((tool) => tool.name === "add")], ["per_run", null, true], "listed with the headers sent, and nothing kept");
   assert.equal((await store.mcp.server("gw")).sealed, null, "no credential in its row");

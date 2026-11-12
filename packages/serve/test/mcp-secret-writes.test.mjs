@@ -10,7 +10,7 @@ import { test } from "node:test";
 const { mcpWritesSecret } = await import("../dist/mcp-secret-writes.js");
 const TOKEN = `not-a-secret-${"bearer"}`;
 
-test("the table: true only for a body that carries an MCP secret value, names a per_run server, or the private-network hosts", () => {
+test("the table: true only for a body that carries an MCP secret value to keep, or the private-network hosts", () => {
   for (const [operation, body, writes, why] of [
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "bearer", token: TOKEN } }, true, "a bearer token"],
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: { "X-Api-Key": TOKEN } } }, true, "a header's value"],
@@ -23,7 +23,7 @@ test("the table: true only for a body that carries an MCP secret value, names a 
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "headers", headers: {} } }, false, "no header named"],
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "oauth" } }, false, "oauth keeps its sign-in"],
     ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "github_app" } }, false, "a github_app server keeps nothing: its token is minted per run"],
-    ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "per_run" } }, true, "a per_run server: where every run's handed credential goes"],
+    ["saveMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "per_run", headers: { authorization: `Bearer ${TOKEN}` } } }, false, "a per_run server keeps nothing: its headers only list its tools"],
     ["saveMcpServer", null, false, "no body"],
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", client_id: "corp-app", client_secret: TOKEN }, true, "a client secret"],
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", client_id: "corp-app" }, true, "a client id alone: its callback seals the sign-in's token set"],
