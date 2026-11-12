@@ -703,7 +703,7 @@ test("market-monitor's sends are pinned to its channel: the consent screen shows
 // here: a fake `docker` first on PATH answers the server's probe, or fails as a CLI with no daemon does.
 // The Archil settings' PUT is a secret write: the client sends it from the owner's session.
 SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/workspace\/archil$/ });
-const ARCHIL = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
+const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } };
 /** A package that reads its folder with a read-only shell where there is one, and with `read` alone where not. */
 const SHELL_READER = "---\nname: shell-reader\nversion: 1.0.0\ndescription: Reads its folder with a shell where there is one.\ntools: [read, bash]\ntool_policy: { bash: read-only }\ncomputer: [shell, none]\n---\nRead.\n";
 const NO_SHELL = /^This server has no shell to give an agent now: Archil is off \(Settings → Workspace\), and the docker box is unavailable here \(.+\), so the agent was made with the template's next choice, no computer, and without bash\. Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell\.$/;
