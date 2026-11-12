@@ -7,7 +7,7 @@
 // The choice here is structural, never semantic: a workflow fits when its input schema has at least one required field
 // and the run's input passes it at the top level (validate.ts inputIssues, the check a run's input gets at start). Whether
 // the workflow can do the job is its own guards' call, never the engine's. Exactly one fitting active workflow serves;
-// none, or more than one, leaves the run to the agent, in one log line. A launch's `workflowFirst: false` (RunCreate
+// none, or more than one (said in one log line), leaves the run to the agent. A launch's `workflowFirst: false` (RunCreate
 // `workflow_first`) forces the agent path. A deopt breaker: a workflow whose last BREAKER_WINDOW workflow-first runs, at
 // its digest (its text, so a new revision of it starts clean), handed back more than half the time is skipped, in one
 // log line, read from the agent's run rows (metrics.path, metrics.workflow, metrics.workflow_digest). The spec builders
@@ -103,7 +103,7 @@ export const pastOf = (store: Pick<Store, "runs">, agentId: string) => async ():
 /** The workflow a run serves first, or undefined: the run is agentic, its claim laid learned workflows (`workflows`:
  *  the active ones the seed lay chose, so learning is neither off nor notes-only), its launch does not force the agent
  *  path, exactly one of them fits its input, and the deopt breaker is not open for it. `past`: the agent's run metrics,
- *  newest first (breakerOf). `log`: one line when none is served though some were laid. */
+ *  newest first (breakerOf). `log`: one line when the launch forces the agent, more than one fits, or the breaker is open. */
 export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly unknown[]>): Promise<WorkflowFirst | undefined> {
   if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return undefined;
   if (launch.workflowFirst === false) {
@@ -112,10 +112,10 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   }
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
   const fitting = workflows.filter((workflow) => fits(workflow, launch.input, resolveSchemaForWorkflow as never));
-  if (fitting.length !== 1) {
-    log?.(`workflow-first: ${fitting.length} of ${workflows.length} learned workflows fit this run's input; the agent takes it`);
-    return undefined;
-  }
+  // None fitting is the common case (a workflow for another job): nothing to say. More than one: which serves is not
+  // the engine's call, in one line.
+  if (fitting.length > 1) log?.(`workflow-first: ${fitting.length} of ${workflows.length} learned workflows fit this run's input; the agent takes it`);
+  if (fitting.length !== 1) return undefined;
   const chosen = fitting[0]!;
   const digest = workflowDigest(chosen);
   const open = past ? breakerOf(await past().catch(() => []), chosen.name, digest) : undefined;

@@ -108,7 +108,7 @@ export function reflectPrompt(options: { dir: string; active: number; tools?: re
       "and so is one the person asks you to keep as a workflow; its steps may also be a skill.",
       "A workflow whose input takes a run's input as the run is given it (the same field names, such as `content`) runs first",
       "on later runs, before you: it answers alone, or ends on an `escalate` node and hands the case back to you with what it found.",
-      "Give each of its model nodes `\"tier\": \"fast\"` unless that step needs your own judgment: a node that names no tier runs on your model.",
+      "Give each of its model nodes `\"tier\": \"fast\"`; a step that needs your own judgment names no tier, and runs on your model.",
       ...(handedBack ? [handbackAsk(handedBack)] : []),
       ...(draftFor.length ? [draftAsk(draftFor), ...describedLines(described, tools)] : []),
     ] : []),

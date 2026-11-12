@@ -205,13 +205,13 @@ test("workflow_first false: the agent takes the run from its first turn, path ag
   assert.ok(logs.some((line) => /workflow_first: false/.test(line)), JSON.stringify(logs));
 });
 
-test("an input no learned workflow fits: the agent takes the run, path agent, in one log line", async (t) => {
+test("an input no learned workflow fits: the agent takes the run, path agent, with nothing logged", async (t) => {
   const { row, entries, gateway, logs } = await piRun(t, { input: { content: `${QUESTION}?` } });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(entries.some((entry) => entry.kind === WORKFLOW_FIRST), false);
   assert.equal(isNode(gateway.requests[0]), false, "the first request is the agent's");
   assert.equal(row.metrics?.path, "agent");
-  assert.ok(logs.some((line) => /0 of 1 learned workflows fit/.test(line)), JSON.stringify(logs));
+  assert.deepEqual(logs.filter((line) => line.startsWith("workflow-first:")), [], "none fitting is the common case: no line");
 });
 
 test("learned_workflow set to ask: the step parks before any node runs; approved, the workflow answers alone", async (t) => {
@@ -246,6 +246,7 @@ test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, n
   const one = await workflowFirstOf("agentic", [flow("answer", ["question"])], launch, log);
   assert.deepEqual({ ...one, digest: typeof one.digest }, { name: "answer", digest: "string", input: launch.input, revision: "abc" });
   assert.equal(await workflowFirstOf("agentic", [flow("answer", ["question"]), flow("other", ["content"])], launch, log), undefined, "two fit: the agent's");
+  assert.ok(logs.some((line) => /2 of 2 learned workflows fit/.test(line)), JSON.stringify(logs));
   assert.equal(await workflowFirstOf("agentic", [flow("answer", ["missing"])], launch, log), undefined, "none fit");
   assert.equal(await workflowFirstOf("agentic", [flow("answer", [])], launch, log), undefined, "no required field: never fits");
   assert.equal(await workflowFirstOf("workflow", [flow("answer", ["question"])], launch, log), undefined, "a workflow run is not agentic");
