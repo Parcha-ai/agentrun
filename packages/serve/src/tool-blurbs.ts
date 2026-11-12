@@ -20,6 +20,7 @@ export const TOOL_BLURBS: Readonly<Record<string, string>> = Object.freeze({
   "monid.discover": "Find paid data sources in monid's catalog",
   "monid.inspect": "Check a monid source's input and price",
   "monid.run": "Get paid data from a monid source",
+  subagent: "Run a task in a fresh helper conversation",
   pdf_pages: "Turn a PDF's pages into images",
   llm: "Ask the model once, with no tools",
   learned_workflow: "Run a workflow this agent learned",

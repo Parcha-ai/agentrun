@@ -273,14 +273,18 @@ export const isHeld = (text: string): boolean => learnedStatus(text) === "pendin
  *  retiredLearned), which take the `status:` line out whole, can edit. One set any other way reads unclear (learnedStatus:
  *  retired), never held or active, and no writer edits it, so a write never leaves part of it behind. The host writes
  *  only one-line statuses (held, retiredLearned). */
-export function statusOnOneLine(text: string): boolean {
+export const statusOnOneLine = (text: string): boolean => onOneLine(text, "status");
+
+/** Whether `key`, when the front matter sets it, is one plain line (`key: <value>`, nothing of it on the lines after):
+ *  statusOnOneLine's rule, for each key the host's writers take out whole (`status`, `retired_from`). */
+function onOneLine(text: string, key: string): boolean {
   const front = frontMatter(text);
-  if (!front?.has("status")) return true;
+  if (!front?.has(key)) return true;
   const lf = text.replace(/\r\n/g, "\n");
-  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith("status:"))?.slice("status:".length).trim() ?? "";
+  const own = lf.slice(4, closeOf(lf)).split("\n").find((line) => line.startsWith(`${key}:`))?.slice(key.length + 1).trim() ?? "";
   if (!own || /^[>|]/.test(own) || (/^["']/.test(own) && !closedQuote(own))) return false;
   // A plain value that wraps onto the next lines reads longer than its own line.
-  return unquote(own) === front.get("status");
+  return unquote(own) === front.get(key);
 }
 
 /** `text`, a SKILL.md or a draft's README.md, as the host merges one the grader held for its owner's OK: `status:
@@ -293,17 +297,36 @@ export function held(text: string): string {
 }
 
 /** `text`, a held SKILL.md or draft README.md, as the host leaves it when its owner approves it: its front matter with
- *  no `status` line, so it is given to every later run. Throws on a text with no front matter. */
+ *  no `status` or `retired_from` line, so it is given to every later run. Throws on a text with no front matter. */
 export function released(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
-  if (!statusOnOneLine(text)) throw new Error("it cannot be approved: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
+  // Its status and retired_from are taken out whole, so each must be one plain line; what is left reads back active, or
+  // the write fails: never an OK over a skill no run is given.
+  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be approved: its status is not one plain line");
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
   const out = `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
-  // What it leaves reads back active, or the approve fails: never an OK over a skill no run is given.
   if (learnedStatus(out) !== "active") throw new Error(`it cannot be approved: its status would read ${learnedStatus(out)}`);
   return out;
 }
+
+/** The status a retired SKILL.md or draft README.md goes back to when a person restores it (`retired_from`, which its
+ *  retire recorded), read by the one reader (frontMatter: its quoting, its one-line rule): `active` only when it reads
+ *  `active` one way, on one plain line; `pending` otherwise, a retire that recorded none or one that reads unclear among
+ *  them (fail closed: only an approval makes a skill or a draft active). */
+export function retiredFrom(text: string): "active" | "pending" {
+  return onOneLine(text, "retired_from") && frontMatter(text)?.get("retired_from") === "active" ? "active" : "pending";
+}
+
+/** Whether a retired SKILL.md or draft README.md can be restored by the host's writer: its front matter reads one way
+ *  (frontMatter), and its `status` and `retired_from` are each one plain line, the only ones the writer takes out whole.
+ *  One that is not is refused until it is written so (a restore never edits half a value). */
+export const restorable = (text: string): boolean => frontMatter(text) !== undefined && statusOnOneLine(text) && onOneLine(text, "retired_from");
+
+/** `text`, a retired SKILL.md or draft README.md, as the host leaves it when a person restores it: back in the status its
+ *  retire recorded (retiredFrom), active, or waiting for its owner's OK. Throws on a text whose front matter does not read
+ *  one way, or whose status is not one plain line (released). */
+export const restoredLearned = (text: string): string => (retiredFrom(text) === "active" ? released(text) : held(released(text)));
 
 /** What a SKILL.md or a draft's README.md says of itself, the one reader of it (frontMatter), the server's and, through
  *  the folder's snapshot, the console's: `pending` while it waits for its owner's OK, `retired` once a person retired
@@ -318,15 +341,28 @@ export function learnedStatus(text: string): "active" | "pending" | "retired" {
   return status === "active" || status === "pending" ? status : "retired";
 }
 
-/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` last in its front matter
- *  (any status line before it dropped), so no later run is given it. Throws on a text with no front matter. */
+/** Whether `text` reads retired (learnedStatus) only because it can't be read: its front matter reads no way, its status
+ *  is not one plain line, or its status is none the host writes. No one retired it: a view says the host could not read
+ *  it, never that a run or a person retired it. */
+export function unclearFront(text: string): boolean {
+  const front = frontMatter(text);
+  return !front || !statusOnOneLine(text) || !["active", "pending", "retired"].includes(front.get("status") ?? "active");
+}
+
+/** `text`, a SKILL.md or a draft's README.md, as a person's retire leaves it: `status: retired` and `retired_from`, the
+ *  status it had (active, or pending while it waited for its owner's OK), last in its front matter (any such lines before
+ *  them dropped), so no later run is given it and its restore gives that status back. Throws on a text with no front
+ *  matter. */
 export function retiredLearned(text: string): string {
   const front = frontOf(text);
   if (typeof front === "string") throw new Error(`it cannot be retired: ${front}`);
-  if (!statusOnOneLine(text)) throw new Error("it cannot be retired: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:"));
-  const out = `---\n${[...kept, "status: retired"].join("\n")}${front.lf.slice(front.end)}`;
-  if (!frontMatter(out) || learnedStatus(out) !== "retired") throw new Error("it cannot be retired: its front matter would not read retired");
+  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be retired: its status is not one plain line");
+  // What it goes back to on a restore: active only when it reads active now; anything else (held, or a text read as
+  // retired already) is held again (fail closed).
+  const from = learnedStatus(text) === "active" ? "active" : "pending";
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
+  const out = `---\n${[...kept, "status: retired", `retired_from: ${from}`].join("\n")}${front.lf.slice(front.end)}`;
+  if (!frontMatter(out) || learnedStatus(out) !== "retired" || retiredFrom(out) !== from) throw new Error("it cannot be retired: its front matter would not read retired");
   return out;
 }
 

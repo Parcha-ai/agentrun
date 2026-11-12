@@ -12,16 +12,16 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type Registry, type Submission, ToolTask } from "@earendil-works/pi-durable";
+import { type Conversation, type Cursor, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type HookApi, type Registry, type Submission, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type SessionIO, type SessionPort, type SessionSpec, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
-import { sessionProvider } from "../../port-models.js";
+import { sessionProvider, tierProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
-import { countCalls } from "../../tool-budget.js";
+import { ConversationToolBudget, countCalls } from "../../tool-budget.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -42,6 +42,11 @@ export interface PreIntentCall {
   /** The tool calls the call's conversation made before it, at most `upTo`, read from its committed entries (tool-budget.ts
    *  countCalls), for the gate's tool-call budget: pi's model-issued calls only, never a nested call or a CLI's. */
   readonly callsBefore?: (upTo: number) => Promise<number>;
+  /** The call's conversation's own tool-call budget (tool-budget.ts ConversationToolBudget, a subagent's), if it has one. */
+  readonly ownBudget?: () => Promise<number | undefined>;
+  /** A call a running tool made (pi's nested call), part of a call already let through: the cap's wrap-up never refuses
+   *  one (tool-budget.ts), so a tool in flight is never cut short. */
+  readonly nested?: true;
 }
 
 /** The host's answer before a call's intent: run it, refuse it, or park the run on it (the call never moves on here). */
@@ -79,6 +84,10 @@ export interface PiAdapterOptions {
    *  claim's Harness. Their tools pass the session's gate (its beforeTool hook), and every conversation they open takes
    *  its model from the root's agent, through this session's proxy and its booking. */
   readonly extensions?: readonly Extension[];
+  /** pi-native tools the session's own extension carries beside its host tools (the subagent tool: runner/subagent.ts):
+   *  pi's own tool tasks, under the session's gate like every call. Read when the session opens. A conversation one of
+   *  them opens keeps the session's extension, so its calls pass the same gate; its own `tools` say which it is offered. */
+  readonly tools?: readonly ToolRegistration[];
   /** The run's models of other tiers than its own (a learned workflow's node of a tier: AGENT_MODEL_FAST,
    *  AGENT_MODEL_STRONG), by tier, each a model route as the session's is: read when the session opens, each on a proxy of
    *  its own beside the session's (its origin, credential, price and fetch), on the session's booking (io.models), so its
@@ -100,15 +109,15 @@ export function piAdapter(options: PiAdapterOptions): AgentAdapter {
   };
 }
 
-/** The names of the run's pi-native extensions' tools (options.extensions): the model is offered them beside the session's
+/** The names of the run's pi-native tools (options.extensions' and options.tools): the model is offered them beside the session's
  *  own (so it may call one), and pi runs it. Offered and run by one mechanism; sessionOn never also piTool-wraps a session
  *  tool a native extension already owns, so the name is in the request's tools exactly once. */
 const nativeToolNames = (options: PiAdapterOptions): readonly string[] =>
-  (options.extensions ?? []).flatMap((extension) => extension.tools ?? []).map((tool) => tool.name);
+  [...(options.extensions ?? []).flatMap((extension) => extension.tools ?? []), ...(options.tools ?? [])].map((tool) => tool.name);
 
 async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO): Promise<AdapterSession> {
-  const { model } = options;
   const context = withAbortSignal(io.signal, BACKGROUND_CONTEXT);
+  const names = [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)];
   // The session's route: pi-ai's requests reach the provider only through this proxy, which admits and books each one
   // through the runner's booking (io.models).
   const proxy = await routeProxy(options, io.models, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)], options.redact);
@@ -116,7 +125,8 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   // the runner's process open.
   let tiers: TierProxies | undefined;
   try {
-    tiers = await openTierProxies(options.tiers ?? new Map(), io.models, options.redact);
+    // A tier's proxy admits the session's tools too: a subagent's child on the tier offers them (runner/subagent.ts).
+    tiers = await openTierProxies(options.tiers ?? new Map(), io.models, options.redact, [...spec.tools.map((tool) => tool.name), ...nativeToolNames(options)]);
     return await sessionOn(proxy, options, spec, io, context, tiers);
   } catch (error) {
     await proxy.close().catch(() => undefined);
@@ -131,6 +141,8 @@ export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "
 /** The tier proxies a session holds (openTierProxies): each tier's port for a side request under `label`, and their close. */
 export interface TierProxies {
   port(label: string, tier: string): SessionPort | undefined;
+  /** Each tier, its route and its proxy: a subagent's child on the tier is sent there on the proxy's own key. */
+  readonly each: readonly (readonly [string, TierModel, ModelProxy])[];
   close(): Promise<void>;
 }
 
@@ -159,13 +171,13 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
  *  keys, AdapterSession.port's `tier`), sent by pi-ai's client of the tier model's own wire (port-models.ts), so a tier
  *  proxy speaks its model's route (model-route.ts routeOf, its translation fetch for a model of neither wire), never the
  *  harness's. One that fails to start closes those started. */
-export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hooks: SessionIO["models"], redact?: (text: string) => string): Promise<TierProxies> {
+export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hooks: SessionIO["models"], redact?: (text: string) => string, tools: readonly string[] = []): Promise<TierProxies> {
   const open = new Map<string, { proxy: ModelProxy; route: TierModel }>();
   const close = async () => {
     for (const { proxy } of open.values()) await proxy.close().catch(() => undefined);
   };
   try {
-    for (const [tier, route] of tiers) open.set(tier, { proxy: await routeProxy(route, hooks, [], redact, tier), route });
+    for (const [tier, route] of tiers) open.set(tier, { proxy: await routeProxy(route, hooks, tools, redact, tier), route });
   } catch (error) {
     await close();
     throw error;
@@ -175,6 +187,7 @@ export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hoo
       const at = open.get(tier);
       return at ? { url: at.proxy.url, key: at.proxy.sideKey(label), model: at.route.model, api: at.route.provider.api } : undefined;
     },
+    each: [...open].map(([tier, { proxy, route }]) => [tier, route, proxy] as const),
     close,
   };
 }
@@ -208,7 +221,20 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // proxy's booking does), so the model's cost stays $0. Image input on either wire (sessionModel): a host tool's images
   // (a screenshot) reach the model in its tool result.
   models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
-  run.setModels(models);
+  // Each tier's model at its own proxy, under its own provider id (tierProvider): a conversation whose agent names it
+  // (a subagent's) is sent there, and booked as the session's own requests are.
+  for (const [tier, route, at] of tiers.each) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
+  // A child made on an earlier claim keeps the tier's model it was made on; when the tier's model has changed since (the
+  // server's AGENT_MODEL_STRONG, say), that one is not here, and the child resumes on the tier's model now, as a new call
+  // on the tier would run.
+  const tierModel = new Map(tiers.each.map(([tier, route]) => [tierProvider(tier), route.model]));
+  run.setModels(tierModel.size === 0 ? models : new Proxy(models, {
+    get(target, key) {
+      if (key === "getModel") return (provider: string, id: string) => target.getModel(provider, id) ?? (tierModel.has(provider) ? target.getModel(provider, tierModel.get(provider)!) : undefined);
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }));
 
   // A session tool whose name a native extension already owns is run by that extension (pi's own tool task), so it is not
   // piTool-wrapped here too: one tool by that name on the agent, offered once.
@@ -217,7 +243,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // intent: a call it runs with no pass here is one it reruns after a crash (a replay-safe call whose intent an earlier
   // attempt stored), told to the host tool as an attempt above 0, so the loop asks the gate about it again.
   const passed = new Set<string>();
-  const tools = spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined)));
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined))), ...(options.tools ?? [])];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -228,8 +254,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         beforeTool: async (call, api, hookContext: Context) => {
           if (!io.gate) return undefined;
           // A model-issued call's count, read only when the gate holds a budget: a nested call (one a tool made) is its
-          // parent's part.
-          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext) } : {};
+          // parent's part, and is marked so (the cap's wrap-up lets it through).
+          const counted = call.parent === undefined ? { callsBefore: (upTo: number) => callsBefore(api, call.id, upTo, hookContext), ownBudget: async () => (await api.snapshot(ConversationToolBudget, api.conversationId, hookContext))?.toolCalls } : { nested: true as const };
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...counted }, hookContext);
           if (answer === "allow") {
             passed.add(call.id);
@@ -285,7 +311,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   let closed = false;
   const existing = await run.harness.commit((tx) => tx.submissionByRequest(root.id, INPUT_REQUEST), context);
   if (existing) input = await run.harness.submission(existing.id, context);
-  let state: AdapterSession["state"] = existing === undefined ? "new" : existing.status === "done" ? "idle" : "open_turn";
+  // Once that first input is settled, a later input of the root still in flight (a follow-up a reopen sent, its turn cut by
+  // a lost claim or a drain) is the turn the session is in: its end is the one recover() reads, never the first input's.
+  const later = existing && (existing.status === "done" || existing.status === "unanswered")
+    ? (await run.harness.inspect(context)).submissions.filter((one) => one.conversationId === root.id && one.type === "input").at(-1)
+    : undefined;
+  if (later) input = await run.harness.submission(later.id, context);
+  let state: AdapterSession["state"] = existing === undefined ? "new" : later ? "open_turn" : existing.status === "done" ? "idle" : "open_turn";
   let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
   const watch = (submission: Submission) => {
     running = submission.wait(context).then(

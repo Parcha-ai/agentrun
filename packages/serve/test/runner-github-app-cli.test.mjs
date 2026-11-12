@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { seal } from "@parcha/pi-durable-agent";
+import { seal } from "../dist/sealing.js";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 import { startModelProxy } from "@parcha/agentrun-kernel/host";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
