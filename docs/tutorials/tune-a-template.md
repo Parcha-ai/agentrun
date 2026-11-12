@@ -36,10 +36,11 @@ to drop, effort per reviewer, and the `CODEREVIEW.md`.
 ## 6. Lock it in
 
 Copy the template's folder, [`packages/serve/templates/code-review/`](../../packages/serve/templates/code-review/), into
-your repo as `my-code-review/`. Turn every PR that taught you something into an eval case under its `evals/`, then run:
+your repo, keeping its name: a template's folder and the `name` in its `agent.md` have to match. Turn every PR that
+taught you something into an eval case under its `evals/`, then run:
 
 ```sh
-npx @parcha/agentrun template eval ./my-code-review
+npx @parcha/agentrun template eval ./code-review
 ```
 
 [Template packages](../../packages/serve/templates/README.md) has the format.
