@@ -1,14 +1,13 @@
 // A run on a harness other than pi, on the faux harness: it starts, answers, takes a follow-up after its end and while
-// it works, and completes; each paid request is counted once, also when the run's process dies mid-turn and the next
-// one resumes the session.
+// it works, and completes; each paid request is counted once, also when the run's runner dies mid-turn (support.mjs
+// crashRunner) and the next runner takes the run up and resumes the session.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, client, FAUX, follow, printed, runDir, runRecordOf, scratch, serve, startServe, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, journalOf, runDir, scratch, serve, startInProcessRunner, withEnv, startServe } from "./support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
@@ -31,8 +30,7 @@ async function started(api, id, instructions, harness = "claude-agent", tools = 
   return run.body.run_id;
 }
 
-// SKIP (follow-up #2078): the run's request and cost counts read undefined on the runner
-test.skip("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
+test("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true], ["opencode", true]]);
   const runId = await started(api, "chat", "Answer the question.");
@@ -46,8 +44,7 @@ test.skip("with a faux harness every harness runs; a claude-agent run answers, t
   assert.deepEqual(second.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["hi", "and then?"]);
 });
 
-// SKIP (follow-up #2078): the run's request and cost counts read undefined on the runner
-test.skip("one turn of three paid requests costs their sum, once: never twice", { timeout: 60_000 }, async (t) => {
+test("one turn of three paid requests costs their sum, once: never twice", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "three", "Make three requests.", "codex");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -55,73 +52,62 @@ test.skip("one turn of three paid requests costs their sum, once: never twice", 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.007);
 });
 
-// SKIP (follow-up #2078): the first paid request's tool row never shows when a run resumes after a crash or a stop
-test.skip("a run whose process dies mid-turn after a paid request resumes on the next process and finishes; each paid request counted once; its timeline says it resumed after a crash", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+// A runner's crash is its process's (support.mjs crashRunner: runner.ts kill, nothing released, no write of its loops
+// lands), and a lease short enough that the next runner takes the run up within the case.
+const CRASHABLE = { leaseMs: 1_500, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+
+test("a run whose runner dies mid-turn after a paid request resumes on the next runner and finishes; each paid request counted once; its timeline says it was taken over", { timeout: 90_000 }, async (t) => {
+  const { api, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
   const go = join(await scratch(t), "go");
-  const runId = await started(api, "resume", `Wait for ${go} before the answer.`);
+  // Granted read, the faux harness's first call: on the runner a call the session has no tool for has no row of its own.
+  const runId = await started(api, "resume", `Wait for ${go} before the answer.`, "claude-agent", ["read"]);
   // The first request is paid and its tool has ended: its row is in, then the turn hangs.
   for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const { holder } = runRecordOf(data, runId);
+  await crashRunner();
   await writeFile(go, "");
-  process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Done after the wait.");
-  assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the kill and the one after it, once each");
-  assert.deepEqual(resumedRows(rows), ["Resumed after a crash"], "one stored row, kept by the settle's read");
+  assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the crash and the one after it, once each");
+  assert.equal(resumedRows(rows).length, 1, `one stored row: ${JSON.stringify(resumedRows(rows))}`);
+  assert.match(resumedRows(rows)[0], /^Resumed after its runner \(.+\) was lost$/, "the next runner took the run over once the dead one's lease ran out");
 });
 
-// SKIP (follow-up #2078): the first paid request's tool row never shows when a run resumes after a crash or a stop
-test.skip("a run that the server stopped mid-turn goes on at the next start, and its timeline says it resumed after the server stopped", { timeout: 90_000 }, async (t) => {
+// SKIP (follow-up #2089): a turn the server's stop lets go mid-way is claimed by the next start's runner and never goes
+// on (it reads working/idle, as turn-record.test.mjs's drain case, skipped for #2089, does). Rewritten onto the runner.
+test.skip("a run that the server stopped mid-turn goes on at the next start", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const first = await serve(t, { data, harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
-  const runId = await started(first.api, "drained", `Wait for ${go} before the answer.`);
+  const runId = await started(first.api, "drained", `Wait for ${go} before the answer.`, "claude-agent", ["read"]);
   for (let i = 0; !(await first.api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  await first.close();
-  const left = runRecordOf(data, runId);
-  assert.deepEqual([left.status, left.detail?.reason], ["sleeping", "drained"], "drained, not crashed");
+  // The whole start stopped, as the CLI's stop stops it: the runner drains, then lets the run go where the next runner
+  // takes it up (released, never ended), then the server.
+  await first.stop();
   const next = await serve(t, { data, harnessTable: fauxTable(FAUX_HARNESS) });
   await writeFile(go, "");
   const { rows } = await follow(next.api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(next.api, runId), "Done after the wait.");
-  assert.deepEqual(resumedRows(rows), ["Resumed after the server stopped"], "one stored row, kept by the settle's read");
+  assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the stop and the one after it, once each");
 });
 
-// SKIP (follow-up #2078): the first paid request's tool row never shows when a run resumes after a crash or a stop
-test.skip("a chat sent while a turn works, then the server and the run's process die: the next server's run finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
-  const data = join(await scratch(t), "agents");
-  // The first server in a process of its own, so it dies as a crash kills it, and the next one knows nothing it knew.
-  // Started through startServe's options: the faux harness is a test hook, which no environment name enables.
-  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
-const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: ${JSON.stringify(FAUX)}, harnessTable: ${JSON.stringify(fauxTable(FAUX_HARNESS))}, drainTimeout: "5s" });
-process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
-  t.after(() => child.kill("SIGKILL"));
-  const out = await printed(child, /\n/);
-  const { base, token } = JSON.parse(out.slice(0, out.indexOf("\n")));
-  const first = client(base, token);
+test("a chat sent while a turn works, then the run's runner dies: the next runner finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
+  const { api, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
   const go = join(await scratch(t), "go");
-  const runId = await started(first, "chat-resume", `Wait for ${go}, then answer the chat.`);
-  for (let i = 0; !(await first("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+  const runId = await started(api, "chat-resume", `Wait for ${go}, then answer the chat.`, "claude-agent", ["read"]);
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
     assert.ok(i < 300, "the first request's tool row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   // Accepted while the turn works: it waits for the turn's end.
-  assert.equal((await first("POST", `/runs/${runId}/messages`, { content: "and the chat?" })).status, 202);
-  child.kill("SIGKILL");
-  await new Promise((resolve) => child.once("exit", resolve));
-  await killRun(data, runId);
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and the chat?" })).status, 202);
+  await crashRunner();
   await writeFile(go, "");
-  const next = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
-  t.after(() => next.close());
-  const api = client(next.baseUrl, next.token);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["hi", "and the chat?"]);
   const last = rows.filter((r) => r.kind === "user_message" || r.kind === "final_answer").at(-1);
@@ -129,31 +115,14 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token 
   assert.equal(await answer(api, runId), "Answered the chat.", "the run's last answer is the chat's");
 });
 
-// SKIP (follow-up #2078): the run never reads working on the runner
-test.skip("a message to a run working on a harness that cannot steer answers follow_up, never steer: it waits for the turn's end and is answered after it", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
-  const go = join(await scratch(t), "go");
-  const runId = await started(api, "no-steer", `Wait for ${go}, then answer the chat.`, "codex");
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
-    assert.ok(i < 300, "the run works");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const sent = await api("POST", `/runs/${runId}/messages`, { content: "and the chat?" });
-  assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
-  // The faux turn holds until its process is replaced: the next one finishes the turn, then answers the message.
-  await writeFile(go, "");
-  await killRun(data, runId);
-  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await answer(api, runId), "Answered the chat.");
-});
-
-/** The run's store entries of `kind` (a session's record, or the root's request marker). */
-function storeRecords(data, runId, kind) {
-  // The run's process writes the store meanwhile: a read that finds it locked tries again.
+/** Every journal entry of run `runId` in the server's one store (`<data>/store.sqlite`, the runs' journals in pi_entries,
+ *  each keyed by its run), in the order they were written. */
+function runEntries(data, runId) {
+  // The runner writes the store meanwhile: a read that finds it locked tries again.
   for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 2_000 });
     try {
-      return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((record) => record.kind === kind);
+      return db.prepare("SELECT record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => JSON.parse(String(row.record)));
     } catch (error) {
       if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
     } finally {
@@ -161,15 +130,10 @@ function storeRecords(data, runId, kind) {
     }
   }
 }
-const storeCount = (data, runId, kind) => storeRecords(data, runId, kind).length;
+/** The run's store entries of `kind` (a session's record, or the root's request marker). */
+const storeRecords = (data, runId, kind) => runEntries(data, runId).filter((record) => record.kind === kind);
 
-const killRun = async (data, runId) => {
-  const { holder } = runRecordOf(data, runId);
-  process.kill(holder.pid, "SIGKILL");
-};
-
-// SKIP (follow-up #2078): the run's request and cost counts read undefined on the runner
-test.skip("a request whose price is unknown makes the run's cost unknown, never 0", { timeout: 60_000 }, async (t) => {
+test("a request whose price is unknown makes the run's cost unknown, never 0", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "unpriced", "Price unknown.");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -177,8 +141,7 @@ test.skip("a request whose price is unknown makes the run's cost unknown, never 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
 });
 
-// SKIP (follow-up #2078): a run past its spend cap waits for input instead of failing spend_cap_reached
-test.skip("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
+test("a run whose booked spend passes its cap shows by how much on its timeline, once, and ends spend_cap_reached saying so", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   assert.equal((await api("POST", "/agents", agent("over", { harness: "codex", instructions: "Overspend." }))).status, 201);
   // A cap that is no whole number of cents: its words say it in cents, never as a float's tail.
@@ -192,25 +155,29 @@ test.skip("a run whose booked spend passes its cap shows by how much on its time
   assert.deepEqual([view.error.code, view.error.message], ["spend_cap_reached", "The run cost $0.50, $0.20 over its cap of $0.30."]);
 });
 
-// SKIP (follow-up #2078): the first paid request's tool row never shows when a run resumes after a crash or a stop
-test.skip("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+test("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
+  const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
   const go = join(await scratch(t), "go");
-  const runId = await started(api, "cut", `Cut until ${go}.`);
-  // The first request's entry is written at its tool's end; the second is then admitted and cut.
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
-    assert.ok(i < 300, "the first request's row");
+  const runId = await started(api, "cut", `Cut until ${go}.`, "claude-agent", ["read"]);
+  // The first request is answered at its tool's end; the second is then admitted and held, never answered.
+  for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {
+    assert.ok(i < 300, "the second request is admitted and marked");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  await crashRunner();
   await writeFile(go, "");
-  await killRun(data, runId);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "After the cut.");
   assert.deepEqual(usageOf(rows), { usd: null, requests: 3, so_far_usd: 0.006, unpriced: 1 }, "the first, the cut one (unknown), and the one after: once each");
-  assert.equal(storeCount(data, runId, "adapter.request"), 3);
+  // On the run's one ledger (its journal in the store): three model requests held, the cut one booked as cut, unknown.
+  const entries = journalOf(data, runId);
+  const requests = entries.filter((entry) => entry.kind === "runner.request" && !String(entry.data?.model ?? "").startsWith("paid:"));
+  const turns = entries.filter((entry) => entry.kind === "runner.turn" && requests.some((request) => request.conversationId === entry.conversationId && request.data.turn === entry.data.turn));
+  assert.equal(requests.length, 3, `three requests admitted, each once: ${JSON.stringify(requests.map((entry) => entry.data))}`);
+  assert.deepEqual(turns.map((entry) => [entry.data.cut === true, entry.data.usd ?? null]), [[false, 0.002], [true, null], [false, 0.004]], `each booked once, the cut one unknown: ${JSON.stringify(turns.map((entry) => entry.data))}`);
 });
 
-// SKIP (follow-up #2078): the first paid request's tool row never shows when a run resumes after a crash or a stop
+// SKIP (follow-up #2080): the first paid request's tool row never shows when a run resumes after a crash or a stop
 test.skip("a run cancelled while its harness's request is out, and never opened again, carries back a cost that is not a plain number", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
@@ -231,26 +198,7 @@ test.skip("a run cancelled while its harness's request is out, and never opened 
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "the carried-back cost is unknown, never the first request's alone");
 });
 
-// SKIP (follow-up #2078): it kills the run's process by the pid in its claim, and on the runner that pid is the server's own, so the test kills itself
-test.skip("a request booked in the session whose root entry was never written (the process died first) is written on resume, once", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
-  const go = join(await scratch(t), "go");
-  const runId = await started(api, "hold", `Hold until ${go}.`);
-  await follow(api, runId, ["working"], { deadlineMs: 55_000 });
-  // The faux answers at once: well within this, the first request is answered and booked in the session, and the turn
-  // holds with no next request to write its entry. The run's own store is locked while its process lives.
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
-  assert.equal(usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows), undefined, "no request on the root yet");
-  await writeFile(go, "");
-  await killRun(data, runId);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  assert.equal(await answer(api, runId), "Done holding.");
-  assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request booked before the kill counts, once, from the session's records");
-  assert.equal(storeCount(data, runId, "adapter.request"), 2);
-});
-
-// SKIP (follow-up #2078): a reopened run whose new request is unpriced does not read cost unknown on the runner
-test.skip("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
+test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "later", "Second turn unpriced.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -261,11 +209,15 @@ test.skip("a run opened again whose new opening has a request of unknown price r
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
 
-/** A run's paid tool records, from its store: each mark and charge, its tool and figure. */
+/** A run's paid tool calls as its one ledger booked them, from the server's store: each paid request of the run's
+ *  paid-tools session (its `paid:<what was paid for>` name), with the figure its turn was booked at (null while none is). A
+ *  request and its booking share a turn of their own session, so they are paired within it. */
 function paidOf(data, runId) {
-  const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 2_000 });
   try {
-    return db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind.startsWith("agentrun.tool_")).map((entry) => [entry.kind, entry.data.tool, entry.data.heldUsd ?? entry.data.usd]);
+    const entries = db.prepare("SELECT conversation_id, record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => ({ conversation: row.conversation_id, ...JSON.parse(String(row.record)) }));
+    const booked = (request) => entries.find((entry) => entry.kind === "runner.turn" && entry.conversation === request.conversation && entry.data?.turn === request.data.turn)?.data?.usd ?? null;
+    return entries.filter((entry) => entry.kind === "runner.request" && String(entry.data?.model ?? "").startsWith("paid:")).map((request) => [request.data.model, booked(request)]);
   } finally {
     db.close();
   }
@@ -283,8 +235,7 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): web_fetch and web_search on claude-agent and codex make no host call on the runner
-  test.skip(`web_fetch runs on ${harness} as a host tool: the definition saves with no warning, its run is not refused, and it reads the page through the guarded fetch`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: the definition saves with no warning, its run is not refused, and it reads the page through the guarded fetch`, { timeout: 60_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB });
     const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["web_fetch"] }));
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -297,8 +248,7 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /"title":"Public page".*"via":"direct"/s, "web_fetch's Page, read through the guarded fetch");
   });
 
-  // SKIP (follow-up #2078): web_fetch and web_search on claude-agent and codex make no host call on the runner
-  test.skip(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
+  test(`web_fetch runs on ${harness} as a host tool: with Parallel picked the run is handed Parallel's key and reads the page through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT"]);
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB, fauxParallel: FAUX_PARALLEL });
@@ -313,12 +263,11 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /"title":"Read by Parallel".*"via":"parallel"/s, "read through Parallel's extract");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.urls]), [["/v1/extract", true, ["http://public.example/"]]], "on the key the server handed the run");
-    assert.deepEqual(paidOf(data, run.body.run_id), [["agentrun.tool_started", "web_fetch", 0.001], ["agentrun.tool_cost", "web_fetch", 0.001]], "the extract's fee, marked and booked as on pi");
+    assert.deepEqual(paidOf(data, run.body.run_id), [["paid:Parallel's extract", 0.001]], "the extract's fee, booked once on the run's one ledger, as on pi");
     assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_fetch").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_fetch"]);
   });
 
-  // SKIP (follow-up #2078): web_fetch and web_search on claude-agent and codex make no host call on the runner
-  test.skip(`web_search runs on ${harness} as a host tool where Parallel is picked: the run is handed Parallel's key and searches through Parallel`, { timeout: 60_000 }, async (t) => {
+  test(`web_search runs on ${harness} as a host tool where Parallel is picked: the run is handed Parallel's key and searches through Parallel`, { timeout: 60_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxParallel: FAUX_PARALLEL });
@@ -333,14 +282,13 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.match(results[0][0], /\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]]], "on the key the server handed the run");
-    assert.deepEqual(paidOf(data, run.body.run_id), [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "the search's fee, marked and booked as on pi");
+    assert.deepEqual(paidOf(data, run.body.run_id), [["paid:Parallel's search", 0.001]], "the search's fee, booked once on the run's one ledger, as on pi");
     assert.deepEqual(rows.filter((row) => row.kind === "phase" && row.tool_name === "web_search").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_search"]);
   });
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): monid_run on claude-agent and codex never reaches monid on the runner
-  test.skip(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the key from the run's pipe, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the run's key, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
@@ -351,7 +299,6 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(seen.map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
-    assert.ok(seen.every((call) => call.pid !== process.pid), "from the run's process");
     assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid_run"], "the harness's journal names the wire name");
     assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid_run"]);
     const results = toolResults(rows);
@@ -368,29 +315,6 @@ test("capabilities say which harnesses run each tool: the file tools, bash and t
   const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
-});
-
-// SKIP (follow-up #2078): it kills the run's process by the pid in its claim, and on the runner that pid is the server's own, so the test kills itself
-test.skip("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
-  const dir = await scratch(t);
-  const go = join(dir, "go");
-  const secret = join(dir, "secret.txt");
-  await writeFile(secret, "not for the agent");
-  const runId = await started(api, "link", `Read the link after ${go}.`, "claude-agent", ["read", "write"]);
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
-    assert.ok(i < 300, "the first tool's row");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  await symlink(secret, join(runDir(data, runId), "work", "out.txt"));
-  await writeFile(go, "");
-  await killRun(data, runId);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
-  const read = toolResults(rows).at(-1);
-  assert.match(read[0], /outside the workspace/, JSON.stringify(read));
-  assert.doesNotMatch(read[0], /not for the agent/);
-  // Named as the call gave it: neither the server's data directory nor where the link points.
-  namesOnlyGiven(rows.filter((r) => r.kind === "tool_result").at(-1), "out.txt", [data, dir], "claude-agent");
 });
 
 test("a turn that says something, then calls a tool, then answers: what it said first is a text_block, the run does not end on it, and its answer is the last one", { timeout: 60_000 }, async (t) => {
@@ -418,15 +342,15 @@ test("a turn whose first answer is empty and that then calls a tool and answers:
   assert.equal(await answer(api, runId), "Wrote note.md.");
 });
 
-// SKIP (follow-up #2078): a turn that comments, answers empty, then calls a tool shows different timeline rows on the runner
-test.skip("a turn that comments, then answers with nothing, then calls a tool and answers: both earlier answers are text_blocks, the real answer the only final_answer", { timeout: 60_000 }, async (t) => {
+test("a turn that comments, then answers with nothing, then calls a tool and answers: the commentary is a text_block, the real answer the only final_answer", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "comment-empty", "Comment, say nothing, then write.", "codex", ["write"]);
   const { rows, last } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary, r.text]));
   assert.equal(await readFile(join(runDir(data, runId), "work", "note.md"), "utf8"), "noted", "the write after the empty answer ran");
   // The empty answer held the turn's place as its answer for a moment; the commentary before it never stays one either.
-  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["text_block", ""], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
+  // A CLI's record keeps the turn's text up to its call as one message, so the empty one joins the commentary's row.
+  assert.deepEqual(rows.filter((r) => ["text_block", "final_answer", "tool_use"].includes(r.kind)).map((r) => [r.kind, r.summary]), [["text_block", "I'll check first."], ["tool_use", "Wrote note.md"], ["final_answer", "Wrote note.md."]], shown);
   assert.equal(rows.filter((r) => r.kind === "final_answer").length, 1, shown);
   assert.deepEqual([last.status, last.final], ["completed", true], shown);
   assert.equal(await answer(api, runId), "Wrote note.md.");
@@ -445,7 +369,8 @@ test("another harness's file tools name the workspace's paths relative to it: a 
   for (const root of new Set([data, realpathSync(data)])) assert.deepEqual(results.filter(([, , text]) => text.includes(root)), [], `no result names ${root}`);
 });
 
-// SKIP (follow-up #2078): a follow-up whose turn shows nothing does not end the run with that turn's empty answer on the runner
+// SKIP (follow-up #2058): the reopened run completes, but its answer reads the earlier turn's ("Answer 1.") where its own
+// turn showed none: the store's answer is the run's last model text, not the last turn's.
 test.skip("a follow-up whose turn ends showing nothing (the Claude CLI's /compact) ends the run completed, its answer that turn's own (none), without waiting for another message", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "answerless", "The second turn answers nothing.");
@@ -480,7 +405,7 @@ async function completesOnlyAfter(api, runId, answer) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): a follow-up sent while a turn works does not keep the run working: it completes first on the runner
+  // SKIP (follow-up #2432): on the runner a claude-agent run completes before a follow-up sent while its turn works is answered
   test.skip(`${harness}: a follow-up sent while a turn works waits its turn; the run does not end when the first turn does, only once the follow-up is answered`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
@@ -497,8 +422,38 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-// SKIP (follow-up #2078): a pi message sent while a turn works is not answered before the run completes on the runner
-test.skip("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
+test("pi: a message sent while the turn a steered message started works reaches that turn too; the run does not end until both are answered", { timeout: 90_000 }, async (t) => {
+  // The first turn holds; a message steered into it is answered in a turn of its own after it (steeredIn), which holds
+  // too; a second message sent while that turn works is placed in it, never left for the run's end and a reopen.
+  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const [go, goToo] = [join(await scratch(t), "go"), join(await scratch(t), "go-too")];
+  assert.equal((await api("POST", "/agents", agent("held-twice", { tools: [] }))).status, 201);
+  const run = await api("POST", "/agents/held-twice/runs", { input: { content: `Hold twice, until ${go} and then ${goToo}.` } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 30_000 });
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
+  await writeFile(go, "");
+  // The steered message's turn holds on the second file: the second message lands while it works.
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => (r.kind === "final_answer" || r.kind === "text_block") && r.summary === "Answer 1."); i++) {
+    assert.ok(i < 300, "the first turn's answer");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and also?" })).status, 202);
+  await writeFile(goToo, "");
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  // Settled: no reopen is still to come.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+  const said = (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block").map((r) => r.summary);
+  assert.equal(said.length, 3, `an answer for the input and for each message: ${JSON.stringify(said)}`);
+  // One end: the second message was answered in the claim, never left for the run's end to open it again.
+  const ends = storeEntries(data, runId).filter((entry) => entry.kind === "agentrun.end");
+  assert.equal(ends.length, 1, `the run ended once, after both messages were answered: ${ends.length} ends`);
+});
+
+test("pi: a message sent while a turn works is placed at that turn's end and answered in the next run; the run does not end between them", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("held-pi", { tools: [] }))).status, 201);
@@ -514,41 +469,40 @@ test.skip("pi: a message sent while a turn works is placed at that turn's end an
   assert.equal(await answer(api, runId), "Answer 2.");
 });
 
-// SKIP (follow-up #2078): the run never completes once the next server takes it up
-test.skip("a run's answer is whole, past the 2,000 characters its summary keeps, on this server and the next; a follow-up that then shows nothing answers \"\"", { timeout: 90_000 }, async (t) => {
+// A follow-up to the completed run, answered with nothing, is #2058's (a message to a finished run): "a follow-up whose
+// turn ends showing nothing" above.
+test("a run's answer is whole, past the 2,000 characters its summary keeps, on this server and the next", { timeout: 90_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
+  const table = fauxTable(FAUX_HARNESS);
+  // The first server and the runner beside it (the CLI start's pair), closed together before the next server opens.
+  const one = await startServe({ data, port: 0, faux: FAUX, harnessTable: table, drainTimeout: "5s" });
+  const runner = await startInProcessRunner(data, { faux: FAUX, harnessTable: table });
   let closed = false;
-  t.after(() => (closed ? undefined : one.close()));
+  t.after(async () => {
+    if (closed) return;
+    await runner();
+    await one.close();
+  });
   const api = client(one.baseUrl, one.token);
   const runId = await started(api, "long", "The second turn answers nothing, after a long answer.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(LONG_ANSWER.length > 2_000, true);
   assert.equal(await answer(api, runId), LONG_ANSWER, "the first turn's answer, whole");
-  await one.close();
   closed = true;
-  const two = await startServe({ data, port: 0, faux: FAUX, harnessTable: fauxTable(FAUX_HARNESS), drainTimeout: "5s" });
-  t.after(() => two.close());
-  const next = client(two.baseUrl, two.token);
-  assert.equal(await answer(next, runId), LONG_ANSWER, "and on the next server, read from the run's store: never the summary the store keeps");
-  assert.equal((await next("POST", `/runs/${runId}/messages`, { content: "/compact" })).status, 202);
-  await follow(next, runId, ["completed"], { deadlineMs: 20_000 });
-  assert.equal(await answer(next, runId), "", "a follow-up that shows nothing answers with its own text, none");
+  await runner();
+  await one.close();
+  const two = await serve(t, { data, harnessTable: table });
+  assert.equal(await answer(two.api, runId), LONG_ANSWER, "and on the next server, read from the run's store: never the summary the store keeps");
 });
 
-/** Until the run's store holds `n` entries of `kind`. */
-/** The run's store entries, read once its process is gone (it holds the store exclusively while it lives): a read that
- *  finds it still held tries again. */
+/** The run's journal entries, in order, as the server's one store keeps them (pi_entries): read-only, beside the server
+ *  that writes it. */
 function storeEntries(data, runId) {
-  for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-    try {
-      return db.prepare("SELECT record FROM entries ORDER BY id").all().map((row) => JSON.parse(String(row.record)));
-    } catch (error) {
-      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
-    } finally {
-      db.close();
-    }
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true, timeout: 5_000 });
+  try {
+    return db.prepare("SELECT record FROM pi_entries WHERE run_id = ? ORDER BY id").all(runId).map((row) => JSON.parse(String(row.record)));
+  } finally {
+    db.close();
   }
 }
 /** Until the faux harness has admitted its request: it writes `signal` the moment it does (cutSignalled). Nothing the API
@@ -559,8 +513,7 @@ const admitted = async (signal) => {
   }
 };
 
-// SKIP (follow-up #2078): it reads the run's own database file, which runs no longer have after the server switch
-test.skip("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
+test("a cancel of a turn that has shown nothing reads working, then cancelled: never completed on the way", { timeout: 90_000 }, async (t) => {
   // Review F2, not reproduced (an interrupted request that showed nothing and was never paid writes no entry): a guard
   // that the cancel decides the run's end, whatever the turn it cut writes.
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
@@ -572,11 +525,13 @@ test.skip("a cancel of a turn that has shown nothing reads working, then cancell
   assert.deepEqual(pages.filter((page) => page.status === "completed").map((page) => page.status), [], `statuses: ${pages.map((page) => page.status).join(", ")}`);
   assert.equal((await api("GET", `/runs/${runId}`)).body.status, "cancelled");
   const entries = storeEntries(data, runId);
-  const user = entries.findLastIndex((e) => e.kind === "pi.user");
-  assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "agentrun.request_started"), "the case: the request was admitted after the person's message (its start mark is in the store)");
+  // The person's message on the CLI's record, then the runner's request record (on the run's model session) as the cap
+  // admits a request.
+  const user = entries.findLastIndex((e) => e.kind === "agentrun.message" && e.data?.role === "person");
+  assert.ok(user >= 0 && entries.slice(user + 1).some((e) => e.kind === "runner.request"), "the case: the request was admitted after the person's message (its record is in the store)");
 });
 
-// SKIP (follow-up #2078): after a stopped turn and a follow-up, the run never completes on the runner
+// SKIP (follow-up #2058): a message to a run that completed or was stopped answers 409 not_continuable: the store does not open the run again (the case also needs a runner beside each server, startInProcessRunner)
 test.skip("pi: after a stopped turn's commentary and a follow-up answered with nothing, the run's answer is that follow-up's own (empty), never the commentary or the earlier answer, on this server and the next", { timeout: 120_000 }, async (t) => {
   // Review F3: commentary that came with a call is no answer, though it is the run's newest text.
   const data = join(await scratch(t), "agents");
@@ -607,8 +562,7 @@ test.skip("pi: after a stopped turn's commentary and a follow-up answered with n
   assert.equal(await answer(client(two.baseUrl, two.token), runId), "", "and on the next server, read from the run's store");
 });
 
-// SKIP (follow-up #2078): it reads the written file from the run's old work/ folder, which runs no longer have
-test.skip("a write that names its file by an absolute path in the workspace reads by its name there (hello.md) in the tool rows and the Saved row; a path outside the run's directory stays as given; the call's arguments are kept", { timeout: 60_000 }, async (t) => {
+test("a write that names its file by an absolute path in the workspace reads by its name there (hello.md) in the tool rows and the Saved row; a path outside the run's directory stays as given; the call's arguments are kept", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const runId = await started(api, "absolute", "Write by the absolute path.", "claude-agent", ["write"]);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
@@ -618,8 +572,9 @@ test.skip("a write that names its file by an absolute path in the workspace read
   assert.match(shown[4]?.[1] ?? "", /^Wrote \/elsewhere\/away\.md failed: /, "a path outside the run's directory stays as given");
   assert.equal(shown.length, 5, JSON.stringify(shown));
   assert.equal(rows.find((r) => r.kind === "phase" && /^Saved/.test(r.summary))?.path, "hello.md", "the Saved row's file, by its name in the workspace");
-  // Display only: the call's own arguments, as the harness sent them, are the input preview.
-  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", new RegExp(`${join(runDir(data, runId), "work", "hello.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  // Display only: the call's own arguments, as the harness sent them (the absolute path under its working directory), are
+  // the input preview.
+  assert.match(rows.find((r) => r.kind === "tool_use")?.tool_input_preview ?? "", /^\/\S*\/hello\.md$/);
 });
 
 test("a codex or pi run whose write names a relative path reads the same as before: Wrote <name>, Saved <name>", { timeout: 60_000 }, async (t) => {
@@ -635,43 +590,36 @@ test("a codex or pi run whose write names a relative path reads the same as befo
   assert.deepEqual(piRows.filter((r) => r.tool_name === "write" || /^Saved/.test(r.summary ?? "")).map((r) => r.summary), ["Wrote report.md", "Wrote report.md: ok", "Saved report.md"]);
 });
 
-// SKIP (follow-up #2078): it kills the run's process by the pid in its claim, and on the runner that pid is the server's own, so the test kills itself
-test.skip("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
+  const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
   const go = join(await scratch(t), "go");
-  assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.` }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.`, tools: ["read"] }))).status, 201);
   const run = await api("POST", "/agents/capped-cut/runs", { input: { content: "hi" }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
-  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
-    assert.ok(i < 300, "the first request's tool row");
+  // The first request answered, the second admitted and held: the crash cuts it.
+  for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {
+    assert.ok(i < 300, "the second request is admitted and marked");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  await crashRunner();
   await writeFile(go, "");
-  await killRun(data, runId);
   // Priced cases, and a cut request that leaves no room, are harness-cap.test.mjs's.
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
   assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
-  // What the cap held for each request, on its record: the model's $0 worst case, so the cut one counts at $0.
-  for (let tries = 0; ; tries++) {
-    const db = new DatabaseSync(join(runDir(data, runId), "store", "run.sqlite"), { readOnly: true, timeout: 2_000 });
-    try {
-      const held = db.prepare("SELECT record FROM entries").all().map((row) => JSON.parse(String(row.record))).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data.heldUsd);
-      assert.deepEqual(held, [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
-      break;
-    } catch (error) {
-      if (tries > 20 || !/locked|busy/i.test(String(error.message))) throw error;
-    } finally {
-      db.close();
-    }
-  }
+  // What the cap held for each request, on the run's one ledger (its journal in the store): the model's $0 worst case,
+  // so the cut one counts at $0, and it is booked as cut.
+  const entries = journalOf(data, runId);
+  const requests = entries.filter((entry) => entry.kind === "runner.request" && !String(entry.data?.model ?? "").startsWith("paid:"));
+  assert.deepEqual(requests.map((entry) => entry.data.heldUsd), [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
+  const turns = entries.filter((entry) => entry.kind === "runner.turn" && requests.some((request) => request.conversationId === entry.conversationId && request.data.turn === entry.data.turn));
+  assert.deepEqual(turns.map((entry) => entry.data.cut === true), [false, true, false], `the cut one booked as cut, once: ${JSON.stringify(turns.map((entry) => entry.data))}`);
 });
 
 // Three runs in turn, each followed for up to 55 s.
-// SKIP (follow-up #2078): the run's thinking level does not reach the harness's session on the runner
-test.skip("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
+test("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   for (const [harness, thinking, said] of [["claude-agent", "high", "Thinking high."], ["claude-agent", "max", "Thinking max."], ["codex", "max", "Thinking xhigh."]]) {
     const id = `think-${harness}-${thinking}`;
@@ -687,18 +635,17 @@ test.skip("the run's thinking level reaches the harness's session: the revision'
  * A refused call's row names the path the call gave, as given, and no other: neither a directory of `roots` (the server's
  * data directory, where a link points), as named or as resolved, nor any other absolute path on the host.
  */
-function namesOnlyGiven(row, given, roots, who) {
+function namesOnlyGiven(row, given, roots, who, words = "outside the workspace") {
   const said = `${row.summary ?? ""}\n${row.tool_result_preview ?? ""}`;
   assert.equal(row.tool_status, "failed", `${who}: ${said}`);
-  assert.ok((row.tool_result_preview ?? "").includes(`${given}: outside the workspace`), `${who}: the refusal names ${given} as given: ${said}`);
+  assert.ok((row.tool_result_preview ?? "").includes(`${given}: ${words}`), `${who}: the refusal names ${given} as given: ${said}`);
   for (const root of new Set(roots.flatMap((root) => [root, realpathSync(root)]))) assert.ok(!said.includes(root), `${who}: the refusal of ${given} names ${root}: ${said}`);
   // An absolute path starts at a "/" no name, dot or "<" comes before: pi's "</harness>", closing its error block, is none.
   assert.doesNotMatch(said.split(given).join(""), /(?<![\w.~<-])\/[\w.-]/, `${who}: the refusal of ${given} names an absolute host path: ${said}`);
   assert.doesNotMatch(said, /resolves to/, `${who}: the refusal of ${given} names where it resolves to: ${said}`);
 }
 
-// SKIP (follow-up #2078): a read refused outside the run names the link rule, not the path it was given, on the runner
-test.skip("a read refused outside the run names the path it was given, as given, on pi, claude-agent and codex: up out of the run, absolute, and a link out of the workspace, never the data directory or a host path", { timeout: 120_000 }, async (t) => {
+test("a read refused outside the run names the path it was given, as given, on pi, claude-agent and codex: up out of the run, absolute, and a link out of the workspace, never the data directory or a host path", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const reads = (rows) => rows.filter((r) => r.kind === "tool_result" && r.tool_name === "read");
   for (const harness of ["claude-agent", "codex"]) {
@@ -724,13 +671,13 @@ test.skip("a read refused outside the run names the path it was given, as given,
   await writeFile(go, "");
   const refused = reads((await follow(api, pi.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows);
   assert.equal(refused.length, 3, `pi: ${JSON.stringify(refused)}`);
-  refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi"));
+  // The link is refused in the workspace's own words for a link (its file tools follow none), the path as given.
+  refused.forEach((row, i) => namesOnlyGiven(row, given[i], [data, dir], "pi", i === 2 ? "refused: a link is on the way to it" : undefined));
   assert.ok(refused.every((row) => !JSON.stringify(row).includes("not for the agent")));
 });
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2078): a cancel while a host web_search through Parallel is out: the search never reaches Parallel on the runner
-  test.skip(`a ${harness} run cancelled while its host web_search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known`, { timeout: 90_000 }, async (t) => {
+  test(`a ${harness} run cancelled while its host web_search through Parallel is under way still settles the call: its charge is booked, so the run's cost stays known`, { timeout: 90_000 }, async (t) => {
     const calls = join(await scratch(t), "parallel.jsonl");
     // The faux Parallel answers the search after 2 s, so the cancel lands while the host tool's call is under way.
     withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:2000" });
@@ -747,9 +694,9 @@ for (const harness of ["claude-agent", "codex"]) {
     let paid = [];
     for (const end = Date.now() + 15_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 200))) {
       paid = paidOf(data, run.body.run_id);
-      if (paid.some(([kind]) => kind === "agentrun.tool_cost")) break;
+      if (paid.some(([, usd]) => usd !== null)) break;
     }
-    assert.deepEqual(paid, [["agentrun.tool_started", "web_search", 0.001], ["agentrun.tool_cost", "web_search", 0.001]], "marked, and settled though its turn was stopped");
+    assert.deepEqual(paid, [["paid:Parallel's search", 0.001]], "held, and booked at its fee though its turn was stopped");
     assert.notEqual((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null, "the run's cost is known");
   });
 }

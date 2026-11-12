@@ -1,20 +1,6 @@
 // What the server prints on stdout: its banner at start, and one line per request, per run start and end, and per
 // refused credential (logfmt: `at=<time> event=<name> key=value ...`). No line holds a token or any part of one.
 import { join } from "node:path";
-import type { ImageState } from "./box-image.js";
-import { sentence } from "./errors.js";
-
-/** The line said as the Docker box image's first build (or pull) starts: it takes minutes, and nothing waits on it but
- *  a sandbox run's first box. */
-export const IMAGE_PREPARING = "Preparing the Docker box image (first start only, a few minutes); agents can be made now, and their first run waits for it.";
-
-/** The line for the Docker box image's state `state`, said once as its build starts and once as it ends (`started`: the
- *  start was said); undefined for any other, an image Docker already had among them. */
-export function boxImageLine(state: ImageState, started: boolean): string | undefined {
-  if (state.state === "preparing") return started ? undefined : IMAGE_PREPARING;
-  if (!started) return undefined;
-  return state.state === "ready" ? "The Docker box image is ready." : `The Docker box image failed: ${sentence(state.reason)}`;
-}
 
 /** Where the token came from: made at this start (printed this once), kept in DIR/.token, or the environment's. */
 export type TokenSource = "made" | "file" | "env";

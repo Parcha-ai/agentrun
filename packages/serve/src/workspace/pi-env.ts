@@ -56,8 +56,12 @@ export type PiEnvOptions = {
   readonly aliases?: readonly string[];
   /** bash's whole environment: nothing of this process's is passed. */
   readonly env: Readonly<Record<string, string>>;
+  /** Shell text bash runs before each command string (a bash policy's, bash-read-only.ts policyPrelude). */
+  readonly prelude?: string;
   /** bash's deadline when a call names none, in seconds. */
   readonly defaultTimeoutS: number;
+  /** Each command's network (a bash policy's on Archil's exec: run-tools.ts). */
+  readonly network?: "deny";
 };
 
 const CODES: Partial<Record<WorkspaceError["code"], FileErrorCode>> = { NOT_FOUND: "not_found", REFUSED: "permission_denied", ESCAPE: "permission_denied", TOO_LARGE: "invalid", EXISTS: "invalid" };
@@ -202,13 +206,14 @@ export function piEnv(workspace: Workspace, options: PiEnvOptions): ExecutionEnv
     };
     const run = (argv: readonly string[]) => workspace.exec(argv, {
       cwd: where.value, env: { ...options.env, ...(given?.env ?? {}) }, timeoutMs: Math.max(1, Math.round(timeoutS * 1000)), maxOutput: 0,
-      ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+      ...(context.abortSignal ? { signal: context.abortSignal } : {}), ...(options.network ? { network: options.network } : {}),
       onOutput: ({ stream, data }) => {
         emit(decoders[stream].decode(data), stream);
         keep(data);
       },
     });
-    const argvs = typeof command === "string" ? [["bash", "-c", command], ["sh", "-c", command]] : [[...command]];
+    const line = typeof command === "string" ? `${options.prelude ?? ""}${command}` : undefined;
+    const argvs = line !== undefined ? [["bash", "-c", line], ["sh", "-c", line]] : [[...command]];
     let ran: Awaited<ReturnType<typeof run>> | undefined;
     try {
       for (const argv of argvs) {

@@ -35,7 +35,9 @@ function definitions(file) {
 
 test('every defineDoc and defineDocFamily in packages/*/src sets checkpointWhen', () => {
   const all = sources.flatMap((file) => definitions(file).map((definition) => ({ file, ...definition })));
-  assert.ok(all.length >= 20, `the guard finds the definitions (${all.length})`);
+  // 17 since the pi packages were retired (serve's own workflow engine, timeline and browser documents): a floor below it,
+  // so a parser that finds none fails here.
+  assert.ok(all.length >= 15, `the guard finds the definitions (${all.length})`);
   const missing = all.filter((definition) => !definition.named).map(({ file, line }) => `${file}:${line}`);
   assert.deepEqual(missing, [], 'add checkpointWhen (`() => false` keeps every change a delta, as without it on 1.1)');
 });

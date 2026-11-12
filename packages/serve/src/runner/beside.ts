@@ -60,7 +60,9 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const runs = env ?? runEnv(process.env);
   const { dockerPathsForRuns } = await import("../box-paths.js");
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
-  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs) });
+  const { PROVIDERS } = await import("@parcha/agentrun-computer");
+  const { hostCommandRefusals } = await import("../computers.js");
+  const computers = computerDepsFrom({ env: runs, store, sealKey: seal.key, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
@@ -69,6 +71,27 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
   const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.error(`agentrun-serve runner: ${line}`) }) : undefined;
+  // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
+  const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
-  return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await store.close(); seal.release(); } };
+  return { runner, close: async () => { await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
+}
+
+/** A server and one runner beside it, both in this process, as the CLI's start composes them (cli.ts): the runner holds
+ *  what the server's options say (besideRunnerOptions) and sees the server's test switches (fauxEnvOf), so a --faux
+ *  server's runs reach its fakes. For a launcher that starts serve in-process (a demo, a smoke): a server alone leaves
+ *  every run queued. close() stops both. */
+export async function serveWithRunner(options: import("../server.js").ServeOptions): Promise<{ serve: import("../server.js").Serve; close(): Promise<void> }> {
+  const { fauxEnvOf, startServe } = await import("../server.js");
+  const { besideRunEnv } = await import("./main.js");
+  const { loops, drainMs } = besideRunnerOptions(options, process.env);
+  const serve = await startServe(options);
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)) }).catch(async (error: unknown) => {
+    await serve.close();
+    throw error;
+  });
+  // Once: a second call (a SIGTERM and a SIGINT both) is the first one's promise, so the runner's store is never closed
+  // under a run still finishing.
+  let closing: Promise<void> | undefined;
+  return { serve, close: () => (closing ??= Promise.all([beside.close(), serve.close()]).then(() => undefined)) };
 }

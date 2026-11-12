@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-computer
-kind: fix
----
-The server now ends computers a crashed runner left behind. When its runner starts, and every 10 minutes after, it looks at each computer provider whose keys it has and whose vendor doesn't end computers itself (Docker, Orgo), and ends this server's computers that are past their deadline. It never touches another server's computers on a shared account or Docker host, or a computer a run's claim still holds. A provider it can't reach is logged once, and the others are still swept; stopping the server never waits on a stuck sweep for more than a few seconds. It doesn't run under `--faux`. The computer package exports `runHash` and `RUN_HASH_LABEL`, and Orgo's `list({})` gives each computer's run hash under `agentrun.run.hash`, so a caller can tell whose run it is. A server or runner whose terminal closed its stdout or stderr (piped to `head`) no longer ends at the next line it writes there: the line is lost and it goes on.

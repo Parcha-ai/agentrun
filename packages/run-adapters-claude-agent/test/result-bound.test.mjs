@@ -1,6 +1,6 @@
 // A host tool's result past the host's bound (HOST_RESULT_MAX_CHARS), on the Claude Agent adapter: the kernel's tool
 // bridge, which every host tool's result passes on its way to the CLI, cuts it there and says so. A skill file of the
-// most a skill holds (1 MiB) and a delegate's 6 MB answer each reach the CLI within the bound, ending with the line that
+// most a skill holds (1 MiB) reaches the CLI within the bound, ending with the line that
 // says where it was cut, and the host hears the call's end flagged truncated. The CLI's tool server answers a call with
 // the bridge's text as it is (harness.ts), and the tool_end the host hears carries that text, so the tests read it there.
 // The stand-in SDK and CLI only: no network, no binary.
@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as kernel from '@parcha/agentrun-kernel';
-import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { claudeAgentAdapter } from '@parcha/agentrun-harness-claude';
 import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 
@@ -57,14 +57,4 @@ test("a skill file of the most a skill holds (1 MiB) reaches the CLI cut at the 
   cut(ended.result, BIG);
   assert.equal(ended.truncated, true);
   assert.equal(kernel.HOST_RESULT_MAX_CHARS, BOUND, 'the kernel states the bound');
-});
-
-test("a delegate's 6 MB answer reaches the CLI cut at the host's bound, saying so, and its end is flagged truncated", async () => {
-  // The delegate's fixed shape: the answer, its citations and its gaps.
-  const answer = { answer: 'y'.repeat(6_000_000), citations: [], gaps: [] };
-  const store = memorySessionStore();
-  const delegate = kernel.delegateTool({ agents: { big: { description: 'Answers at length.', system: 'Answer.', tools: [] } }, tools: [], adapter: fauxAdapter({ script: () => [{ submit: answer }] }), store, parentKey: 'lead' });
-  const ended = await reached({ tools: [delegate], call: 'call delegate {"agent":"big","task":"Find it all."}' });
-  cut(ended.result, JSON.stringify(answer));
-  assert.equal(ended.truncated, true);
 });

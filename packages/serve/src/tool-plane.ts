@@ -29,6 +29,7 @@ import { builtinHarness, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
+import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { canonicalPin, defaultPermission, isCatalogTool, isMcpTool, MAX_PIN_ARGS, MAX_PIN_CHOICES, type Permission, PERMISSIONS, permissionFrom, permissionOf, type Pin, SETTINGS_UNREAD, SHELL_FAMILY } from "./tool-gate.js";
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 
@@ -39,7 +40,6 @@ import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
  * never does), and a catalog's tools (`monid.*`, `mcp:<server>/<tool>`: catalog tools, which their catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
-export type Capability = (typeof CAPABILITIES)[number];
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
  *  where there is one (never on claude-agent, where Claude's own search is picked as `native`), else Parallel where the
  *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
@@ -52,7 +52,7 @@ export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-key
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** Every tool of serve's table (tools.ts), by name, so this module needs no import of it: a test holds the two as one. */
-export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "pdf_pages", "llm"];
+export const TABLE_TOOLS: readonly string[] = ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "subagent", "pdf_pages", "llm"];
 /** The tools whose approved call the kernel runs itself, outside the model's turn (host-tools.ts's REPLAY): ask is
  *  offered for these and for catalog tools. Any other (browser, ask_person, the call-only ones) is allow or deny. The
  *  run's learned_workflow is one (tool-gate.ts runs an approved call of it on the run's own tools). */
@@ -533,12 +533,24 @@ export async function saveToolSettings(store: { settings: Pick<Settings, "get" |
   return structuredClone(kept);
 }
 
+/** Why a tool of bash's family (SHELL_FAMILY: bash and the background tools) is not there for a run whose shell is
+ *  `shell` (workspace/resolve-computer.ts runShellOf, the claim's own rule read off the agent's computer setting), in the
+ *  kernel registry's words for a call of it there: with no computer that mounts the run's folder the background tools
+ *  are refused (NEEDS_A_COMPUTER), and bash too where the run has no shell at all (NO_SHELL, Mode 1); in Mode 2 bash runs
+ *  on Archil's exec. Undefined for any other tool, and where it is there. */
+export function shellUnavailable(name: string, shell: ShellPlace): Resolution | undefined {
+  if (!Object.hasOwn(SHELL_FAMILY, name) || shell === "computer") return undefined;
+  if (name === SHELL_FAMILY[name]) return shell === "none" ? `unavailable: ${NO_SHELL}` : undefined;
+  return `unavailable: ${NEEDS_A_COMPUTER}`;
+}
+
 /** GET /v2/agents/{id}'s `tools`: each tool its current revision grants, in `order` (capabilities.tools'), with its
  *  permission in force and where it came from (the agent's own settings, the server's, or the default), the one that
  *  applies when the agent sets none (the server's, else the default) and those it may be set to; and for one with a
  *  provider choice the provider in force and where it came from, the one that applies when the agent sets none, and what
- *  it resolves to on the agent's harness and model. */
-export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[]) {
+ *  it resolves to on the agent's harness and model. `shell`: where a run of the agent has its shell (runShellOf on its
+ *  computer setting); a tool of bash's family that leaves out resolves unavailable, saying why (shellUnavailable). */
+export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, agent: Tooling, order: readonly string[], shell: ShellPlace = "computer") {
   const plane = planeFor(env, agent, settings);
   const rank = (name: string) => order.indexOf(name);
   return [...new Set(agent.tools)].sort((a, b) => rank(a) - rank(b)).map((name) => {
@@ -547,6 +559,9 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
     // One short line for people (tool-blurbs.ts), as capabilities serves it.
     const blurb = blurbOf(name);
     const shown = { name, ...(blurb ? { blurb } : {}) };
+    // A tool of bash's family the agent's computer gives no shell for: unavailable, in the words its run's call gets.
+    const noShell = shellUnavailable(name, shell);
+    if (noShell) return { ...shown, ...gate, resolved: noShell };
     if (!Object.hasOwn(PROVIDERS, name)) return { ...shown, ...gate };
     const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;

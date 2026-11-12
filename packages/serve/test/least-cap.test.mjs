@@ -54,8 +54,7 @@ test("a paid call's refusal for room carries the same figure, the cap its words 
 // too, the cap its words name. pi through capModels; claude-agent through harness-app.ts's guard.
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
 for (const harness of ["pi", "claude-agent"]) {
-  // SKIP (follow-up #2078): the least cap a paid call's pause serves reads null on the runner
-  test.skip(`${harness}: a run paused at a paid call's refusal serves least_cap_usd, the cap its words name`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a run paused at a paid call's refusal serves least_cap_usd, the cap its words name`, { timeout: 90_000 }, async (t) => {
     withEnv(t, { MONID_API_KEY: KEY });
     const { api } = await serve(t, { fauxMonid: FAUX_MONID, ...(harness === "pi" ? {} : { harnessTable: fauxTable(FAUX_HARNESS) }) });
     const ask = "Run monid's /person/enrich, called again after a raise.";

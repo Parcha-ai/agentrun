@@ -17,7 +17,6 @@ export function hostToolsOf(run, names, context, results, tools) {
     env: run.env ?? (async () => ({})),
     commit: harness ? (change, at, options) => harness.commit(change, at, options) : none("store"),
     snapshot: harness ? (...args) => Reflect.apply(harness.snapshot, harness, args) : none("Harness"),
-    conversation: harness ? (id, at) => harness.conversation(id, at) : none("Harness"),
     waitForTask: harness ? (id, at) => harness.waitForTask(id, at) : none("Harness"),
     agent: harness
       ? async (at) => {

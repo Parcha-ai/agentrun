@@ -32,7 +32,7 @@ export const ARCHIL_HELPER = "/usr/local/sbin/agentrun-archil";
 export const ARCHIL_GATE = "/opt/agentrun/archil-mounted";
 const HELPER_SHA = createHash("sha256").update(readFileSync(new URL("../box/agentrun-archil", import.meta.url))).digest("hex");
 /** What the preflight prints in a computer as the Archil image makes it. */
-export const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none"].join("\n");
+export const GOOD_PREFLIGHT = ["uid 0", `helper ${HELPER_SHA} -rwxr-xr-x 0 0`, "archil Archil Client: v0.10.1-1793222256, 1001, proto=Version2", "tool 2510:2510", "sudo none", "fuse present"].join("\n");
 /** The verb of a root command: the helper's, the preflight, or the gate; undefined for any other command. */
 export function rootVerb(command) {
 	if (command?.[0] === ARCHIL_HELPER) return command[1];

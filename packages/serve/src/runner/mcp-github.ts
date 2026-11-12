@@ -5,10 +5,12 @@
 // redaction set, and is minted again with REFRESH_BEFORE_MS left, mid-run, so a long run's calls never carry an expired
 // token. A token that could not be renewed answers its calls in words once it expires, never a crash. One claim per run
 // mints for itself: there is no stored token to share, so no refresh lease.
+import type { GithubPermissions } from "../github.js";
 
-/** The App's answer for one repository: a token and when it expires (ms), or why not. */
-export type GithubAppMint = (target: { installation?: number; repo: string }) => Promise<
-  { ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed"; message: string }
+/** The App's answer for one repository: a token and when it expires (ms), or why not. `permissions` narrows the token
+ *  below the App's own (a checkout's: contents read alone). */
+export type GithubAppMint = (target: { installation?: number; repo: string }, permissions?: GithubPermissions) => Promise<
+  { ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed" | "disconnected"; message: string }
 >;
 
 /** What the runner gives the step for a run's github_app servers: the bound mint, and the run's repository (from its
@@ -16,6 +18,11 @@ export type GithubAppMint = (target: { installation?: number; repo: string }) =>
 export interface GithubAppAccess {
   readonly mint: GithubAppMint;
   readonly target: { readonly installation?: number; readonly repo: string } | undefined;
+  /** Revokes an installation token this access minted (best effort): one dropped at release or on a disconnect. */
+  readonly revoke?: (token: string) => Promise<void>;
+  /** Whether the App is still the one this access mints with (its id and key): read before each call, so a disconnect
+   *  or a new App stops a run's token at its next call, not at its next mint. */
+  readonly same?: () => Promise<boolean>;
 }
 
 /** A timer the step arms: the refresh before expiry, the expiry itself. */
@@ -31,6 +38,7 @@ export const GITHUB_UNUSABLE = {
   notInstalled: (repo: string) => `the GitHub App is not installed on ${repo}: install it from Settings → GitHub`,
   failed: (message: string) => `GitHub did not make a token for this run (${message})`,
   expired: (message: string) => `its GitHub App token expired and a new one could not be made (${message})`,
+  disconnected: "the GitHub App this run's token came from was disconnected or replaced on this server (Settings → GitHub)",
 };
 
 type Entry = { headers?: Record<string, string>; unopened?: string };
@@ -45,11 +53,29 @@ const REAL_TIMER: GithubTimer = (fire, ms) => {
  *  hands its entry to `put`, then keeps it fresh until `release`. */
 export function githubTokens(access: GithubAppAccess | undefined, { now = Date.now, arm = REAL_TIMER }: { now?: () => number; arm?: GithubTimer } = {}) {
   const held = new Map<string, { token: string; expiresAt: number; timers: { clear(): void }[]; put: (entry: Entry) => void }>();
+  /** The tokens a refresh replaced, by server, until they expire: a call already sent may still carry one, so it is not
+   *  revoked at the refresh, only when its server's access ends (drop) or the run's does (release). */
+  const replaced = new Map<string, { token: string; expiresAt: number }[]>();
   let released = false;
+  /** Each server's access epoch: a drop ends it, so a mint that was out across the drop (a refresh while check() found
+   *  the App gone) installs nothing; its token is revoked. */
+  const epochs = new Map<string, number>();
+  const epochOf = (name: string) => epochs.get(name) ?? 0;
 
   const clear = (name: string) => {
     for (const timer of held.get(name)?.timers ?? []) timer.clear();
     held.delete(name);
+  };
+  const revoke = (token: string) => void access?.revoke?.(token).catch(() => undefined);
+  /** `name`'s tokens, the one held and every one a refresh replaced that has not expired, revoked at GitHub as they are
+   *  dropped: never left live past its run or its App. */
+  const drop = (name: string) => {
+    epochs.set(name, epochOf(name) + 1);
+    const token = held.get(name)?.token;
+    clear(name);
+    if (token) revoke(token);
+    for (const old of replaced.get(name) ?? []) if (old.expiresAt > now()) revoke(old.token);
+    replaced.delete(name);
   };
 
   /** A token minted for `name` and put; its refresh and its expiry armed. On a refresh that fails, the token held keeps
@@ -57,13 +83,24 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
   const mint = async (name: string, put: (entry: Entry) => void, refreshing: boolean): Promise<void> => {
     if (!access) return put({ unopened: GITHUB_UNUSABLE.noAccess });
     if (!access.target) return put({ unopened: GITHUB_UNUSABLE.noRepo });
+    const epoch = epochOf(name);
     let got: Awaited<ReturnType<GithubAppMint>>;
     try {
       got = await access.mint(access.target);
     } catch (error) {
       got = { ok: false, reason: "github_failed", message: String((error as Error)?.message ?? error) };
     }
-    if (released) return;
+    // A mint that came back after the run's access ended, or the server's (its token dropped meanwhile, its calls
+    // refused): its token is revoked at once, never held, and the refusal stands.
+    if (released || epochOf(name) !== epoch) {
+      if (got.ok) revoke(got.token);
+      return;
+    }
+    // The App disconnected or replaced since the claim: the token held stops now, revoked, never used to its expiry.
+    if (!got.ok && got.reason === "disconnected") {
+      drop(name);
+      return put({ unopened: GITHUB_UNUSABLE.disconnected });
+    }
     if (!got.ok) {
       const why = got.reason === "not_installed" ? GITHUB_UNUSABLE.notInstalled(access.target.repo) : got.reason === "no_repo" ? GITHUB_UNUSABLE.noRepo : GITHUB_UNUSABLE.failed(got.message);
       const kept = held.get(name);
@@ -80,6 +117,8 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
       clear(name);
       return put({ unopened: why });
     }
+    const previous = held.get(name);
+    if (previous && previous.token !== got.token) replaced.set(name, [...(replaced.get(name) ?? []).filter((old) => old.expiresAt > now()), { token: previous.token, expiresAt: previous.expiresAt }]);
     clear(name);
     const entry = { token: got.token, expiresAt: got.expires_at, timers: [] as { clear(): void }[], put };
     held.set(name, entry);
@@ -98,10 +137,23 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
       }
       await mint(name, put, false);
     },
-    /** Every token dropped and every timer stopped: the loop ended, or the claim is lost. */
+    /** Before a call of `name`: the token held for it, when the App it was minted under is gone or replaced, is dropped
+     *  and revoked, and the server's calls refused in words. */
+    async check(name: string): Promise<void> {
+      const kept = held.get(name);
+      // A read that fails throws on: the gateway refuses the call unsent, the token kept (fail closed, never dropped).
+      if (!kept || !access?.same || (await access.same())) return;
+      if (released) return;
+      // The App is gone or replaced: whatever is held now (a refresh may have replaced the token while the read waited)
+      // is dropped and revoked, and the server's calls refused, never sent on the replacement.
+      const now_ = held.get(name) ?? kept;
+      drop(name);
+      now_.put({ unopened: GITHUB_UNUSABLE.disconnected });
+    },
+    /** Every token dropped and revoked, and every timer stopped: the loop ended, or the claim is lost. */
     release(): void {
       released = true;
-      for (const name of [...held.keys()]) clear(name);
+      for (const name of new Set([...held.keys(), ...replaced.keys()])) drop(name);
     },
   };
 }

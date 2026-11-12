@@ -58,7 +58,7 @@ test('the shipped schema bounds budget_usd as the validator does, above 0', asyn
 });
 
 test('an older document with budget still loads, and an author writing budget is told budget_usd', async () => {
-  const { candidatePolicyErrors } = await import('../dist/index.js');
+  const { candidatePolicyErrors } = await import('../dist/author.js');
   const older = flow({ budget: 3 });
   assert.equal(validateWorkflow(older).ok, true, 'budget on an agent is accepted and ignored, as before');
   const errors = candidatePolicyErrors(older, {});

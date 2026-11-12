@@ -301,7 +301,7 @@ test("a server that fails to listen takes up no import and starts no count: it h
   assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
 });
 
-// SKIP (follow-up #2078): under its launcher setup writes a line to stderr (a refused worker or node:sqlite warning)
+// SKIP (follow-up #2432): under its launcher setup writes a line to stderr (a refused worker or node:sqlite warning)
 test.skip("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
   const root = await scratch(t);
   const home = join(root, "home");
@@ -484,11 +484,12 @@ test("a server stopped while setup still lists a home's session files exits at o
   assert.doesNotMatch(err, /the count of this machine's sessions failed/, "an ended count is no failed one");
 });
 
-// SKIP (follow-up #2078): the store now opens Postgres from AGENTRUN_STORE_URL, so the value the test plants for it as a launcher secret is refused at start
-test.skip("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
+test("under its launcher, setup's import cuts each of the server's own secrets out of everything it writes: a session's text, the project's instructions and its skills", { timeout: 90_000 }, async (t) => {
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
-  // of the server's has one. The seal key is one a server takes: 32 bytes in base64.
-  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter(Boolean);
+  // of the server's has one. The seal key is one a server takes: 32 bytes in base64. All but the store's URL, which the
+  // server opens its store from (a value that is no store is refused at start): its password's custody is
+  // secret-custody.test.mjs's.
+  const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter((name) => name && name !== "AGENTRUN_STORE_URL");
   const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : `not-a-secret-${name.toLowerCase()}-${randomBytes(8).toString("hex")}`]));
   const KEY = Object.values(keys).join(" ");
   const root = await scratch(t);

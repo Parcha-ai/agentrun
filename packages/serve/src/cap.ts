@@ -45,10 +45,10 @@
 // (RunSpend.wait, budget.ts): a model node's request before it is sent, a call node's call and a decision before they are
 // admitted again. A refusal inside a call node's effect is told to the call (capRefusals), never only to the model.
 import { readRunDbSync } from "./run-db.js";
-import { durableDecisions } from "@parcha/agentrun-pi/durable";
+import { durableDecisions } from "./workflow/readers.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { providerInputOverhead } from "@parcha/agentrun-kernel/host";
+import { imageInputOf, providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
 import { CAP_WRAPUP, type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
@@ -576,7 +576,7 @@ export function decisionSpentIn(storeFile: string): number {
   if (existsSync(storeFile)) try { receipts = durableDecisions(storeFile, { unlocked: true }); } catch { receipts = []; }
   for (const receipt of receipts) {
     const usd = figureOf(receipt.cost_usd);
-    // A stored receipt row names its decision `decision_id` (agentrun-pi decision-recovery.ts rowOf).
+    // A stored receipt row names its decision `decision_id` (workflow/decision-recovery.ts rowOf).
     const id = typeof receipt.decision_id === "string" ? receipt.decision_id : typeof receipt.id === "string" ? receipt.id : undefined;
     if (id !== undefined && usd !== undefined && usd > 0) receipted.set(id, (receipted.get(id) ?? 0) + usd);
   }
@@ -880,16 +880,19 @@ function outputBound(model: Pick<Model<Api>, "maxTokens" | "contextWindow" | "co
 }
 
 /** A request's input tokens, bounded above: one per UTF-8 byte of what is sent (a byte-level tokenizer never takes
- *  fewer than one byte a token, and an image's base64 is far more bytes than its tokens), plus `overhead`, what the
- *  provider adds server-side that the body does not hold. The same bound on every harness. */
+ *  fewer than one byte a token), plus `overhead`: what the provider adds server-side that the body does not hold, and
+ *  each image at what it is billed as in place of its base64's bytes (below 0 for a large image: piOverhead). The same
+ *  bound on every harness. */
 export const inputBound = (sent: string, overhead = 0): number => Buffer.byteLength(sent, "utf8") + overhead;
 
 /** What pi's provider adds server-side to a request of `context`, the same table the model proxy uses, by the model's API
  *  kind: undefined for a kind whose additions are not known. The context does not say how the request chooses a tool,
  *  so the dearer choice is taken. */
-export function piOverhead(model: Pick<Model<Api>, "api">, context: Context): number | undefined {
-  const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown }[] }).content) : []));
-  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").length });
+export function piOverhead(model: Pick<Model<Api>, "api"> & { id?: string }, context: Context): number | undefined {
+  const parts = (context.messages ?? []).flatMap((message) => (Array.isArray((message as { content?: unknown }).content) ? ((message as { content: { type?: unknown; data?: unknown }[] }).content) : []));
+  // Each image, in every turn, at what the model's provider bills it as by its size, in place of its base64's bytes in
+  // what is sent (imageInputOf, imageTokens).
+  return providerInputOverhead(model.api, { tools: (context.tools?.length ?? 0) > 0, toolChoice: "any", images: parts.filter((part) => part?.type === "image").map((part) => imageInputOf(part.data)), ...(model.id ? { model: model.id } : {}) });
 }
 
 const unmeasured = (cap: number) => `${SPEND_CAP_REACHED}: Not sent: the size of the next model request's input is unknown, so the run's cap of ${money(cap)} cannot be kept: the run is out of budget.`;

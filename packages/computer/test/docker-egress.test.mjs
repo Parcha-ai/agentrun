@@ -5,7 +5,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DockerProvider, EGRESS_IMAGE, sweep } from "../dist/index.js";
+import { DockerProvider } from "../dist/docker.js";
+import { EGRESS_IMAGE, sweep } from "../dist/index.js";
 import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
@@ -92,7 +93,7 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 		"--pull", "never", "--entrypoint", "node", EGRESS_IMAGE,
 		"/code/docker/egress-main.js", "--socket", "/egress/egress.sock", "--deadline", deadline, "--allow", ALLOW.join(","), ...(LOCAL.length ? ["--local", LOCAL.join(",")] : []),
 	]);
-	assert.match(EGRESS_IMAGE, /^node:22\.\d+\.\d+-bookworm-slim@sha256:[0-9a-f]{64}$/, "the proxy's image is pinned by digest");
+	assert.match(EGRESS_IMAGE, /^node:22\.\d+\.\d+-trixie-slim@sha256:[0-9a-f]{64}$/, "the proxy's image is pinned by digest");
 	assert.deepEqual(valuesOf(computer, "--network"), ["none"], "the computer itself has no network");
 	assert.deepEqual(valuesOf(computer, "--env"), ["HOME=/work"], "init's relay gives every program its proxy variables, not docker run");
 	assert.deepEqual(valuesOf(computer, "--mount").at(-1), `type=volume,src=${volume},dst=/opt/agentrun/egress,readonly`);
@@ -142,7 +143,7 @@ test("create() with an allowlist fails in words naming the image when its pull f
 	const { provider, calls, names, volumeNames } = fakeDocker({ images: [EGRESS_IMAGE], pull: "fails" });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false, JSON.stringify(made));
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /^docker pull debian:bookworm-slim failed, so nothing was made: .*pull access denied for debian:bookworm-slim/);
 	assert.deepEqual(calls().filter((args) => args[0] === "volume" || args[0] === "run"), [], "no volume, no proxy, no computer");
 	assert.deepEqual([names(), volumeNames()], [[], []]);
@@ -295,7 +296,7 @@ test("create() fails closed when the proxy ends before it is ready: the computer
 	const { provider, calls, names, volumeNames } = fakeDocker({ egress: "exits" });
 	const made = await provider.create(SPEC);
 	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "docker");
+	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /egress proxy .* ended .*: egress: no host list/);
 	assert.equal(computerRunOf(calls()), undefined, "the computer was never run");
 	assert.deepEqual([names(), volumeNames()], [[], []]);
