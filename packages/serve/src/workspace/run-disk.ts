@@ -63,6 +63,16 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     return { diskId: launch.diskId, kind: "launch" };
   }
   const stored = await agentDiskOf(options.store, options.agentId);
+  /** Waits for a pending disk to read available, then clears its pending mark (unless it was removed or replaced meanwhile). */
+  const ready = async (diskId: string): Promise<void> => {
+    await availableDisk(control, diskId, { ...(options.availableMs !== undefined ? { timeoutMs: options.availableMs } : {}), ...(signal ? { signal } : {}) });
+    const now = await agentDiskOf(options.store, options.agentId);
+    if (now?.diskId === diskId && !now.removing) await storeAgentDisk(options.store, options.agentId, { diskId });
+  };
+  const readyReused = (diskId: string): Promise<void> =>
+    ready(diskId).catch((error: unknown) => {
+      throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is not ready in region ${region}: ${(error as Error).message}`, { cause: error });
+    });
   // A launch that names no disk resolved to its agent's on its first claim, and that disk was kept for the run: a later
   // claim of the same run (a reopened one) mounts it or is refused, never another disk.
   const kept = launch === undefined && options.runId !== undefined ? await runDiskKept(options.store, options.runId) : undefined;
@@ -71,6 +81,7 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
   // run launched while DELETE /v2/agents/{id}/archil ran is refused, never started on a disk being deleted.
   if (bound !== undefined) {
     if (stored?.diskId !== bound || stored.removing) throw new ArchilClaimRefused(`This run's Archil disk ${bound} was its agent's, and it ${stored?.diskId === bound ? "is being" : "has been"} removed: start a new run, and it gets the agent's new disk.`);
+    if (stored.pending) await readyReused(bound);
     return { diskId: bound, kind: "agent" };
   }
   const keep = async (diskId: string): Promise<RunDisk> => {
@@ -78,15 +89,18 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     return { diskId, kind: "agent" };
   };
   if (stored?.removing) throw new ArchilClaimRefused(`This agent's Archil disk ${stored.diskId} is being removed: start a new run once that is done, and it gets a new disk.`);
-  if (stored !== undefined) return keep(stored.diskId);
+  if (stored !== undefined) {
+    if (stored.pending) await readyReused(stored.diskId);
+    return keep(stored.diskId);
+  }
   const name = diskNameOf(await serverIdOf(options.store), options.agentId);
   let id: string;
   try {
     id = (await ensureDisk(control, name, signal ? { signal } : {})).id;
-    // Stored before the wait, so a disk that never becomes available is still the agent's: DELETE /v2/agents/{id}/archil
-    // finds it, and the plan's slot it takes is never lost.
-    await storeAgentDisk(options.store, options.agentId, { diskId: id });
-    await availableDisk(control, id, { ...(options.availableMs !== undefined ? { timeoutMs: options.availableMs } : {}), ...(signal ? { signal } : {}) });
+    // Stored before the wait, as pending, so a disk that never becomes available is still the agent's (DELETE
+    // /v2/agents/{id}/archil finds it, and the plan's slot it takes is never lost) and a claim that finds it waits.
+    await storeAgentDisk(options.store, options.agentId, { diskId: id, pending: true });
+    await ready(id);
   } catch (error) {
     if (error instanceof ArchilDiskLimit) throw new ArchilClaimRefused(`This agent's Archil disk can't be made: ${diskLimitWords(error.limit)}.`, { cause: error });
     throw new ArchilClaimRefused(`This agent's Archil disk ${name} can't be made in region ${region}: ${(error as Error).message}`, { cause: error });

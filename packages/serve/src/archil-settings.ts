@@ -74,6 +74,8 @@ export const ARCHIL_DISK_ID = /^dsk-[0-9a-f]{16}$/;
 export interface AgentDisk {
   readonly diskId: string;
   readonly removing?: true;
+  /** Made, and not yet read `available` at Archil: a claim that finds it waits for it before it mounts. */
+  readonly pending?: true;
 }
 
 /** The settings key agent `agentId`'s disk is stored under. */
@@ -84,12 +86,12 @@ export async function agentDiskOf(store: { settings: Pick<Settings, "get"> }, ag
   const read = await store.settings.get(agentDiskKey(agentId));
   const row = typeof read === "object" && read !== null ? (read as Record<string, unknown>) : {};
   if (typeof row.diskId !== "string" || !ARCHIL_DISK_ID.test(row.diskId)) return undefined;
-  return { diskId: row.diskId, ...(row.removing === true ? { removing: true as const } : {}) };
+  return { diskId: row.diskId, ...(row.removing === true ? { removing: true as const } : {}), ...(row.pending === true ? { pending: true as const } : {}) };
 }
 
 /** Stores `disk` on agent `agentId`, as removing when it says so. */
 export async function storeAgentDisk(store: { settings: Pick<Settings, "put"> }, agentId: string, disk: AgentDisk): Promise<void> {
-  await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, ...(disk.removing ? { removing: true } : {}) });
+  await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, ...(disk.removing ? { removing: true } : {}), ...(disk.pending ? { pending: true } : {}) });
 }
 
 /** The settings key of the agent disk run `runId` first resolved to (its launch record is written once, before any disk). */
