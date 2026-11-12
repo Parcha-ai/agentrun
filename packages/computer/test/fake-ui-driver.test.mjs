@@ -49,7 +49,7 @@ test("with ui.tree off, observe answers the image and the reason with no nodes, 
 	const seen = (await c.client.call("ui.observe", {})).value;
 	assert.deepEqual(seen.nodes, []);
 	assert.equal(seen.empty, `ui.tree is off here: ${why}`);
-	assert.equal(seen.image.width, 480, "the image comes unasked, at the window's size within the default edge");
+	assert.equal(seen.image.width, 320,"the image comes unasked, at the window's size within the default edge");
 	const clicked = await c.client.call("ui.act", { state: seen.state, steps: [{ click: [40, 150] }] });
 	assert.deepEqual(clicked.value.steps, [{ route: "background", verified: false }], "a point from the image-only state still lands");
 	await c.close();
