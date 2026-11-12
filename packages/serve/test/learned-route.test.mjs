@@ -137,10 +137,11 @@ test("R4 (guard) a capped codex run's learned node is admitted by the session's 
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: fake("gateway"), AGENT_MODEL_PRICE: OUTPUT_PRICED }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
-  // $0.103 holds the harness's own first request (its least, 1,024 tokens at $100 a million, $0.1024), not its next after
-  // the $0.001 it spent, nor the node's $0.9216: the run pauses at the cap whichever is asked first, on the one total. That
-  // the node's refusal counts the harness's spend is the next test's, on a cap that only that spend decides.
-  const cap = 0.103;
+  // $0.105 holds the harness's own first request (its least, 1,024 tokens at $100 a million, $0.1024) and is just above the
+  // line where the cap's wrap-up would refuse the node's call before it asks (the $0.001 spent plus the reserve), but not the
+  // node's $0.9216: the session's guard refuses the node and the run pauses at the cap on the one total. That the node's
+  // refusal counts the harness's spend is the next test's, on a cap that only that spend decides.
+  const cap = 0.105;
   const { runId, rows, view } = await ran(api, data, "capped-port", "codex", { fields: { max_cost_usd: cap }, ends: ["completed", "failed", "input_required"] });
   assert.deepEqual(gw.requests.filter((r) => r.method === "POST"), [], "the node's request never left");
   assert.deepEqual((await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === LEARNED_WORKFLOW_TOOL), [], "refused before its record: the session wrote none");
