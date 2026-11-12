@@ -360,8 +360,10 @@ export function checkProposal(input: CheckInput): ProposalCheck {
         const original = input.base.rules?.get(rule);
         const at = holders.findIndex((one) => one.file === holder);
         if (original !== undefined && holder !== original && at >= 0 && note.supersedes.includes(original)) {
-          alternates.push([holders[at]!, note.file]);
-          holders[at] = note;
+          // At its own place in the answer (the end of the holders so far), not the copy's: the shared checks name notes
+          // in answer order, so an update must not jump ahead of a note between the two.
+          alternates.push([holders.splice(at, 1)[0]!, note.file]);
+          holders.push(note);
           rules.set(rule, note.file);
           continue;
         }

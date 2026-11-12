@@ -125,3 +125,15 @@ test("a copy of a seed note's rule, then an update of that note: the update hold
   assert.equal(after.ok, true, "what is left passes");
   assert.deepEqual(after.notes.map(({ file }) => file), ["update.md"]);
 });
+
+// #2256 review (PRRT_kwDOUmdVMs62oQtX): the update keeps its own place in the answer, behind a note between it and the copy.
+test("a copy, a note superseding the same seed note, then an update of it: the update, last in the answer, is the one the shared checks refuse; both rules survive", () => {
+  const base = seedOf(3);
+  const rule = "Old rule number 1.";
+  const changes = [change({ file: "copy.md", body: rule, supersedes: [] }), change({ file: "new.md", body: "Rule S: name the source.", supersedes: ["old-1.md"] }), change({ file: "update.md", body: rule, supersedes: ["old-1.md"] })];
+  const first = checkProposal({ base, changes });
+  assert.deepEqual(first.problems.map(({ rule: name, path }) => [name, path]).sort(), [["supersedes", "update.md"]], "the update is refused, not new.md");
+  const second = checkProposal({ base, changes: changes.filter(({ path }) => path !== "update.md") });
+  assert.equal(second.ok, true);
+  assert.deepEqual(second.notes.map(({ file }) => file), ["copy.md", "new.md"], "both rules survive");
+});
