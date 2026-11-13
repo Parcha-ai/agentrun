@@ -51,10 +51,10 @@ function network({ answer = "fresh", freshS = 3600, address = "93.184.216.34" } 
 }
 
 /** A store at T0 with the server saved, its token ending `leftMs` after T0, and a claimed run. */
-async function setUp(t, leftMs) {
+async function setUp(t, leftMs, auth = "bearer") {
   const opened = await storeOn(t);
   const set = setOf(leftMs);
-  await opened.store.mcp.put({ name: "fake", url: MCP_URL, auth: "bearer", tools: [ADD], sealed: sealMcpCredential(KEY, "fake", { type: "oauth", set }, MCP_URL), tokenLeftMs: leftMs });
+  await opened.store.mcp.put({ name: "fake", url: MCP_URL, auth, tools: [ADD], sealed: sealMcpCredential(KEY, "fake", { type: "oauth", set }, MCP_URL), tokenLeftMs: leftMs });
   await queued(opened.store, "run-1");
   const claim = await opened.store.claim("run-1", "runner-a", { leaseMs: 600_000 });
   return { ...opened, claim };
@@ -179,7 +179,7 @@ test("a row another claim's refresh left, its new token near its end but valid o
 test("a refresh that lands between a run's read of the credential and of its token's end never leaves it sending the expired token", async (t) => {
   // The credential and its end are one row snapshot: another claim's refresh landing right after this run read the row must
   // not pair the old token with the new token's end. The run's next call sees the row moved and opens the new token.
-  const { store, claim } = await setUp(t, 30 * MINUTE);
+  const { store, claim } = await setUp(t, 30 * MINUTE, "oauth");
   const old = await store.mcp.server("fake");
   const fresh = { ...setOf(60 * MINUTE), tokens: { access_token: FRESH, token_type: "Bearer", refresh_token: `not-a-secret-${"refresh-2"}` } };
   let landed = false;
