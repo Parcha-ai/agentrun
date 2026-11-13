@@ -164,6 +164,8 @@ def exec_run(c, argv, timeout_ms=60000):
     if "error" in reply:
         raise Failed(f"{os.path.basename(argv[0])}: {reply['error'].get('message')}")
     r = reply["result"]
+    if r.get("timedOut"):
+        raise Failed(f"{os.path.basename(argv[0])}: no answer in {timeout_ms // 1000} s")
     if r.get("exitCode") != 0:
         err = base64.b64decode(r.get("stderr", "")).decode(errors="replace").strip()
         raise Failed(f"{os.path.basename(argv[0])}: exit {r.get('exitCode')}: {err[-400:]}")
@@ -323,20 +325,25 @@ CLOSE_WINDOWS = """on run argv
 end run"""
 
 # The snapshot's AppleScript half: each calendar's name and its count of today's events, each Notes folder's name and
-# its count of notes. Names and counts only.
-SNAPSHOT = """on run argv
+# its count of notes. Names and counts only. One script per app, so a stuck app is named.
+SNAPSHOT_CALENDARS = """on run argv
   set t0 to current date
   set time of t0 to 0
   set t1 to t0 + 1 * days
   set out to ""
   tell application "Calendar"
     repeat with c in calendars
-      set out to out & "calendar" & tab & (name of c) & tab & (count (events of c whose start date >= t0 and start date < t1)) & linefeed
+      set out to out & (name of c) & tab & (count (events of c whose start date >= t0 and start date < t1)) & linefeed
     end repeat
   end tell
+  return out
+end run"""
+
+SNAPSHOT_FOLDERS = """on run argv
+  set out to ""
   tell application "Notes"
     repeat with f in folders
-      set out to out & "folder" & tab & (name of f) & tab & (count notes of f) & linefeed
+      set out to out & (name of f) & tab & (count notes of f) & linefeed
     end repeat
   end tell
   return out
@@ -346,16 +353,25 @@ end run"""
 def snapshot(c):
     """What the harness can see: names, counts and ids."""
     shot = {"calendars": {}, "folders": {}, "windows": {}, "root": []}
-    for line in osa(c, SNAPSHOT).splitlines():
-        kind, name, count = (line.split("\t") + ["", ""])[:3]
-        group = shot["calendars" if kind == "calendar" else "folders"]
-        key, n = name, 2
-        while key in group:  # two calendars may share a name
-            key, n = f"{name} ({n})", n + 1
-        group[key] = int(count or 0)
+    for group, script, app in (("calendars", SNAPSHOT_CALENDARS, "Calendar"), ("folders", SNAPSHOT_FOLDERS, "Notes")):
+        try:
+            lines = osa(c, script).splitlines()
+        except Failed as e:
+            raise Failed(f"the snapshot of {app}: {e}")
+        for line in lines:
+            name, count = (line.split("\t") + [""])[:2]
+            fill(shot[group], name, count)
     shot["windows"] = {app: sorted(ids) for app, ids in windows().items()}
     shot["root"] = sorted(os.listdir(ROOT)) if os.path.isdir(ROOT) else []
     return shot
+
+
+def fill(group, name, count):
+    """One name and count, under a key of its own: two calendars may share a name."""
+    key, n = name, 2
+    while key in group:
+        key, n = f"{name} ({n})", n + 1
+    group[key] = int(count or 0)
 
 
 def differences(before, after):
@@ -967,7 +983,9 @@ def main():
             for app, words in can_automate(c, ask=True).items():
                 print(f"Automation, Computerd > {APPS.get(app, app)}: {words}")
             sys.exit(0)
-        missing = {app: words for app, words in can_automate(c).items() if words != "granted"}
+        answers = can_automate(c)
+        print("Automation: " + ", ".join(f"{APPS.get(app, app)} {words}" for app, words in answers.items()), flush=True)
+        missing = {app: words for app, words in answers.items() if words != "granted"}
         if missing:
             names = ", ".join(f"{APPS.get(app, app)} ({words})" for app, words in missing.items())
             sys.exit(f"Computerd has no Automation grant for: {names}. The sandbox is made and removed by AppleScript: run "
