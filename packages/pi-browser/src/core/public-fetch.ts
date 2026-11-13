@@ -34,6 +34,8 @@ export function isPrivateAddress(ip: string): boolean {
   const groups = net.isIPv6(ip) ? v6Groups(ip) : null;
   if (!groups) return true;
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) return isPrivateAddress([groups[6]! >> 8, groups[6]! & 0xff, groups[7]! >> 8, groups[7]! & 0xff].join("."));
+  // 6to4 (2002::/16, RFC 3056) carries an IPv4 address in its next 32 bits, which a relay delivers to: judged as that one.
+  if (groups[0] === 0x2002) return isPrivateAddress([groups[1]! >> 8, groups[1]! & 0xff, groups[2]! >> 8, groups[2]! & 0xff].join("."));
   return V6_PRIVATE.some(([base, bits]) => inV6(groups, v6Groups(base)!, bits));
 }
 

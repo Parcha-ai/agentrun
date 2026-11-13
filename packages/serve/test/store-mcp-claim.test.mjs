@@ -48,7 +48,7 @@ async function setUp(t, { tools = [ADD], seal = headersCredential, mcp } = {}) {
   return { ...opened, fake, claim };
 }
 
-const claimOf = (store, claim, grants, extra = {}) => mcpClaim({ store, claim, grants, sealKey: KEY, signal: new AbortController().signal, bounds: quick, ...extra });
+const claimOf = (store, claim, grants, extra = {}) => mcpClaim({ loopback: true, store, claim, grants, sealKey: KEY, signal: new AbortController().signal, bounds: quick, ...extra });
 const calls = (fake) => fake.log.filter((entry) => entry.method === "tools/call");
 const bearer = (step) => step.credentials.fake?.headers?.authorization;
 
@@ -129,7 +129,7 @@ test("M6: the opened credentials are dropped at release and when the claim's sig
   step.release();
   assert.deepEqual({ ...step.credentials }, {}, "released: no credential held");
   const lost = new AbortController();
-  const again = await mcpClaim({ store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: lost.signal, bounds: quick });
+  const again = await mcpClaim({ loopback: true, store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: lost.signal, bounds: quick });
   assert.equal(bearer(again), `Bearer ${TOKEN}`, "opened again at the next claim");
   lost.abort(new Error("the claim was lost"));
   assert.deepEqual({ ...again.credentials }, {}, "the claim lost: no credential held");

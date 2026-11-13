@@ -1,11 +1,9 @@
 // Every model-visible host tool's definition: its name, words, schema and replay, as main shows them today. read, write,
 // edit and bash are pi's (pi 1.5.0's coding tools, MIT), with serve's additions: bash's timeout words and read's image
 // sentence on a computer. The five background tools are serve's (background.ts). A test holds every one of them, in
-// order, to serve's own on main. A computer of a kind past files and a shell adds its own tools after them
-// (capabilityToolDefs): the desktop's, the phone's.
-import { DESKTOP_TOOL_DEFS } from "./desktop.js";
+// order, to serve's own on main. A desktop or a phone adds the computer's tools after them (computer.ts
+// computerToolDefs).
 import type { CapabilityKind } from "./hands.js";
-import { PHONE_TOOL_DEFS } from "./phone.js";
 import { BACKGROUND_INPUT_BYTES, BACKGROUND_LIST_MAX, BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES, BACKGROUND_SIGNALS, BASH_DEFAULT_TIMEOUT_S } from "./limits.js";
 
 /** Where the run's shell is: on a computer (bash and the background tools run there), the run's folder's own exec with no
@@ -164,11 +162,5 @@ export function hostToolDefs(options: { maxExecS: number; shell: ShellPlace }): 
   return defs;
 }
 
-/** The kinds, in the order their tools follow the host tools. */
+/** The kinds whose computer brings the computer's tools, each under its own settings key. */
 export const CAPABILITY_KINDS: readonly CapabilityKind[] = Object.freeze(["desktop", "phone"]);
-
-/** A computer kind's own tools, which a run of that kind sees after its host tools: the desktop's (desktop.ts) or the
- *  phone's (phone.ts). */
-export function capabilityToolDefs(kind: CapabilityKind): readonly ToolDef[] {
-  return kind === "desktop" ? DESKTOP_TOOL_DEFS : PHONE_TOOL_DEFS;
-}
