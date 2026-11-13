@@ -117,7 +117,7 @@ export function blocksOf(runs: readonly CostRun[], size: number): Block[] {
  *  "7.4x"), a whole number from 10 up ("12x"). */
 export function timesOf(ratio: number): string {
   const tenth = Math.round(ratio * 10) / 10;
-  return `${tenth >= 10 ? Math.round(tenth) : tenth.toFixed(1)}x`;
+  return `${tenth >= 10 ? Math.round(ratio) : tenth.toFixed(1)}x`;
 }
 
 /** A share as a person reads it: a whole percent. */
