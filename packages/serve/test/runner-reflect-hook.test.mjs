@@ -93,6 +93,28 @@ test("a turn an earlier claim asked first answers with what that ask kept: the j
   assert.equal((await unknown(inputOf())).also[0].row.proposal.look_back_usd, null, "the job's cost unknown at the first ask: the look-back's is too");
 });
 
+test("a turn an earlier claim asked first and this claim never asks (skipped, or cut) still keeps that ask's figures: the job's cost and answer time, its look-back what the run spent since, unknown when that is", async () => {
+  // The earlier attempt answered the job at $0.002 and its look-back request was cut by a lost runner: under a cap the run's
+  // spend is now unknown (bookCut), so this claim skips the turn, and its look-back reads unknown, never $0 or absent.
+  const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
+  const rounds = [];
+  const keptOf = (round) => (rounds.push(round), kept);
+  const { hook, input, calls } = hookWith({ facts: { capUsd: 1, costUsd: null } });
+  const [row] = (await hook({ ...input(), keptOf })).also;
+  assert.deepEqual(calls.asked, [], "skipped: nothing asked");
+  assert.deepEqual(row.row.proposal, { state: "dropped", reason: "unknown_cost", detail: said.unknownCost, answered_at: kept.answered_at, job_cost_usd: 0.002, look_back_usd: null });
+  assert.deepEqual(rounds, [1], "the run's first round's turn");
+  // Its cap reached since, or a person's stop: the earlier attempt's spend ($0.008 of the run's $0.01) is the look-back's.
+  for (const [facts, cut, reason] of [[{ capReached: true }, undefined, "no_budget"], [{}, "stopped-looking", "cancelled"]]) {
+    const { hook: skip, input: inputOf } = hookWith({ facts });
+    const [one] = (await skip({ ...inputOf(cut ? "failed" : "completed"), ...(cut ? { cut } : {}), keptOf: () => kept })).also;
+    assert.deepEqual([one.row.proposal.reason, one.row.proposal.answered_at, one.row.proposal.job_cost_usd, one.row.proposal.look_back_usd], [reason, kept.answered_at, 0.002, 0.008], reason);
+  }
+  // A turn no claim asked before: the skip keeps no figures, as before.
+  const { hook: fresh, input: freshInput } = hookWith({ facts: { capUsd: 1, costUsd: null } });
+  assert.deepEqual(await fresh({ ...freshInput(), keptOf: () => undefined }), { also: [dropped("unknown_cost", said.unknownCost)] });
+});
+
 test("the learning run a proposal queues names the grade model the hook is given (gradeModelOf, as main's server resolves it), and none when it is given none", async () => {
   const deps = (extra = {}) => ({
     facts: async () => ({ learns: true, costUsd: 0.01 }),

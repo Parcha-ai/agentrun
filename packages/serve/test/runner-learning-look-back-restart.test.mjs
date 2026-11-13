@@ -22,6 +22,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -39,10 +40,9 @@ const until = async (done, what, ms = 40_000) => {
   }
 };
 
-/** A learning CLI run of the faux harness whose end-of-run turn (`how`: cut, or answered then held) holds on runner-a
- *  until runner-a is closed (the claim lost mid look-back), then runs on runner-b. Its session's booked requests and
- *  turns, the prompts its CLI was sent, its kept learning, and when runner-b started. */
-async function restarted(t, how) {
+/** A learning CLI run of the faux harness told `instructions` (its launch with `launch` too), on a store in a fresh
+ *  folder: its runners, started by name, and what its session and learning hold once it ended (`read`). */
+async function learningRun(t, instructions, launchExtra = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-learning-look-back-restart-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [];
@@ -55,12 +55,9 @@ async function restarted(t, how) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  const go = join(dir, "go");
-  const signal = join(dir, "held");
-  const instructions = `Look back, ${how} and held until ${go} (signal ${signal}).`;
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions, harness: HARNESS, tools: ["read"], learning: true } });
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: instructions(dir), harness: HARNESS, tools: ["read"], learning: true } });
   const seed = await landWorkflows(dir, "agent-1", []);
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" }, learning: startAt(seed) };
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" }, learning: startAt(seed), ...launchExtra };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: "not-a-secret-gateway", AGENT_MODEL_PRICE: "1,2,0.5", AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
@@ -78,28 +75,42 @@ async function restarted(t, how) {
     runners.push(runner);
     return runner;
   };
+  /** The run's end after `since` (its endedAt), with no runner holding it. */
+  const ended = (since = 0) => until(async () => {
+    const now = await server.runs.get(RUN);
+    return (now.endedAt ?? 0) > since && ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run's end");
+  const read = async (row) => {
+    reader = await Harness.open(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), { models: () => createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
+    const sessions = journalSessions(reader, ctx, server);
+    const all = [];
+    for (const key of await sessions.keys()) for (const record of await sessions.read(key)) all.push(record);
+    const requests = all.filter((record) => record.kind === "runner.request").map((record) => record.data);
+    const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
+    const sent = all.filter((record) => record.kind === "faux.user").map((record) => record.data.text);
+    const kept = await server.learning.proposal(RUN);
+    const timeline = (await runTimeline(server, RUN, ctx)).map((one) => [one.kind, one.text ?? one.summary ?? one.tool_name]);
+    return { requests, turns, sent, kept, timeline };
+  };
+  return { dir, server, start, ended, read };
+}
+
+/** A learning CLI run of the faux harness whose end-of-run turn (`how`: cut, or answered then held) holds on runner-a
+ *  until runner-a is closed (the claim lost mid look-back), then runs on runner-b. Its session's booked requests and
+ *  turns, the prompts its CLI was sent, its kept learning, and when runner-b started. */
+async function restarted(t, how, launchExtra = {}) {
+  const { dir, server, start, ended, read } = await learningRun(t, (at) => `Look back, ${how} and held until ${join(at, "go")} (signal ${join(at, "held")}).`, launchExtra);
   const a = await start("runner-a");
   // The end-of-run turn holds on runner-a (its request admitted and unanswered, or answered and the turn held after it).
-  await until(() => existsSync(signal), "runner-a's end-of-run turn holds");
+  await until(() => existsSync(join(dir, "held")), "runner-a's end-of-run turn holds");
   await a.close();
   const lost = await server.runs.get(RUN);
   assert.notEqual(lost.state, "ended", `runner-a wrote no end: ${JSON.stringify(lost)}`);
-  writeFileSync(go, "");
+  writeFileSync(join(dir, "go"), "");
   const restartedAt = Date.now();
   await start("runner-b");
-  const row = await until(async () => {
-    const now = await server.runs.get(RUN);
-    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the run's end on runner-b");
-  reader = await Harness.open(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), { models: () => createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
-  const sessions = journalSessions(reader, ctx, server);
-  const all = [];
-  for (const key of await sessions.keys()) for (const record of await sessions.read(key)) all.push(record);
-  const requests = all.filter((record) => record.kind === "runner.request").map((record) => record.data);
-  const turns = all.filter((record) => record.kind === "runner.turn").map((record) => record.data);
-  const sent = all.filter((record) => record.kind === "faux.user").map((record) => record.data.text);
-  const kept = await server.learning.proposal(RUN);
-  return { row, requests, turns, sent, kept, restartedAt };
+  const row = await ended();
+  return { row, ...(await read(row)), restartedAt };
 }
 
 /** The paid look-back asks across both claims: the CLI's turns sent the end-of-run prompt, and any request booked at
@@ -131,4 +142,40 @@ test("a CLI look-back answered and then cut by a lost runner: asked again once o
   assert.equal(proposal.job_cost_usd, 0.002, `the job's own cost, never the earlier attempt's look-back: ${JSON.stringify(proposal)}`);
   assert.ok(Date.parse(proposal.answered_at) < restartedAt, `when the job answered is runner-a's, before the restart: ${JSON.stringify(proposal)}`);
   assert.equal(proposal.look_back_usd, 0.013, `both attempts' look-back spend ($0.004, then $0.008 + $0.001): ${JSON.stringify(proposal)}`);
+});
+
+test("a CLI look-back a lost runner cut under a cap: the next claim skips it (the run's spend unknown), and still keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
+  const { row, turns, sent, kept, restartedAt } = await restarted(t, "cut", { max_cost_usd: 1 });
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.deepEqual(asks(sent, turns), { prompts: 1, twice: 0 }, `sent once, on runner-a; runner-b asks nothing: ${JSON.stringify(turns)}`);
+  const proposal = kept?.proposal;
+  assert.deepEqual([proposal?.state, proposal?.reason], ["dropped", "unknown_cost"], JSON.stringify(proposal));
+  assert.equal(proposal.job_cost_usd, 0.002, `the job's own cost, as it stood when the turn was first asked: ${JSON.stringify(proposal)}`);
+  assert.ok(Date.parse(proposal.answered_at) < restartedAt, `when the job answered is runner-a's, before the restart: ${JSON.stringify(proposal)}`);
+  assert.equal(proposal.look_back_usd, null, `the look-back spent what no one knows (its cut request), never nothing: ${JSON.stringify(proposal)}`);
+});
+
+test("a CLI run stopped while looking back, then followed up and its runner lost in the follow-up's turn: the next claim recovers the follow-up, never settles it as that old look-back", { timeout: 180_000 }, async (t) => {
+  const { dir, server, start, ended, read } = await learningRun(t, (at) => `Look back, stopped, then a follow-up held until ${join(at, "go")} (signal ${join(at, "held")}).`);
+  const held = join(dir, "held");
+  const a = await start("runner-a");
+  // Round 1's look-back holds; the person stops the run there: its prompt is on the record, with no submission.
+  await until(() => existsSync(held), "runner-a's end-of-run turn holds");
+  rmSync(held);
+  await server.command(RUN, { kind: "stop" });
+  const stopped = await ended();
+  assert.equal(stopped.state, "stopped", JSON.stringify(stopped));
+  // The follow-up reopens the run; its turn holds; its runner is lost there.
+  await server.runs.reopen(RUN, { kind: "steer", body: { text: "And once more?" } });
+  await server.flush?.();
+  await until(() => existsSync(held), "the follow-up's turn holds on runner-a");
+  await a.close();
+  writeFileSync(join(dir, "go"), "");
+  await start("runner-b");
+  const row = await ended(stopped.endedAt ?? 0);
+  const { timeline, sent } = await read(row);
+  assert.equal(row.state, "ended", `${JSON.stringify(row)} ${JSON.stringify(timeline)}`);
+  const answers = timeline.filter(([kind]) => kind === "final_answer").map(([, text]) => text);
+  assert.ok(answers.includes("Followed."), `the follow-up's turn was recovered and answered as the job's: ${JSON.stringify(timeline)}`);
+  assert.equal(sent.filter((text) => REFLECT.test(text)).length, 2, `round 1's look-back, stopped, and round 2's after the follow-up, each sent once: ${JSON.stringify(sent)}`);
 });

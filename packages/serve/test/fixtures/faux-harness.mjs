@@ -165,6 +165,15 @@ export function script(spec, session = {}) {
     const held = existsSync(until) ? answered : how === "cut" ? [cutSignalled(signal)] : [...answered, hangSignalled(signal)];
     return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...held, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }, { say: "Asked twice.", usd: 0.016 }];
   }
+  // A job of two requests ($0.001 each), then a hold (writing the signal) until <file> exists: the end-of-run turn reaches
+  // it (a person stops the run there), and a hold keeps its place, so the follow-up that reopens the run reaches it too
+  // (its runner is lost there). Then the follow-up's answer ($0.002) and end ($0.001), and its round's look-back: an
+  // answer saying nothing to keep ($0.008) and its end ($0.001).
+  const stoppedLooking = /Look back, stopped, then a follow-up held until (\S+) \(signal (\S+)\)\./.exec(text);
+  if (stoppedLooking) {
+    const [, until, signal] = stoppedLooking;
+    return [{ say: "Answered.", usd: 0.001 }, { end: true, usd: 0.001 }, ...(existsSync(until) ? [] : [hangSignalled(signal)]), { say: "Followed.", usd: 0.002 }, { end: true, usd: 0.001 }, { say: "Nothing new.", usd: 0.008 }, { end: true, usd: 0.001 }];
+  }
   // One request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, then the answer.
   if (/Hold the request that carries the note\./.test(text)) return [{ say: "Done.", inputTokensMax: 1_000, usd: 0.01 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that the provider does not
