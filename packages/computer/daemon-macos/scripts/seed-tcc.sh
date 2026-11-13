@@ -7,6 +7,7 @@
 #   scripts/seed-tcc.sh PATH/TO/Computerd.app
 #
 # Each write is reported, and a refusal is not fatal: the smoke test then checks that hello says why a feature is off.
+# tccd holds the user database at times ("database is locked"), so each write waits up to 10 s for it.
 # Never run this on a person's Mac.
 set -uo pipefail
 
@@ -26,7 +27,7 @@ now="$(date +%s)"
 seed() {
 	local db="$1" service="$2" sudo="$3"
 	local sql="INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, indirect_object_identifier, flags, last_modified) VALUES ('$service', '$id', 0, 2, 4, 1, X'$hex', 'UNUSED', 0, $now);"
-	if $sudo sqlite3 "$db" "$sql" 2>&1; then
+	if $sudo sqlite3 -cmd ".timeout 10000" "$db" "$sql" 2>&1; then
 		echo "seeded $service in $db"
 	else
 		echo "could not seed $service in $db"
@@ -53,7 +54,7 @@ for target in /System/Applications/Calendar.app /System/Applications/Notes.app /
 		|| { echo "csreq could not compile $target_id's requirement"; continue; }
 	target_hex="$(xxd -p "$target_blob" | tr -d '\n')"
 	sql="INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceAppleEvents', '$id', 0, 2, 4, 1, X'$hex', 0, '$target_id', X'$target_hex', 0, $now);"
-	if sqlite3 "$user_db" "$sql" 2>&1; then
+	if sqlite3 -cmd ".timeout 10000" "$user_db" "$sql" 2>&1; then
 		echo "seeded kTCCServiceAppleEvents for $target_id in $user_db"
 	else
 		echo "could not seed kTCCServiceAppleEvents for $target_id in $user_db"

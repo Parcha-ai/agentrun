@@ -8,6 +8,11 @@
 //   second   "Second page" heading and "Back", NEXT_MS after Next and a NEXT_ANIMATE_MS fade; Back returns home. Home's
 //            views leave the window, so their refs are stale there, and come back as the same elements.
 //
+// Its windows: home also holds "New window" (id open), which opens a second window titled "Another window" NEW_WINDOW_MS
+// after its press, in front, and "Close" (id close), which closes the window it is in; "Another window" holds its
+// heading and its own Close. Closing the last window leaves the app running with none, as a Mac app does, and opening
+// the app again (apps.launch) shows its main window on its home screen.
+//
 // Started with --input-log PATH it is the desktop input fixture instead (InputFixture.swift).
 #if os(macOS)
 import AppKit
@@ -22,6 +27,7 @@ enum Spec {
 let savedMs = 300
 let nextMs = 200
 let nextAnimateMs = 300
+let newWindowMs = 300
 let size = Spec.size
 
 /// A view whose frames read from the top left, as window points do.
@@ -57,10 +63,14 @@ final class Fixture: NSObject, NSApplicationDelegate {
 	let home = Flipped(frame: NSRect(origin: .zero, size: size))
 	let second = Flipped(frame: NSRect(origin: .zero, size: size))
 	let saved = NSTextField(labelWithString: "Saved")
+	/// The windows New window opened that are still open.
+	var others: [NSWindow] = []
 
 	func applicationDidFinishLaunching(_ note: Notification) {
 		window.titlebarAppearsTransparent = true
 		window.title = "UI fixture"
+		// Closed by Close and shown again by a reopen: the window object stays.
+		window.isReleasedWhenClosed = false
 		window.setFrame(NSRect(origin: .zero, size: size), display: false)
 		window.center()
 		window.contentView = root
@@ -81,6 +91,8 @@ final class Fixture: NSObject, NSApplicationDelegate {
 
 		home.addSubview(button("Save", "save", x: 16, y: 136, action: #selector(save)))
 		home.addSubview(button("Next", "next", x: 112, y: 136, action: #selector(next)))
+		home.addSubview(button("New window", "open", x: 92, y: 96, width: 104, action: #selector(openAnother)))
+		home.addSubview(button("Close", "close", x: 208, y: 96, action: #selector(closeWindow)))
 
 		let canvas = Canvas(frame: NSRect(x: 16, y: 180, width: 200, height: 100))
 		canvas.setAccessibilityElement(true)
@@ -100,7 +112,15 @@ final class Fixture: NSObject, NSApplicationDelegate {
 		NSApp.activate(ignoringOtherApps: true)
 	}
 
-	func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+	func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
+
+	/// Opened again with no window: the main window comes back on its home screen.
+	func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows: Bool) -> Bool {
+		guard !hasVisibleWindows else { return true }
+		back()
+		window.makeKeyAndOrderFront(nil)
+		return false
+	}
 
 	func heading(_ words: String) -> NSTextField {
 		let label = NSTextField(labelWithString: words)
@@ -110,9 +130,9 @@ final class Fixture: NSObject, NSApplicationDelegate {
 		return label
 	}
 
-	func button(_ title: String, _ id: String, x: CGFloat, y: CGFloat, action: Selector) -> NSButton {
+	func button(_ title: String, _ id: String, x: CGFloat, y: CGFloat, width: CGFloat = 80, action: Selector) -> NSButton {
 		let b = NSButton(title: title, target: self, action: action)
-		b.frame = NSRect(x: x, y: y, width: 80, height: 28)
+		b.frame = NSRect(x: x, y: y, width: width, height: 28)
 		mark(b, id)
 		return b
 	}
@@ -154,6 +174,33 @@ final class Fixture: NSObject, NSApplicationDelegate {
 		second.removeFromSuperview()
 		root.addSubview(home)
 		window.title = "UI fixture"
+	}
+
+	/// "Another window", newWindowMs after the press, in front of the main window.
+	@objc func openAnother() {
+		later(newWindowMs) { [self] in
+			let another = NSWindow(
+				contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+			another.titlebarAppearsTransparent = true
+			another.isReleasedWhenClosed = false
+			another.title = "Another window"
+			let content = Flipped(frame: NSRect(origin: .zero, size: size))
+			let title = heading("Another window")
+			content.addSubview(title)
+			content.addSubview(button("Close", "close", x: 16, y: 56, action: #selector(closeWindow)))
+			another.contentView = content
+			another.setFrame(NSRect(origin: .zero, size: size), display: false)
+			another.setFrameTopLeftPoint(NSPoint(x: window.frame.minX + 40, y: window.frame.maxY - 40))
+			others.append(another)
+			another.makeKeyAndOrderFront(nil)
+		}
+	}
+
+	/// Closes the window the pressed Close is in.
+	@objc func closeWindow(_ sender: NSButton) {
+		guard let closing = sender.window else { return }
+		closing.close()
+		others.removeAll { $0 === closing }
 	}
 }
 
