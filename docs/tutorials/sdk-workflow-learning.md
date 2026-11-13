@@ -4,6 +4,31 @@ The [Claude Agent SDK](claude-sdk-learning.md) and [Codex SDK](codex-sdk-learnin
 
 This requires the client and server from the same reviewed development checkout. Build the DSL and client packages, and install their checkout versions alongside `@modelcontextprotocol/sdk` in your backend. The workflow entry point uses the DSL interpreter and MCP SDK; the notes-and-skills wrappers do not require a bridge.
 
+## How MCP fits in
+
+Think of a learned workflow as a saved recipe that can use your agent's existing tools. MCP gives the native agent one extra tool, `learned_workflow`, to follow an accepted recipe:
+
+1. Your backend starts a normal Claude or Codex task. The wrapper records the run through the AgentRun API.
+2. After the task, AgentRun uses the recorded evidence to propose, check and grade learning. A reusable skill may later become an accepted workflow.
+3. On a fresh task, the wrapper fetches the accepted learning revision. The native agent can choose its `learned_workflow` MCP tool when a saved workflow fits the request.
+4. The bridge in your backend executes that workflow with fresh inputs, calling the original functions you registered. It checks your tool policy and returns their result to the native agent.
+
+For example, a release reporter can learn “read the release status, then format the brief.” On the next request it follows that sequence for the newly requested service. Your application still starts the job, and your backend still executes its tools. The AgentRun API handles evidence and learning delivery; MCP handles the agent's call to the workflow bridge.
+
+## Which keys do I need?
+
+| Component | Authentication |
+| --- | --- |
+| Existing Claude or Codex agent | Keep its current native login or provider credentials in your backend. |
+| AgentRun wrapper | An AgentRun API key (`AGENTRUN_API_KEY`) for recording runs and fetching accepted learning. |
+| Server reflection and grading | A working model route configured on the AgentRun server, with that provider's credentials, such as an OpenRouter key. These model calls incur usage separately from the native task. |
+| Original tool callbacks | Keep any credentials those tools already need in your backend. |
+| Optional workflow model or judgment nodes | Supply an explicit `runNode` or `runJudge` adapter and its provider credentials. The bridge supplies neither adapter automatically. |
+
+**Tool-only workflows do not need a Jev key.** If you choose the [Jev judgment adapter](../../packages/jev/README.md#call-jev), direct TypeSafe access uses `TYPESAFE_API_KEY`. Its [OpenRouter route](../../packages/jev/README.md#through-openrouter) uses `OPENROUTER_API_KEY` with `provider: 'openrouter'`, without a separate TypeSafe key. Configure that adapter in your backend; a model key saved on the AgentRun server is not automatically passed to it.
+
+MCP itself needs no model-provider key. The local bridge generates its own connection authentication, exposed as `workflows.headers`; pass those headers to the native SDK as shown below.
+
 ## Register existing callbacks once
 
 Expose the tools a learned workflow may call, using their canonical MCP names and actual schemas. Pass the same callback functions used by your existing tools. The following example assumes `readReleaseStatus`, `statusInputSchema`, `statusOutputSchema`, and `authorizeTool` already belong to your backend:
