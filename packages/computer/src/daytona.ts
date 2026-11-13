@@ -12,7 +12,6 @@ import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL, o
 import { shellLine } from "./hosted/scripts.js";
 import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
-import { ARCHIL_HELPER, type ArchilEgress, archilEgressOf } from "./mount-archil.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerSpec, checkGpu, type NetworkPolicy, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
@@ -46,12 +45,6 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "k
 	sandboxClass?: "container" | "linux-vm";
 	/** The Daytona target (region); default the organization's. */
 	target?: string;
-	/**
-	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
-	 * lane>` such as 10.60.0.40:18100:42050 (parcha-proxy's archil-egress): for a target whose runners reach Archil only
-	 * through it. Unset, the client reaches Archil as the sandbox's network allows.
-	 */
-	archilEgress?: string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -455,7 +448,6 @@ class DaytonaHost implements MachineHost {
 	readonly #webSocket: WebSocketFactory;
 	readonly #class: "container" | "linux-vm";
 	readonly #target: string | undefined;
-	readonly #archilEgress: ArchilEgress | undefined;
 	/** The snapshot its GPU computers are made from, and their GPU. */
 	readonly #gpu: DaytonaGpuSnapshot;
 	readonly #autoStop: number;
@@ -466,12 +458,11 @@ class DaytonaHost implements MachineHost {
 	/** Whether each sandbox this host made was asked for a GPU, by id: what its read-back is held to. */
 	readonly #made = new Map<string, boolean>();
 
-	constructor(options: { rest: Rest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; archilEgress?: ArchilEgress; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+	constructor(options: { rest: Rest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
 		this.#rest = options.rest;
 		this.#webSocket = options.webSocket;
 		this.#class = options.sandboxClass;
 		this.#target = options.target;
-		this.#archilEgress = options.archilEgress;
 		this.#gpu = options.gpu;
 		this.#autoStop = options.autoStop;
 		this.#autoDelete = options.autoDelete;
@@ -714,17 +705,6 @@ class DaytonaHost implements MachineHost {
 	}
 
 	/**
-	 * argv as the toolbox runs it. With an egress gateway, the helper's mount and revoke of an Archil computer are given
-	 * it as their last word (egress=<gateway>:<mount lane>:<data lane>), as the helper reads it: the shared adapter's
-	 * mount steps name no gateway.
-	 */
-	#argv(argv: readonly string[]): readonly string[] {
-		const egress = this.#archilEgress;
-		if (egress === undefined || argv.length !== 5 || argv[0] !== ARCHIL_HELPER || (argv[1] !== "mount" && argv[1] !== "revoke")) return argv;
-		return [...argv, `egress=${egress.gateway}:${egress.mountLane}:${egress.dataLane}`];
-	}
-
-	/**
 	 * A session command of its own: argv as one shell line, run async with no input echo, as the toolbox's user (root, or
 	 * one with passwordless sudo, which the adapter's scripts use). Its output comes from the command's log stream, where
 	 * Daytona prefixes each stdout line with 01 01 01 and each stderr line with 02 02 02; an echo of a request the client
@@ -741,7 +721,7 @@ class DaytonaHost implements MachineHost {
 		if (!made.ok) return made;
 		let removed: Promise<void> | undefined;
 		const removeSession = () => (removed ??= this.#rest.call("DELETE", session, {}).then(() => {}));
-		const ran = await this.#rest.json("POST", `${session}/exec`, { json: { command: shellLine(this.#argv(argv)), runAsync: true, suppressInputEcho: true }, timeoutMs: ctx.timeoutMs }, ctx.signal);
+		const ran = await this.#rest.json("POST", `${session}/exec`, { json: { command: shellLine(argv), runAsync: true, suppressInputEcho: true }, timeoutMs: ctx.timeoutMs }, ctx.signal);
 		const commandId = ran.ok ? (ran.value as { cmdId?: unknown } | null)?.cmdId : undefined;
 		if (!ran.ok || typeof commandId !== "string") {
 			await removeSession();
@@ -972,7 +952,6 @@ export class DaytonaProvider extends HostedProvider {
 			arch = "amd64",
 			sandboxClass = "container",
 			target,
-			archilEgress,
 			gpuSnapshot,
 			autoStopMinutes = 0,
 			autoDeleteMinutes,
@@ -1002,7 +981,6 @@ export class DaytonaProvider extends HostedProvider {
 			arch,
 			sandboxClass,
 			...(target === undefined ? {} : { target }),
-			...(archilEgress === undefined || archilEgress === "" ? {} : { archilEgress: archilEgressOf(archilEgress) }),
 			gpu: daytonaGpuSnapshot(gpuSnapshot),
 			autoStop: autoStopMinutes,
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,

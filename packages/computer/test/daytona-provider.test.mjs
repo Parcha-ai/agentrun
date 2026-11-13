@@ -530,7 +530,7 @@ test("exec: a failed read of the command's session ends the run with that failur
 	assert.match(deleted[0], /\/process\/session\/agentrun-[0-9a-f]{16}$/);
 });
 
-test("exec is a session command of its own: argv as one shell line, async, no input echo; with archilEgress, the helper's mount and revoke take egress= as their last word", async () => {
+test("exec is a session command of its own: argv as one shell line, async, no input echo; archilEgress is the adapter's, so the helper's argv, egress= and all, goes as the adapter gives it", async () => {
 	const helper = "/usr/local/sbin/agentrun-archil";
 	const run = async (options, argv) => {
 		const tb = toolboxRecorder();
@@ -544,11 +544,10 @@ test("exec is a session command of its own: argv as one shell line, async, no in
 		return tb.commands[0].command;
 	};
 	const egress = { archilEgress: "192.0.2.40:18100:42050" };
-	assert.equal(await run(egress, [helper, "mount", "dsk", "aws-us-east-1", "/agents/a1/runs/r1/work"]), `${helper} mount dsk aws-us-east-1 /agents/a1/runs/r1/work egress=192.0.2.40:18100:42050`);
-	assert.equal(await run(egress, [helper, "revoke", "dsk", "aws-us-east-1", "/f"]), `${helper} revoke dsk aws-us-east-1 /f egress=192.0.2.40:18100:42050`);
-	assert.equal(await run(egress, [helper, "serve"]), `${helper} serve`, "serve takes no gateway");
-	assert.equal(await run({}, [helper, "mount", "dsk", "aws-us-east-1", "/f"]), `${helper} mount dsk aws-us-east-1 /f`, "no gateway, no egress word");
-	assert.equal(await run({ archilEgress: "" }, [helper, "mount", "dsk", "aws-us-east-1", "/f"]), `${helper} mount dsk aws-us-east-1 /f`, "an empty setting is none");
+	for (const verb of ["mount", "revoke"]) {
+		assert.equal(await run(egress, [helper, verb, "dsk", "aws-us-east-1", "/f", "egress=192.0.2.40:18100:42050"]), `${helper} ${verb} dsk aws-us-east-1 /f egress=192.0.2.40:18100:42050`, verb);
+		assert.equal(await run(egress, [helper, verb, "dsk", "aws-us-east-1", "/f"]), `${helper} ${verb} dsk aws-us-east-1 /f`, `${verb}: Daytona adds no word of its own`);
+	}
 	assert.equal(await run({}, ["sh", "-c", 'echo "$1"', "sh", "it's"]), `sh -c 'echo "$1"' sh 'it'\\''s'`, "every word but a plain one quoted");
 });
 
