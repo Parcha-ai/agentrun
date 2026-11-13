@@ -83,6 +83,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:daemon": "node scripts/build-daemon.mjs",
+    "build:phoned": "node scripts/build-phoned.mjs",
+    "build:ui-fixture": "node scripts/build-ui-fixture.mjs",
+    "check:phoned": "node scripts/check-phoned-jar.mjs",
+    "test:phoned": "node scripts/build-phoned.mjs --test && node scripts/build-phoned.mjs --fake && node --test test/phoned/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
     "test:docker": "node --test --test-timeout=900000 test/docker/*.test.mjs",
