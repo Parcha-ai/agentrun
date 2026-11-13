@@ -1,6 +1,6 @@
 // A real round trip, replayed offline: the pinned Codex binary, through the adapter, answers a DSL agent node that calls
-// the host's `lookup` tool and then submits. The provider is the three streams Codex 0.164.0 and gpt-5.4-mini exchanged
-// through a Responses provider, recorded with their ids, paths and cache key replaced (test/fixtures/roundtrip-*). The
+// the host's `lookup` tool and then submits. The provider is the three streams Codex 0.164.0 and a classic-shape model
+// (an older OpenAI model, kept as the capture's opaque recorded id) exchanged through a Responses provider, recorded with their ids, paths and cache key replaced (test/fixtures/roundtrip-*). The
 // adapter's requests must keep the recorded shape, and each request's usage must be booked as the stream reported it.
 // No network.
 //
@@ -17,6 +17,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
+import { CLASSIC_MODEL } from './offer.mjs';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
@@ -44,7 +45,7 @@ test('a recorded lookup-then-submit round trip, replayed through the adapter: th
   const calls = [];
   const lookup = { name: 'lookup', description: 'Look up a fact by its question.', inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] }, replay: 'safe', call: async (args) => { calls.push(args); return { text: 'The capital of France is Paris.' }; } };
   const events = [];
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: mkdtempSync(join(ROOT, 'sessions-')), fetch, price: (_model, u) => (u.input * 2 + u.cacheRead * 0.2 + u.output * 8) / 1e6 });
+  const codex = codexAdapter({ model: CLASSIC_MODEL, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: mkdtempSync(join(ROOT, 'sessions-')), fetch, price: (_model, u) => (u.input * 2 + u.cacheRead * 0.2 + u.output * 8) / 1e6 });
   const runNode = createHarnessRunner(codex, { store: memorySessionStore(), tools: [lookup], timeoutMs: 120_000, onEvent: (e) => events.push(e) });
   const result = await runWorkflow(doc, {}, { runNode });
 

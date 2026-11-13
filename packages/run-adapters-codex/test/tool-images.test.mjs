@@ -15,6 +15,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
+import { CLASSIC_MODEL } from './offer.mjs';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
@@ -41,7 +42,7 @@ test("on the pinned binary, a host tool's image reaches the model as an image it
     const n = seen.length;
     return new Response(sse(n, answers[n - 1] ?? [say(n)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
-  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch });
+  const codex = codexAdapter({ model: CLASSIC_MODEL, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch });
   const read = { name: 'read', description: 'Read a file.', inputSchema: { type: 'object', properties: { path: { type: 'string' } } }, replay: 'safe', call: async () => ({ text: '/tmp/view/frame.png: image/png, 70 bytes', images: [{ mimeType: 'image/png', data: PNG }] }) };
   const runNode = kernel.createHarnessRunner(codex, { store: memorySessionStore(), tools: [read], timeoutMs: 120_000 });
   const output = await runNode({ kind: 'agent', label: 'images', system: ['Answer.'], user: 'Look at the frame, then answer ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['read'] });

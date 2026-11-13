@@ -65,7 +65,11 @@ else
 fi
 
 # The Mac mini's demo tasks (mini-demos.py), recorded (each frame cut to the task's window): reported, and not yet a
-# verdict here, since a runner's apps are fresh each time (first-run sheets, no account).
+# verdict here, since a runner's apps are fresh each time (first-run sheets, no account). Safari's page body is blank
+# in a runner's frames, and in the window itself: the runner's WebKit content process may not create IOSurfaces
+# ("IOSurface open failed: e00002e2 (likely sandbox violation)" in its log) and no GPU process runs, so the page's
+# tiles are never drawn. Only Safari's own chrome and the page's background colour show; every capture (screen.shot,
+# the window's own image, screencapture) agrees. A Mac with its GPU draws them.
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --movie || echo "the demo tasks failed: see above"
 # The grants asked of TCC while the tests and demos ran, counted by service: a grant the sandbox's AppleScript needs
 # and seed-tcc.sh does not seed shows up here.
