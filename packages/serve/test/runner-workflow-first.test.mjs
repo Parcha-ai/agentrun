@@ -43,6 +43,7 @@ const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
 const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, reviseOf, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
+const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -426,18 +427,65 @@ test("a workflow's answer under the cut is the run's own answer", async (t) => {
   assert.equal(gateway.requests.filter((request) => !isNode(request)).length, 0);
 });
 
-test("an agent with an output schema: a workflow's JSON answer is fenced as its answer, and one that is not JSON goes back to the agent", async (t) => {
+/** The run's final answer, as the timeline shows it. */
+const finalOf = (timeline) => timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text ?? "";
+
+test("an agent with an output schema: a one-field workflow's bare code is served as the schema's object, its result.output meets the schema", async (t) => {
+  const outputSchema = { type: "object", required: ["mcc"], properties: { mcc: { type: "string" } } };
+  const code = await piRun(t, { flows: TEXT_FLOWS, answer: "5462", outputSchema });
+  assert.equal(code.row.metrics?.path, "workflow", JSON.stringify(code.row.metrics));
+  const said = finalOf(code.timeline);
+  assert.match(said, /^```json\n[\s\S]*\n```$/, `the answer is one fenced json block: ${said}`);
+  assert.deepEqual(structuredAnswer(said, outputSchema), { value: { mcc: "5462" } }, "the code is the schema's field as a string, never a JSON number");
+});
+
+test("an agent with an output schema: a one-field workflow's text (not JSON) is served as the schema's object", async (t) => {
+  const outputSchema = { type: "object", required: ["category"], properties: { category: { type: "string" } } };
+  const words = await piRun(t, { flows: TEXT_FLOWS, answer: "Grocery stores", outputSchema });
+  assert.equal(words.row.metrics?.path, "workflow", JSON.stringify(words.row.metrics));
+  assert.deepEqual(words.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.deepEqual(structuredAnswer(finalOf(words.timeline), outputSchema), { value: { category: "Grocery stores" } });
+});
+
+test("an agent with an output schema: a workflow's object output is served as it is, fenced; without a schema it is left as the workflow gave it", async (t) => {
   const outputSchema = { type: "object", properties: { answer: { type: "number" } } };
   const json = await piRun(t, { outputSchema });
   assert.equal(json.row.metrics?.path, "workflow", JSON.stringify(json.row.metrics));
-  const said = json.timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text ?? "";
-  assert.match(said, /^```json\n[\s\S]*42[\s\S]*\n```$/, `the answer is one fenced json block: ${said}`);
-  // Without a schema the same answer is left as the workflow gave it.
+  assert.deepEqual(structuredAnswer(finalOf(json.timeline), outputSchema), { value: { answer: 42, sure: true } });
   const bare = await piRun(t);
-  assert.doesNotMatch(bare.timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text ?? "", /```/);
+  assert.doesNotMatch(finalOf(bare.timeline), /```/);
+});
+
+test("an agent with an output schema: an output that cannot be shaped to it goes back to the agent, the reason in its handback", async (t) => {
+  const outputSchema = { type: "object", required: ["answer"], properties: { answer: { type: "number" } } };
   const words = await piRun(t, { flows: TEXT_FLOWS, answer: "forty-two", outputSchema });
   assert.equal(words.row.metrics?.path, "handed_back", JSON.stringify(words.row.metrics));
   assert.deepEqual(words.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  const handed = words.timeline.find((one) => /handed it back to you/.test(one.text ?? ""));
+  assert.ok(handed, "the agent's first input is the handback");
+  assert.match(handed.text, /forty-two/, "the workflow's own answer is in it");
+  assert.match(handed.text, /does not meet the agent's output schema: \/answer/, `the reason is in it: ${handed.text}`);
+});
+
+test("answerAsServed: one answer as served for serving, replay and grading; what it serves reads back as the value it shaped", () => {
+  const mcc = { type: "object", required: ["mcc"], properties: { mcc: { type: "string" } } };
+  const cases = [
+    ["5462", mcc, { mcc: "5462" }],
+    ["Grocery stores", mcc, { mcc: "Grocery stores" }],
+    ['{"mcc":"5462"}', mcc, { mcc: "5462" }],
+    ["7", { type: "object", required: ["n"], properties: { n: { type: "number" }, why: { type: "string" } } }, { n: 7 }],
+    ['Done.\n```json\n{"mcc":"5999"}\n```', mcc, { mcc: "5999" }],
+  ];
+  for (const [output, schema, value] of cases) {
+    const served = answerAsServed(output, schema);
+    assert.deepEqual(served.value, value, `${output}: ${JSON.stringify(served)}`);
+    assert.deepEqual(structuredAnswer(served.text, schema), { value }, `${output}: the grade path (result.output) reads what serving shaped`);
+  }
+  // A replay of a one-field workflow agrees with its graded answer: the replay's answer is the served one, read as a value.
+  const replayed = answerAsServed("5462", mcc);
+  assert.deepEqual(answerJson(replayed.text), { value: { mcc: "5462" } });
+  assert.match(answerAsServed("forty-two", { type: "object", required: ["n"], properties: { n: { type: "number" } } }).why ?? "", /^its answer does not meet the agent's output schema: \/n /);
+  assert.deepEqual(answerAsServed("5462", undefined), { text: "5462", value: "5462" }, "no schema: as the workflow gave it");
 });
 
 test("a claim that dies after the workflow handed the job back: the next claim sends the handback even when the money rule now stops the workflow", async (t) => {
