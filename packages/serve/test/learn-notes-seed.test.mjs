@@ -42,7 +42,7 @@ test("a follow-up round proposes against the run's seed for skills and main's no
   const folder = learningWorkspace({ mode: "local", data, agentId: AGENT });
   let result;
   try {
-    const answer = [skillBlock("Step one, then two."), `\`\`\`note units.md\n${note({ name: "Units", description: "Units", body: "Convert every amount to one unit first, then compare.\n" })}\`\`\``].join("\n\n");
+    const answer = [skillBlock("Step one, then two."), `\`\`\`note units-2.md\n${note({ name: "Units two", description: "Units two", body: "Compare amounts only after converting them to one unit.\n", extra: "supersedes: [units.md]\n" })}\`\`\``].join("\n\n");
     result = await proposeRun({ folder: folder.workspace, runDir, seed, notesSeed: main, turn: { answer, asked: [] }, refuse: [], outcome: "completed" });
   } finally {
     await folder.end();
