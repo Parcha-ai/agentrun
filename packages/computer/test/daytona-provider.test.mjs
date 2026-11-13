@@ -490,6 +490,46 @@ test("stdin: a write is never sent again where the line may have reached the com
 	}
 });
 
+test("exec: a failed read of the command's session ends the run with that failure, at once, its log stream closed and its session removed; never a later timeout", async () => {
+	const deleted = [];
+	let socketClosed = false;
+	const rec = recorder({ [`GET /api/sandbox/${REF.id}`]: { body: sandbox() }, [`POST /toolbox/${REF.id}/process/session`]: { body: {} } });
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		if (init.method === "POST" && at.pathname.endsWith("/exec")) return new Response(JSON.stringify({ cmdId: "cmd-1" }), { status: 200 });
+		// The session read: refused (403, never sent again), while the command runs on and its stream stays open.
+		if (init.method === "GET" && /\/process\/session\/[^/]+$/.test(at.pathname)) return new Response(JSON.stringify({ statusCode: 403, message: "session read refused" }), { status: 403 });
+		if (init.method === "DELETE") {
+			deleted.push(at.pathname);
+			return new Response(null, { status: 204 });
+		}
+		return rec.fetch(url, init);
+	};
+	const webSocket = () => {
+		const listeners = {};
+		queueMicrotask(() => listeners.open?.({}));
+		return {
+			binaryType: "",
+			addEventListener: (type, listener) => (listeners[type] = listener),
+			close: () => {
+				socketClosed = true;
+				listeners.close?.({ code: 1000 });
+			},
+		};
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, webSocket, timeouts: TIMEOUTS });
+	const { runToExit } = await import("../dist/hosted/process.js");
+	const began = Date.now();
+	const ran = await runToExit(provider.host, REF.id, ["true"], { ms: 1_000, what: "a command" });
+	assert.equal(ran.ok, false);
+	assert.equal(ran.error.code, "vendor", ran.error.message);
+	assert.match(ran.error.message, /a command failed: reading the command's exit code failed .*403 .*session read refused/);
+	assert.ok(Date.now() - began < 1_000, "it ends with the read, not at the call's bound");
+	assert.equal(socketClosed, true, "the log stream is closed");
+	assert.equal(deleted.length, 1, "the session is removed");
+	assert.match(deleted[0], /\/process\/session\/agentrun-[0-9a-f]{16}$/);
+});
+
 test("exec is a session command of its own: argv as one shell line, async, no input echo; with archilEgress, the helper's mount and revoke take egress= as their last word", async () => {
 	const helper = "/usr/local/sbin/agentrun-archil";
 	const run = async (options, argv) => {
