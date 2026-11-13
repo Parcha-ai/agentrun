@@ -139,7 +139,7 @@ test("compileTurn: a draft the checks refuse goes back with their errors, each a
     ask: async (prompt, attempt) => (asked.push({ prompt, attempt }), { answer: answers[attempt - 1] }),
     compile: ASK(),
     answer: "",
-    check: async (answer) => (answer.includes("GOOD") ? { state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/answer/workflow.json" }] } } : { state: "dropped", reason: "checker", problems: [{ rule: "workflow", path: "workflows/answer/workflow.json", detail: "its JSON does not parse" }] }),
+    check: async (answer) => (answer.includes("GOOD") ? { state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/answer/workflow.json", text: JSON.stringify(compile.compileExample(false)) }] } } : { state: "dropped", reason: "checker", problems: [{ rule: "workflow", path: "workflows/answer/workflow.json", detail: "its JSON does not parse" }] }),
   });
   assert.deepEqual(asked.map(({ attempt }) => attempt), [1, 2, 3]);
   assert.ok(asked[0].prompt.startsWith("One more turn: write this agent's job"));
@@ -344,4 +344,66 @@ test("GET /runs/{id}/learning: compiled.promoted is null until its promotion is 
   assert.deepEqual([body({}).promoted, body({}).digest], [null, "0123456789abcdef"]);
   assert.equal(body({ promoted: true }).promoted, true);
   assert.equal(body({ promoted: false }).promoted, false);
+});
+
+// #2641 review (class A): a draft the checks keep is held to the guards the ask asked for (learnedHost's rules) before
+// it is accepted; a missing or wrong guard goes back through the retry loop, never into a workflow that runs a judgment
+// with no hand-back.
+const strip = (doc, kinds) => JSON.parse(JSON.stringify(doc, (key, value) => (value && typeof value === "object" && kinds.includes(value.node) ? Object.fromEntries(Object.entries(value).filter(([k]) => k !== "guard")) : value)));
+test("guardProblems: every judgment step guarded, with Jev every extract and call step on Jev, without Jev no guard reads it", () => {
+  for (const judges of [false, true]) {
+    assert.deepEqual(compile.guardProblems(compile.compileExample(judges, true), { jev: true }), [], `judges ${judges}, Jev: the example passes`);
+    assert.deepEqual(compile.guardProblems(compile.compileExample(judges, false), { jev: false }), [], `judges ${judges}, no Jev: the example passes`);
+  }
+  const bare = compile.guardProblems(strip(compile.compileExample(true, true), ["decide", "judge"]), { jev: true });
+  assert.deepEqual(bare, [
+    `the judge step "policy" has no guard: give it {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`,
+    `the decide step "answer" has no guard: give it {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`,
+  ]);
+  // With Jev, an extract or call step reports no confidence: Jev alone checks it.
+  assert.deepEqual(compile.guardProblems(compile.compileExample(false, false), { jev: true }), [`the extract step "facts" has no guard: give it {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+  const selfOnExtract = compile.compileExample(false, true);
+  selfOnExtract.root.steps[0].guard = { signal: "self", threshold: 0.7 };
+  assert.deepEqual(compile.guardProblems(selfOnExtract, { jev: true }), [`the extract step "facts" reports no confidence of its own: its guard reads jev, {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+  // Without Jev, a guard that reads it would hand every case back.
+  assert.deepEqual(compile.guardProblems(compile.compileExample(false, true), { jev: false }), [
+    `the extract step "facts" has a guard that reads jev, and this run cannot call Jev: an extract or call step takes no guard`,
+    `the decide step "answer" has a guard that reads both, and this run cannot call Jev: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`,
+  ]);
+  // Nested steps are read too (a map's body, a route's branches).
+  const nested = { v: 2, name: "n", schemas: {}, root: { node: "map", label: "each", itemsPath: "items", body: { node: "agent", label: "inner" } } };
+  assert.deepEqual(compile.guardProblems(nested, { jev: false }), [`the agent step "inner" has no guard: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+});
+
+test("compileTurn: a draft the checks keep but missing a guard the ask asked for goes back with which step, and the guarded one is kept", async () => {
+  const unguarded = JSON.stringify(strip(compile.compileExample(false), ["decide"]));
+  const guarded = JSON.stringify(compile.compileExample(false));
+  const asked = [];
+  const result = await compile.compileTurn({
+    ask: async (prompt, attempt) => (asked.push(prompt), { answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${attempt === 1 ? unguarded : guarded}\n\`\`\`\`` }),
+    compile: ASK(), answer: "",
+    check: async (answer) => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text: answer.includes(unguarded) ? unguarded : guarded }] } }),
+  });
+  assert.equal(asked.length, 2, "asked again");
+  assert.match(asked[1], /guard: the decide step "answer" has no guard/);
+  assert.deepEqual(result.record.attempts, [{ ok: false, errors: [`guard: the decide step "answer" has no guard: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`] }, { ok: true, errors: [] }]);
+  assert.match(result.kept.answer, /"guard"/);
+});
+
+// #2641 review (class B): the compile turn reads the agent's notes whole; notes past NOTES_MAX compile nothing and say
+// why, never a workflow from a cut set of rules.
+test("the compile prompt keeps every note whole, past what a cut would have kept; notes over NOTES_MAX ask nothing and record why", async () => {
+  const body = "Always do the thing this rule says, every time. ".repeat(80);
+  const notes = Array.from({ length: 7 }, (_, i) => ({ file: `rule-${i + 1}.md`, text: note({ name: `Rule ${i + 1}`, description: `Rule ${i + 1}` }) + body + `END-OF-RULE-${i + 1}` }));
+  assert.ok(notes.reduce((sum, one) => sum + one.text.length, 0) > 24_000, "past the old cut");
+  const prompt = compile.compilePrompt(ASK({ notes }));
+  for (let i = 1; i <= 7; i++) assert.ok(prompt.includes(`END-OF-RULE-${i}`), `rule ${i} whole`);
+  assert.ok(!/…\n----- end/.test(prompt), "nothing cut");
+  const many = Array.from({ length: Math.ceil(compile.NOTES_MAX / body.length) + 1 }, (_, i) => ({ file: `rule-${i + 1}.md`, text: body }));
+  let asks = 0;
+  const over = await compile.compileTurn({ ask: async () => (asks++, { answer: "" }), compile: ASK({ notes: many }), answer: "", check: async () => assert.fail("nothing to check") });
+  assert.equal(asks, 0, "no turn asked over a cut set of rules");
+  assert.equal(over.record.workflow, compile.UNNAMED);
+  assert.equal(over.record.attempts.length, 1);
+  assert.match(over.draftErrors[0], new RegExp(`notes hold \\d+ characters, more than the ${compile.NOTES_MAX} the compile turn reads whole`));
 });

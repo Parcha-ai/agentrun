@@ -89,7 +89,7 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [] } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [] } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -121,7 +121,9 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // store's own rows, every other read the store's.
   const runsOf = { ...store.runs, list: async (filter) => [...past, ...(await store.runs.list(filter))] };
   for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
-  const depStore = past.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  // `keptBefore`: earlier runs' kept learning, newest first (learning_proposals), laid before the store's own the same way.
+  const learningOf = { proposal: async (runId) => earlier.find((one) => one.runId === runId) ?? (await store.learning.proposal(runId)), proposals: async (agentId, options) => [...earlier.filter((one) => one.agentId === agentId), ...(await store.learning.proposals(agentId, options))], spend: (window) => store.learning.spend(window) };
+  const depStore = past.length || earlier.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? learningOf : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
@@ -314,6 +316,22 @@ test("held by its replay: the agent takes the run, and the compile turn asks for
   const older = await piRun(t, { promotions: [{ ...held, digest: "fedcba9876543210" }] });
   assert.equal(older.row.metrics?.path, "workflow", JSON.stringify(older.row.metrics));
   assert.ok(!older.gateway.requests.some((request) => /One more turn: revise your learned workflow/.test(textOf(request.body))), "an older revision's hold asks nothing");
+});
+
+// #2641 review (class C): once per hold. A run since the hold that compiled the held workflow asked already, whatever
+// came of it (its draft failed its checks, or the grader dropped it), however many runs ago; one before the hold did not.
+test("held: a compile of it since the hold, past the last 4 runs, asks no revision again; one from before the hold does", async (t) => {
+  const at = new Date().toISOString();
+  const replay = { of: [], n: 20, agree: 13, agent_acc: 0.9, wf_acc: 0.7, delta: -0.2, handed_back: 4, cost_usd: 0.4 };
+  const held = { workflow: "answer", digest: DIGEST, at, decided: "hold", source: "replay", reason: "replayed on 20 graded inputs: more than 2 pts under the agent", replay };
+  const past = pastRuns({ served: 0, byHand: 6 });
+  const compiledAt = (createdAt) => [{ runId: "past-5", agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", from_notes: [], attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } }];
+  const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  const since = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) + 1) });
+  assert.equal(since.row.metrics?.path, "agent", JSON.stringify(since.row.metrics));
+  assert.ok(!asksRevision(since.gateway), "asked once already, 6 runs ago: never again for this hold");
+  const before = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) - 60_000) });
+  assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
 });
 
 test("money rule: under the by-hand cost, a new digest, fewer than 10 served runs, or no by-hand baseline: the workflow serves", async (t) => {
