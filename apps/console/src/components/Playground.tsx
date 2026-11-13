@@ -226,7 +226,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               {result.runId && live ? (
                 // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
                 <>
-                  <div className="min-h-0 flex-1 overflow-hidden border-b">{live(result.runId)}</div>
+                  <div className="min-h-0 flex-1 overflow-hidden border-b short:overflow-auto">{live(result.runId)}</div>
                   <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-small leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>

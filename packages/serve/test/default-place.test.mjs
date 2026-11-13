@@ -6,10 +6,13 @@
 // on a fake `docker` first on PATH (fixtures/fake-docker.mjs): no daemon is reached, nothing is pulled or built.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { dockerHost } from "./docker-host-fake.mjs";
 import { agent, client, flowAgent, follow, jsonLines, journalOf, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
@@ -33,6 +36,20 @@ async function fakeDocker(t, marks = {}) {
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   const calls = () => jsonLines(join(state, "argv.jsonl"));
   return { runs: () => calls().filter((args) => args[0] === "run"), execs: () => calls().filter((args) => args[0] === "exec"), release: () => rm(join(state, "build-hold"), { force: true }) };
+}
+
+// The Docker computer's daemon file, which the computer package's build:daemon makes with Go (CI's build job does; a machine
+// with no Go has none). The fake docker never runs it: the provider asks Docker's architecture, then copies and binds the file.
+const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
+const NO_DAEMON = !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)";
+
+/** A Docker host first on PATH and docker listed in AGENTRUN_BOXES, where a run in the box gets a computer whose fake
+ *  computerd (computer/test/fake-computerd.mjs) runs its exec, file and process calls in the computer's folders, /workspace
+ *  the run's folder: the real Docker provider over the computer package's fake docker. */
+async function computerDocker(t) {
+  const host = dockerHost({ computerd: true });
+  withEnv(t, { PATH: `${host.dir}:${process.env.PATH}`, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  return { runs: () => host.calls().filter((args) => args[0] === "run") };
 }
 
 const until = async (done, what, ms = 30_000) => {
@@ -81,13 +98,11 @@ function refusedNotForPlace(answer) {
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
 const fresh = (id) => ({ definition: { id, name: id, instructions: "Probe." } });
 
-// SKIP (follow-up #2080, same cause as docker-by-default's demo): the store reads here are ported (journalOf), but a run in the
-// Docker box now starts a computer, and the fake docker cannot stand in for it: the run fails with run_failed, "Docker could not
-// start a sandbox computer: no daemon for Docker's 27.0.0-fake ... run npm run build:daemon -w @parcha/agentrun-computer".
-test.skip("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000 }, async (t) => {
+// A run in the Docker box starts a computer: computerDocker gives it a fake computerd, so its bash and background tools run.
+test("a new agent on a server with docker can start a command in the background and read its output, with no tools named", { timeout: 120_000, skip: NO_DAEMON }, async (t) => {
   const [{ NEW_AGENT_TOOLS }, { SHELL_TOOLS }] = await Promise.all([import("../dist/place.js"), import("../dist/background.js")]);
   assert.deepEqual([...NEW_AGENT_TOOLS], [...SHELL_TOOLS], "a new agent's tools are the shell tools, bash and the background tools");
-  await fakeDocker(t);
+  await computerDocker(t);
   const { api, data } = await serve(t, { faux: PROBE });
   const made = await api("POST", "/agents", fresh("backgrounded"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -151,8 +166,7 @@ test("with no docker, a new agent is saved as before, with no place, and runs on
   await follow(api, run.run_id, ["completed"]);
 });
 
-// SKIP (follow-up #2080): its first run in the Docker box fails with the same run_failed, no computer daemon for the fake docker.
-test.skip("a revision that names no place runs where default_place says, as a new agent would be saved: in the Docker box on a server that now has docker; one with a tool the box refuses, and a workflow, on the runner", { timeout: 90_000 }, async (t) => {
+test("a revision that names no place runs where default_place says, as a new agent would be saved: in the Docker box on a server that now has docker; one with a tool the box refuses, and a workflow, on the runner", { timeout: 90_000, skip: NO_DAEMON }, async (t) => {
   withEnv(t, { AGENTRUN_BOXES: "none" });
   const data = join(await scratch(t), "agents");
   const first = await startServe({ data, port: 0, faux: PROBE, drainTimeout: "5s" });
@@ -164,7 +178,7 @@ test.skip("a revision that names no place runs where default_place says, as a ne
   assert.equal((await before("POST", "/agents", agent("browsing", { tools: ["read", "browser"] }))).status, 201);
   assert.equal((await before("POST", "/agents", flowAgent("flow"))).status, 201);
   await first.close();
-  const docker = await fakeDocker(t);
+  const docker = await computerDocker(t);
   const { api } = await serve(t, { data, faux: PROBE });
   const places = await placesOf(api);
   assert.deepEqual(places.default_place, DOCKER, "this server's default place");
@@ -182,7 +196,10 @@ test.skip("a revision that names no place runs where default_place says, as a ne
   const shell = await probe(api, "old", [{ tool: "bash", args: { command: "printf 'hi\\n' > out.txt" } }]);
   assert.deepEqual(shell.place, DOCKER);
   await follow(api, shell.run_id, ["completed"], { deadlineMs: 60_000 });
-  assert.equal(docker.runs().length, 1, "one box, for the run with bash");
+  // A box-placed run gets its computer when the runner claims it, whatever its tools (the first run, of write, was placed in
+  // the box too): one computer for each of the two runs placed there, and none for what stays on the runner, below.
+  const computers = docker.runs().filter((args) => args.includes("agentrun.computer=1")).map((args) => args.find((arg) => arg.startsWith("agentrun.run=")));
+  assert.deepEqual(computers, [`agentrun.run=${run.run_id}`, `agentrun.run=${shell.run_id}`], "one computer for each run placed in the box");
   // A tool the box refuses keeps the runner, as at create; a workflow is never given a box.
   // (Its run may still be refused for the browser's keys, which this test does not hold: never for its place.)
   const browsing = await api("POST", "/agents/browsing/runs", { input: { content: JSON.stringify({ probe: [] }) } });
