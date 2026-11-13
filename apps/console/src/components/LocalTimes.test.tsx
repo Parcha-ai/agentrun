@@ -38,7 +38,7 @@ describe("the console's times, in the viewer's zone (Puerto Rico, UTC-4)", () =>
   });
   it("the Files tab", () => {
     const file = { path: "hello.md", size_bytes: 6, modified_at: AT, content_type: "text/markdown" } as RunFile;
-    const t = text(createElement(RunFiles, { files: [file], onOpen: () => {} }));
+    const t = text(createElement(RunFiles, { files: [file], onOpen: () => {}, showHidden: false, onShowHidden: () => {} }));
     expect(t).toContain("Nov 4, 4:50 PM");
     expect(t).not.toContain("8:50 PM");
   });
