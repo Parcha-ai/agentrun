@@ -18,7 +18,6 @@ const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { githubTokens, GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
-
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
 
@@ -105,7 +104,8 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   const { store } = await storeOn(t);
   await connected(store);
   const github = await fakeGitHub(t);
-  const fake = await startFakeMcp({ token: (authorization) => authorization === "Bearer not-a-secret-ghs-token" });
+  const seen = {};
+  const fake = await startFakeMcp({ token: (authorization) => authorization === "Bearer not-a-secret-ghs-token", inspect: (headers) => Object.assign(seen, headers) });
   t.after(() => fake.close());
   const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
   await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
@@ -117,11 +117,14 @@ test("a claimed run whose agent grants a github_app server's tools gets the App'
   const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp, githubMcpOrigin: new URL(fake.url).origin });
   t.after(() => step.release());
   assert.equal(step.credentials.gh?.headers?.authorization, "Bearer not-a-secret-ghs-token");
-  assert.ok(step.secrets.has("Bearer not-a-secret-ghs-token"), "in the run's redaction set");
   const work = mkdtempSync(join(tmpdir(), "github-app-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const answer = await mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   assert.deepEqual(answer, { content: [{ type: "text", text: "2" }] }, "the server took the App's token");
+  // A server that answers with the token it was sent: the run reads none of it.
+  fake.tools.add = { ...fake.tools.add, run: () => ({ content: [{ type: "text", text: `you sent ${seen.authorization}` }] }) };
+  const echoed = JSON.stringify(await mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal }));
+  assert.ok(echoed.includes("you sent") && !echoed.includes("not-a-secret-ghs-token"), `the echoed token is scrubbed from the answer: ${echoed}`);
   assert.deepEqual(github.asked.map((a) => a.url), ["/app/installations/777/access_tokens"], "minted once, for the run's repository");
 });
 
@@ -237,7 +240,8 @@ async function claimedGitHub(t, { failSame } = {}) {
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const access = await githubAppAccess(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { api: github.api });
   const failing = { ...access, same: async () => (failSame?.() ? Promise.reject(new Error("the store did not answer")) : access.same()) };
-  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: { commit: async () => { throw new Error("no record here"); } }, work: () => work, launchInput: {}, githubAppAccess: async () => failing, githubMcpOrigin: new URL(fake.url).origin });
+  // A runner beside a local install, as the CLI's is: the fake MCP server is on loopback.
+  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:gh/add"], harness: { commit: async () => { throw new Error("no record here"); } }, work: () => work, launchInput: {}, githubAppAccess: async () => failing, githubMcpOrigin: new URL(fake.url).origin });
   t.after(() => mcp.release());
   const host = mcp.tools.find((tool) => tool.name === "mcp__gh__add");
   let n = 0;
