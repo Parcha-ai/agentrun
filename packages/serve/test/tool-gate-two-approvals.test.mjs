@@ -92,19 +92,27 @@ test("pi: two calls set to ask in one run, the first allowed, the second denied 
 // once it is allowed, on the second. The QA walk that found it put web_fetch's setting back to its default (allow) while
 // the second waited: the next claim's gate read allow and ran the call without taking the person's allow, and the call
 // that ran read "Not run: the run ended while it waited" and "Withdrawn when the run ended". An ask a person was shown
-// stands until it is answered, and flipping the tool to allow answers it: the call runs, the ask closes reading "Allowed
-// by the tool's setting", and the person is never asked again (a deny set since still refuses it).
+// stands until it is answered, and flipping the tool to allow answers it: the flip itself wakes the run (PUT
+// /settings/tools), the call runs, the ask closes reading "Allowed by the tool's setting", and the person is never asked
+// again, nor has to answer (a deny set since still refuses it).
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  for (const putBack of [false, true]) {
-    test(`${harness}: two calls set to ask in ONE answer, each allowed in turn${putBack ? ", web_fetch's setting put back to allow while the second waits" : ""}: at the run's end each reads held, then its approval (asked, or allowed by the setting once it was put back, never withdrawn), then that it ran, its result the fetch's own`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, putBack));
+  for (const putBack of [false, "woken"]) {
+    test(`${harness}: two calls set to ask in ONE answer, ${putBack ? "the first allowed, then web_fetch's setting put back to allow while the second waits, which alone ends its wait" : "each allowed in turn"}: at the run's end each reads held, then its approval (asked, or allowed by the setting once it was put back, never withdrawn), then that it ran, its result the fetch's own`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, putBack));
   }
 }
 
-// A person's deny already sent wins over the setting: web_fetch's setting goes back to allow while the second call waits,
-// then the owner declines it. On a resume pi starts the call's task while the session opens, before the stored deny can
-// reach the loop; the setting must not answer for it then. The call is never run, and its rows say it was declined.
+// The run's effective permission is its pinned revision's: an agent whose own settings set web_fetch to ask still asks
+// once the server's setting is put back to allow, so that flip wakes nothing (no claim: the run's epoch stays), and the
+// waiting call runs on the person's own allow, its approval row reading asked.
 for (const harness of ["pi", "claude-agent", "codex"]) {
-  test(`${harness}: a call the person declined after web_fetch's setting went back to allow is never run`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "declined"));
+  test(`${harness}: web_fetch's server setting put back to allow while the second call waits, the agent's own setting still ask: the flip wakes nothing, and the call waits for the person's allow`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "agent-ask"));
+}
+
+// A person's deny already sent wins over the setting: the owner declines the second call, then web_fetch's setting goes
+// back to allow, which wakes the run if it is still parked. Whichever claim reads the ask, the stored deny is its answer:
+// the call is never run, and its rows say it was declined.
+for (const harness of ["pi", "claude-agent", "codex"]) {
+  test(`${harness}: a call the person declined, web_fetch's setting put back to allow right after, is never run`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, "declined"));
 }
 
 async function bothAllowed(t, harness, putBack) {
@@ -113,7 +121,8 @@ async function bothAllowed(t, harness, putBack) {
   const answer = await owner(server);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const ask = "Fetch two pages at once and both fail, then stop.";
-  assert.equal((await api("POST", "/agents", agent("both", harness === "pi" ? { tools: ["web_fetch"] } : { harness, instructions: ask, tools: ["web_fetch"] }))).status, 201);
+  const own = putBack === "agent-ask" ? { tool_settings: { web_fetch: { permission: "ask" } } } : {};
+  assert.equal((await api("POST", "/agents", agent("both", harness === "pi" ? { tools: ["web_fetch"], ...own } : { harness, instructions: ask, tools: ["web_fetch"], ...own }))).status, 201);
   const started = await api("POST", "/agents/both/runs", { input: { content: ask } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -130,8 +139,27 @@ async function bothAllowed(t, harness, putBack) {
   assert.equal(await answer(runId, first.id, { decision: "allow" }), 204);
   const second = await pendingOther(first.id, "the second call never parked on its own");
   assert.equal(JSON.parse(second.args_preview).url, "http://b.example/", "then on the second");
-  if (putBack) assert.equal((await api("PUT", "/settings/tools", { web_fetch: {} })).status, 200);
-  assert.equal(await answer(runId, second.id, putBack === "declined" ? { decision: "deny", note: NOTE } : { decision: "allow" }), 204);
+  const putBackNow = async () => assert.equal((await api("PUT", "/settings/tools", { web_fetch: {} })).status, 200);
+  if (putBack === "declined") {
+    assert.equal(await answer(runId, second.id, { decision: "deny", note: NOTE }), 204);
+    await putBackNow();
+  } else if (putBack === "woken") {
+    // No answer: the flip alone ends the wait.
+    await putBackNow();
+  } else if (putBack === "agent-ask") {
+    const before = await server.store.runs.get(runId);
+    assert.equal(before.state, "parked", "parked on the second call, released");
+    await putBackNow();
+    // Long past the runner's poll: a wake would have claimed it (its epoch moves at a claim) by now.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const after = await server.store.runs.get(runId);
+    assert.deepEqual([after.state, after.epoch], ["parked", before.epoch], "the flip woke nothing: still parked, never claimed");
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual([view.status, view.pending?.id], ["input_required", second.id], "still waiting on the person");
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  } else {
+    assert.equal(await answer(runId, second.id, { decision: "allow" }), 204);
+  }
 
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const done = await rowsNow(api, runId);
@@ -144,8 +172,9 @@ async function bothAllowed(t, harness, putBack) {
   }
   for (const [call, host] of [[first.call_id, "a.example"], [second.call_id, "b.example"]]) {
     const asked = done.filter((r) => r.kind === "tool_approval_requested" && r.tool_use_id === call);
-    // The second call waited when the setting went back to allow: the setting answered its ask.
-    const bySetting = putBack && call === second.call_id;
+    // The second call waited when the setting went back to allow: the setting answered its ask (the agent's own ask kept
+    // it the person's).
+    const bySetting = putBack === "woken" && call === second.call_id;
     const head = bySetting ? "Allowed by the tool's setting" : "Asked your approval";
     assert.deepEqual(asked.map((r) => r.summary), [`${head}: web_fetch {"url":"http://${host}/"}`], `${host}: its approval row reads ${head}, never withdrawn: ${shown}`);
     readsInOrder(done, call, bySetting ? /^AgentRun: web_fetch ran, as its setting allows it, and failed$/ : /^AgentRun: web_fetch ran once you allowed it, and failed$/, `${host}, at the run's end`);

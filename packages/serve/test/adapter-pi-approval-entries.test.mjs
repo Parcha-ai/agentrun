@@ -47,8 +47,11 @@ async function parkedRun(t, { price, noResume = false, setting } = {}) {
         return { ...inner, start: (claim) => (claim.from === "parked" ? Promise.reject(new Error("the run's harness could not open")) : inner.start(claim)) };
       }
     : loop;
-  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING, now: () => clock.at });
+  // The runner, closed at the case's end; a case may close it and start another (`restart`) on the same loop.
+  let runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING, now: () => clock.at });
   t.after(() => runner.close());
+  const closeRunner = () => runner.close();
+  const restart = (name, store = opened.runners[0]) => void (runner = startRunner({ store, createLoop, name, ...TIMING, now: () => clock.at }));
   const settled = (state) => until(async () => {
     const row = await opened.server.runs.get("run-1");
     return row.state === state && row.runner === null && row;
@@ -60,7 +63,18 @@ async function parkedRun(t, { price, noResume = false, setting } = {}) {
   };
   const asks = async () => (await read()).filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
   const answers = async () => (await read()).filter((entry) => entry.kind === "agentrun.answer").map((entry) => entry.data);
-  return { opened, ran, clock, settled, asks, answers };
+  return { opened, ran, clock, settled, asks, answers, closeRunner, restart };
+}
+
+/** `store` with its command rows read `ms` late (commands, commandsOf); every other call its own. */
+function slowRows(store, ms) {
+  return new Proxy(store, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === "commands" || property === "commandsOf") return async (...args) => (await new Promise((resolve) => setTimeout(resolve, ms)), value.apply(target, args));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 test("an asked call's ask carries its args, when it was asked and its price, kept on a re-ask; its approve is an allow, answered then", async (t) => {
@@ -110,6 +124,30 @@ test("a call the person declined, its tool's setting at allow by the next claim,
   setting.now = "allow";
   w.clock.at = ANSWERED_AT;
   await sendCommand(w.opened.server, "run-1", { kind: "deny", body: { approval: ask.callId, note: "not on a Friday" } });
+  await w.settled("ended");
+  assert.equal(w.ran.asked, 0, "the person's deny wins over the setting: it never ran");
+  assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "deny", answeredAt: "2026-11-08T12:05:30.250Z", note: "not on a Friday" }]);
+});
+
+// The race the parked claim above can't reach (it reads its rows before pi's session recovers): a takeover. A runner
+// claims the parked run and dies at once, so the person's deny is written and left untaken while the run reads running;
+// once that claim's lease runs out, the next claim comes from running, and pi starts the call's task again while its
+// session opens, before the runner hands the loop the stored deny. The setting at allow by then must not answer first.
+test("a takeover that finds the person's deny untaken and the call's tool set to allow since: the deny wins, though pi starts the call's task while its session opens", async (t) => {
+  const setting = { now: "ask" };
+  const w = await parkedRun(t, { setting });
+  const [ask] = await w.asks();
+  await w.closeRunner();
+  setting.now = "allow";
+  w.clock.at = ANSWERED_AT;
+  await sendCommand(w.opened.server, "run-1", { kind: "deny", body: { approval: ask.callId, note: "not on a Friday" } });
+  // The runner that dies: its claim (the deny made the run claimable) moves the run to running, and nothing of it reads a
+  // row or writes one again.
+  assert.ok(await w.opened.server.claim("run-1", "runner-gone", { leaseMs: 60_000 }), "claimed by the runner that dies");
+  // Its lease runs out on the store's clock: runner-b takes the run over, from running. Its reads of the run's rows come
+  // late (a store slow to answer), so the session opens, and the call's task starts, before the deny reaches the loop.
+  w.opened.clock.skewMs += 61_000;
+  w.restart("runner-b", slowRows(w.opened.runners[0], 600));
   await w.settled("ended");
   assert.equal(w.ran.asked, 0, "the person's deny wins over the setting: it never ran");
   assert.deepEqual(await w.answers(), [{ callId: ask.callId, approved: false, decision: "deny", answeredAt: "2026-11-08T12:05:30.250Z", note: "not on a Friday" }]);
