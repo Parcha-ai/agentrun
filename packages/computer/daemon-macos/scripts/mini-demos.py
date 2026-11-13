@@ -932,8 +932,15 @@ LOCK = "/private/tmp/agentrun-demos.lock"
 
 def lock():
     """One run at a time on a Mac: a second one's sweep would remove the first one's sandboxes. The lock goes with the
-    process, so a killed run holds nothing."""
-    f = open(LOCK, "w")
+    process, so a killed run holds nothing. /private/tmp is shared: the file is opened without following a link and
+    without truncating, and must be this user's own."""
+    try:
+        fd = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        sys.exit(f"the lock {LOCK}: {e}")
+    f = os.fdopen(fd, "r+")
+    if os.fstat(fd).st_uid != os.getuid():
+        sys.exit(f"the lock {LOCK} belongs to another user: remove it, then run this again")
     try:
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
