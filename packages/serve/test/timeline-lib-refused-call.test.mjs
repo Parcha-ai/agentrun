@@ -65,3 +65,24 @@ test("a write that ran and errored still reads failed with its error; the same w
   assert.equal(rowFor(rows, "w", "tool_result"), "Wrote out.md failed: EACCES: permission denied, open 'out.md'");
   assert.equal(rowFor(rows, "x", "tool_result"), `Wrote deny.md failed: ${DENIED}`, "told by the details' mark, never by the words");
 });
+
+test("a refused call's result row is marked `refused` (a client shows it apart from a failure); a call that ran and failed is not, and both stay tool_status failed", () => {
+  const rows = rowsOf([
+    user("go"),
+    assistant([call("d", "write", { path: "deny.md", content: "x" }), call("w", "write", { path: "out.md", content: "x" })], 0),
+    refusedResult("d", "write", DENIED),
+    result("w", "write", "EACCES: permission denied, open 'out.md'", 1, { isError: true }),
+  ]);
+  const resultOf = (id) => rows.find((row) => row.tool_use_id === id && row.kind === "tool_result");
+  assert.equal(resultOf("d").refused, true, JSON.stringify(resultOf("d")));
+  assert.equal(resultOf("w").refused, undefined, JSON.stringify(resultOf("w")));
+  assert.deepEqual([resultOf("d").tool_status, resultOf("w").tool_status], ["failed", "failed"]);
+});
+
+test("a refused result that came before its call (its result first) is marked `refused` once it is placed after its call", () => {
+  const rows = rowsOf([user("go"), refusedResult("d", "write", DENIED), assistant([call("d", "write", { path: "deny.md", content: "x" })], 2)]);
+  const row = rows.find((r) => r.tool_use_id === "d" && r.kind === "tool_result");
+  assert.ok(row, JSON.stringify(rows.map((r) => [r.kind, r.tool_use_id])));
+  assert.equal(row.refused, true, JSON.stringify(row));
+  assert.match(row.summary, /^Refused: write deny\.md/);
+});

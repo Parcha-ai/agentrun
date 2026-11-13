@@ -8,7 +8,7 @@ export function RunResult({ run, rows, files = [], onOpen }: { run: Run; rows: T
   const answer = run.result?.final_answer ?? rows.findLast((r) => r.kind === "final_answer")?.text ?? null;
   const linked = onOpen ? { paths: files.map((f) => f.path) } : undefined;
   const open = openLinkedFile((path) => { const f = files.find((x) => x.path === path); if (f) onOpen?.(f); });
-  if (answer) return <article className="report max-w-none" onClick={open} dangerouslySetInnerHTML={{ __html: markdown(answer, linked) }} />;
+  if (answer?.trim()) return <article className="report max-w-none" onClick={open} dangerouslySetInnerHTML={{ __html: markdown(answer, linked) }} />;
   if (run.result?.output !== undefined && run.result.output !== null) {
     // A workflow's output can carry written reports (a text field of several lines): each reads as Markdown under its
     // field's name, and the rest of the output stays JSON.
