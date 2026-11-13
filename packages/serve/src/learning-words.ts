@@ -108,6 +108,10 @@ export const said = {
   /** The end-of-run turn asked again because a workflow draft failed its dry run (learn/reflect.ts reflectDryRun), as a
    *  person reads it in the timeline: never the ask, which holds the check's words. */
   askedDryRun: "Looking back again: a workflow draft did not pass its dry run.",
+  /** The compile turn's ask (learn/compile.ts askedForCompile): the job written as a workflow, or a revision of one, or
+   *  an attempt the checks sent back. */
+  askedCompile: "Writing this job as a learned workflow.",
+  askedCompileAgain: "Writing the workflow again: the checks sent back what they refused.",
   proposed: (notes: number, skills = 0, workflows = 0) => `Checking ${listed([...(notes || !(skills || workflows) ? [count(notes, "new note")] : []), ...(skills ? [count(skills, "skill")] : []), ...(workflows ? [count(workflows, "workflow")] : [])])}…`,
   /** What it learned, by name, and how many older notes they replace, and its skill and workflow by name; then what
    *  waits for the owner's OK, by name; then, when the grader dropped an item and kept others (a verdict per item), its
