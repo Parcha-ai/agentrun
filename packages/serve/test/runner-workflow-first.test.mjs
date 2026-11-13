@@ -111,13 +111,29 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim)) });
+  // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
+  // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
+  let claims = 0;
+  const specOf = async (claim, run) => {
+    const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
+    claims += 1;
+    if (approve !== "stop-at-gate" || claims > 1) return spec;
+    const gate = spec.gate;
+    return { ...spec, gate: async (call) => {
+      if (call.callId === "workflow-first") {
+        await sendCommand(server, RUN, { kind: "stop" });
+        await until(async () => (await server.runs.get(RUN)).state !== "running" || (await new Promise((resolve) => setTimeout(() => resolve(true), 300))), "the stop delivered", 5_000);
+      }
+      return gate ? gate(call) : undefined;
+    } };
+  };
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const settled = (states) => until(async () => {
     const now = await server.runs.get(RUN);
     return states.includes(now.state) && now.runner === null && now;
   }, `the run ${states.join("/")}`);
   let parked;
-  if (approve) {
+  if (approve && approve !== "stop-at-gate") {
     parked = await settled(["parked", "ended", "failed", "stopped"]);
     const callId = await until(async () => {
       const row = await server.runs.get(RUN);
@@ -138,7 +154,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const entries = await runEntries(server, RUN, ctx);
   const kept = await server.learning.proposal(RUN);
   const reflect = await runReflect(server, RUN, ctx);
-  return { row, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs };
+  return { row, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims };
 }
 
 test("workflow alone: the run answers on its learned workflow with no agent-model request, path workflow, its node $ its cost", async (t) => {
@@ -231,6 +247,14 @@ test("learned_workflow set to ask: a stop while the step waits ends the run stop
   assert.equal(parked.state, "parked", `the run parked on the ask: ${JSON.stringify(parked)}`);
   assert.equal(row.state, "stopped", `the stop is taken, not parked again: ${JSON.stringify(row)}`);
   assert.equal(gateway.requests.length, 0, "no model request: the workflow never ran, the agent never asked");
+});
+
+test("learned_workflow set to ask: a stop that lands while the step is asked is taken by that claim, never parked on", async (t) => {
+  const { row, gateway, claims, timeline } = await piRun(t, { toolSettings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } }, approve: "stop-at-gate" });
+  assert.equal(row.state, "stopped", `the run ends stopped: ${JSON.stringify(row)}`);
+  assert.equal(claims, 1, "the claim that held the stop took it; the run was never given back parked with its stop untaken");
+  assert.equal(gateway.requests.length, 0, "the workflow never ran, the agent never asked");
+  assert.equal(timeline.filter((one) => one.kind === "user" || one.kind === "person").length <= 1, true, JSON.stringify(timeline.map(({ kind, text }) => [kind, text])));
 });
 
 test("the deopt breaker skips a workflow that handed back more than half its last runs at its digest", async () => {
