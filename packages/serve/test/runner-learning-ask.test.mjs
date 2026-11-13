@@ -1,7 +1,8 @@
 // The learning run's grader call (runner/learning-ask.ts bookedAsk) is a paid model request like a pi turn: booked in
 // the learning run's own records through the run's one booking (runBooking over its journal sessions, modelPortFor),
 // sent through the kernel's model proxy, and asked of the learning run's own cap first. Its dollars and its tokens are
-// the grade's (the reader's cost_usd.grade and tokens.grade). A cap that leaves no room for the grade sends nothing.
+// the grade's (the reader's cost_usd.grade and tokens.grade). A cap that leaves no room for the grade sends nothing, and
+// the grade is skipped, said so.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -98,7 +99,7 @@ test("a learning run whose cap leaves no room for the grade sends nothing: the c
   assert.equal(sent.length, 0, `no grade request reached the provider: ${sent.length} did`);
   const learning = await runLearningEnd(store, "run-1");
   assert.equal(learning?.state, "dropped", JSON.stringify(learning));
-  assert.equal(learning.reason, "grade_failed", "the grade could not be made");
+  assert.deepEqual([learning.reason, learning.detail], ["no_budget", "Not graded: no room under the cap."], "skipped for room, never a failure");
   assert.equal(await spendInRecords(store, "learn-1"), 0, "nothing spent");
 });
 
