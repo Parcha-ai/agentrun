@@ -39,6 +39,10 @@ final class FakeOS: @unchecked Sendable {
 	var frontPID: Int32?
 	/// Where the pointer is, in screen pixels.
 	var cursor = Point(10, 10)
+	/// When, on the fake clock, a person last used the keyboard or the mouse.
+	var personPressed: Double?
+	/// The app's key window, by id; nil for none known.
+	var keyWindow: String?
 	/// Raw input events the fake refuses, as their entries.
 	var rawFails: Set<String> = []
 	/// The app in front, as apps.list says it.
@@ -86,7 +90,7 @@ final class FakeOS: @unchecked Sendable {
 	var entries: [String] { with { $0.log } }
 
 	func platform(background: Feature = .on, foreground: Feature = .on, nav: Feature = .off("macOS has no system back, home or app switcher")) -> Platform {
-		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, navFeature: nav, raw: FakeRaw(os: self), clock: FakeClock(os: self))
+		Platform(accessibility: FakeAX(os: self), capture: FakeCapture(os: self), workspace: FakeWorkspace(os: self), background: FakeRoute(os: self, name: "bg"), backgroundFeature: background, foreground: FakeRoute(os: self, name: "fg"), foregroundFeature: foreground, navFeature: nav, raw: FakeRaw(os: self), person: FakePerson(os: self), clock: FakeClock(os: self))
 	}
 
 	func engine(policy: Policy = Policy(), background: Feature = .on, foreground: Feature = .on) -> UIEngine {
@@ -187,6 +191,10 @@ struct FakeAX: Accessibility {
 
 	func focused(_ target: ResolvedTarget) -> ElementHandle? { os.with { $0.focusedID }.map { ElementHandle($0) } }
 
+	func takesText(_ element: ElementHandle) -> Bool { os.with { $0.elements[id(element)]?.textInput == true } }
+
+	func keyWindow(_ target: ResolvedTarget) -> String? { os.with { $0.keyWindow } }
+
 	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> ElementHandle? {
 		os.with { os in
 			os.order.compactMap { os.elements[$0] }.first { $0.role == "menuitem" && $0.name == chord.text }.map { ElementHandle($0.id) }
@@ -229,6 +237,13 @@ struct FakeCapture: Capture {
 	func screenInfo() -> ScreenInfo? { ScreenInfo(width: 1440, height: 900, scale: 2) }
 
 	func cursor() -> Point? { os.with { $0.cursor } }
+}
+
+/// A person's keyboard and mouse, as the test sets them.
+struct FakePerson: PersonInput {
+	let os: FakeOS
+
+	func lastInput() -> Double? { os.with { $0.personPressed } }
 }
 
 /// The keyboard and mouse: each event recorded, the pointer kept (in pixels, at scale 2), and a raw.fail entry's event
