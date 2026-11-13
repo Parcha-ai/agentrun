@@ -576,6 +576,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       shown: async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true }),
       log,
       ...(start.notesOnly ? { workflows: false as const } : {}),
+      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
     })
     : undefined;
   // The decision keys its learned workflows' typed questions need (claim-secrets.ts learnedDecisionKeys), read once the lay
