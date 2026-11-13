@@ -33,7 +33,7 @@ const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-s
 const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [STAND_IN], env: { FAKE_CODEX_MODEL: "remote" } }) };
 /** The default models on OpenRouter alone, as capabilities name them and as each is sent. */
 const CLAUDE_OR_MODEL = "anthropic/claude-sonnet-5.5";
-const CODEX_OR_MODEL = "openai/gpt-6-sol";
+const CODEX_OR_MODEL = "openai/gpt-6.1-sol";
 /** The id claude-agent's adapter puts on the wire for CLAUDE_OR_MODEL: Anthropic's native one. */
 const CLAUDE_OR_WIRE = "claude-sonnet-5-5";
 /** Every answer's usage: 1000 tokens in, 100 out, none cached. */
@@ -155,8 +155,7 @@ test("claude-agent's OpenRouter form, guard on main: on its adapter as serve bui
 
 // --- Key custody: the OpenRouter key never rides an explicit route. Guards on main. ----------------------------------
 
-// SKIP (follow-up #2080): through a gateway, the runner sends agent-model/<id> instead of the gateway's own model id (in-flight fix: PR #2057).
-test.skip("custody, guard on main: with the OpenRouter key and an explicit gateway (AGENT_MODEL_BASE_URL=<gw>/api) whose own key is unset, codex sends POST /api/v1/responses with \"Bearer none\", and neither codex nor pi puts the OpenRouter key on the wire", { timeout: 90_000, skip: noSetpriv }, async (t) => {
+test("custody, guard on main: with the OpenRouter key and an explicit gateway (AGENT_MODEL_BASE_URL=<gw>/api) whose own key is unset, codex sends POST /api/v1/responses with \"Bearer none\", and neither codex nor pi puts the OpenRouter key on the wire", { timeout: 90_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t);
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, AGENT_MODEL_BASE_URL: `${gw.url}/api`, AGENT_MODEL: CODEX_OR_MODEL, ...CODEX_STAND_IN }, NAMES);
   const { api } = await serve(t, { faux: undefined });
@@ -189,8 +188,7 @@ test("custody, guard on main: with the OpenRouter key and an explicit Anthropic 
 
 for (const [form, base, path] of [["<gw>", (url) => url, "/v1/responses"], ["<gw>/api", (url) => `${url}/api`, "/api/v1/responses"]]) {
   // A real pi run under a loaded host: the same bound as the codex and claude-agent cases, the run's own deadline under it.
-  // SKIP (follow-up #2080): through a gateway, the runner sends agent-model/<id> instead of the gateway's own model id (in-flight fix: PR #2057).
-  test.skip(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 180_000 }, async (t) => {
+  test(`pi through serve's gateway at ${form}: POST ${path}, as codex does (red on main: pi sends <base>/responses)`, { timeout: 180_000 }, async (t) => {
     const { run, usage, count, shapes, gw } = await onGateway(t, "pi", base, { model: CODEX_OR_MODEL, price: null, deadlineMs: 170_000 });
     assert.deepEqual(shapes, [[path, `Bearer ${KEY("gateway")}`, null, CODEX_OR_MODEL]], `pi's requests: ${JSON.stringify(gw.requests)}`);
     assert.equal(run.status, "completed", JSON.stringify(run.error));
@@ -211,7 +209,7 @@ for (const [harness, model] of [["claude-agent", CLAUDE_OR_MODEL], ["codex", COD
 }
 
 /** pi's default on OpenRouter alone (capabilities' `provider/model-id`): undefined until it is set. */
-const PI_OR_DEFAULT = "openrouter/openai/gpt-6-sol";
+const PI_OR_DEFAULT = "openrouter/openai/gpt-6.1-sol";
 
 test("pi on OPENROUTER_API_KEY alone: its default model, on pi-ai's own openrouter provider, keyed by OPENROUTER_API_KEY and priced (red on main: pi has no default)", { timeout: 60_000, skip: !PI_OR_DEFAULT && "pi's default id on OpenRouter alone is not set yet" }, async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY }, NAMES);

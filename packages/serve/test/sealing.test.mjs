@@ -1,6 +1,5 @@
 // AES-256-GCM sealing (sealing.ts), the primitive every secret this server keeps at rest is sealed with: the format is
-// IV, ciphertext and tag, opened by the test's own reading, and a sealing opens only under its own key and aad. Copied
-// with sealing.ts from @parcha/pi-durable-agent's vault.test.mjs ("seal and unseal, shared with a host, ...").
+// IV, ciphertext and tag, opened by the test's own reading, and a sealing opens only under its own key and aad.
 import assert from "node:assert/strict";
 import { createDecipheriv, randomBytes } from "node:crypto";
 import { test } from "node:test";

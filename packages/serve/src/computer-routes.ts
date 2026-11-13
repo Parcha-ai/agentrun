@@ -1,7 +1,8 @@
 // A run's desktop or phone, as its owner takes it: POST /v2/runs/{id}/computer/take-over and POST .../computer/hand-back
 // (the hand-back for every kind: a browser's answers its agent's ask, as POST .../browser/hand-back does). Owner-only, as
-// a run's browser is: the owner's password session in the console, never a token. GET /v2/runs/{id}/computer and the live
-// viewer are tl-browser's; computerViewOf is the store-backed read of the run's computer it can build on.
+// a run's browser is: the owner's password session in the console, never a token. GET /v2/runs/{id}/computer is answered by
+// server.ts from computerView (computer-view.ts) over computerHoldOf; computerViewOf is the store-backed read of the run's
+// computer the take-over tests check against.
 //
 // Everything is read from the one store (computer-commands.ts): the run's computer is up, and who drives it, as the run's
 // runner committed them to the run's journal; a take-over or hand-back is a command row the runner applies to the run's
@@ -9,7 +10,7 @@
 // outlives the server that took it.
 import {
   type ComputerHoldAnswer, type ComputerCallOptions, type ComputerCallStore, computerAsk, computerHoldOf, entriesOf, handBackComputer, holdIn,
-  holdShown, type JournalEntry, runOver, runViewedKind, takeOverComputer, type ViewedKind,
+  holdShown, runOver, runViewedKind, takeOverComputer, type ViewedKind,
 } from "./computer-commands.js";
 import { ApiError, invalid } from "./errors.js";
 import { unknownFields } from "./validate.js";
@@ -43,10 +44,6 @@ export async function computerViewOf(store: ComputerCallStore, runId: string, op
   if (!hold.up || (await runOver(store, runId))) return { kind, state: "none", hold: "agent", why: `this run's ${kind} is not up now` };
   return { kind, state: "live", hold: holdShown(hold, await store.commands(runId, 0)).state };
 }
-
-/** Whether the run's computer is taken over now, for the run read's computer field (run-computer.ts ComputerStateOf):
- *  from the run's journal and its rows. */
-export const takenOverIn = (entries: readonly JournalEntry[], commands: Parameters<typeof holdShown>[1]): boolean => holdShown(holdIn(entries), commands).state === "person";
 
 /** How a request to one of the routes came: by the owner's signed-in page, or with a token; whether this server has
  *  accounts (for the refusal's words); its body. */

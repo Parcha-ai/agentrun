@@ -36,7 +36,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, capabilityToolDefs, createRegistry, endBackground, type Registry } from "@parcha/agentrun-kernel/kernel";
-import type { ComputerClient, Group } from "@parcha/agentrun-computer";
+import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
 import type { AttachableComputer, MountCheck } from "./attach.js";
 import { inputOf, phoneOf, screenOf } from "./computer-ports.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
@@ -56,12 +56,12 @@ import type { Workspace } from "./workspace.js";
  * - phone: a screen, touch and apps; never attached;
  * - browser: what the run's browser tool drives it by (its CDP URL through its provider); no tools of the registry's,
  *   never attached.
- * `groups`: what the computer offers (its hello's groups), which fill its kind's ports.
+ * `hello`: what a desktop or a phone said it is when the claim connected it; its groups fill its kind's ports.
  */
 export type RunComputer =
   | { readonly kind: "sandbox"; readonly computer: AttachableComputer; readonly check: MountCheck }
-  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly groups: readonly Group[]; readonly check?: MountCheck }
-  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly groups: readonly Group[] }
+  | { readonly kind: "desktop"; readonly computer: AttachableComputer; readonly hello: HelloResult; readonly check?: MountCheck }
+  | { readonly kind: "phone"; readonly computer: { readonly client: ComputerClient }; readonly hello: HelloResult }
   | { readonly kind: "browser"; readonly browser: ClaimBrowser };
 
 /** A desktop's or a phone's ports as a person's hold on the computer gives them back: each call made while the person
@@ -73,24 +73,26 @@ export type RunHold = (ports: Pick<Hands, "screen" | "input" | "phone">) => Pick
  *  provider mounts the folder; none for any other. */
 function mountedIn(computer: RunComputer | undefined): { readonly computer: AttachableComputer; readonly check: MountCheck } | undefined {
   if (computer?.kind === "sandbox") return computer;
-  if (computer?.kind === "desktop" && computer.check && computer.groups.includes("files") && computer.groups.includes("exec")) return { computer: computer.computer, check: computer.check };
+  if (computer?.kind === "desktop" && computer.check && computer.hello.groups.includes("files") && computer.hello.groups.includes("exec")) return { computer: computer.computer, check: computer.check };
   return undefined;
 }
 
 /** The kind's ports, as the computer's groups offer them, the kinds whose tools the run gets (a desktop's with a screen
  *  and input, a phone's with a screen and touch; a browser's none), and the kind's tools its groups do not offer: a
- *  phone's tree without apps.ui_tree, its keys without input.keys (an iPhone's today). */
+ *  phone's tree without the ui group, its keys without input.keys (an iPhone's today). */
 function portsOf(computer: RunComputer | undefined): { readonly ports: Pick<Hands, "screen" | "input" | "phone">; readonly kinds: readonly CapabilityKind[]; readonly without: readonly string[] } {
   if (computer?.kind === "desktop") {
     const { client } = computer.computer;
-    const screen = computer.groups.includes("screen");
-    const input = computer.groups.includes("input.pointer") || computer.groups.includes("input.keys");
+    const { groups } = computer.hello;
+    const screen = groups.includes("screen");
+    const input = groups.includes("input.pointer") || groups.includes("input.keys");
     return screen && input ? { ports: { screen: screenOf(client), input: inputOf(client) }, kinds: ["desktop"], without: [] } : { ports: {}, kinds: [], without: [] };
   }
   if (computer?.kind === "phone") {
-    if (!computer.groups.includes("screen") || !computer.groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
-    const tree = computer.groups.includes("apps.ui_tree");
-    const keys = computer.groups.includes("input.keys");
+    const { groups } = computer.hello;
+    if (!groups.includes("screen") || !groups.includes("input.touch")) return { ports: {}, kinds: [], without: [] };
+    const tree = groups.includes("ui");
+    const keys = groups.includes("input.keys");
     return { ports: { phone: phoneOf(computer.computer.client, { tree, keys }) }, kinds: ["phone"], without: [...(tree ? [] : ["phone_tree"]), ...(keys ? [] : ["phone_key"])] };
   }
   return { ports: {}, kinds: [], without: [] };

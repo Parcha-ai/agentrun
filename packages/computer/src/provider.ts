@@ -13,6 +13,11 @@ export type NetworkForm = "none" | "open" | "allow";
 export interface ComputerOwner {
 	/** The agent's id: a non-empty string with no NUL byte (ownerProblem). */
 	agent: string;
+	/**
+	 * The server the agent is on, where more than one server shares a vendor account: two servers may each have an agent
+	 * of one id, and each owns its own computer. A non-empty string with no NUL byte. Absent: the agent's id alone.
+	 */
+	server?: string;
 	/** How long the computer may stay detached before the janitor deletes it. Absent: it stays until it is deleted. */
 	idleTtlMs?: number;
 }
@@ -48,6 +53,11 @@ export interface ComputerSpec {
 	 * refuses any other kind before a vendor call. An Archil token is never in a label, a read-back or an error.
 	 */
 	mount?: MountSpec;
+	/**
+	 * A browser's own options, for a provider whose capabilities().browser declares what they ask; check() refuses, in
+	 * words and before any vendor call, one it does not declare.
+	 */
+	browser?: BrowserSpec;
 	/**
 	 * GPUs for the computer: a type the provider declares (capabilities().gpu.types, the vendor's own name, such as Modal's
 	 * "A100-80GB" or Daytona's "H100") and how many, 1 up to capabilities().gpu.max. check() refuses one the provider does
@@ -94,6 +104,30 @@ export interface GpuCapability {
 	fence?: NetworkFence;
 }
 
+/** A browser session's options beside the protocol's. A flag set false asks for nothing, so it is never refused. */
+export interface BrowserSpec {
+	viewport?: { width: number; height: number };
+	/** A saved profile the session opens: the pointer profiles.create gave, and whether the session saves back to it. */
+	profile?: { pointer: string; save: boolean };
+	/** The vendor's anti-bot mode (Browserbase's Verified browser and its CAPTCHA solver). */
+	stealth?: boolean;
+	headless?: boolean;
+}
+
+/** What a browser provider's sessions offer beyond the protocol: each optional feature is there only when declared. */
+export interface BrowserFeatures {
+	/** "wall-clock": the vendor ends a session lifetimeMs after create; "inactivity": that long after its last connection closes. */
+	timeout: "wall-clock" | "inactivity";
+	/** The shortest lifetimeMs a session takes (Kernel's shortest idle timeout); absent, any above 0. */
+	minLifetimeMs?: number;
+	/** settleMs: how long after a saving session ends the vendor may still be writing the profile back. */
+	profiles?: { settleMs: number };
+	stealth?: true;
+	headless?: true;
+	/** path: the directory a driver points Browser.setDownloadBehavior at, so the vendor keeps what is saved there. */
+	downloads?: { path: string };
+}
+
 /** One kind of allowlist entry a provider takes: how many a list may hold, and the ports an entry opens. */
 export interface AllowRule {
 	max: number;
@@ -110,9 +144,10 @@ export interface AllowCapability {
 }
 
 /**
- * Who answers a computer's methods. pid1: computerd init is the computer's main process, so its exit ends the computer.
- * child: the vendor's own agent is the main process and starts init at boot; init's exit does not end the computer.
- * none: no computerd runs; the provider answers the methods itself, from our server (adb, the vendor's API).
+ * Whether computerd init runs in the computer, and so keeps init's promises about programs; who answers the wire is
+ * hello's business. pid1: init is the computer's main process, so its exit ends the computer. child: the vendor's own
+ * agent is the main process and starts init at boot; init's exit does not end the computer. none: no init runs; the
+ * provider answers the methods itself (adb, the vendor's API), or a driver on the machine does (an attached Mac).
  */
 export type DaemonMode = "pid1" | "child" | "none";
 
@@ -173,6 +208,8 @@ export interface ComputerCapabilities {
 	vendorAgentPorts?: number[];
 	/** The GPUs spec.gpu may ask for. Absent: none, and check() refuses any spec.gpu. */
 	gpu?: GpuCapability;
+	/** With kind browser: what its sessions offer beyond the protocol, which spec.browser asks for. */
+	browser?: BrowserFeatures;
 }
 
 /** The os and daemon modes each kind may have; no other pair is valid. */
@@ -225,10 +262,12 @@ export function runLifetimeMs(spec: Pick<ComputerSpec, "lifetimeMs">): number {
 
 /** Why owner is not an agent's ownership, in words, or undefined when it is one. */
 export function ownerProblem(owner: unknown): string | undefined {
-	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, idleTtlMs? }";
-	const { agent, idleTtlMs } = owner as Partial<ComputerOwner>;
+	if (typeof owner !== "object" || owner === null || Array.isArray(owner)) return "owner is { agent, server?, idleTtlMs? }";
+	const { agent, server, idleTtlMs } = owner as Partial<ComputerOwner>;
 	if (typeof agent !== "string" || agent === "") return "owner.agent must be the agent's id, a non-empty string";
 	if (agent.includes("\0")) return "owner.agent cannot hold a NUL byte: no provider takes one in a label";
+	if (server !== undefined && (typeof server !== "string" || server === "")) return "owner.server, when given, is the server's id, a non-empty string";
+	if (typeof server === "string" && server.includes("\0")) return "owner.server cannot hold a NUL byte: no provider takes one in a label";
 	if (idleTtlMs !== undefined && !(Number.isSafeInteger(idleTtlMs) && idleTtlMs > 0)) return `owner.idleTtlMs is a whole number of milliseconds above 0, not ${JSON.stringify(idleTtlMs)}`;
 	return undefined;
 }
@@ -376,6 +415,16 @@ export interface AttachContext extends CallContext {
  */
 export type ReleaseHow = "stop" | "delete" | "detach";
 
+/**
+ * release's context: with a claim (a provider that declares persistence), a delete of an agent's computer is that claim's
+ * alone: done only while the computer still carries exactly the claim's run and epoch and no attach or detach holds it,
+ * else refused in words (fenced, or busy) with the computer as it was. So a claim that made the computer and lost it
+ * deletes it only where no later claim has taken it. A provider with no persistence has no agent's computer to fence.
+ */
+export interface ReleaseContext extends CallContext {
+	claim?: ComputerClaim;
+}
+
 /** A live connection to a computer's daemon. */
 export interface ComputerConnection {
 	client: ComputerClient;
@@ -411,8 +460,9 @@ export interface ComputerProvider {
 	/**
 	 * Idempotent: a computer already gone is ok. A "stop" capabilities().release does not declare is refused in words. A
 	 * "detach" is refused in words, the computer as it was, on a provider with no persistence and on a run's computer.
+	 * context.claim: a delete under that claim alone (ReleaseContext).
 	 */
-	release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>>;
+	release(ref: ComputerRef, how: ReleaseHow, context?: ReleaseContext): Promise<Result<void>>;
 	/**
 	 * Sets the deadline to now + ttlMs: never earlier than the current deadline, never past created + maxLifetimeMs. A
 	 * ttlMs that would move it earlier, or past that cap, is refused in words with the deadline unchanged: an extend

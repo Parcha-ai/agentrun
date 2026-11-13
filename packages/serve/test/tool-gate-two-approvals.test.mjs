@@ -10,7 +10,7 @@ import { agent, call, cookieOf, FAUX, follow, scratch, serve } from "./support.m
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
-const GATE = { faux: fixture("faux-gate.mjs"), fauxHarness: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
+const GATE = { faux: fixture("faux-gate.mjs"), fauxWeb: fixture("faux-gate-web.mjs"), accounts: true, openSetup: true };
 const json = { "content-type": "application/json" };
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const NOTE = "not that page twice";

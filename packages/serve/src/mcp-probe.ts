@@ -14,7 +14,8 @@ export const MCP_SERVER_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The names AgentRun's own tools are called by, which no MCP server takes: claude-agent calls the kernel's host tools
  *  as `mcp__hands__<tool>`, and monid's are `monid_<tool>` (tool-gate.ts settingsKeyOf reads both as AgentRun's). */
 const RESERVED_MCP_NAMES: readonly string[] = ["hands", "monid"];
-export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app"] as const;
+/** `per_run`: the server keeps no credential; each run's caller hands one with the run (mcp_auth), held for that run alone. */
+export const MCP_AUTH_TYPES = ["none", "bearer", "headers", "oauth", "github_app", "per_run"] as const;
 /** Where an owner updates a saved MCP server, as people read it. */
 const MCP_SETTINGS = "Settings → MCP servers";
 /** Why a saved credential can't be used for a run's calls, each with its own remedy and no other, as the model reads it
@@ -28,6 +29,8 @@ export const UNUSABLE = {
   silent: "the sign-in server didn't answer; try again",
   /** An access token past its expiry whose refresh the address check refused unsent (mcp-oauth.ts), followed by its words. */
   blocked: "its sign-in server's address is refused here",
+  /** A per_run server's run that was handed no credential for it (mcp_auth), or whose credential was erased at its end. */
+  perRunMissing: "this server takes its credential from each run, and this run was handed none: its caller sends one as mcp_auth when it starts the run or sends it a message",
 } as const;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
@@ -136,7 +139,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
 /** The body's auth: its type and, when it sends one, its credential as the headers it becomes. */
 export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
   if (value === undefined) return { type: "none" };
-  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth|github_app, token?, headers?}." });
+  if (!isObject(value)) return void issues.push({ field: "auth", reason: "wrong_type", message: "auth is {type: none|bearer|headers|oauth|github_app|per_run, token?, headers?}." });
   const before = issues.length;
   issues.push(...unknownFields(value, ["type", "token", "headers"]).map((issue) => ({ ...issue, field: `auth.${issue.field}` })));
   const type = value.type;
@@ -148,6 +151,7 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
   };
   let headers: HeaderMap | undefined;
   if (type === "github_app" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "auth.type github_app takes no token: the connected GitHub App's installation token is minted for each run." });
+  if (type === "per_run" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "auth.type per_run takes headers to list the server's tools with, never kept: a run's own credential is its mcp_auth." });
   if ((type === "none" || type === "oauth") && (value.token !== undefined || value.headers !== undefined)) issues.push({ field: "auth", reason: "not_allowed", message: type === "none" ? "auth.type none sends no credential." : "auth.type oauth takes its credential from a sign-in, never from a body." });
   if (type === "bearer") {
     if (value.headers !== undefined) issues.push({ field: "auth.headers", reason: "not_allowed", message: "A bearer credential is auth.token." });
@@ -156,23 +160,56 @@ export function authOf(value: unknown, issues: InputIssue[]): Auth | undefined {
       headers = { authorization: `Bearer ${String(value.token)}` };
     }
   }
-  if (type === "headers" || type === "github_app") {
+  if (type === "headers" || type === "github_app" || type === "per_run") {
     if (type === "headers" && value.token !== undefined) issues.push({ field: "auth.token", reason: "not_allowed", message: "Named headers are auth.headers." });
-    if (value.headers !== undefined) {
-      const entries = isObject(value.headers) ? Object.entries(value.headers) : [];
-      if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field: "auth.headers", reason: "invalid", message: `auth.headers names 1 to ${MAX_HEADERS} headers and their values.` });
-      headers = Object.create(null) as HeaderMap;
-      for (const [name, text] of entries) {
-        const lower = name.toLowerCase();
-        if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: `auth.headers.${name}`, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
-        else if (type === "github_app" && lower === "authorization") issues.push({ field: `auth.headers.${name}`, reason: "not_allowed", message: "A github_app server's Authorization is the installation token minted for each run, never a saved one." });
-        else if (lower in headers) issues.push({ field: `auth.headers.${name}`, reason: "duplicate", message: `${name} is named twice.` });
-        check(`auth.headers.${name}`, text);
-        headers[lower] = String(text);
-      }
-    }
+    if (value.headers !== undefined) headers = headersOf("auth.headers", value.headers, issues, type === "github_app" ? "A github_app server's Authorization is the installation token minted for each run, never a saved one." : undefined);
   }
   return issues.length > before ? undefined : { type: type as AuthType, ...(headers ? { headers } : {}) };
+}
+
+/** A credential's named headers at `field`: 1 to MAX_HEADERS, each a header a credential may be sent in, its value text
+ *  with no control character, within MAX_VALUE_BYTES. `noAuthorization`: why Authorization is refused, when it is. */
+function headersOf(field: string, value: unknown, issues: InputIssue[], noAuthorization?: string): HeaderMap {
+  const entries = isObject(value) ? Object.entries(value) : [];
+  if (!entries.length || entries.length > MAX_HEADERS) issues.push({ field, reason: "invalid", message: `${field} names 1 to ${MAX_HEADERS} headers and their values.` });
+  const headers = Object.create(null) as HeaderMap;
+  for (const [name, text] of entries) {
+    const lower = name.toLowerCase();
+    const at = `${field}.${name}`;
+    if (!HEADER_NAME.test(name) || RESERVED.has(lower)) issues.push({ field: at, reason: "invalid", message: `${name} is not a header a credential may be sent in.` });
+    else if (noAuthorization && lower === "authorization") issues.push({ field: at, reason: "not_allowed", message: noAuthorization });
+    else if (lower in headers) issues.push({ field: at, reason: "duplicate", message: `${name} is named twice.` });
+    if (typeof text !== "string" || text === "") issues.push({ field: at, reason: "wrong_type", message: `${at} is text, not empty.` });
+    else if (CONTROL.test(text)) issues.push({ field: at, reason: "invalid", message: `${at} holds a control character.` });
+    else if (Buffer.byteLength(text) > MAX_VALUE_BYTES) issues.push({ field: at, reason: "too_long", message: `${at} is at most ${MAX_VALUE_BYTES} bytes.` });
+    headers[lower] = String(text);
+  }
+  return headers;
+}
+
+/** The most servers one mcp_auth names. */
+const MAX_MCP_AUTH_SERVERS = 8;
+
+/** A run's `mcp_auth` (POST /runs, POST /agents/{id}/runs, POST /runs/{id}/messages): the headers each named per_run
+ *  server is called with for this run, `{"<server>": {"headers": {...}}}`. Checked for shape here; that each name is a
+ *  saved per_run server is the caller's check. Undefined when absent or wrong (with its issues). */
+export function mcpAuthOf(value: unknown, issues: InputIssue[]): Record<string, HeaderMap> | undefined {
+  if (value === undefined) return undefined;
+  const shape = 'mcp_auth is {"<server>": {"headers": {"<name>": "<value>"}}}, one entry for each per_run MCP server the run calls.';
+  if (!isObject(value) || !Object.keys(value).length || Object.keys(value).length > MAX_MCP_AUTH_SERVERS) return void issues.push({ field: "mcp_auth", reason: isObject(value) ? "invalid" : "wrong_type", message: `${shape} It names 1 to ${MAX_MCP_AUTH_SERVERS} servers.` });
+  const before = issues.length;
+  const out: Record<string, HeaderMap> = Object.create(null);
+  for (const [server, entry] of Object.entries(value)) {
+    const field = `mcp_auth.${server}`;
+    if (!MCP_SERVER_NAME.test(server)) issues.push({ field, reason: "invalid", message: `${server} is not an MCP server's name.` });
+    if (!isObject(entry)) {
+      issues.push({ field, reason: "wrong_type", message: shape });
+      continue;
+    }
+    issues.push(...unknownFields(entry, ["headers"]).map((issue) => ({ ...issue, field: `${field}.${issue.field}` })));
+    out[server] = headersOf(`${field}.headers`, entry.headers, issues);
+  }
+  return issues.length > before ? undefined : out;
 }
 
 /** The OAuth scope list a sign-in body may send: 1 to 32 OAuth scopes. */

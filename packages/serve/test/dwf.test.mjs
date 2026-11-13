@@ -194,8 +194,7 @@ test.skip("a run's graph reads while it goes and while it is paused mid-map at m
   assert.ok(graph.decisions.every((d) => typeof d.id === "string" && d.id.length > 0 && d.images.length === 1 && d.state !== null), JSON.stringify(graph.decisions[0]));
 });
 
-// SKIP (follow-up #2089): the run's graph has no effect for the failed map item
-test.skip("a tool that fails in a map item fails that item only when the map collects: the others run, the run completes", async (t) => {
+test("a tool that fails in a map item fails that item only when the map collects: the others run, the run completes", async (t) => {
   const dir = await scratch(t);
   const docs = join(dir, "docs");
   await mkdir(docs);

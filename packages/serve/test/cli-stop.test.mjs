@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { REPEAT_MS } from "../dist/stop-signals.js";
 import { agent, client, FAUX, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -17,11 +18,11 @@ async function until(check, what, ms = 60_000) {
 }
 
 /** The CLI on its own data root with one run mid-turn (the faux model waits a minute on its second request), so a stop's
- *  3 s drain has a run to wait on. */
-async function midTurn(t) {
+ *  drain (3 s, or `drain`) has a run to wait on. */
+async function midTurn(t, drain = "3s") {
   const dir = await scratch(t);
   const data = join(dir, "agents");
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, "--drain-timeout", "3s"], { env: { ...process.env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, "--drain-timeout", drain], { env: { ...process.env, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   let out = "";
@@ -51,15 +52,19 @@ test("one Ctrl-C that reaches the server twice in a moment drains as one stop: i
   assert.equal(existsSync(join(data, ".server.json")), false, "the record is removed");
 });
 
-// SKIP (follow-up #2080): its 1.5 s exit bound is a wall-clock race on a loaded machine.
-test.skip("a second Ctrl-C a while later stops at once, saying the runs resume on the next start", { timeout: 120_000 }, async (t) => {
-  const { child, exited, data, said } = await midTurn(t);
+test("a second Ctrl-C a while later stops at once, saying the runs resume on the next start", { timeout: 120_000 }, async (t) => {
+  // A 30 s drain: a stop at once ends far inside it, however slow the machine.
+  const { child, exited, data, said } = await midTurn(t, "30s");
   child.kill("SIGINT");
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // The second press goes once the server has taken the first (it says it is stopping) and the moment a repeat of that
+  // press could be has passed (stop-signals.ts REPEAT_MS), timed from what it said, never from a guess at its speed.
+  await until(() => /^agentrun-serve: stopping: waiting up to \d+ s for 1 run/m.test(said()), `the first stop taken: ${said()}`);
+  await new Promise((resolve) => setTimeout(resolve, REPEAT_MS + 250));
   const forcedAt = Date.now();
   child.kill("SIGINT");
   const end = await exited;
-  assert.ok(Date.now() - forcedAt < 1_500, `it stopped at once, not after the drain (${Date.now() - forcedAt} ms)`);
+  assert.ok(Date.now() - forcedAt < 15_000, `it stopped at once, not after the 30 s drain (${Date.now() - forcedAt} ms)`);
+  assert.doesNotMatch(said(), /passed its deadline/, "stopped by the press, not by the drain's deadline");
   assert.equal(end.signal, null, "it exits by itself, not by the signal");
   assert.equal(end.code, 130, said());
   assert.match(said(), /^stopping now; runs resume on the next start \(1 was running\)$/m);

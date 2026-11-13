@@ -1,8 +1,7 @@
-// The agent body validator (store/agent-body.ts, the P4 fold of pi-durable-agent's bodyOf): everything the old validator
+// The agent body validator (store/agent-body.ts): everything the old validator
 // accepted it accepts — harness, tool settings, place, content-addressed skills, a default cap, the learning switch.
 // The agent-level argument pin is NOT handled here: agents-store.ts checks and keeps it through tool-plane's pinIssues +
-// canonicalToolSettings (the one copy). Ported from
-// pi-durable-agent/test/agent-store.test.mjs's revision checks, tested on bodyOf directly.
+// canonicalToolSettings (the one copy). Tested on bodyOf directly.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -66,7 +65,15 @@ test("a revision's computer keeps a sandbox's gpu, {type, count}: a GPU type nam
     assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu } }), refused(/gpu is not \{type, count\}/), JSON.stringify(gpu));
   }
   assert.deepEqual(bodyOf({ ...A, computer: { gpu: { type: "H100", count: 1 }, image: "cuda", provider: "daytona", kind: "sandbox" } }).body.computer, { kind: "sandbox", provider: "daytona", image: "cuda", gpu: { type: "H100", count: 1 } }, "an image and GPUs both kept, in the body's order");
-  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", region: "earth" } }), refused(/not \{kind, provider\?, image\?, gpu\?\}/));
+  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", region: "earth" } }), refused(/not \{kind, provider\?, image\?, gpu\?, persistent\?\}/));
+});
+
+test("a revision's computer keeps persistent, a boolean; anything else is refused, and none named keeps none", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo", persistent: true } }).body.computer, { kind: "desktop", provider: "orgo", persistent: true });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo" } }).body.computer, { kind: "desktop", provider: "orgo" });
+  for (const persistent of ["yes", 1, null]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "desktop", provider: "orgo", persistent } }), refused(/persistent a boolean/), JSON.stringify(persistent));
+  }
 });
 
 test("a revision keeps a default spend cap and its mode, and the learning switch, when they are set; bad values are refused", () => {
