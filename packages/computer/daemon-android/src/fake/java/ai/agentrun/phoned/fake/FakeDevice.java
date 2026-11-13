@@ -98,6 +98,8 @@ public final class FakeDevice implements Device {
 	 * reported (a window's bounds in another space from its elements, its screen and its input). 0 agrees.
 	 */
 	public int windowSkewY;
+	/** How long the fixture's second page stays before the app returns to its home window on its own. 0 stays. */
+	public long secondStaysMs;
 
 	public FakeNode list;
 	public FakeNode network;
@@ -199,7 +201,8 @@ public final class FakeDevice implements Device {
 		}
 	}
 
-	private synchronized void after(long ms, Runnable run) {
+	/** Runs run once the clock is ms from now: what an app does later, on its own. A new page drops what is pending. */
+	public synchronized void after(long ms, Runnable run) {
 		later.add(new Later(clock.now() + ms, run));
 	}
 
@@ -441,6 +444,7 @@ public final class FakeDevice implements Device {
 		root.add(heading("Second page"), button("Back", "back", 16, 56, this::fixture));
 		show(SECOND_WINDOW, "Second page", fixtureBounds(), root, FIXTURE);
 		for (long t = 50; t <= NEXT_ANIMATE_MS; t += 50) after(t, this::changed);
+		if (secondStaysMs > 0) after(secondStaysMs, this::fixture);
 	}
 
 	// --- navigation -----------------------------------------------------------------------------------------------

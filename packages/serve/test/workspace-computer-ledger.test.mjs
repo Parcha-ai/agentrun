@@ -60,6 +60,21 @@ test("swap puts an entry in place of the one read only while the ledger still ke
   assert.equal(await ledger.get("sess-none"), undefined);
 });
 
+test("claim puts an entry only while the ledger keeps none under its id: of two claims at once, one is put", async (t) => {
+  const { store } = await storeOn(t);
+  const ledger = storeLedger(store.computerLedger, "phone-harness");
+  const other = { ...A, labels: { "agentrun.run": "run-9" } };
+  const claims = await Promise.all([ledger.claim(A), ledger.claim(other)]);
+  assert.deepEqual(claims.sort(), [false, true], "one claim of the id, never both");
+  const kept = await ledger.get("sess-a");
+  assert.deepEqual(kept, kept.labels["agentrun.run"] === "run-1" ? A : other, "the kept entry is one claim's, whole");
+  assert.equal(await ledger.claim(A), false, "kept already: nothing put");
+  await ledger.remove("sess-a");
+  assert.equal(await ledger.claim(B), true, "another id");
+  assert.equal(await ledger.claim(A), true, "removed: claimed again");
+  assert.deepEqual(await ledger.get("sess-a"), A);
+});
+
 test("an entry read back is the caller's to change: the ledger's copy stays as put", async (t) => {
   const { store } = await storeOn(t);
   const phone = storeLedger(store.computerLedger, "phone-harness");

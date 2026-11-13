@@ -33,6 +33,16 @@ enum Roles {
 		"AXGroup": "group", "AXSplitGroup": "group", "AXRadioGroup": "group", "AXTabGroup": "group", "AXLayoutArea": "group",
 	]
 
+	/// A window's role, as UiWindow.role sends it: "dialog" for a sheet, an alert or a panel (a floating window), and
+	/// nil, which means "window", for any other.
+	static func window(role: String?, subrole: String?) -> String? {
+		if role == "AXSheet" || role == "AXDrawer" { return "dialog" }
+		switch subrole {
+		case "AXDialog", "AXSystemDialog", "AXFloatingWindow", "AXSystemFloatingWindow": return "dialog"
+		default: return nil
+		}
+	}
+
 	/// The protocol's role for an element; a list's children are its items.
 	static func map(role: String?, subrole: String?, parentRole: String?) -> String {
 		if let subrole, let mapped = bySubrole[subrole] { return mapped }

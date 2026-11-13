@@ -94,6 +94,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
@@ -588,7 +589,8 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");

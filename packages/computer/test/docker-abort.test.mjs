@@ -5,10 +5,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { settleWords } from "../dist/docker.js";
-import { fakeDocker } from "./fake-docker.mjs";
+import { computerNameFor } from "../dist/provider.js";
+import { allowed, container, fakeDocker, idOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-abort-${++requests}` });
 
 /** create(spec) on `fake` (made with lateRun), aborted once the daemon's late create has begun: the fake's daemon
  *  process marks it before the CLI can be cut off, so the abort always lands with a create under way. */
@@ -20,7 +24,7 @@ async function abortedLate(fake, spec) {
 			await sleep(10);
 		}
 	})();
-	const made = await fake.provider.create(spec, { signal: controller.signal });
+	const made = await fake.provider.create(spec, { ...req(), signal: controller.signal });
 	await watch;
 	return made;
 }
@@ -36,8 +40,8 @@ test("an abort during the egress proxy's docker run, which the daemon still fini
 	await sleep(500);
 	assert.deepEqual(fake.names(), []);
 	assert.deepEqual(fake.volumeNames(), []);
-	// It was removed with its anonymous volumes, as release removes a computer.
-	assert.ok(fake.calls().some((args) => args.join(" ") === `rm --force --volumes ${fake.late().committed}`));
+	// It was removed by the id that create's look found it under, with its anonymous volumes, as release removes a computer.
+	assert.ok(fake.calls().some((args) => args.join(" ") === `rm --force --volumes ${idOf(fake.late().committed)}`));
 });
 
 test("an abort during the computer's own docker run, which the daemon still finishes, leaves no computer, and with an allowlist no proxy or volume", { timeout: 60_000 }, async () => {
@@ -53,6 +57,42 @@ test("an abort during the computer's own docker run, which the daemon still fini
 		assert.deepEqual(fake.names(), [], JSON.stringify(network));
 		assert.deepEqual(fake.volumeNames(), [], JSON.stringify(network));
 	}
+});
+
+test("a retry cut off during its docker run, before Docker said the name is taken, leaves the computer its request already has", { timeout: 60_000 }, async () => {
+	const requestId = "docker-abort-retry";
+	const name = computerNameFor(requestId);
+	// The computer an earlier create of this request made (here or in another process); the retry's run never answers.
+	const fake = fakeDocker({ containers: [container({ name })], hold: ["run"] });
+	const controller = new AbortController();
+	const watch = (async () => {
+		while (!fake.runHeld()) await sleep(10);
+		controller.abort();
+	})();
+	const made = await fake.provider.create(SPEC, { requestId, signal: controller.signal });
+	await watch;
+	assert.equal(made.error?.code, "aborted");
+	assert.equal(made.error.message, `create was aborted during docker run; the computer ${name} that another create of this request made is left as it is`);
+	assert.deepEqual(fake.names(), [name], "the request's computer is still there");
+	assert.ok(!fake.calls().some((args) => args[0] === "rm" && args.includes(name)), "no rm by its name");
+});
+
+test("a retry with an allowlist cut off during its proxy's docker run leaves the computer, proxy and volume its request already has", { timeout: 60_000 }, async () => {
+	const requestId = "docker-abort-retry-egress";
+	const name = computerNameFor(requestId);
+	// What an earlier create of this request made: the computer, its proxy and its volume. The retry's proxy run never answers.
+	const fake = fakeDocker({ ...allowed({ name, allow: ALLOW }), hold: ["run"] });
+	const controller = new AbortController();
+	const watch = (async () => {
+		while (!fake.runHeld()) await sleep(10);
+		controller.abort();
+	})();
+	const made = await fake.provider.create({ ...SPEC, network: { allow: ALLOW } }, { requestId, signal: controller.signal });
+	await watch;
+	assert.equal(made.error?.code, "aborted", JSON.stringify(made));
+	assert.deepEqual(fake.names().sort(), [name, `${name}-egress`], "the request's computer and proxy are still there");
+	assert.deepEqual(fake.volumeNames(), [`${name}-egress`], "and so is its volume");
+	assert.ok(!fake.calls().some((args) => args[0] === "rm" || (args[0] === "volume" && args[1] === "rm")), JSON.stringify(fake.calls().filter((args) => args.includes("rm"))));
 });
 
 test("a late container that Docker will not remove is named in the error once the 10 s bound is spent", { timeout: 60_000 }, async () => {
@@ -82,7 +122,7 @@ test("settleWords always names what it checked: what the last look still found, 
 test("a docker run that ended with an exit of its own is cleaned up as before, once, with no settling", async () => {
 	// The proxy's run answered, and the proxy then ended before it was ready: removed by release, as before.
 	const egress = fakeDocker({ egress: "exits" });
-	const made = await egress.provider.create({ ...SPEC, network: { allow: ALLOW } });
+	const made = await egress.provider.create({ ...SPEC, network: { allow: ALLOW } }, req());
 	assert.equal(made.ok, false);
 	assert.deepEqual([made.error.code, made.error.vendor], ["vendor", "docker"]);
 	assert.match(made.error.message, /ended \(exit code 2\) before it was ready/);

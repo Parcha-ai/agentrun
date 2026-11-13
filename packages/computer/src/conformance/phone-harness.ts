@@ -198,6 +198,14 @@ export function fileLedger(path: string, { waitMs = LOCK_WAIT_MS }: { waitMs?: n
 	};
 	return {
 		put: (entry) => locked(() => write({ ...read(), [entry.id]: entry })),
+		// Under the file's lock: the read and the write are one step to every other writer.
+		claim: (entry) =>
+			locked(() => {
+				const entries = read();
+				if (entry.id in entries) return false;
+				write({ ...entries, [entry.id]: entry });
+				return true;
+			}),
 		get: (id) => read()[id],
 		list: () => Object.values(read()),
 		remove: (id) =>
