@@ -2407,6 +2407,16 @@ async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, wor
   return { ...state, [node.as]: value, [`${node.as}$answers`]: sidecar };
 }
 
+/** What a pick's judge is asked about `items`: each candidate described (`item_<i>`), beside its interpolated `state` (else
+ *  the workflow's state as context). Its guard is asked about the same (guardInputOf). */
+function pickAskOf(node: PickNode, state: Record<string, unknown>, items: readonly unknown[], workflow?: Workflow): { options: Record<string, string>; asked: Record<string, unknown> } {
+  const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
+  return { options, asked: { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state, workflow) }), candidates: options } };
+}
+/** The items a sift's judge is asked about, by id (`item_<i>`), each with its description when the sift has one. */
+const siftItemsOf = (node: SiftNode, state: Record<string, unknown>, items: readonly unknown[]) =>
+  items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
+
 async function runPickNode(node: PickNode, state: Record<string, unknown>, deps: WorkflowDeps, workflow?: Workflow): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const items = getPath(state, node.itemsPath);
@@ -2420,9 +2430,8 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   }
   const capacity = SYSTEM_ONE_LIMITS.maxChoiceOptions - (node.allowNone ? 1 : 0);
   if (items.length > capacity) throw new Error(`pick node "${node.label}": ${items.length} items exceed the ${capacity} a choice can hold — sift first`);
-  const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
+  const { options, asked } = pickAskOf(node, state, items, workflow);
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
-  const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state, workflow) }), candidates: options };
   const decided = await decide(deps, { workflowState: state, decision: decisionOf(node), images: resolveImages(node.images, state, node.label), nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
     const a = answers.pick;
     if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
@@ -2450,7 +2459,7 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
     const images = resolveImages(node.images, state, node.label);
-    const named = items.map((item, i) => ({ id: `item_${i}`, ...(node.describe ? { summary: describeItem(node.describe, state, item, i) } : {}), item }));
+    const named = siftItemsOf(node, state, items);
     const chunks = siftChunks(deps, node.label, ids.length, base, named);
     const measure = keepTail === "confidence" ? "confidence" as const : "value" as const;
     // The keep rule, as applied and as a receipt states it: the author's threshold, else 0.5 for a yes/no
@@ -2702,20 +2711,35 @@ function confidenceChannelOf(schema: Record<string, unknown>): { schema: Record<
 }
 /** A confidence as a guard reads it: a number in [0, 1], else none. */
 const confidenceOf = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null);
-/** The step's own confidence from its state once it ran: an agent or decide node's `<key>$confidence`, a judge, pick or
- *  sift node's weakest answer's (`<as>$answers.min_confidence`). */
+/** The step's own confidence from its state once it ran: an agent or decide node's `<key>$confidence`, a judge or pick
+ *  node's weakest answer's (`<as>$answers.min_confidence`), a sift's weakest over every item's answers (`<as>.answers[i]`,
+ *  none when it was asked about no item, or one item's is missing). */
 function selfConfidenceOf(node: WorkflowNode, out: Record<string, unknown>): number | null {
   const key = writeKeyOf(node);
   if (!key) return null;
   if (node.node === "agent" || node.node === "decide") return confidenceOf(out[confidenceKey(key)]);
+  if (node.node === "sift") {
+    const answers = (out[key] as { answers?: unknown } | undefined)?.answers;
+    if (!Array.isArray(answers) || !answers.length) return null;
+    const each = answers.map((sidecar) => confidenceOf((sidecar as { min_confidence?: unknown } | null)?.min_confidence));
+    return each.some((c) => c === null) ? null : Math.min(...(each as number[]));
+  }
   return confidenceOf((out[`${key}$answers`] as { min_confidence?: unknown } | undefined)?.min_confidence);
 }
 /** What a step saw, as its guard is asked about it: its interpolated `state`, a call's `args` (or an executor's `input`, a
- *  shell's `env`), a child's `input`; else the workflow's state before it, as a generative node with no `state` sees it. */
+ *  shell's `env`), a child's `input`; a pick's, what its judge chose among (its state, the candidates, its instructions,
+ *  whether none may fit); a sift's, its state and the items its judge was asked about; else the workflow's state before
+ *  it, as a generative node with no `state` sees it. */
 function guardInputOf(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow): unknown {
   try {
     if (node.node === "call") return interpolateValue(node.via === "tool" ? node.args ?? {} : node.via === "executor" ? node.input ?? {} : node.env ?? {}, state, node.label);
     if (node.node === "workflow") return interpolateValue(node.input, state, node.label);
+    if (node.node === "pick" || node.node === "sift") {
+      const items = getPath(state, node.itemsPath);
+      const list = Array.isArray(items) ? items : [];
+      if (node.node === "pick") return { ...pickAskOf(node, state, list, workflow).asked, instructions: node.instructions, allow_none: node.allowNone === true };
+      return { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {}), items: siftItemsOf(node, state, list) };
+    }
     const own = (node as { state?: unknown }).state;
     if (own && typeof own === "object") return interpolateValue(own, state, (node as { label: string }).label);
   } catch { /* The step ran on it, so it resolves; should it not, the state it ran on stands in. */ }

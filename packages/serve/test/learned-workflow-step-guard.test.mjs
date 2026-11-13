@@ -154,7 +154,7 @@ test("both: the lower of self and Jev with no fit; through the fitted logistic w
 test("the run record keeps each guard's row as metrics.guards; a workflow whose guard reads Jev is handed the Jev key", () => {
   const rows = [{ node: "answer", signal: "both", self: 0.6, jev: 0.92, p: 0.6, threshold: 0.65, escalated: true }];
   const entries = [
-    { kind: LEARNED_NODES, data: { call: "workflow-first", workflow: "answer", nodes: [{ label: "fetch", kind: "call", status: "ok", duration_ms: 3 }, { label: "answer", kind: "agent", status: "escalated", duration_ms: 9, guard: rows[0] }] } },
+    { kind: LEARNED_NODES, data: { call: "workflow-first", workflow: "answer", nodes: [{ label: "fetch", kind: "call", status: "ok", duration_ms: 3 }, { label: "answer", kind: "agent", status: "escalated", duration_ms: 9, guard: rows[0] }], guards: rows } },
     { kind: "other", data: {} },
   ];
   assert.deepEqual(guardsOf(entries), rows);
@@ -163,4 +163,40 @@ test("the run record keeps each guard's row as metrics.guards; a workflow whose 
   assert.deepEqual(providersNamed([{ node: "extract", guard: { signal: "jev", threshold: 0.5 } }]), ["jev"]);
   assert.deepEqual(providersNamed([{ node: "agent", guard: { signal: "both", threshold: 0.5 } }]), ["jev"]);
   assert.deepEqual(providersNamed([{ node: "agent", guard: { signal: "self", threshold: 0.5 } }]), []);
+});
+
+// Review on #2639: the trace keeps at most LEARNED_NODES_MAX nodes for the call's timeline row, but every guard check is
+// kept beside it (`guards`), so a map over more items than that still gives the run's metrics (and the promotion replay
+// and threshold refit that read them) every check, and the hand-back names the check that handed back past the cap.
+test("every guard check is kept past the trace's cap: a map of 70 guarded judges, then one that hands back", { timeout: 120_000 }, async (t) => {
+  const { LEARNED_NODES_MAX } = await import("../dist/learned-nodes.js");
+  const run = await decisionsOf(t);
+  const flow = {
+    v: 2, name: "answer",
+    schemas: {
+      In: { type: "object", required: ["question", "items"], properties: { question: { type: "string" }, items: { type: "array", items: { type: "string" } } } },
+      Check: { type: "object", required: ["right"], properties: { right: { type: "boolean", description: "Is the claim right?" } } },
+    },
+    input: { schemaId: "In" }, output: { schemaId: "Check", path: "answer" },
+    root: { node: "chain", steps: [
+      // The faux Jev says yes at 0.92 to each: a confidence of 0.84, over 0.5, and under 0.9.
+      { node: "map", label: "each", itemsPath: "items", as: "checked", maxConcurrency: 4, body: { node: "judge", label: "check", state: { claim: "{item}" }, out: "Check", as: "check", guard: { signal: "self", threshold: 0.5 } } },
+      { node: "judge", label: "answer", state: { claim: "{question}" }, out: "Check", as: "answer", guard: { signal: "self", threshold: 0.9 } },
+    ] },
+  };
+  const items = Array.from({ length: 70 }, (_, i) => `claim ${i}`);
+  const tool = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Checks claims", workflow: JSON.stringify(flow) }], granted: [], env: {}, work: await scratch(t), models: { getModel: () => MODEL, getModels: () => [MODEL] }, modelOf: () => ({ provider: "stand-in", modelId: "stand-in" }), policy: () => "allow", denyFrom: () => "agent", decisions: run.decisions });
+  const kept = [];
+  const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
+  const said = await tool.execute({ name: "answer", input: { question: "six times seven is 42", items } }, api, { abortSignal: new AbortController().signal });
+  const text = (said.output ?? []).map((part) => part.text ?? "").join("");
+  assert.equal(said.isError, true, text);
+  const trace = kept.find((entry) => entry.kind === LEARNED_NODES)?.data;
+  assert.equal(trace.nodes.length, LEARNED_NODES_MAX, "the timeline's trace stays capped");
+  const rows = guardsOf(kept);
+  assert.equal(rows.length, 71, "every check: 70 in the map, and the one that handed back");
+  assert.equal(rows.filter((row) => row.node === "check" && !row.escalated).length, 70);
+  assert.deepEqual(rows.at(-1), { node: "answer", signal: "self", self: 0.84, p: 0.84, threshold: 0.9, escalated: true });
+  assert.deepEqual(pathMetrics({ input: {}, learning: { seed: "abc" } }, undefined, kept).guards, rows);
+  assert.match(text, /guard on "answer" \(self\): p 0\.84 against threshold 0\.9 \(its own confidence 0\.84\); handed back/, "the hand-back names the check past the cap");
 });

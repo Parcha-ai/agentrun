@@ -13,7 +13,7 @@
 //     probability is badly calibrated until fitted (OG1: ECE 0.21 raw, 0.03 fitted), so a threshold is set on fitted p.
 // No signal is no evidence the step is right: a guard whose Jev call failed, or a step that reported no confidence, has
 // no p and hands back, never passes: so does a run with no Jev (no key, or jev set to deny). Every check is a row the
-// run keeps (GuardRow, in its LEARNED_NODES trace and its metrics `guards`): B4's promotion replay and threshold refit
+// run keeps (GuardRow, in its LEARNED_NODES entry's `guards`, never capped, and its metrics `guards`): B4's promotion replay and threshold refit
 // read them.
 import type { DecisionProvider, GuardStepParams, GuardVerdict, StepGuard, WorkflowDeps } from "@parcha/agentrun-dsl";
 import { JEV_OPENROUTER_KEY_ENV } from "../decisions.js";

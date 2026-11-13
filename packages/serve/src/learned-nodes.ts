@@ -2,8 +2,9 @@
 // the workflow DSL ended it (learned-workflow.ts runLearned writes it; store-reads/journal.ts runTimeline puts it on the
 // call's result row as `learned_nodes`). Its own module, so the timeline's reader needs none of the tool's imports.
 
-/** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes }`, its call's id, the
- *  workflow's name and each of its nodes that ran (LearnedNode). */
+/** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, guards? }`, its call's id, the
+ *  workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX) and every guard check it made
+ *  (GuardRow, never capped: a map over more items than the trace holds keeps each). */
 export const LEARNED_NODES = "agentrun.learned_nodes";
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
@@ -19,18 +20,15 @@ export type LearnedNode = { readonly label: string; readonly kind: string; reado
  *  it handed the job back. A run's rows are its metrics' `guards` (runner/workflow-first.ts pathMetrics). */
 export type GuardRow = { readonly node: string; readonly signal: "self" | "jev" | "both"; readonly self?: number; readonly jev?: number; readonly p: number | null; readonly threshold: number; readonly escalated: boolean };
 
-/** A run's guard rows, from its root entries: every guard row of every learned_workflow call's trace (LEARNED_NODES), in
- *  order. What its metrics keep as `guards`. */
+/** A run's guard rows, from its root entries: every guard check of every learned_workflow call (LEARNED_NODES `guards`,
+ *  never the capped trace's), in order. What its metrics keep as `guards`. */
 export function guardsOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): GuardRow[] {
   const rows: GuardRow[] = [];
   for (const entry of entries) {
     if (entry.kind !== LEARNED_NODES) continue;
-    const nodes = (entry.data as { nodes?: unknown } | undefined)?.nodes;
-    if (!Array.isArray(nodes)) continue;
-    for (const node of nodes) {
-      const row = (node as { guard?: GuardRow } | null)?.guard;
-      if (row && typeof row === "object") rows.push(row);
-    }
+    const guards = (entry.data as { guards?: unknown } | undefined)?.guards;
+    if (!Array.isArray(guards)) continue;
+    for (const row of guards) if (row && typeof row === "object") rows.push(row as GuardRow);
   }
   return rows;
 }
