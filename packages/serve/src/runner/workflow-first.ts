@@ -10,7 +10,9 @@
 // none, or more than one (said in one log line), leaves the run to the agent. A launch's `workflowFirst: false` (RunCreate
 // `workflow_first`) forces the agent path. A deopt breaker: a workflow whose last BREAKER_WINDOW workflow-first runs, at
 // its digest (its text, so a new revision of it starts clean), handed back more than half the time is skipped, in one
-// log line, read from the agent's run rows (metrics.path, metrics.workflow, metrics.workflow_digest). The spec builders
+// log line, read from the agent's run rows (metrics.path, metrics.workflow, metrics.workflow_digest). Each run it skips
+// keeps the skip (metrics.workflow_skipped), so the breaker stays open on the newest skipped run, never on the runs that
+// tripped it, which later runs push out of the page read: it closes only for a new revision. The spec builders
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
 // the first input), through the run's own learned_workflow tool, gate, record and ledger.
 import { createHash } from "node:crypto";
@@ -80,15 +82,21 @@ export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): str
 /** How many of a workflow's newest workflow-first runs the deopt breaker reads; it trips only on a full window. */
 export const BREAKER_WINDOW = 10;
 
-/** The deopt breaker over an agent's run metrics, newest first: the workflow's last BREAKER_WINDOW workflow-first runs
- *  at `digest`, and how many of them handed back, when more than half did; undefined otherwise (fewer runs than the
- *  window included, so a new revision serves until it has a record). */
-export function breakerOf(metrics: readonly unknown[], name: string, digest: string): { handedBack: number; of: number } | undefined {
+/** Why the deopt breaker is open: the window that tripped it, or a newer run it skipped (`kept`). */
+export type BreakerOpen = { readonly handedBack: number; readonly of: number } | { readonly kept: true };
+
+/** The deopt breaker over an agent's run metrics, newest first: open when a run it skipped at `digest` comes before
+ *  the window fills (the skip kept), or when the workflow's last BREAKER_WINDOW workflow-first runs at `digest` handed
+ *  back more than half the time (how many); undefined otherwise (fewer runs than the window included, so a new
+ *  revision serves until it has a record). */
+export function breakerOf(metrics: readonly unknown[], name: string, digest: string): BreakerOpen | undefined {
   const window: RunPath[] = [];
   for (const one of metrics) {
     if (window.length === BREAKER_WINDOW) break;
-    const m = isObject(one as Json) ? (one as { path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : undefined;
-    if (m?.workflow === name && m.workflow_digest === digest && (m.path === "workflow" || m.path === "handed_back")) window.push(m.path);
+    const m = isObject(one as Json) ? (one as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_skipped?: unknown }) : undefined;
+    if (m?.workflow_digest !== digest) continue;
+    if (m.path === "agent" && m.workflow_skipped === name) return { kept: true };
+    if (m.workflow === name && (m.path === "workflow" || m.path === "handed_back")) window.push(m.path);
   }
   const handedBack = window.filter((path) => path === "handed_back").length;
   return window.length === BREAKER_WINDOW && handedBack * 2 > BREAKER_WINDOW ? { handedBack, of: BREAKER_WINDOW } : undefined;
@@ -100,30 +108,38 @@ const PAST_RUNS = 200;
 /** The agent's newest runs' metrics, newest first (the store lists by start), as breakerOf reads them. */
 export const pastOf = (store: Pick<Store, "runs">, agentId: string) => async (): Promise<readonly unknown[]> => (await store.runs.list({ agentId, limit: PAST_RUNS })).map((row) => row.metrics);
 
-/** The workflow a run serves first, or undefined: the run is agentic, its claim laid learned workflows (`workflows`:
+/** What workflowFirstOf chose: the workflow the run serves first, or the one the deopt breaker skipped (the run's metrics
+ *  keep it, pathMetrics), or neither. */
+export interface FirstChoice {
+  readonly serve?: WorkflowFirst;
+  readonly skipped?: { readonly workflow: string; readonly digest: string };
+}
+
+/** The workflow a run serves first (`serve`), or none: the run is agentic, its claim laid learned workflows (`workflows`:
  *  the active ones the seed lay chose, so learning is neither off nor notes-only), its launch does not force the agent
  *  path, exactly one of them fits its input, and the deopt breaker is not open for it. `past`: the agent's run metrics,
  *  newest first (breakerOf). `log`: one line when the launch forces the agent, more than one fits, or the breaker is open. */
-export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly unknown[]>): Promise<WorkflowFirst | undefined> {
-  if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return undefined;
+export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly unknown[]>): Promise<FirstChoice> {
+  if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return {};
   if (launch.workflowFirst === false) {
     log?.("workflow-first: off for this run (workflow_first: false); the agent takes it");
-    return undefined;
+    return {};
   }
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
   const fitting = workflows.filter((workflow) => fits(workflow, launch.input, resolveSchemaForWorkflow as never));
   // None fitting is the common case (a workflow for another job): nothing to say. More than one: which serves is not
   // the engine's call, in one line.
   if (fitting.length > 1) log?.(`workflow-first: ${fitting.length} of ${workflows.length} learned workflows fit this run's input; the agent takes it`);
-  if (fitting.length !== 1) return undefined;
+  if (fitting.length !== 1) return {};
   const chosen = fitting[0]!;
   const digest = workflowDigest(chosen);
   const open = past ? breakerOf(await past().catch(() => []), chosen.name, digest) : undefined;
   if (open) {
-    log?.(`workflow-first: ${chosen.name} handed back ${open.handedBack} of its last ${open.of} runs; the agent takes this one until a new revision of it`);
-    return undefined;
+    const why = "kept" in open ? `handed back more than half of its last ${BREAKER_WINDOW} runs` : `handed back ${open.handedBack} of its last ${open.of} runs`;
+    log?.(`workflow-first: ${chosen.name} ${why}; the agent takes this one until a new revision of it`);
+    return { skipped: { workflow: chosen.name, digest } };
   }
-  return { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed };
+  return { serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed } };
 }
 
 /** The run's path from its root entries: the WORKFLOW_FIRST entry's outcome, else the agent's. */
@@ -135,11 +151,13 @@ export function pathOf(entries: readonly { readonly kind: string; readonly data?
 
 /** The run-record fields a learning run's metrics carry (learning-curve reads path, learned_revision and workflow): the
  *  path it took, the learned revision it ran on, and the workflow that served it first and its digest (the breaker's
- *  key), when one did. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, entries: readonly { readonly kind: string; readonly data?: unknown }[]): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string } {
+ *  key), when one did; or the workflow the breaker skipped (`skipped`, FirstChoice) and its digest, which keeps the
+ *  breaker open. None for a run that does not learn. */
+export function pathMetrics(launch: RunLaunch, entries: readonly { readonly kind: string; readonly data?: unknown }[], skipped?: FirstChoice["skipped"]): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_skipped?: string } {
   if (!launch.learning) return {};
   const { path, workflow, digest } = pathOf(entries);
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}) };
+  const kept = path === "agent" && skipped ? { workflow_skipped: skipped.workflow, workflow_digest: skipped.digest } : {};
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...kept };
 }
 
 /** The agent's first input on a handback: the hand-back first (which workflow, and its own words for why, the trace the

@@ -1759,15 +1759,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           servingFirst = new Promise<void>((resolve) => (release = resolve));
           try {
             const step = await serveFirst(spec.workflowFirst);
-            if (step === "park") {
+            // A stop while it ran, or while it was asked, ends the run stopped, its call ended interrupted (or its ask
+            // withdrawn) on the record: given back parked with its stop untaken, the run would be claimed again only to end
+            // then, as parkedFollowUp's park says. A lost claim leaves it.
+            const cutBy = stopReason as StopReason | undefined;
+            if (step === "park" && cutBy?.kind !== "command") {
               await releaseHost(harness);
               gate.seal(new Parked());
               return { state: "parked" };
             }
-            // A stop while it ran ends the run stopped, its call ended interrupted on the record; a lost claim leaves it.
-            const cutBy = stopReason as StopReason | undefined;
             if (cutBy?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cutBy.cancel), [cutBy.commandId], await cutRows(claim, spec, "stopped"));
-            if (cutBy || deps.signal.aborted) return await interrupted(cutBy?.kind ?? "its claim's signal aborted");
+            if (cutBy || deps.signal.aborted || step === "park") return await interrupted(cutBy?.kind ?? "its claim's signal aborted");
             served = step;
             if (served?.outcome === "answered") turnsOver = true;
             else if (served?.outcome === "handed_back") {

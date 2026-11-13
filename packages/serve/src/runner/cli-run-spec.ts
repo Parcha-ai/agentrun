@@ -501,7 +501,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     }
   }
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
-  const workflowFirst = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : undefined;
+  const firstChoice = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : {};
+  const workflowFirst = firstChoice.serve;
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
@@ -580,7 +581,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
       const total = costUsd === null || paid === null ? null : costUsd + paid;
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, entries as never) } };
+      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, entries as never, firstChoice.skipped) } };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.

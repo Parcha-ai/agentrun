@@ -594,7 +594,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
-  const workflowFirst = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : undefined;
+  const firstChoice = learnsWorkflows(revision.kind, workflows) ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : {};
+  const workflowFirst = firstChoice.serve;
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
@@ -697,7 +698,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
       // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics).
-      const path = pathMetrics(launch, entries as never);
+      const path = pathMetrics(launch, entries as never, firstChoice.skipped);
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time), booked on the run's one ledger
       // (the paid tool calls on its cap, in their own session, not on the root), are the run's cost too.
       const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
