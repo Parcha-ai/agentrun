@@ -8,7 +8,8 @@ import { Worker } from "node:worker_threads";
 import { runnableDeadline } from "../deadline.js";
 import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
-import { type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
+import { ONE_ANSWER_INDEX } from "../schema.js";
+import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
 import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
 export type { Params, Statement, StatementResult } from "./worker.js";
@@ -105,10 +106,13 @@ const cleanStatement = (statement: Statement): Statement => ({ ...statement, par
 const RULES: Record<number, ConstraintRule> = { 275: "check", 2067: "unique", 1555: "unique", 787: "foreign_key", 1299: "not_null" };
 
 /** Which rule refused a row, from SQLite's extended code; for a duplicate, its table and columns, which SQLite reports
- *  only in its message ("UNIQUE constraint failed: t.a, t.b"): read here, in the SQLite adapter alone. */
-function constraintOf(errcode: number, message: string): { rule?: ConstraintRule; unique?: { table: string; columns: string[] } } {
+ *  only in its message ("UNIQUE constraint failed: t.a, t.b"), or the index's name for an index on an expression
+ *  ("UNIQUE constraint failed: index 'commands_one_answer'"): read here, in the SQLite adapter alone. */
+function constraintOf(errcode: number, message: string): { rule?: ConstraintRule; unique?: { table: string; columns: string[] }; index?: string } {
   const rule = RULES[errcode];
   if (rule !== "unique") return rule ? { rule } : {};
+  const index = /UNIQUE constraint failed: index '([^']+)'$/.exec(message)?.[1];
+  if (index) return { rule, index };
   const named = /UNIQUE constraint failed: (.+)$/.exec(message)?.[1]?.split(", ").map((part) => part.split("."));
   if (!named?.length || named.some((part) => part.length !== 2) || new Set(named.map(([table]) => table)).size !== 1) return { rule };
   return { rule, unique: { table: named[0]![0]!, columns: named.map(([, column]) => column!) } };
@@ -120,8 +124,12 @@ function typed(error: WorkerError): Error {
       return error.miss.kind === "fenced" ? new Fenced(error.miss.runId, error.miss.epoch) : new RunFinal(error.miss.runId);
     case "busy":
       return new StoreBusy(`the store stayed locked past its busy wait: ${error.message}`);
-    case "constraint":
-      return new StoreConstraint(error.message, constraintOf(error.errcode, error.message));
+    case "constraint": {
+      const refused = constraintOf(error.errcode, error.message);
+      // A second answer to one approval (the one-answer index): the answer written first stands.
+      if (refused.rule === "unique" && refused.index === ONE_ANSWER_INDEX) return new AnswerTaken(error.message, refused.index);
+      return new StoreConstraint(error.message, refused);
+    }
     case "closed":
       return new StoreClosed();
     case "owned":

@@ -17,7 +17,7 @@ export interface CommandInput {
 
 /** The store's insert: refuses a run that is final (RunFinal) in the insert itself, so it never races the run's end. */
 export interface CommandSink {
-  command(runId: string, command: { kind: string; body: Record<string, unknown> }): Promise<Command>;
+  command(runId: string, command: { kind: string; body: Record<string, unknown> }, options?: { launchSealed?: Uint8Array }): Promise<Command>;
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
@@ -30,7 +30,7 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       return body.reason === undefined || typeof body.reason === "string" ? undefined : `a ${kind}'s reason is text`;
     case "steer":
       if (!text(body.text)) return "a steer needs its text";
-      // A trigger's message names who wrote it, as the Timeline shows it (pi-durable-agent's originOf): never a person's.
+      // A trigger's message names who wrote it, as the Timeline shows it: never a person's.
       return body.origin === undefined || originOf(body.origin) !== undefined ? undefined : "a steer's origin is a message origin (a trigger's, or the server's)";
     case "approve":
     case "deny":
@@ -62,14 +62,14 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
 
 /** Inserts a command row for a run, after checking its kind and body. Rejects RunFinal (from the store) when the run is
  *  final, and a TypeError for a kind or body no runner would take. */
-export async function sendCommand(store: CommandSink, runId: string, input: CommandInput): Promise<Command> {
+export async function sendCommand(store: CommandSink, runId: string, input: CommandInput, options?: { launchSealed?: Uint8Array }): Promise<Command> {
   if (!COMMAND_KINDS.has(input.kind)) {
     throw new TypeError(`a command's kind is one of ${[...COMMAND_KINDS].join(", ")}, not ${JSON.stringify(input.kind)}`);
   }
   const body = input.body ?? {};
   const problem = bodyProblem(input.kind, body);
   if (problem) throw new TypeError(problem);
-  return store.command(runId, { kind: input.kind, body });
+  return store.command(runId, { kind: input.kind, body }, ...(options ? [options] : []));
 }
 
 /** The reason a command still untaken when its run ended is refused with: the store's own words (the write that makes a

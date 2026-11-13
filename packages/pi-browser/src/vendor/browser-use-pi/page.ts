@@ -2,9 +2,10 @@
 // e7007f219b10fa2c2baae1bf3e2f902a5a2706fd, src/page.ts. MIT License, Copyright (c) 2026 Browser Use contributors; the
 // license's full text is in this package's NOTICE, and UPSTREAM.json beside this file records the source.
 // Changes: the Page class only (no Tabs, no snapshot of its own: ax.ts's is the driver's); goto refuses a scheme other
-// than http, https and about:blank; screenshot takes the driver's format, quality, clip and full-page options; untyped
-// CDP params and results.
+// than http, https and about:blank; screenshot takes the driver's options (format, quality, clip, full page and scale),
+// sent as core/images.ts captureParams makes them; untyped CDP params and results.
 import { setTimeout as delay } from "node:timers/promises";
+import { captureParams, type Layout, type ScreenshotOptions } from "../../core/images.js";
 import type { CDP } from "./cdp.js";
 
 const contextLost = /Execution context was destroyed|Cannot find context|Cannot find default execution context/;
@@ -90,23 +91,10 @@ export class Page {
     await this.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
   }
 
-  /** `clip` in CSS pixels from the viewport's corner, as the page tools give it; the browser's own is from the document's. */
-  async screenshot(options: { type?: "png" | "jpeg"; quality?: number; fullPage?: boolean; clip?: { x: number; y: number; width: number; height: number } } = {}) {
-    const type = options.type ?? "png";
-    let clip: object | undefined;
-    if (options.clip) {
-      const scroll = await this.evaluate(() => ({ x: scrollX, y: scrollY })).catch(() => ({ x: 0, y: 0 }));
-      clip = { ...options.clip, x: options.clip.x + scroll.x, y: options.clip.y + scroll.y, scale: 1 };
-    } else if (options.fullPage) {
-      const { cssContentSize } = await this.cdp<{ cssContentSize: { width: number; height: number } }>("Page.getLayoutMetrics");
-      clip = { x: 0, y: 0, width: Math.ceil(cssContentSize.width), height: Math.ceil(cssContentSize.height), scale: 1 };
-    }
-    const { data } = await this.cdp<{ data: string }>("Page.captureScreenshot", {
-      format: type,
-      ...(type === "jpeg" && options.quality !== undefined ? { quality: Math.round(options.quality) } : {}),
-      ...(options.fullPage && !options.clip ? { captureBeyondViewport: true } : {}),
-      ...(clip ? { clip } : {}),
-    });
+  /** The driver's options as core/images.ts captureParams makes them CDP's, on the page's layout as it is now. */
+  async screenshot(options: ScreenshotOptions = {}) {
+    const layout = await this.cdp<Layout>("Page.getLayoutMetrics");
+    const { data } = await this.cdp<{ data: string }>("Page.captureScreenshot", captureParams(options, layout));
     return data;
   }
 }

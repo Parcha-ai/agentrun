@@ -59,17 +59,19 @@ test("a claude-agent run reads the same rows and final answer over the store as 
   ], context);
   await store.runs.update(pi, { state: "ended", outcome: "completed", summary: "There are two files.", costUsd: 0.42, endedAt: T0 + 10 });
 
-  const cliRows = await runTimeline(store, "cli", context, { settled: true });
+  // Usage rows aside: this record has no booking, which the CLI run's own usage row reads as unknown (below).
+  const cliRows = (await runTimeline(store, "cli", context, { settled: true })).filter((r) => r.kind !== "usage");
   const piRows = (await runTimeline(store, "pi", context, { settled: true })).filter((r) => r.kind !== "usage");
   // The CLI record reads the same person/model/call rows, in the same order, with the same words, as the pi run.
   assert.deepEqual(shown(cliRows), shown(piRows));
   assert.deepEqual(shown(cliRows).map((r) => r.kind), ["user_message", "text_block", "tool_use", "tool_result", "final_answer"]);
 
-  // The run read's final answer is the last model message, and its cost its stored total (no $0/unknown usage row).
+  // The run read's final answer is the last model message. Its model worked with no request booked (this record has no
+  // runner.request or runner.turn), so its cost reads unknown from its usage row, never a total its booking can't show.
   const view = await viewOverStore(store, "cli", deps);
   assert.deepEqual(view.result, { output: null, final_answer: "There are two files." });
   assert.equal(view.status, "completed");
-  assert.deepEqual(view.cost, { usd: 0.42, basis: "estimate", charge_state: null, cap_usd: null });
+  assert.deepEqual(view.cost, { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0, unpriced: 1 });
 });
 
 test("a CLI record's rows are dated by when each entry was written; an entry with no time of its own reads the run's start, never epoch 0", async (t) => {
@@ -103,7 +105,7 @@ test("a CLI record's rows are dated by when each entry was written; an entry wit
 });
 
 /** Each row's kind and time, its timestamp and created_at checked to agree. */
-const shownAt = (rows) => rows.map((row) => (assert.equal(row.created_at, row.timestamp, row.kind), [row.kind, row.timestamp]));
+const shownAt = (rows) => rows.filter((row) => row.kind !== "usage").map((row) => (assert.equal(row.created_at, row.timestamp, row.kind), [row.kind, row.timestamp]));
 
 test("a codex run's calls read their end status and output: a success ok, a failure as an error with its output", async (t) => {
   const { store } = await storeOn(t);
@@ -120,7 +122,7 @@ test("a codex run's calls read their end status and output: a success ok, a fail
   ], context);
   await store.runs.update(cli, { state: "ended", outcome: "completed", summary: "A test is failing.", costUsd: 0.1, endedAt: T0 + 10 });
 
-  const rows = shown(await runTimeline(store, "run-1", context, { settled: true }));
+  const rows = shown((await runTimeline(store, "run-1", context, { settled: true })).filter((r) => r.kind !== "usage"));
   assert.deepEqual(rows.map((r) => r.kind), ["user_message", "tool_use", "tool_result", "tool_use", "tool_result", "final_answer"]);
   // The successful call's result reads ok, with its output; the failed one reads an error, with its output.
   const [okUse, okResult, failUse, failResult] = rows.slice(1, 5);
@@ -300,7 +302,7 @@ async function chargeRowsFor(t, usd, turn = {}, tool) {
   return rows.filter((x) => x.kind === "phase" && /^(Tool cost|Not metered):/.test(x.summary ?? "")).map((x) => x.summary);
 }
 
-// A paid record's outcomes, each as main's timeline renders it (pi-durable-agent timeline.ts, the TOOL_COST row).
+// A paid record's outcomes, each as main's timeline renders it (the TOOL_COST row).
 test("a paid charge whose request names a tool of its own keeps it: the call's tool names only a charge that names none", async (t) => {
   assert.deepEqual(await chargeRowsFor(t, 0.005, {}, "web_fetch"), ["Tool cost: parallel charged $0.0050 for web_fetch"]);
 });
@@ -336,10 +338,11 @@ test("a claude-agent run's paid MCP charge renders a Tool cost row under its cal
   const cost = rows.findIndex((x) => x.kind === "phase" && /^Tool cost:/.test(x.summary ?? ""));
   assert.ok(result >= 0 && cost === result + 1, `the Tool cost row follows its call's result: ${JSON.stringify(shown(rows))}`);
   assert.equal(rows[cost].summary, "Tool cost: fake charged $0.0500 for mcp:fake/paid");
-  // A CLI run's usage row is its booking's (#2275): here no model request was booked, so it is the paid call's charge.
+  // A CLI run's usage row is its booking's (#2275): here its model answered with no request booked, so its cost is
+  // unknown, the paid call's charge the part known.
   const usage = rows.filter((x) => x.kind === "usage");
   assert.equal(usage.length, 1);
-  assert.deepEqual([usage[0].usage, usage[0].summary], [{ usd: 0.05, requests: 0 }, "Cost so far: $0.0500 over 0 model requests and 1 paid tool call"]);
+  assert.deepEqual([usage[0].usage, usage[0].summary], [{ usd: null, requests: 0, so_far_usd: 0.05, unpriced: 1 }, "Cost so far: unknown, its model's requests were not metered and 1 paid tool call"]);
 });
 
 test("an ended CLI run that left a request unanswered serves its Timeline cost unknown, with the known part: never a known total", async (t) => {

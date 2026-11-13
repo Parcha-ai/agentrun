@@ -3,11 +3,13 @@
 // (pi-ai's isRetryableAssistantError): the cap's refusal for room begins "spend_cap_reached (out of budget): ", and one
 // for good is final too. A cap of $0.0004295 puts "429" in the words: one ask, nothing sent, never asked again, and no
 // retry backoff. And one ledger: the run's requests are judged by beforeRequestOf alone, through the one rule, and
-// createCap's own ledger books nothing for a pi run.
+// createCap's own ledger books nothing for a pi run. A provider's 429 is retried (pi-ai inside the attempt, pi across
+// attempts), each retry a new request the cap judges: one that finds no room is refused in the cap's words and parks the
+// run, never a retry loop past the cap.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
-import { cap, capRun, SONNET } from "./adapter-pi-cap-support.mjs";
+import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { cap, capRun, quiet, SONNET, specCap } from "./adapter-pi-cap-support.mjs";
 
 after(closeOpenSessions);
 const CAP = 0.0004295;
@@ -49,4 +51,31 @@ test("one ledger: a pi run's requests are judged by beforeRequestOf through the 
   assert.ok(asked.length >= 1, "the host was asked");
   assert.equal(judged.count, asked.length, "one judgement per ask, by the one rule");
   assert.deepEqual(booked, [], "createCap's ledger booked nothing");
+});
+
+test("pi through the adapter: a provider's 429 whose retry finds no room under the cap ends in the cap's refusal, the run parked, and nothing is retried past the cap", async (t) => {
+  const [CAP_USD, FILLED] = [1, 0.99];
+  const script = [{ say: "never sent" }];
+  // The cap has room for the first request; once the provider has answered it 429, the run's other spend (a subagent's,
+  // booked while the 429 waited) leaves none.
+  let room = true;
+  const specOf = (sent) => {
+    const origin = scriptedOrigin(script, sent);
+    let busy = true;
+    const fetch = async (url, init) => {
+      if (!busy) return origin(url, init);
+      busy = false;
+      room = false;
+      sent.push("429");
+      return new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "429 Too Many Requests: fleet capacity exhausted" } }), { status: 429, headers: { "content-type": "application/json", "retry-after-ms": "10" } });
+    };
+    return piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
+  };
+  const { row, asked, sent, ms } = await capRun(t, { script, specOf, cap: specCap(CAP_USD), runCap: ({ capUsd: () => CAP_USD, modelOf: () => SONNET, spentUsd: () => (room ? 0 : FILLED) }) });
+  assert.deepEqual(sent, ["429"], "only the 429 reached the provider");
+  assert.equal(asked.length, 2, `the first request and its retry were asked, nothing after: ${JSON.stringify(asked.map((a) => a.answer))}`);
+  assert.equal(asked[0]?.answer?.refuse, undefined, "the first request was admitted");
+  assert.match(asked[1]?.answer?.refuse ?? "", /^spend_cap_reached \(out of budget\): /, JSON.stringify(asked[1]?.answer));
+  assert.equal(row.state, "parked", JSON.stringify(row));
+  assert.ok(ms < 10_000, `no retry loop: ${ms} ms`);
 });

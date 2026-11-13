@@ -517,6 +517,11 @@ export function fakeModal({ create = "ok", box = {}, tags: tagPatch = {}, sandbo
 					return handle(id);
 				};
 				if (create === "fail") return Promise.reject(new InvalidError("Image build failed: COPY --from could not pull the image"));
+				// Modal's bound on a sandbox's tags, keys and values together, in its words (the qa36 live run's).
+				const tagBytes = Object.entries(params.tags ?? {}).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
+				if (tagBytes > 512) {
+					return Promise.reject(Object.assign(new Error(`/modal.client.ModalClient/SandboxCreateV2 INVALID_ARGUMENT: a sandbox's cumulative tags size (${tagBytes} bytes) cannot exceed 512 bytes`), { name: "ClientError", code: 3 }));
+				}
 				if (create === "slow" || create === "late") {
 					const held = deferred();
 					fake.held.push(held);

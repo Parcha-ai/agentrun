@@ -70,6 +70,7 @@
     "writeHomeFile": ["home", "write"],
     "deleteHomeFile": ["home", "delete"],
     "getAgentLearning": ["learning", "get"],
+    "getLearningCost": ["learning", "cost"],
     "listLearningNotes": ["learning", "notes"],
     "listLearningLog": ["learning", "log"],
     "readLearningFile": ["learning", "read"],

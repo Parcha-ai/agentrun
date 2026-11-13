@@ -87,8 +87,8 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.equal(await readAfterNavigation(() => driver.run({ code: AFTER_SUBMIT }), (value) => typeof value === "string"), "Submission 1 received for Ada Lovelace.");
       assert.equal(site.submissions(), 1);
     });
-    await t.test("screenshot honors type, quality and the css or device scale", async () => {
-      const png = await driver.screenshot({ type: "png", scale: "css" });
+    await t.test("screenshot honors type and quality, and takes a scale below 1 at one image pixel per CSS pixel", async () => {
+      const png = await driver.screenshot({ type: "png", scale: 0.5 });
       assert.equal(png.mimeType, "image/png");
       assert.deepEqual(pngSize(png.data), { width: 1000, height: (pngSize(png.data)).height });
       const jpeg = await driver.screenshot({ type: "jpeg", quality: 40.4 });
