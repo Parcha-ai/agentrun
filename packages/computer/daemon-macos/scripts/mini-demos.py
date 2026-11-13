@@ -35,7 +35,8 @@ A failed teardown fails the task.
 
 An app that was not running before the run is the run's: it is started for the grants and the sweep and quit after
 them, and its task starts it again and quits it at the end of its teardown, after the snapshot, so its window never
-sits in front of a later task's (an app that did not quit counts as left). An app that was running before the run, a
+sits in front of a later task's. Its windows are not compared, since they go with it, and an app that did not quit
+counts as left. An app that was running before the run, a
 person's, is left as it is. Calendar and Notes are asked about (snapshot, teardown) only while they run, since asking
 would start them.
 
@@ -516,8 +517,10 @@ def fill(group, name, count):
     group[key] = int(count or 0)
 
 
-def differences(before, after):
-    """Every way after is not before, in words."""
+def differences(before, after, quitting=None):
+    """Every way after is not before, in words. quitting: an app the run started, quit right after this: its windows go
+    with it (and one that does not quit counts on its own), so none of them is left. What an app opens on launch is
+    not the same each time (TextEdit's Open panel on CI, or nothing)."""
     left = []
     for group, what, unit, app in (("calendars", "calendar", "events today", "Calendar"), ("folders", "Notes folder", "notes", "Notes")):
         if before[group] is None or after[group] is None:
@@ -534,20 +537,20 @@ def differences(before, after):
                 left.append(f"{what} {name!r} is gone")
             elif now != was:
                 left.append(f"{what} {name!r}: {now} {unit}, was {was}")
-    for app in sorted(set(before["windows"]) | set(after["windows"])):
-        new = sorted(set(after["windows"].get(app, [])) - set(before["windows"].get(app, [])))
+    for app in sorted((set(before["windows"]) | set(after["windows"])) - {quitting}):
+        new =sorted(set(after["windows"].get(app, [])) - set(before["windows"].get(app, [])))
         gone = sorted(set(before["windows"].get(app, [])) - set(after["windows"].get(app, [])))
         left += [f"{APPS[app]} window {w}" for w in new] + [f"{APPS[app]} window {w} is gone" for w in gone]
     left += [f"{ROOT}/{name}" for name in after["root"] if name not in before["root"]]
     return left
 
 
-def settle(c, before, seconds=15):
+def settle(c, before, quitting=None, seconds=15):
     """The snapshot again, asked until it matches the one before or the time is up: a store takes a moment to save."""
     deadline = time.monotonic() + seconds
     while True:
         after = snapshot(c)
-        left = differences(before, after)
+        left = differences(before, after, quitting)
         if not left or time.monotonic() > deadline:
             return left
         time.sleep(1)
@@ -1173,18 +1176,6 @@ def teardown(t):
     return failed
 
 
-def still_windows(app, still=2, most=15):
-    """Until the app's onscreen windows have not changed for `still` seconds (at most `most`): an app just started opens
-    its first windows a moment after it answers."""
-    start = time.monotonic()
-    seen, since = windows().get(app, set()), start
-    while time.monotonic() - since < still and time.monotonic() - start < most:
-        time.sleep(0.25)
-        now = windows().get(app, set())
-        if now != seen:
-            seen, since = now, time.monotonic()
-
-
 def quit_apps(apps, seconds=15):
     """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
     their own, and waited for: the ones still running after that, by name."""
@@ -1320,11 +1311,6 @@ def main():
                 time.sleep(0.5)
             error, left = None, []
             try:
-                if app in started:
-                    # Opening the app is the setup's, as Notes' and Calendar's are: what it opens on launch (TextEdit's
-                    # Open panel on CI) is in both snapshots, and goes with the app when it quits.
-                    t.launch()
-                    still_windows(app)
                 if prepare:
                     prepare(t)
                 before = snapshot(c)
@@ -1351,7 +1337,7 @@ def main():
                         if failed:
                             error = "; ".join(([error] if error else []) + [f"teardown: {f}" for f in failed])
                         try:
-                            left = settle(c, before)
+                            left = settle(c, before, app if app in started else None)
                         except Exception as e:
                             left = [f"no snapshot after the task: {e}"]
                         # After the snapshot, which was taken with the app as it was in the one before.

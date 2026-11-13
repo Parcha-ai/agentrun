@@ -126,7 +126,8 @@ sweep never removes a live run's sandbox.
 
 An app that wasn't running before the run is the run's own. The run starts it for the grant check and the sweep, then
 quits it. Its task starts it again and quits it at the end of the teardown, after the snapshot, so its window never
-sits in front of a later task's; an app that doesn't quit counts as left behind. An app that was already running, a
+sits in front of a later task's. Its windows aren't compared, since they go with it (what an app opens on launch
+varies: TextEdit's Open panel on CI, or nothing), and an app that doesn't quit counts as left behind. An app that was already running, a
 person's own on the mini, is left as it is. The snapshot and the teardown ask Calendar and Notes only while they run,
 since asking would start them.
 
