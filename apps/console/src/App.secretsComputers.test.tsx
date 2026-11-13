@@ -13,7 +13,7 @@ globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const COMPUTERS = { kinds: [{ kind: "sandbox", offered: true, groups: [], tools: [], providers: [
+const COMPUTERS = { paired: [], kinds: [{ kind: "sandbox", offered: true, groups: [], tools: [], providers: [
   { id: "e2b", name: "E2B", metered: true, secrets: [{ name: "computer:e2b:E2B_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:e2b:E2B_API_KEY"], ready: false, why: "E2B needs E2B_API_KEY saved" },
 ] }] };
 const ARCHIL = { on: false, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } };

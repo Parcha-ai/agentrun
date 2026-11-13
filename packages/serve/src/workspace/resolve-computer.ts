@@ -40,6 +40,9 @@ export type KindRegistry = {
   readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, unknown>>;
   servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[];
   readonly PROVIDERS: readonly ProviderEntry[];
+  /** A provider's own words for why it gives no computer of `kind`, where they say more than servingRefusals' (a paired
+   *  computer: its driver is what to update, attached-computers.ts withPaired); undefined, servingRefusals' words. */
+  readonly unservedWhy?: (entry: ProviderEntry, kind: ComputerSettingKind) => string | undefined;
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
@@ -290,6 +293,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // The configurations of the provider that serve the kind; none, and the registry says why, by its closest one.
   const serving = servingOf(registry, entry, kind);
   if (serving.length === 0) {
+    const own = registry.unservedWhy?.(entry, kind);
+    if (own !== undefined) return { refused: `${own}, or pick ${pick}` };
     const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
