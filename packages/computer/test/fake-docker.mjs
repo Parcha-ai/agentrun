@@ -1,15 +1,18 @@
 // A fake docker program under a temp dir, for DockerProvider's unit tests: it records each call's argv, keeps its
-// containers in a JSON file, and answers run, inspect, ps, stop, rm, info and exec (with the daemon's hello) as the
+// containers in a JSON file, and answers run, inspect, ps, stop, rm, info, image inspect, pull and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
-import { DockerProvider } from "../dist/index.js";
+import { fileURLToPath } from "node:url";
+import { checkAddress } from "../dist/docker/egress-table.js";
+import { DockerProvider } from "../dist/docker.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-export const HELLO = { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 
 const dirs = [];
 after(() => {
@@ -21,8 +24,11 @@ export const idOf = (name) => createHash("sha256").update(name).digest("hex");
 /** The paths Docker 29 masks and makes read-only in a container that is not privileged. */
 export const MASKED_PATHS = ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"];
 export const READONLY_PATHS = ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"];
-/** Stands for the provider's daemon path in a seeded container; fakeDocker puts the real path in. */
+/** Stands for the daemon file a seeded container binds; fakeDocker puts in the provider's private copy of its daemon. */
 export const DAEMON = "@daemon";
+/** The fake daemon's bytes, and the name of the provider's copy of them: computerd-<sha256 of the bytes>. */
+export const DAEMON_BYTES = "not a real daemon";
+export const COPY_NAME = `computerd-${createHash("sha256").update(DAEMON_BYTES).digest("hex")}`;
 
 /**
  * What Docker 29 inspect reports for a container made as DockerProvider.create makes one. Self-contained: the fake
@@ -31,8 +37,20 @@ export const DAEMON = "@daemon";
 export function report({
 	id, name, image = "debian:bookworm-slim", labels = {}, cmd, user = "1000:1000", workdir = "/work", env = ["HOME=/work"], network = "none", running = true,
 	capDrop = ["ALL"], securityOpt = ["no-new-privileges"], pids = 1024, memory = 4096 * 1024 * 1024, swap = memory, period = 100_000, quota = 200_000,
-	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", apparmor = false, masked, readonly,
+	tmpfs, ipc = "private", cgroupns = "private", daemonPath = "@daemon", daemonVolume, apparmor = false, masked, readonly, binds = [], volumes = [],
 }) {
+	// A named volume's mount, as Docker 29 records it: volume-nocopy and volume-subpath under VolumeOptions in
+	// HostConfig.Mounts, and in Mounts the volume by name, its source the volume's own directory.
+	const volumeOptions = (v) => (v.subpath !== undefined || v.nocopy ? { VolumeOptions: { ...(v.nocopy ? { NoCopy: true } : {}), ...(v.subpath !== undefined ? { Subpath: v.subpath } : {}) } } : {});
+	const volumeHost = (v) => ({ Type: "volume", Source: v.src, Target: v.dst, ...(v.readonly ? { ReadOnly: true } : {}), ...volumeOptions(v) });
+	const volumePoint = (v) => ({ Type: "volume", Name: v.src, Source: `/var/lib/docker/volumes/${v.src}/_data`, Destination: v.dst, Driver: "local", Mode: "z", RW: !v.readonly, Propagation: "" });
+	// Each further --mount, after the daemon's, as Docker 29 reports it: a bind, or a named volume; ReadOnly only when it is.
+	const hostBinds = [...binds.map((b) => ({ Type: "bind", Source: b.src, Target: b.dst, ...(b.readonly ? { ReadOnly: true } : {}) })), ...volumes.map(volumeHost)];
+	const mountBinds = [...binds.map((b) => ({ Type: "bind", Source: b.src, Destination: b.dst, Mode: "", RW: !b.readonly, Propagation: "rprivate" })), ...volumes.map(volumePoint)];
+	// The daemon: a bind of daemonPath, or, from a provider with the volume option, daemonVolume ({ src, subpath }).
+	const daemonAt = daemonVolume === undefined ? undefined : { src: daemonVolume.src, dst: daemonVolume.dst ?? "/opt/agentrun", readonly: true, subpath: daemonVolume.subpath, nocopy: true };
+	const daemonHost = daemonAt === undefined ? { Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true } : volumeHost(daemonAt);
+	const daemonPoint = daemonAt === undefined ? { Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" } : volumePoint(daemonAt);
 	const [uid, gid] = user.split(":");
 	return {
 		Id: id,
@@ -59,11 +77,11 @@ export function report({
 			BlkioWeightDevice: [], BlkioDeviceReadBps: [], BlkioDeviceWriteBps: [], BlkioDeviceReadIOps: [], BlkioDeviceWriteIOps: [], CpuPeriod: period, CpuQuota: quota,
 			CpuRealtimePeriod: 0, CpuRealtimeRuntime: 0, CpusetCpus: "", CpusetMems: "", Devices: [], DeviceCgroupRules: null, DeviceRequests: null, MemoryReservation: 0,
 			MemorySwap: swap, MemorySwappiness: null, OomKillDisable: null, PidsLimit: pids, Ulimits: [], CpuCount: 0, CpuPercent: 0, IOMaximumIOps: 0, IOMaximumBandwidth: 0,
-			Mounts: [{ Type: "bind", Source: daemonPath, Target: "/opt/agentrun/computerd", ReadOnly: true }],
+			Mounts: [daemonHost, ...hostBinds],
 			MaskedPaths: masked ?? ["/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys", "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list", "/proc/timer_stats", "/sys/devices/virtual/powercap", "/sys/firmware"],
 			ReadonlyPaths: readonly ?? ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"],
 		},
-		Mounts: [{ Type: "bind", Source: daemonPath, Destination: "/opt/agentrun/computerd", Mode: "", RW: false, Propagation: "rprivate" }],
+		Mounts: [daemonPoint, ...mountBinds],
 		NetworkSettings: { Networks: { [network]: {} } },
 	};
 }
@@ -77,40 +95,168 @@ export function container({ name, labels = {}, network = "none", running = true,
 }
 
 /**
+ * What Docker 29 inspect reports for a computer's egress proxy container, made as DockerProvider.create makes one.
+ * Self-contained: the fake docker program runs a copy of it for each docker run of a proxy.
+ */
+export function proxyReport({
+	id, name, image = "node:22.23.4-bookworm-slim", labels = {}, entrypoint = ["node"], cmd, user = "1000:1000", running = true, exitCode = 0, network = "bridge", capDrop = ["ALL"], securityOpt = ["no-new-privileges"],
+	readonlyRootfs = true, privileged = false, mounts = [], logs = "", memory = 256 * 1024 * 1024, swap = memory, pids = 64, ipc = "private", cgroupns = "private",
+	logConfig = { Type: "json-file", Config: { "max-file": "2", "max-size": "1m" } }, period = 100_000, quota = 50_000, ulimits = [{ Name: "nofile", Hard: 1024, Soft: 1024 }],
+	created = "2026-01-01T00:00:00.000000000Z",
+}) {
+	return {
+		Id: id,
+		Name: `/${name}`,
+		Created: created,
+		State: { Running: running, Status: running ? "running" : "exited", ExitCode: running ? 0 : exitCode, Error: "" },
+		Config: { User: user, Image: image, Entrypoint: entrypoint, Cmd: cmd, Labels: labels, Env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "NODE_VERSION=22.23.4"] },
+		HostConfig: {
+			NetworkMode: network, CapDrop: capDrop, CapAdd: null, Privileged: privileged, SecurityOpt: securityOpt, ReadonlyRootfs: readonlyRootfs, PortBindings: {}, PublishAllPorts: false,
+			Binds: null, VolumesFrom: null, Devices: [], PidMode: "", UsernsMode: "", IpcMode: ipc, CgroupnsMode: cgroupns, RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
+			Memory: memory, MemorySwap: swap, PidsLimit: pids, LogConfig: logConfig, CpuPeriod: period, CpuQuota: quota, Ulimits: ulimits,
+			Mounts: mounts.map((m) => ({
+				Type: m.type, Source: m.src, Target: m.dst, ...(m.readonly ? { ReadOnly: true } : {}),
+				...(m.subpath !== undefined || m.nocopy ? { VolumeOptions: { ...(m.nocopy ? { NoCopy: true } : {}), ...(m.subpath !== undefined ? { Subpath: m.subpath } : {}) } } : {}),
+			})),
+		},
+		Mounts: mounts.map((m) =>
+			m.type === "volume"
+				? { Type: "volume", Name: m.src, Source: `/var/lib/docker/volumes/${m.src}/_data`, Destination: m.dst, Driver: "local", Mode: "z", RW: !m.readonly, Propagation: "" }
+				: { Type: "bind", Source: m.src, Destination: m.dst, Mode: "", RW: !m.readonly, Propagation: "rprivate" },
+		),
+		NetworkSettings: { Networks: { [network]: {} } },
+		Logs: logs,
+	};
+}
+
+/** The proxy code's two binds, as the provider makes them: this package's dist/docker and its package.json. */
+export const CODE_DIR = fileURLToPath(new URL("../dist/docker", import.meta.url));
+export const PACKAGE_JSON = fileURLToPath(new URL("../package.json", import.meta.url));
+
+/** This machine's own public addresses, which a provider with no egress.hostAddresses gives its proxy's --local. */
+export const LOCAL = [...new Set(Object.values(networkInterfaces()).flat().map((entry) => entry.address).filter((address) => checkAddress(address, []).ok))];
+
+/**
+ * A computer with network allow as DockerProvider.create makes one, seeded: the computer, its proxy container and its
+ * volume. `proxy` is merged over the proxy's report fields (to make it drift), or null leaves the proxy out. `local` is
+ * the proxy's --local, this machine's public addresses by default; [] leaves the flag out.
+ */
+export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000).toISOString(), labels = {}, user = "1000:1000", running = true, proxy = {}, local = LOCAL }) {
+	const volume = `${name}-egress`;
+	const computer = container({
+		name, labels, deadline, user, running, cmd: ["init", "--deadline", deadline, "--egress", "/opt/agentrun/egress/egress.sock"],
+		volumes: [{ src: volume, dst: "/opt/agentrun/egress", readonly: true }],
+	});
+	const cmd = ["/code/docker/egress-main.js", "--socket", "/egress/egress.sock", "--deadline", deadline, "--allow", allow.join(","), ...(local.length ? ["--local", local.join(",")] : [])];
+	const made = proxy === null ? [] : [proxyReport({
+		id: idOf(volume), name: volume, user, running, cmd, labels: { ...labels, "agentrun.computer.egress": name, "agentrun.computer.deadline": deadline },
+		mounts: [{ type: "volume", src: volume, dst: "/egress" }, { type: "bind", src: CODE_DIR, dst: "/code/docker", readonly: true }, { type: "bind", src: PACKAGE_JSON, dst: "/code/package.json", readonly: true }],
+		...proxy,
+	})];
+	return { containers: [computer, ...made], volumes: [egressVolume({ computer: name, deadline, labels })] };
+}
+
+/** A computer's egress volume as `docker volume inspect` reports it: its labels (the computer's, its deadline, the
+ *  spec's) and when it was made. */
+export function egressVolume({ computer, deadline = new Date(Date.now() + 600_000).toISOString(), labels = {}, created = "2026-01-01T00:00:00Z" }) {
+	return { Name: `${computer}-egress`, Labels: { ...labels, "agentrun.computer.egress": computer, "agentrun.computer.deadline": deadline }, CreatedAt: created, Driver: "local" };
+}
+
+/**
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
  * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
- * "info", "hello") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
+ * "info", "hello", "logs") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
  * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
+ * `binds` is merged over each bind docker run makes after the daemon's ({ src } binds another folder, { readonly: true }
+ * binds it read-only), or "drop" makes none: a Docker that does not bind what it was asked to. `daemonMode` is the fake
+ * daemon file's mode (default 0755); `daemonCache` is the provider's daemonCache option, by default a directory under
+ * the fake's temp dir, and `bound` is then the copy the provider binds.
+ * `volumes` are there from the start ({ Name, Labels }); `egress` is what a new egress proxy does: "ready" (it logs its
+ * ready line), "never" (it runs and never says it is ready) or "exits" (it ends at once, saying why); `proxyPatch` is
+ * merged over each new proxy's report; `proxyLocal` replaces the --local a new proxy runs with ([] drops the flag): a
+ * Docker whose proxy does not run what it was asked to; `egressOptions` is the provider's egress option. `endpoint` is
+ * the daemon `docker context inspect` names (a local unix socket by default), or null when it fails. `images` lists the
+ * images on the host (default: every image is), which `image inspect` finds, `pull` adds and `run --pull never` needs;
+ * `pull` is "ok" or "fails" (the registry refuses it); "pull" can be held too. `volume` is the provider's volume option;
+ * `volumeRoots` maps a volume's name to the directory its files are in, so a `volume-subpath` that is not there fails as
+ * Docker's does. docker info reports `ServerVersion` 29.0.0 unless `info` says otherwise. `lateRun` ("egress" or
+ * "computer") makes that kind's `docker run` a CLI that never answers, whose container the daemon still makes after
+ * the CLI is killed (by the caller's abort), once the cleanup that follows goes quiet, as a real daemon does with a
+ * create already under way; `late()`
+ * reads its marks. `sticky` lists name endings of containers `docker rm` never removes.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up" } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [] } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
 	const state = join(dir, "containers.json");
+	const volumeState = join(dir, "volumes.json");
+	const imageState = join(dir, "images.json");
+	writeFileSync(imageState, JSON.stringify(images ?? null));
 	const daemonPath = join(dir, "computerd");
-	writeFileSync(state, JSON.stringify(containers).replaceAll(JSON.stringify(DAEMON), JSON.stringify(daemonPath)));
-	writeFileSync(daemonPath, "not a real daemon");
-	chmodSync(daemonPath, 0o755);
+	// The provider copies its daemon into its cache directory, by default one under this temp dir, and binds the copy.
+	const cache = daemonCache ?? join(dir, "cache");
+	const bound = daemonCache === undefined ? join(realpathSync(dir), "cache", COPY_NAME) : undefined;
+	writeFileSync(state, JSON.stringify(containers).replaceAll(JSON.stringify(DAEMON), JSON.stringify(bound ?? daemonPath)));
+	writeFileSync(volumeState, JSON.stringify(volumes));
+	writeFileSync(daemonPath, DAEMON_BYTES);
+	chmodSync(daemonPath, daemonMode);
 	const program = join(dir, "docker");
-	const config = JSON.stringify({ dir, log, state, running, gone, patch, hello: { ...HELLO, ...hello },
-		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ...info },
+	const config = JSON.stringify({ dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
+		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
 		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys"] } });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
-const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+// Each state file is written whole to a file of this process's beside it, then renamed over it: a docker call reading it
+// meanwhile (another of this fake's processes) reads the old file or the new one, never a half-written one.
+const replace = (file, text) => {
+	const next = file + "." + process.pid + ".next";
+	writeFileSync(next, text);
+	renameSync(next, file);
+};
 const { createHash } = require("node:crypto");
 const config = ${config};
 const report = ${report.toString()};
+const proxyReport = ${proxyReport.toString()};
 const args = process.argv.slice(2);
 appendFileSync(config.log, JSON.stringify(args) + "\\n");
 const load = () => JSON.parse(readFileSync(config.state, "utf8"));
-const save = (all) => writeFileSync(config.state, JSON.stringify(all));
+const save = (all) => replace(config.state, JSON.stringify(all));
+const loadVolumes = () => JSON.parse(readFileSync(config.volumeState, "utf8"));
+const saveVolumes = (all) => replace(config.volumeState, JSON.stringify(all));
+// The images on the host, or null when every image is.
+const loadImages = () => JSON.parse(readFileSync(config.imageState, "utf8"));
+const saveImages = (all) => replace(config.imageState, JSON.stringify(all));
+// A container docker run made: saved and its id printed, or, for config.lateRun's kind, a CLI that never answers while
+// the daemon (a detached process here) still makes the container after the CLI is killed: once the cleanup that follows
+// has gone quiet (no docker call for 150 ms), so it lands after the provider's first removal looked and found nothing.
+const commit = (made, kind) => {
+	if (config.lateRun !== kind) {
+		save([...load(), made]);
+		process.stdout.write(made.Id + "\\n");
+		return;
+	}
+	// The daemon process writes late-started first (its create is under way, before the CLI can be cut off), and
+	// late-committed once it made the container.
+	const daemon = "const fs = require('node:fs'); const parent = " + process.pid + "; const state = " + JSON.stringify(config.state) + "; const log = " + JSON.stringify(config.log) + "; const made = " + JSON.stringify(made) + "; const dir = " + JSON.stringify(config.dir) + ";" +
+		"fs.writeFileSync(dir + '/late-started', '');" +
+		"const alive = () => { try { process.kill(parent, 0); return true; } catch { return false; } };" +
+		"let size = -1; let since = Date.now();" +
+		"const wait = setInterval(() => { if (alive()) return; const now = fs.statSync(log).size; if (now !== size) { size = now; since = Date.now(); return; } if (Date.now() - since < 150) return;" +
+		" clearInterval(wait); const all = JSON.parse(fs.readFileSync(state, 'utf8')); all.push(made); fs.writeFileSync(state + '.' + process.pid + '.next', JSON.stringify(all)); fs.renameSync(state + '.' + process.pid + '.next', state); fs.writeFileSync(dir + '/late-committed', made.Name); }, 20);";
+	require("node:child_process").spawn(process.execPath, ["-e", daemon], { detached: true, stdio: "ignore" }).unref();
+	setInterval(() => {}, 1000);
+};
+const labelFilters = () => args.flatMap((arg, i) => (arg === "--filter" && args[i + 1].startsWith("label=") ? [args[i + 1].slice("label=".length)] : []));
+// A filter of a label's name alone (label=k) asks only that the label is there.
+const hasLabels = (labels) => labelFilters().every((f) => (f.includes("=") ? (labels ?? {})[f.slice(0, f.indexOf("="))] === f.slice(f.indexOf("=") + 1) : Object.hasOwn(labels ?? {}, f)));
 const find = (all, key) => all.find((c) => c.Name === "/" + key) ?? all.find((c) => /^[0-9a-f]{12,64}$/.test(key) && c.Id.startsWith(key));
 const noSuch = (key) => { process.stderr.write("Error response from daemon: No such container: " + key + "\\n"); process.exit(1); };
 // A held step waits for its proceed file, at most a minute.
@@ -123,9 +269,27 @@ const held = (step, then) => {
 		then();
 	}, 20);
 };
-const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => (at == null ? undefined : at[key]), value);
+// As Docker runs a --format template on the JSON as a map: a key the map lacks fails the whole call (missingkey=error),
+// in Docker's words, where (index .Path "Key") reads it as null.
+const pick = (value, path) => path.split(".").filter(Boolean).reduce((at, key) => {
+	if (at == null) return undefined;
+	if (typeof at === "object" && !Array.isArray(at) && !Object.hasOwn(at, key)) throw new Error('template parsing error: template: :1: executing "" at <' + path + '>: map has no entry for key "' + key + '"');
+	return at[key];
+}, value);
 const render = (format, found) =>
-	format.replace(/\\{\\{(json )?([.A-Za-z]+)\\}\\}/g, (_, json, path) => (json ? JSON.stringify(pick(found, path) ?? null) : String(pick(found, path) ?? "")));
+	format.replace(/\\{\\{(json )?(?:\\(index ([.A-Za-z]+) "([A-Za-z]+)"\\)|([.A-Za-z]+))\\}\\}/g, (_, json, base, key, path) => {
+		const value = path === undefined ? pick(found, base)?.[key] : pick(found, path);
+		return json ? JSON.stringify(value ?? null) : String(value ?? "");
+	});
+/** render, or Docker's exit on a template it cannot run on the JSON. */
+const rendered = (format, found) => {
+	try {
+		return render(format, found);
+	} catch (error) {
+		process.stderr.write(error.message + "\\n");
+		process.exit(1);
+	}
+};
 const merge = (base, over) => {
 	for (const [key, value] of Object.entries(over)) {
 		base[key] = value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object" ? merge(base[key], value) : value;
@@ -136,10 +300,53 @@ switch (args[0]) {
 	case "run": {
 		const flags = {};
 		let i = 1;
-		for (; i < args.length && args[i].startsWith("--"); i += args[i] === "--detach" ? 1 : 2) (flags[args[i]] ??= []).push(args[i + 1]);
+		for (; i < args.length && args[i].startsWith("--"); i += args[i] === "--detach" || args[i] === "--read-only" ? 1 : 2) (flags[args[i]] ??= []).push(args[i + 1]);
 		const name = flags["--name"][0];
 		const labels = Object.fromEntries(flags["--label"].map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
-		const mount = Object.fromEntries(flags["--mount"][0].split(",").map((p) => p.split("=")));
+		const parsed = flags["--mount"].map((m) => Object.fromEntries(m.split(",").map((p) => (p.includes("=") ? [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)] : [p, ""]))));
+		// An image not on the host: --pull never fails as Docker does; any other run pulls it first.
+		const present = loadImages();
+		if (present !== null && !present.includes(args[i])) {
+			if (flags["--pull"]?.[0] === "never") { process.stderr.write("docker: Error response from daemon: No such image: " + args[i] + "\\n"); process.exit(125); }
+			saveImages([...present, args[i]]);
+		}
+		// A volume's subpath must be there, as Docker requires: config.volumeRoots names where each volume's files are.
+		for (const m of parsed) {
+			const root = m.type === "volume" && m["volume-subpath"] !== undefined ? config.volumeRoots[m.src] : undefined;
+			if (root !== undefined && !existsSync(root + "/" + m["volume-subpath"])) {
+				process.stderr.write("docker: Error response from daemon: cannot access path " + m["volume-subpath"] + " of volume " + m.src + "\\n");
+				process.exit(125);
+			}
+		}
+		if (flags["--entrypoint"]?.[0] === "node") {
+			// An egress proxy: config.egress says whether it says it is ready, never does, or ends at once.
+			const ends = config.egress === "exits";
+			let cmd = args.slice(i + 1);
+			if (config.proxyLocal !== null) {
+				const at = cmd.indexOf("--local");
+				if (at >= 0) cmd = cmd.toSpliced(at, 2);
+				if (config.proxyLocal.length > 0) cmd = [...cmd, "--local", config.proxyLocal.join(",")];
+			}
+			const made = proxyReport({
+				id: createHash("sha256").update(name).digest("hex"), name, image: args[i], labels, entrypoint: ["node"], cmd, user: flags["--user"]?.[0] ?? "",
+				running: !ends, exitCode: ends ? 2 : 0, network: flags["--network"]?.[0] ?? "default", capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], readonlyRootfs: "--read-only" in flags,
+				mounts: parsed.map((m) => ({ type: m.type, src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m })),
+				memory: Number.parseInt(flags["--memory"]?.[0] ?? "0", 10) * 1024 * 1024, swap: Number.parseInt(flags["--memory-swap"]?.[0] ?? "0", 10) * 1024 * 1024,
+				pids: Number(flags["--pids-limit"]?.[0] ?? 0), ipc: flags["--ipc"]?.[0] ?? "", cgroupns: flags["--cgroupns"]?.[0] ?? "",
+				logConfig: { Type: flags["--log-driver"]?.[0] ?? "json-file", Config: Object.fromEntries((flags["--log-opt"] ?? []).map((o) => [o.slice(0, o.indexOf("=")), o.slice(o.indexOf("=") + 1)])) },
+				period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0), created: new Date().toISOString(),
+				ulimits: (flags["--ulimit"] ?? []).map((u) => { const [n, limits] = u.split("="); const [soft, hard = soft] = limits.split(":").map(Number); return { Hard: hard, Name: n, Soft: soft }; }),
+				logs: config.egress === "ready" ? "egress ready allow=" + args[args.indexOf("--allow") + 1] + "\\n" : ends ? "egress: no host list, so the proxy does not start\\n" : "",
+			});
+			commit(merge(made, config.proxyPatch), "egress");
+			break;
+		}
+		const [mount, ...more] = parsed;
+		// config.binds is merged over each further bind as Docker made it, or "drop" leaves them out: a Docker that does
+		// not bind what it was asked to.
+		const binds = config.binds === "drop" ? [] : more.filter((m) => m.type === "bind").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, ...config.binds }));
+		const volumes = more.filter((m) => m.type === "volume").map((m) => ({ src: m.src, dst: m.dst, readonly: "readonly" in m, subpath: m["volume-subpath"], nocopy: "volume-nocopy" in m }));
+		const daemonVolume = mount.type === "volume" ? { src: mount.src, subpath: mount["volume-subpath"], dst: mount.dst } : undefined;
 		const network = flags["--network"][0];
 		const memory = flags["--memory"] ? Number.parseInt(flags["--memory"][0], 10) * 1024 * 1024 : 0;
 		const swap = flags["--memory-swap"] ? Number.parseInt(flags["--memory-swap"][0], 10) * 1024 * 1024 : 0;
@@ -148,15 +355,14 @@ switch (args[0]) {
 			env: flags["--env"] ?? [], network, running: config.running, capDrop: flags["--cap-drop"], securityOpt: flags["--security-opt"], pids: Number(flags["--pids-limit"][0]),
 			memory, swap, period: Number(flags["--cpu-period"]?.[0] ?? 0), quota: Number(flags["--cpu-quota"]?.[0] ?? 0),
 			tmpfs: Object.fromEntries((flags["--tmpfs"] ?? []).map((t) => [t.slice(0, t.indexOf(":")), t.slice(t.indexOf(":") + 1)])),
-			ipc: flags["--ipc"]?.[0] ?? "private", cgroupns: flags["--cgroupns"]?.[0] ?? "private", daemonPath: mount.src,
-			apparmor: config.info.SecurityOptions.some((option) => option.startsWith("name=apparmor")),
+			ipc: flags["--ipc"]?.[0] ?? "private", cgroupns: flags["--cgroupns"]?.[0] ?? "private", daemonPath: mount.src, daemonVolume,
+			apparmor: config.info.SecurityOptions.some((option) => option.startsWith("name=apparmor")), binds, volumes,
 		});
 		made.HostConfig.Mounts[0].ReadOnly = "readonly" in mount;
 		made.Mounts[0].RW = !("readonly" in mount);
 		if (!config.running) Object.assign(made.State, { ExitCode: 127, Error: "exec format error" });
 		if (flags["--cpus"]) made.HostConfig.NanoCpus = Math.round(Number(flags["--cpus"][0]) * 1e9);
-		save([...load(), merge(made, config.patch)]);
-		process.stdout.write(made.Id + "\\n");
+		commit(merge(made, config.patch), "computer");
 		break;
 	}
 	case "inspect": held("inspect", () => {
@@ -164,16 +370,15 @@ switch (args[0]) {
 		let missing;
 		for (const key of args.slice(5)) {
 			const found = config.vanish.includes(key) ? undefined : find(all, key);
-			if (found) process.stdout.write(render(args[4], found) + "\\n");
+			if (found) process.stdout.write(rendered(args[4], found) + "\\n");
 			else missing = key;
 		}
 		if (missing) noSuch(missing);
 	}); break;
 	case "ps": {
-		const filters = args.flatMap((arg, i) => (arg === "--filter" ? [args[i + 1].slice("label=".length)] : []));
+		const names = args.includes("{{.Names}}");
 		for (const c of load()) {
-			const has = filters.every((f) => c.Config.Labels[f.slice(0, f.indexOf("="))] === f.slice(f.indexOf("=") + 1));
-			if (has) process.stdout.write((config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
+			if (hasLabels(c.Config.Labels)) process.stdout.write((names || config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
 		}
 		break;
 	}
@@ -181,12 +386,69 @@ switch (args[0]) {
 		if (config.gone) noSuch(args.at(-1));
 		const all = load();
 		const found = find(all, args.at(-1));
-		if (args[0] === "rm") save(all.filter((c) => c !== found));
+		// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
+		if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
 		else if (found) { found.State.Running = false; save(all); }
 		process.stdout.write(args.at(-1) + "\\n");
 		break;
 	}
-	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? render(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	case "image": {
+		if (args[1] !== "inspect") { process.stderr.write("unexpected docker image call\\n"); process.exit(2); }
+		const present = loadImages();
+		if (present !== null && !present.includes(args.at(-1))) { process.stderr.write("Error response from daemon: No such image: " + args.at(-1) + "\\n"); process.exit(1); }
+		process.stdout.write("sha256:" + createHash("sha256").update(args.at(-1)).digest("hex") + "\\n");
+		break;
+	}
+	case "pull": held("pull", () => {
+		const image = args.at(-1);
+		if (config.pull === "fails") { process.stderr.write("Error response from daemon: pull access denied for " + image + ", repository does not exist or may require 'docker login'\\n"); process.exit(1); }
+		const present = loadImages();
+		if (present !== null && !present.includes(image)) saveImages([...present, image]);
+		process.stdout.write("Status: Downloaded newer image for " + image + "\\n");
+	}); break;
+	case "info": held("info", () => process.stdout.write(args[1] === "--format" ? rendered(args[2], config.info) + "\\n" : JSON.stringify(config.info) + "\\n")); break;
+	// The server's architecture in Docker's (Go's) words, as dockerArch asks for it.
+	case "version": {
+		const version = { Server: { Arch: { x86_64: "amd64", aarch64: "arm64" }[config.info.Architecture] ?? config.info.Architecture } };
+		process.stdout.write(args[1] === "--format" ? rendered(args[2], version) + "\\n" : JSON.stringify(version) + "\\n");
+		break;
+	}
+	case "context": {
+		if (args[1] !== "inspect") { process.stderr.write("unexpected docker context call\\n"); process.exit(2); }
+		if (config.endpoint === null) { process.stderr.write("context \\"elsewhere\\": context not found\\n"); process.exit(1); }
+		process.stdout.write(JSON.stringify(config.endpoint) + "\\n");
+		break;
+	}
+	case "logs": held("logs", () => {
+		const found = find(load(), args.at(-1));
+		if (!found) noSuch(args.at(-1));
+		process.stdout.write(found.Logs ?? "");
+	}); break;
+	case "volume": {
+		const all = loadVolumes();
+		if (args[1] === "create") {
+			const name = args.at(-1);
+			const labels = Object.fromEntries(args.flatMap((arg, i) => (arg === "--label" ? [args[i + 1]] : [])).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+			const options = args.flatMap((arg, i) => (arg === "--opt" ? [args[i + 1]] : []));
+			if (!all.some((v) => v.Name === name)) saveVolumes([...all, { Name: name, Labels: labels, Options: options, CreatedAt: new Date().toISOString().replace(/\\.\\d+Z$/, "Z"), Driver: "local" }]);
+			process.stdout.write(name + "\\n");
+		} else if (args[1] === "inspect") {
+			let missing;
+			for (const name of args.slice(4)) {
+				const found = all.find((v) => v.Name === name);
+				if (found) process.stdout.write(JSON.stringify(found) + "\\n");
+				else missing = name;
+			}
+			if (missing) { process.stderr.write("Error response from daemon: get " + missing + ": no such volume\\n"); process.exit(1); }
+		} else if (args[1] === "ls") {
+			for (const v of all) if (hasLabels(v.Labels)) process.stdout.write(v.Name + "\\n");
+		} else if (args[1] === "rm") {
+			const names = args.slice(2).filter((arg) => !arg.startsWith("--"));
+			saveVolumes(all.filter((v) => !names.includes(v.Name)));
+			for (const name of names) process.stdout.write(name + "\\n");
+		} else { process.stderr.write("unexpected docker volume call\\n"); process.exit(2); }
+		break;
+	}
 	case "exec": {
 		if (config.noDaemon) { process.stderr.write("OCI runtime exec failed: no such file or directory\\n"); process.exit(126); }
 		let buffered = "";
@@ -227,9 +489,32 @@ switch (args[0]) {
 	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
 	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
-	const options = { daemonPath, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }) };
-	return { provider: new DockerProvider(options), calls, names, daemonPath, proceed, started };
+	const volumeNames =() => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
+	/** Changes a container in the fake's state, by name: what Docker would do under the provider (a proxy that crashed). */
+	const alter = (name, change) => {
+		const all = JSON.parse(readFileSync(state, "utf8"));
+		change(all.find((c) => c.Name === `/${name}`));
+		writeFileSync(`${state}.next`, JSON.stringify(all));
+		renameSync(`${state}.next`, state);
+	};
+	// The host the provider looks at for a container's signs is a clean fake root, so these tests run the same inside a
+	// container; egressOptions.hostRoot replaces it.
+	const hostRoot = join(dir, "host-root");
+	mkdirSync(hostRoot);
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }) };
+	// `options` makes a fresh provider over the same Docker: another process's.
+	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
+	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
+	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started, late };
 }
+
+/** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and
+ *  its volume by their label, and find none. */
+export const removal = (name) => [
+	["rm", "--force", "--volumes", name],
+	["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${name}`, "--format", "{{.ID}}"],
+	["volume", "ls", "--filter", `label=agentrun.computer.egress=${name}`, "--format", "{{.Name}}"],
+];
 
 /** The value after each occurrence of a flag. */
 export const valuesOf = (args, flag) => args.flatMap((arg, i) => (arg === flag ? [args[i + 1]] : []));

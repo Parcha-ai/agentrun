@@ -3,14 +3,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 
-const tools = [{ name: "read", available: true }, { name: "write", available: true }, { name: "web_fetch", available: true }];
+const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_fetch", available: true, harnesses: ["pi"] }];
 const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }], tools, thinking: ["low"] };
 
 // Tools are on by default: a new agent starts with what its harness runs here ticked, and says when it can't reach the web.
 describe("AgentEditor, a new agent's tools", () => {
   it("starts with the harness's tools ticked, and the server's tool objects render as their names", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "tools" }));
-    expect((html.match(/checked=""/g) ?? []).length).toBe(3);
+    // The tools ticked (the Approvals choice below them is a radio of its own).
+    expect((html.match(/<input type="checkbox"[^>]*checked=""/g) ?? []).length).toBe(3);
     expect(html).toContain("web_fetch");
     expect(html).not.toContain("can&#x27;t reach the web");
   });
@@ -19,12 +20,12 @@ describe("AgentEditor, a new agent's tools", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: noWeb, step: "tools" }));
     expect(html).toContain("can&#x27;t reach the web");
   });
-  const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract." };
+  const webFetch = { name: "web_fetch", available: true, summary: "Read one public web page through Parallel's extract.", harnesses: ["pi"] };
   const withWebFetch = { ...caps, tools: [...tools.filter((t) => t.name !== "web_fetch"), webFetch] };
   it("an agent whose only tool is web_fetch reaches the web: no notice", () => {
     const reader = { agent_id: "reader", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reader", instructions: "Read it.", harness: "pi", skills: [], tools: ["web_fetch"] } };
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: reader, caps: withWebFetch, step: "tools" }));
-    expect((html.match(/checked=""/g) ?? []).length).toBe(1);
+    expect((html.match(/<input type="checkbox"[^>]*checked=""/g) ?? []).length).toBe(1);
     expect(html.match(/<input[^>]*value="web_fetch"[^>]*>/)?.[0]).toContain('checked=""');
     expect(html).not.toContain("can&#x27;t reach the web");
   });
@@ -110,9 +111,9 @@ describe("AgentEditor, tools a person chose by hand", () => {
     const checked = () => [...host.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].filter((i) => i.checked).map((i) => i.value);
     return { host, click, checked, done: () => act(() => root.unmount()) };
   };
-  const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true }] };
+  const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true, harnesses: ["pi"] }] };
 
-  it("keeps a hand-picked set when the harness changes", async () => {
+  it("keeps a hand-picked set when the harness changes, less what the new harness doesn't run, which a switch back ticks again", async () => {
     const { host, click, checked, done } = await setup({ agent: null, caps: both, step: "tools" });
     const fetchBox = host.querySelector<HTMLInputElement>('input[type=checkbox][value="web_fetch"]');
     click(fetchBox);
@@ -120,6 +121,11 @@ describe("AgentEditor, tools a person chose by hand", () => {
     expect(picked).not.toContain("web_fetch");
     click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
     click(host.querySelector('input[type=radio][value="codex"]'));
+    click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
+    // codex runs only the file tools here (no `harnesses` served: the server's own rule): ask_person comes off.
+    expect(checked()).toEqual(picked.filter((t) => t !== "ask_person"));
+    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click(host.querySelector('input[type=radio][value="pi"]'));
     click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
     expect(checked()).toEqual(picked);
     done();
@@ -130,8 +136,9 @@ describe("AgentEditor, tools a person chose by hand", () => {
     let saved: { tools?: string[] } | undefined;
     const { host, click, checked, done } = await setup({ agent, caps: both, step: "tools", onSave: async (fields: { tools?: string[] }) => { saved = fields; return null; } });
     expect(checked()).toEqual([]);
-    // A save sends none: it never widens what the agent can do.
+    // A save (of another edit: with none, Save is off) sends none: it never widens what the agent can do.
     const { act } = await import("react");
+    click(host.querySelector('fieldset[aria-label="Approvals"] input[type="radio"][value="never"]'));
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /Save revision/i.test(b.textContent ?? ""))!.click(); });
     expect(saved?.tools ?? []).toEqual([]);
     done();

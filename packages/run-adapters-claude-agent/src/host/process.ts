@@ -9,10 +9,10 @@
 import type { DriveContext } from "./kernel.js";
 
 export {
-  BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, toolBridge, waitForSubmissions,
-  zodShapeFromJsonSchema,
+  BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, resumeUnstartedCalls, toolBridge,
+  waitForSubmissions, zodShapeFromJsonSchema,
 } from "@parcha/agentrun-kernel/process";
-export type { JournalRecord, TranscriptEntry } from "@parcha/agentrun-kernel/process";
+export type { CallOutcome, DanglingCall, JournalRecord, ToolBridge, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
 export type KillSignal = "SIGTERM" | "SIGKILL" | "SIGINT";
 

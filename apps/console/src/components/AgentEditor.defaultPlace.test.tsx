@@ -6,9 +6,8 @@ import { toolOffers } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
 
 // A new agent's place, as the server serves it (capabilities.places.default_place): the form starts on it, and in a
-// sandbox it ticks bash with the other tools, so a new agent in the box has a shell. On the server (the runner), or on an
-// older server that serves no default_place, the form is today's: no place sent, bash not ticked. What the person picks
-// or unticks is what is sent.
+// sandbox it ticks bash with the other tools, so a new agent in the box has a shell. On the server (the runner), the form
+// starts on the server: no place sent, bash not ticked. What the person picks or unticks is what is sent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -16,14 +15,14 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const DOCKER = { mode: "sandbox", box: "docker" };
 const boxes = [{ id: "bwrap", available: false, reason: "fixture: no bwrap" }, { id: "docker", available: true }];
 const served = (extra: Record<string, unknown>) => placesOf({ places: { modes: ["runner", "sandbox"], boxes, ...extra } });
-const tools = toolOffers([{ name: "read", available: true }, { name: "write", available: true }, { name: "bash", available: true, sandbox_only: true }, { name: "browser", available: true }]);
+const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }, { name: "browser", available: true, harnesses: ["pi"] }]);
 const capsWith = (places: ReturnType<typeof placesOf>) => ({ harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places });
 
 function mount(places: ReturnType<typeof placesOf>) {
   let saved: Record<string, unknown> | undefined;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditor, { caps: capsWith(places), step: "settings", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
+  act(() => root!.render(createElement(AgentEditor, { caps: capsWith(places), step: "computer", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
   const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
   const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
   const step = (label: RegExp) => click([...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? "")));
@@ -62,17 +61,6 @@ describe("AgentEditor, a new agent's default place", () => {
     runner.step(/Tools/);
     expect(runner.input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
     expect(runner.input('input[type="checkbox"][value="browser"]')!.checked).toBe(true);
-  });
-
-  it("an older server that serves no default_place keeps today's form: on the server, bash not ticked, no place sent", async () => {
-    const { input, step, fill, save } = mount(served({}));
-    expect(input('input[name="place"][value="runner"]')!.checked).toBe(true);
-    step(/Tools/);
-    expect(input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
-    fill();
-    const sent = await save();
-    expect(sent).toMatchObject({ tools: ["read", "write", "browser"] });
-    expect(sent!.place).toBeUndefined();
   });
 
   it("never overrides the person: the default is sent as served, bash unticked stays off, and a pick of the server is sent", async () => {

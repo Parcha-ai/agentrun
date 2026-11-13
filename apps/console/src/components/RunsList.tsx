@@ -1,11 +1,12 @@
-import { Archive, ArrowUpRight } from "lucide-react";
+import { Archive, ArrowUpRight, Play } from "lucide-react";
+import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { RunsFilter } from "@/lib/client";
-import { cost, runEnded, when } from "@/lib/format";
+import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
 import type { Run, RunStatus } from "@/lib/v2";
 
@@ -24,30 +25,45 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
         <h1 className="mr-auto font-mono text-2xl font-semibold">{archived ? "Archived runs" : "Runs"}</h1>
         {onFilter && (
           <>
-            <select aria-label="Runs in one state" value={filter.status ?? ""} onChange={(e) => onFilter({ ...filter, status: (e.target.value || undefined) as RunStatus | undefined })}
-              className="h-11 border bg-background px-3 font-mono text-[13px]">
-              <option value="">Any state</option>
-              {RUN_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </select>
+            <Picker label="Runs in one state" value={filter.status ?? ""} onChange={(v) => onFilter({ ...filter, status: (v || undefined) as RunStatus | undefined })} className="h-11 w-48"
+              options={[{ value: "", label: "Any state" }, ...RUN_STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))]} />
             <Button size="lg" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
           </>
         )}
       </div>
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length ? <p className="border px-4 py-12 text-center font-mono text-[13px] text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
+        : !runs.length ? (filter.status || archived
+          ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">{filter.status ? "No run matches." : "No archived runs."}</p>
+          : <FirstRun />)
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
-      {runs && onMore && <div className="mt-4 flex justify-center"><button type="button" onClick={onMore} disabled={loadingMore} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{loadingMore ? "Loading" : "Load more"}</button></div>}
+      {runs && onMore && <div className="mt-4 flex justify-center"><Button type="button" onClick={onMore} disabled={loadingMore} size="sm">{loadingMore ? "Loading" : "Load more"}</Button></div>}
     </div>
+  );
+}
+
+/** A server with no run yet: what a run is, and the two ways to the first one. The Playground starts a run on an agent
+ *  (and says how to make one where there is none); a template makes its agent and runs it. */
+function FirstRun() {
+  return (
+    <section aria-labelledby="first-run" className="border border-primary/50 bg-primary/5 p-5">
+      <p className="caps text-label text-primary-text">No runs yet</p>
+      <h2 id="first-run" className="mt-2 text-xl font-semibold">Start your first run</h2>
+      <p className="mt-1 max-w-prose text-lead text-muted-foreground">A run is one piece of work an agent does: a question answered, a page researched, a file written. Each one is listed here with its state, when it started and what it cost.</p>
+      <div className="mt-5 flex flex-wrap gap-2">
+        <a href="#/playground" className={buttonVariants({ variant: "solid", size: "lg" })}><Play aria-hidden /> Start a run</a>
+        <a href="#/templates" className={buttonVariants({ variant: "outline", size: "lg" })}>Browse templates</a>
+      </div>
+    </section>
   );
 }
 
 function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: string) => string; onOpen: (id: string) => void }) {
   return (
-    <table className="w-full border-collapse border text-[13px]">
+    <table className="w-full border-collapse border text-body">
       <thead className="hidden md:table-header-group">
-        <tr className="caps text-[11px] text-muted-foreground">
+        <tr className="caps text-label text-muted-foreground">
           {["Status", "Run", "Agent", "Kind", "Started", "Cost"].map((h) => <th key={h} className="border-b px-3 py-2 text-left font-normal">{h}</th>)}
         </tr>
       </thead>
@@ -57,16 +73,16 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
             <td className="px-3 py-2.5 align-top"><StatusBadge run={r} /></td>
             <td className="px-3 py-2.5 align-top">
               <button type="button" className="flex items-start gap-1 text-left" onClick={(e) => { e.stopPropagation(); onOpen(r.run_id); }}>
-                <span className="line-clamp-2">{r.title}</span><ArrowUpRight className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="line-clamp-2">{runTitle(r)}</span><ArrowUpRight className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
               </button>
-              {r.status === "completed" && r.review && <span className="mt-1 block text-[12px] text-warning-text">{r.review.reason}</span>}
+              {r.status === "completed" && r.review && <span className="mt-1 block text-small text-warning-text">{r.review.reason}</span>}
               {r.trigger && <span className="mt-1 flex"><ScheduleChip run={r} /></span>}
-              <span className="mt-1 block font-mono text-[11px] text-muted-foreground md:hidden">{agentName(r.agent_id)} · {when(r.created_at)}</span>
+              <span className="mt-1 block font-mono text-label text-muted-foreground md:hidden">{agentName(r.agent_id)} · {when(r.created_at)}</span>
             </td>
             <td className="hidden px-3 py-2.5 align-top md:table-cell">{agentName(r.agent_id)}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{r.kind}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{when(r.created_at)}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-[12px] text-muted-foreground md:table-cell">{cost(r.cost, { ended: runEnded(r.status) })}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell">{r.kind}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell">{when(r.created_at)}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell">{cost(r.cost, { ended: runEnded(r.status) })}</td>
           </tr>
         ))}
       </tbody>

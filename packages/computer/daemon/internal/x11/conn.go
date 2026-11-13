@@ -558,15 +558,17 @@ func (c *Conn) flushLocked() error {
 	return nil
 }
 
-// fail closes the connection for why, and returns the error every call gets from then on.
+// fail closes the connection for why, and returns the error every call gets from then on. The reason is recorded before
+// the socket closes, so whoever sees the close (the server, or a call that fails on it) reads why in Err.
 func (c *Conn) fail(why error) error {
-	_ = c.Close()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.err == nil {
 		c.err = fmt.Errorf("%w: %v", ErrClosed, why)
 	}
-	return c.err
+	err := c.err
+	c.mu.Unlock()
+	_ = c.Close()
+	return err
 }
 
 // call sends a request with a reply of at most limit bytes past its first 32, and waits for it.

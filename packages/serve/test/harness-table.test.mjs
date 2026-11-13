@@ -4,7 +4,7 @@
 // branch in serve. Each module is imported by name inside its test, so a build without it fails each test on its own.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -83,15 +83,15 @@ test("facts decide, not names: thinking clamps at a harness's highest level, nat
 test("providerFor goes by the wire: opencode and codex, both on the Responses API, take one route, key and model; claude-agent's wire never takes the gateway", async () => {
   const [{ providerFor }, { runKeyOf }] = await Promise.all([import("../dist/provider.js"), import("../dist/key-refusal.js")]);
   const view = (p) => ({ origin: p.origin, auth: p.auth, modelId: p.modelId, priceModel: p.priceModel, key: p.credential() });
-  const openai = { provider: "openai", modelId: "gpt-6-sol" };
+  const openai = { provider: "openai", modelId: "gpt-6.1-sol" };
   for (const env of [{ OPENAI_API_KEY: `not-a-secret-${"o"}` }, { OPENROUTER_API_KEY: `not-a-secret-${"r"}` }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/v1", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` }]) {
     assert.deepEqual(view(providerFor("openai-responses", env, openai, "opencode")), view(providerFor("openai-responses", env, openai, "codex")), JSON.stringify(Object.keys(env)));
-    assert.deepEqual(runKeyOf(env, "opencode", "openai/gpt-6-sol"), runKeyOf(env, "codex", "openai/gpt-6-sol"), JSON.stringify(Object.keys(env)));
+    assert.deepEqual(runKeyOf(env, "opencode", "openai/gpt-6.1-sol"), runKeyOf(env, "codex", "openai/gpt-6.1-sol"), JSON.stringify(Object.keys(env)));
   }
   const both = { ANTHROPIC_API_KEY: `not-a-secret-${"a"}`, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` };
   assert.equal(providerFor("anthropic-messages", both, { provider: "anthropic", modelId: "claude-sonnet-5.5" }, "claude-agent").origin, "https://api.anthropic.com", "the gateway serves the Responses wire alone");
   assert.equal(runKeyOf(both, "claude-agent", "anthropic/claude-sonnet-5-5").field, "ANTHROPIC_API_KEY");
-  assert.equal(runKeyOf(both, "codex", "openai/gpt-6-sol").field, "AGENT_MODEL_API_KEY");
+  assert.equal(runKeyOf(both, "codex", "openai/gpt-6.1-sol").field, "AGENT_MODEL_API_KEY");
 });
 
 test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the built-ins by id, and the server's own environment never names one", async (t) => {
@@ -100,17 +100,30 @@ test("a test's table module (HARNESS_TABLE_ENV) merges its entries over the buil
   const dir = await scratch(t);
   const module = join(dir, "table.mjs");
   writeFileSync(module, "export const entries = (builtins) => ({ codex: { runs: () => false, refusal: async () => ({ reason: `stood in for ${builtins.codex.facts.label}` }) } });\n");
-  const env = { [HARNESS_TABLE_ENV]: module };
-  assert.equal(harnessRuns(env, "openai/gpt-6-sol", "codex"), false, "the module's entry decides");
-  assert.equal(harnessRuns({}, "openai/gpt-6-sol", "codex"), true, "the built-in one, without it");
+  // Under a test runner, as a test's server and runs are (harnessTable reads NODE_TEST_CONTEXT).
+  const env = { [HARNESS_TABLE_ENV]: module, NODE_TEST_CONTEXT: "child-v8" };
+  assert.equal(harnessRuns(env, "openai/gpt-6.1-sol", "codex"), false, "the module's entry decides");
+  assert.equal(harnessRuns({}, "openai/gpt-6.1-sol", "codex"), true, "the built-in one, without it");
   assert.deepEqual(await harnessOf(env, "codex").refusal(env, undefined, { atStart: false }), { reason: "stood in for Codex" });
   assert.equal(harnessOf(env, "codex").facts, harnessOf({}, "codex").facts, "an entry merged over keeps the facts it does not name");
   assert.equal(harnessOf(env, "claude-agent"), harnessOf({}, "claude-agent"), "an id the module names not is the built-in entry");
   assert.equal(harnessTable(env), harnessTable({ ...env }), "loaded once per module");
   const missing = join(dir, "none.mjs");
   writeFileSync(missing, "export const script = () => [];\n");
-  assert.throws(() => harnessTable({ [HARNESS_TABLE_ENV]: missing }), /exports no entries\(builtins\)/);
+  assert.throws(() => harnessTable({ [HARNESS_TABLE_ENV]: missing, NODE_TEST_CONTEXT: "child-v8" }), /exports no entries\(builtins\)/);
   assert.deepEqual(Object.keys(withoutFaux({ [HARNESS_TABLE_ENV]: module, KEEP: "1" })), ["KEEP"], "an operator's environment never loads a table module");
+});
+
+test("outside a test runner (no NODE_TEST_CONTEXT in the environment it is given), AGENTRUN_HARNESS_TABLE loads nothing: the table is the built-in one, whatever module it names", async (t) => {
+  const { HARNESS_TABLE_ENV, harnessTable, builtinHarness } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  const module = join(dir, "table.mjs");
+  const marker = join(dir, "loaded");
+  writeFileSync(module, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "");\nexport const entries = () => ({ codex: { runs: () => false } });\n`);
+  const table = harnessTable({ [HARNESS_TABLE_ENV]: module });
+  assert.equal(table.codex, builtinHarness("codex"), "the built-in codex entry");
+  assert.equal(existsSync(marker), false, "the module was never loaded");
+  assert.notEqual(harnessTable({ [HARNESS_TABLE_ENV]: module, NODE_TEST_CONTEXT: "child-v8" }).codex, builtinHarness("codex"), "under a test runner it is merged");
 });
 
 test("pi's gateway takes the one base rule (provider.ts gatewayBase): a base its key could leave this machine for in the clear, or that reads other than it points, is refused by name before any request", async () => {
@@ -120,6 +133,15 @@ test("pi's gateway takes the one base rule (provider.ts gatewayBase): a base its
   }
   const ok = await runModels({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/api/v1", AGENT_MODEL: "team/model", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}`, AGENT_MODEL_PRICE: "1,1" }, undefined);
   assert.equal(ok.models.getModel(ok.model.provider, ok.model.modelId).baseUrl, "http://127.0.0.1:4000/api/v1", "one trailing /v1 off, then the API under <base>/v1");
+});
+
+test("the one base rule finds a dot segment however the slashes after the scheme are written: the URL parser reads each of these as the named host, so the path is read after the scheme and the host, never after the first // in the text", async () => {
+  const { gatewayBase } = await import("../dist/provider.js");
+  for (const value of ["https:/gw.example//../x", "https:gw.example/../x", "https:///gw.example/a/../b", "https://gw.example//%2e%2e/x"]) {
+    assert.equal(new URL(value).hostname, "gw.example", `the URL parser names the host: ${value}`);
+    assert.throws(() => gatewayBase("AGENT_MODEL_BASE_URL", value), /has a \. or \.\. path segment/, value);
+  }
+  assert.equal(gatewayBase("AGENT_MODEL_BASE_URL", "https://gw.example/api/v1"), "https://gw.example/api", "a plain base is as before");
 });
 
 test("each module of the provider, model and table cycle loads first in a fresh process: the table's built-in entries never read a wire's settings before they exist", () => {

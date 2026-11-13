@@ -9,14 +9,13 @@
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
+import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
-import { checkedOnce, hostHeaderProblems, type ModelProxyOptions, sha256OfFile, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
@@ -139,6 +138,8 @@ export interface ClaudeAgentAdapterOptions {
   thinking?: ClaudeAgentThinking;
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
+  /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
+  now?: () => Date;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -194,8 +195,15 @@ export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgen
   return checkedOnce(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
 }
 
-/** The CLI at `path` against `pins`' sha256 and version. */
-function checkCli(path: string, pins: { sha256?: string; version: string }): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
+/** verifyClaudeAgentCli without holding the event loop (the kernel's checkedOnceAsync): what a host awaits before it
+ *  makes the adapter, whose own check then answers from what this kept. */
+export async function verifyClaudeAgentCliAsync(path: string | undefined, pins = claudeAgentCliPins()): Promise<{ path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled> {
+  if (!path) return verifyClaudeAgentCli(path, pins);
+  return checkedOnceAsync(path, JSON.stringify(pins), () => checkCli(path, pins), (result) => !(result instanceof Error));
+}
+
+/** The CLI at `path` against `pins`' sha256 and version, as the steps it reads (the kernel's BinaryCheck). */
+function* checkCli(path: string, pins: { sha256?: string; version: string }): Generator<BinaryProbe, { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled, string> {
   try {
     if (!statSync(path).isFile()) throw new Error("not a file");
     accessSync(path, constants.R_OK);
@@ -205,7 +213,7 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
   if (pins.sha256) {
     let found: string;
     try {
-      found = sha256OfFile(path);
+      found = yield { kind: "sha256", path };
     } catch {
       return new ClaudeAgentNotInstalled(`no CLI at ${path}`);
     }
@@ -213,7 +221,7 @@ function checkCli(path: string, pins: { sha256?: string; version: string }): { p
   }
   let version: string;
   try {
-    version = execFileSync(path, ["--version"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, encoding: "utf8", timeout: 15_000 }).trim().split(/\s/)[0] ?? "";
+    version = (yield { kind: "run", path, args: ["--version"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", DISABLE_AUTOUPDATER: "1" }, timeoutMs: 15_000 }).trim().split(/\s/)[0] ?? "";
   } catch (error) {
     return new ClaudeAgentPinMismatch("cli_version", pins.version, `unreadable (${String((error as Error)?.message ?? error).slice(0, 120)})`, path);
   }
@@ -394,7 +402,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-harness-claude: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
       // With skills, the model also reads their files (read_skill_file), from the session's own copy of them.
-      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
+      const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const calls = new CallsInFlight();
       // The remote MCP servers' granted tools, as the CLI names them: its own MCP client calls them at the proxy.
@@ -449,11 +457,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         sdk,
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
+        ...(options.now ? { now: options.now } : {}),
+        // The host's gate, asked about each host-tool call before it is written or run.
+        ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
 
       const live = (event: unknown) => {
         const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // The model's message ended inside the turn (the CLI resumes a cut answer itself): what it said so far is one message.
+        if (e?.type === "text_end") io.onEvent({ type: "text_end" });
         // An MCP call, recorded as a built-in's: the host hears of it once its intent is in the session's records.
         if (e?.type === "tool_start" && typeof e.callId === "string" && typeof e.name === "string" && mcpNames.has(e.name)) {
           calls.begin(e.callId);
@@ -492,11 +505,15 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         state = "idle";
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string } | undefined;
+          // A turn whose final answer the model cut at its output limit, the CLI's recovery of it spent, says so on its
+          // turn_end: stopReason "length", with the output tokens its result reports.
+          let stop: { stopReason?: "length"; outputTokens?: number } = {};
           for (let attempt = 0; !outcome; attempt += 1) {
             const current = drive;
             try {
               await harness.drive(current);
-              const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+              const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
+              if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
             } catch (error) {
               // Stopped by the session or its host: interrupted. Halted by anything else (a spend cap, the mirror, a refused
@@ -512,7 +529,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
             }
           }
-          io.onEvent({ type: "turn_end", status: outcome.status });
+          io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
         })();
         return running;

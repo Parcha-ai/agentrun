@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
+const machinePathRule = await readFile(new URL('./machine-path.mjs', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-source-export-'));
@@ -18,9 +19,10 @@ async function fixture(t) {
     await writeFile(join(root, path), content);
   };
   await write('scripts/export-source.mjs', exporter);
+  await write('scripts/machine-path.mjs', machinePathRule);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -61,11 +63,11 @@ test('source archives exclude website files, build output, and private review st
 
 test('a *.local.* file is excluded and a source file named local.ts is archived', async t => {
   const f = await fixture(t);
-  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and a host imports it: a source
-  // archive without it does not build. Only a name with `.local` after something (`*.local.*`, `*.local`) is a machine's own file: a
+  // A package's module may be named local.ts (a `./box/*` export resolving `./box/local` to src/box/local.ts, which a
+  // host imports): a source archive without it does not build. Only a name with `.local` after something (`*.local.*`, `*.local`) is a machine's own file: a
   // directory named `local` and a name that merely starts with `.localhost` are source too.
-  const archived = ['packages/pi-transport/src/box/local.ts', 'packages/dsl/src/local.mjs', 'packages/dsl/src/local/index.mjs', 'examples/foo.localhost.ts'];
-  const excluded = ['packages/pi-transport/examples/hands.local.json', 'docs/settings.local.md', 'examples/notes.local', 'examples/.env.local', 'packages/dsl/.env.local.json'];
+  const archived = ['packages/serve/src/box/local.ts', 'packages/dsl/src/local.mjs', 'packages/dsl/src/local/index.mjs', 'examples/foo.localhost.ts'];
+  const excluded = ['packages/serve/examples/hands.local.json', 'docs/settings.local.md', 'examples/notes.local', 'examples/.env.local', 'packages/dsl/.env.local.json'];
   for (const path of archived) await f.write(path, 'export const box = 1;\n');
   for (const path of excluded) await f.write(path, 'MACHINE_LOCAL_FIXTURE\n');
   await f.run();
@@ -123,7 +125,7 @@ test('the removed website output flag is rejected before writing artifacts', asy
 
 test('root and package license notices are scanned and retained byte-for-byte', async t => {
   const f = await fixture(t);
-  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'pi'].map(pkg => `packages/${pkg}/${name}`)]);
+  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'serve'].map(pkg => `packages/${pkg}/${name}`)]);
   for (const path of notices) await f.write(path, `Notice fixture: ${path}\n`);
   await f.run();
   for (const path of notices) {
@@ -131,11 +133,11 @@ test('root and package license notices are scanned and retained byte-for-byte', 
     assert.equal(archived.stdout, `Notice fixture: ${path}\n`);
   }
   const secret = ['ghp_', 'z'.repeat(36)].join('');
-  await f.write('packages/pi/NOTICE', secret);
+  await f.write('packages/serve/NOTICE', secret);
   await assert.rejects(f.run(), /Source export blocked/);
   const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
   assert.equal(receipt.status, 'failed');
-  assert.ok(receipt.findings.some(finding => finding.path === 'packages/pi/NOTICE'));
+  assert.ok(receipt.findings.some(finding => finding.path === 'packages/serve/NOTICE'));
 });
 
 test('contributor guidance at the root is archived and receipted; unlisted root files are skipped', async t => {
@@ -191,6 +193,21 @@ test('a recorded event stream (.sse) is archived and scanned as text: a machine 
   assert.ok(blocked.findings.some(finding => finding.path === path));
 });
 
+test('a SQL migration (.sql) is archived and scanned as text: a machine path planted in one stops the export', async t => {
+  const f = await fixture(t);
+  const path = 'packages/x/src/store/postgres/migrations/0001_initial.sql';
+  await f.write(path, '-- the schema\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`));
+  assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text');
+  const machinePath = ['', 'home', 'someone', 'dump.sql'].join('/');
+  await f.write(path, `-- restored from ${machinePath}\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
+  const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(blocked.findings.some(finding => finding.path === path));
+});
+
 test('a /home/ or /Users/ right after a path parameter is an API route, not a machine path; a real one still stops the export', async t => {
   const f = await fixture(t);
   const route = 'packages/x/lib/routes.mjs';
@@ -207,6 +224,20 @@ test('a /home/ or /Users/ right after a path parameter is an API route, not a ma
     await assert.rejects(f.run(), /Source export blocked/);
     const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
     assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'machine_path']]);
+    await rm(join(f.root, path));
+  }
+});
+
+test('/Users/Shared/ is macOS\'s folder shared by every user, not a machine path; any other /Users/ or /home/ name still stops the export', async t => {
+  const f = await fixture(t);
+  const shared = 'packages/x/lib/shared.mjs';
+  await f.write(shared, `export const labels = "${['', 'Users', 'Shared', 'agentrun', 'labels.json'].join('/')}";\n`);
+  await f.run();
+  for (const [path, owner] of [['packages/x/lib/alice.mjs', ['', 'Users', 'alice', 'x'].join('/')], ['packages/x/lib/bob.mjs', ['', 'home', 'bob', 'x'].join('/')], ['packages/x/lib/shared-like.mjs', ['', 'Users', 'Sharedfolks', 'x'].join('/')]]) {
+    await f.write(path, `"${owner}"\n`);
+    await assert.rejects(f.run(), /Source export blocked/);
+    const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+    assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'machine_path']], owner);
     await rm(join(f.root, path));
   }
 });
@@ -239,6 +270,23 @@ test('the code owners file is archived and scanned as text; another extensionles
   await assert.rejects(f.run(), /Unreviewed source-export file type: \.github\/OWNERS/);
 });
 
+test('the computer image recipe (the root helper, its Dockerfile and its two build scripts) is archived and scanned as text; another file there still stops the export', async t => {
+  const f = await fixture(t);
+  const box = ['packages/computer/box/agentrun-archil', 'packages/computer/box/Dockerfile', 'packages/computer/box/build-daytona.py', 'packages/computer/box/build-modal.py'];
+  for (const path of box) await f.write(path, '# fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  const listing = await f.listing();
+  for (const path of box) {
+    assert.ok(listing.includes(`agentrun-dsl-source/${path}\n`), path);
+    assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
+  }
+  // Any .py is text now (the Python client), so the file that must still stop the export has no reviewed type: no
+  // extension and not one of the recipe's names.
+  await f.write('packages/computer/box/agentrun-other', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/agentrun-other/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
@@ -251,7 +299,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -276,7 +324,7 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -303,7 +351,7 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-transport', 'pi-durable-agent', 'serve', 'decisions', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
@@ -329,10 +377,10 @@ test('the dependency inventory leaves out an optional peer nothing requires at r
 
 test('the dependency inventory keeps an optional peer that a runtime dependency requires, for the package that requires it', async t => {
   const f = await fixture(t);
-  await f.write('package-lock.json', optionalPeerLock({ requiredBy: 'pi' }));
+  await f.write('package-lock.json', optionalPeerLock({ requiredBy: 'jev' }));
   await f.run('--inventory-only');
   const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
-  for (const name of ['test-runner', 'bundler', 'css-engine']) assert.match(inventory, new RegExp(`\\| ${name} \\| 1\\.0\\.0 \\| [^|]+ \\| pi \\| no \\| 1 \\|`), `${name} ships with pi`);
+  for (const name of ['test-runner', 'bundler', 'css-engine']) assert.match(inventory, new RegExp(`\\| ${name} \\| 1\\.0\\.0 \\| [^|]+ \\| jev \\| no \\| 1 \\|`), `${name} ships with jev`);
   assert.match(inventory, /\*\*css-engine@1\.0\.0:\*\* MPL-2\.0 — License expression needs release-owner review\./);
 });
 
@@ -341,7 +389,7 @@ test('a run-state directory under a package is never exported, and a long one-li
   await f.write('examples/public.mjs', 'export const value = 42;\n');
   // A journal as a long run writes it: one line, megabytes of host-like tokens.
   const journal = JSON.stringify({ state: { text: 'ab.cd.'.repeat(400_000) } });
-  await f.write('packages/pi/.pi/agentrun/runs/run-1/journal.json', journal);
+  await f.write('packages/dsl/.pi/agentrun/runs/run-1/journal.json', journal);
   await f.write('.pi/agentrun/runs/run-2/journal.json', journal);
   const started = Date.now();
   await exec(process.execPath, [join(f.root, 'scripts/export-source.mjs')], { cwd: f.root, timeout: 30_000 });
@@ -401,4 +449,28 @@ test('a TSX source file is archived and scanned like any other source', async t 
     assert.match(error.stderr, /Source export blocked/);
     return true;
   });
+});
+
+test('the Python client is source: its .py files, pyproject.toml and py.typed are archived and scanned; its bytecode is left out', async t => {
+  const f = await fixture(t);
+  const sources = ['python/pyproject.toml', 'python/README.md', 'python/LICENSE', 'python/NOTICE', 'python/agentrun/__init__.py', 'python/agentrun/py.typed', 'python/tests/test_rules.py'];
+  for (const path of sources) await f.write(path, `# ${path}\n`);
+  await f.write('python/agentrun/__pycache__/_client.cpython-311.pyc', 'BYTECODE\n');
+  await f.write('python/tests/__pycache__/helpers.cpython-311.pyc', 'BYTECODE\n');
+  // What `pip install ./python` leaves beside the source: its build tree and its metadata.
+  await f.write('python/build/lib/agentrun/__init__.py', '# a copy\n');
+  await f.write('python/parcha_agentrun.egg-info/PKG-INFO', 'Metadata-Version: 2.1\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of sources) assert.match(listing, new RegExp(`agentrun-dsl-source/${path.replace(/\./g, '\\.')}\\n`), path);
+  assert.doesNotMatch(listing, /__pycache__|\.pyc|python\/build\/|egg-info/);
+  const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');
+  await f.write('python/agentrun/_key.py', `KEY = "${fakeSecret}"\n`);
+  await assert.rejects(f.run(), error => {
+    assert.match(error.stderr, /Source export blocked/);
+    return true;
+  });
+  await f.write('python/agentrun/_key.py', 'KEY = None\n');
+  await f.write('python/agentrun/native.so', 'ELF\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: python\/agentrun\/native\.so/);
 });

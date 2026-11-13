@@ -1,0 +1,444 @@
+// pi through the adapter, parked at its cap (agentrun.budget), then raised: what a raise does is the kernel's rule
+// (checkRaise, takeRaises, followUpOf in run-adapters/src/kernel/cap/park.ts), as on main. Raises taken together resume
+// the run once, at the latest cap, with one follow-up turn in the server's words; a raise the rule refuses is refused in
+// its words and the run stays parked; a raise above the cap but still short of the request's need resumes it, and the
+// next request, refused at the new figures, parks it again with a fresh pending budget. Each test names the main test it
+// mirrors. The spec gives the launch's cap and nothing more, as the run's spec does (adapter-run-spec.ts): a raise is the
+// raise row alone, and the cap the run is held to after it is the loop's to keep, from its raise entries.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { cap, quiet, rootEntries, SONNET, sleep, STEADY } from "./adapter-pi-cap-support.mjs";
+
+after(closeOpenSessions);
+const { startRunner } = await import("../dist/runner/runner.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
+const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
+
+const CAP = 0.01;
+const FOLLOW_UP = (usd) => cap.followUpOf(usd).text;
+/** The bound on a wait for a runner's own event: it caps the wait, it never orders anything. */
+const EVENT_WAIT_MS = 30_000;
+
+/** `event`, or a failure naming `what` once EVENT_WAIT_MS passes without it: a loop that fails before it gets there fails
+ *  the case in words, never hangs it. */
+async function reached(event, what) {
+  let timer;
+  try {
+    return await Promise.race([event, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`not within ${EVENT_WAIT_MS} ms: ${what}`)), EVENT_WAIT_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** One pi run on the adapter loop under its launch's cap (`capUsd`, default CAP), its spec's figure fixed as the run's
+ *  spec's is: `raise(usd)` only writes the raise row. The runner runs until `stopRunner()`, and a new one until the test
+ *  ends: raises sent between them meet the run unclaimed. `first`: the first runner's own store and journal hooks and
+ *  lease (startOne's options). */
+async function cappedRun(t, script, first = {}, { capUsd = CAP } = {}) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-adapter-raise-"));
+  // The stores' clock: real time plus `clock.skewMs`, so a case runs a lost claim out by moving the store's now past its
+  // until, never by waiting for a short real lease.
+  const clock = { skewMs: 0 };
+  const now = () => Date.now() + clock.skewMs;
+  const server = await openStore(dir, "server", now);
+  const store = await openStore(dir, "runner", now);
+  const runners = [];
+  t.after(async () => {
+    for (const runner of runners) await runner.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Raise" }, { id: "rev-1", kind: "agentic", body: {} });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const sent = [];
+  const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) });
+  // The cap's rules as the run's spec hands them to the loop (which imports no cap): the launch's figure, its park at the
+  // cap the loop holds the run to when it parks, its raise check and follow-up.
+  const specCapRule = { capUsd, park: (refusal, capNow = capUsd) => cap.parkOf(refusal, capNow), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf };
+  const loop = createAdapterLoop(async (claim, run) => ({
+    ...(await spec(claim, run)),
+    cap: specCapRule,
+    runCap: { capUsd: () => capUsd, modelOf: () => SONNET },
+  }), { restartLimit: MAX_RESTARTS });
+  // A lease no stall of a loaded machine outlasts: the run moves between runners here by its park's release, never by a
+  // lease that ran out, and a claim lost and retaken would hand the resume to a loop these tests do not count.
+  // `storeOf`, `journalOf`, `timing`: a runner's own store and journal hooks, and its lease.
+  // `loopOf`: the loop as the runner sees it (a test's view of its commands).
+  const startOne = ({ storeOf = (s) => s, journalOf, timing = STEADY, loopOf = (l) => l } = {}) => {
+    const createLoop = (deps) => loopOf(loop(journalOf ? { ...deps, journal: (claim) => journalOf(deps.journal(claim)) } : deps));
+    runners.push(startRunner({ store: storeOf(store), createLoop, name: `runner-${runners.length}`, ...timing }));
+    return `runner-${runners.length - 1}`;
+  };
+  startOne(first);
+  const settled = async (state, ms = 20_000) => {
+    const from = Date.now();
+    for (;;) {
+      const row = await server.runs.get("run-1");
+      if (row.state === state && row.runner === null) return row;
+      if (Date.now() - from > ms) throw new Error(`not ${state} within ${ms} ms: ${JSON.stringify(row)}`);
+      await sleep(20);
+    }
+  };
+  /** A person's raise: the raise row, all the server writes (runs-over-store raiseCap). */
+  const raise = (usd) => sendCommand(server, "run-1", { kind: "raise", body: { capUsd: usd } });
+  /** The run once a claim has let it go (no runner) in one of `states`, not before `ms`. */
+  const settledIn = async (states, ms = 20_000) => {
+    const from = Date.now();
+    for (;;) {
+      const row = await server.runs.get("run-1");
+      if (states.includes(row.state) && row.runner === null) return row;
+      if (Date.now() - from > ms) throw new Error(`not in ${states.join("/")} within ${ms} ms: ${JSON.stringify(row)}`);
+      await sleep(20);
+    }
+  };
+  /** The store's now moved past every claim's until (the steady lease): a claim whose runner was lost is claimable. */
+  const runOut = () => void (clock.skewMs += STEADY.leaseMs * 2);
+  return { server, store, sent, settled, settledIn, raise, stopRunner: () => runners.at(-1).close(), startOne, runOut };
+}
+
+async function openStore(dir, role, now) {
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  return openSqliteStore({ dataDir: dir, role, now });
+}
+
+const followUpsSent = (sent, usd) => sent.filter((body) => JSON.stringify(body.messages ?? []).includes(FOLLOW_UP(usd))).length;
+const commandOf = async (server, id) => (await server.commands("run-1", id - 1)).find((row) => row.id === id);
+
+// Mirrors kernel-cap-park "a parked run raised goes on: one follow-up in the server's words, under the new cap" and
+// serve cap-raise.test.mjs:53 ("a run paused at its cap, its cap raised, goes on: one follow-up turn in the server's
+// words runs under the new cap and completes").
+test("a run parked at its cap, raised, goes on: one follow-up turn in the server's words, under the new cap, and it ends", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  await w.settled("parked");
+  assert.equal(w.sent.length, 0, "the refused request never reached the provider");
+  const row = await w.raise(5);
+  const ended = await w.settled("ended");
+  assert.equal(ended.summary, null);
+  assert.equal(followUpsSent(w.sent, 5), 1, `one follow-up in the server's words: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  const taken = await commandOf(w.server, row.id);
+  assert.ok(taken.takenAt !== null && taken.refused === null, `the raise row is taken, not refused: ${JSON.stringify(taken)}`);
+  const raises = await rootEntries(w.store, "agentrun.raise");
+  assert.deepEqual(raises.map((data) => [data.capUsd, data.takes]), [[5, [row.id]]], "one raise entry, taking its row");
+});
+
+// Mirrors kernel-cap-park "two raises before the run is claimed resume once, at the later cap" and serve
+// cap-raise.test.mjs:353 ("two raises of a paused run before its let-go process is gone resume it once, at the later cap").
+test("two raises of a parked run, taken together, resume it once, at the later cap", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  await w.settled("parked");
+  await w.stopRunner();
+  const one = await w.raise(3);
+  const two = await w.raise(5);
+  w.startOne();
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, 5), 1, "one follow-up, at the later cap");
+  assert.equal(followUpsSent(w.sent, 3), 0, "none at the earlier one");
+  for (const row of [one, two]) {
+    const taken = await commandOf(w.server, row.id);
+    assert.ok(taken.takenAt !== null && taken.refused === null, `raise ${row.id} taken, not refused: ${JSON.stringify(taken)}`);
+  }
+  const raises = await rootEntries(w.store, "agentrun.raise");
+  assert.deepEqual(raises.map((data) => [data.capUsd, data.takes]), [[5, [one.id, two.id]]], "one raise entry for both");
+});
+
+// Mirrors kernel-cap-park "a raise is checked: a number above the run's cap; none for a run with no cap or an ended run"
+// and serve cap-raise.test.mjs:71 ("a raise is checked: only above the run's own cap…").
+/** `store` with every renew refused, as a store that stays busy: its runner's claim runs out at its lease. */
+const renewsRefused = (store) =>
+  new Proxy(store, {
+    get(target, key) {
+      if (key === "renew" || key === "renewMany") return () => Promise.reject(new Error("the store stayed busy"));
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+/** A journal hook whose commit of a raise entry never lands (a claim lost before its raise entry did): `reached` resolves
+ *  once that commit is asked for. */
+const raiseEntryNeverLands = () => {
+  let told = () => {};
+  const reached = new Promise((resolve) => (told = resolve));
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+        return (batches, ...rest) => {
+          if (!batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.raise")) return value.call(target, batches, ...rest);
+          told();
+          return new Promise(() => {});
+        };
+      },
+    });
+  return { journalOf, reached };
+};
+
+test("a raised run whose resumed claim is lost before its raise entry lands resumes on the next claim: one follow-up at the later cap, never ended without it", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  await w.settled("parked");
+  await w.stopRunner();
+  await w.raise(3);
+  await w.raise(5);
+  // The resuming runner's renews are refused and its raise entry never lands: once it is stuck there, its claim runs out
+  // (the store's clock moved past its until), and the run is left running with its pause unanswered and both raise rows
+  // untaken. Ordered by that event, never by a short real lease.
+  const stuck = raiseEntryNeverLands();
+  w.startOne({ storeOf: renewsRefused, journalOf: stuck.journalOf });
+  await reached(stuck.reached, "the resuming runner asks to commit its raise entry");
+  w.runOut();
+  // The next runner claims it once that lease ran out: from "running", its pause still unanswered.
+  w.startOne();
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, 5), 1, `one follow-up, at the later cap: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.equal(followUpsSent(w.sent, 3), 0, "none at the earlier one");
+});
+
+/** A runner starved at its park: its store claims once, and once its journal is asked to commit a budget entry, that
+ *  commit never lands and its renews are refused from then on, so its claim runs out after everything before the park
+ *  landed and before the park did (an order of events, no timing), and it never claims again. */
+const starvedAtPark = () => {
+  let starved = false;
+  let told = () => {};
+  const reached = new Promise((resolve) => (told = resolve));
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+        return (batches, ...rest) => {
+          if (!batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.budget")) return value.call(target, batches, ...rest);
+          starved = true;
+          told();
+          return new Promise(() => {});
+        };
+      },
+    });
+  // `reached`: once the park's commit is asked for (the starved point), for the case to run the claim out from there.
+  return { hooks: { storeOf: (store) => claimsOnce(store, () => starved), journalOf }, reached };
+};
+
+/** `store` that claims once, its renews refused once `starved()` says so. */
+const claimsOnce = (store, starved) => {
+  let claimed = false;
+  const runs = new Proxy(store.runs, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "claimable") return (...args) => (claimed ? Promise.resolve([]) : value.apply(target, args));
+      if (key === "claimMany") {
+        return async (...args) => {
+          if (claimed) return [];
+          const claims = await value.apply(target, args);
+          if (claims.length) claimed = true;
+          return claims;
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return new Proxy(store, {
+    get(target, key) {
+      if (key === "runs") return runs;
+      if ((key === "renew" || key === "renewMany") && starved()) return () => Promise.reject(new Error("the store stayed busy"));
+      if (key === "claim") {
+        return async (...args) => {
+          if (claimed) return null;
+          const claim = await target.claim(...args);
+          if (claim) claimed = true;
+          return claim;
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+};
+
+test("a run refused at its cap whose claim is lost before its park lands is parked on the next claim with the cap's figures, never failed, and a raise goes on", async (t) => {
+  // The first runner is refused at the cap; its park never lands, its renews are refused from then and it claims no
+  // more: its claim runs out after the refusal and before the park.
+  // Once it is starved at the park, its claim runs out (the store's clock moved past its until): ordered by that event,
+  // never by a short real lease.
+  const starved = starvedAtPark();
+  const w = await cappedRun(t, [{ say: "done" }], starved.hooks);
+  await reached(starved.reached, "the first runner asks to commit its park (the budget entry)");
+  w.runOut();
+  // The next runner claims it once that lease ran out, from "running".
+  w.startOne();
+  const row = await w.settled("parked").catch(async (error) => {
+    throw new Error(`${error.message}; budget entries: ${JSON.stringify(await rootEntries(w.server, "agentrun.budget"))}`);
+  });
+  const budgets = await rootEntries(w.server, "agentrun.budget");
+  assert.equal(budgets.length, 1, `one pause: ${JSON.stringify(budgets)}`);
+  const [budget] = budgets;
+  assert.equal(budget.pending.kind, "budget");
+  assert.equal(budget.pending.cap_usd, CAP, "at the run's cap");
+  assert.ok(budget.pending.least_cap_usd > CAP, `the least cap that sends the request is above the cap: ${JSON.stringify(budget)}`);
+  assert.ok(budget.words, `the pause carries the cap's words: ${JSON.stringify(budget)}`);
+  assert.equal(row.summary, budget.words, "the row says the cap's words");
+  assert.equal(w.sent.length, 0, "the refused request never reached the provider");
+  // A raise resumes it: one follow-up at the new cap, and it ends.
+  await w.stopRunner();
+  await w.raise(5);
+  w.startOne();
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, 5), 1, "one follow-up, at the raised cap");
+});
+
+test("a raise that reaches the loop once its pause is journaled, before the run is parked, resumes the run: one follow-up at the raised cap, never left parked", async (t) => {
+  // Ordered by events, no timing: the pause's commit lands, then returns only once the raise sent after it has had its
+  // outcome from the loop, so the raise is decided while this claim still runs, before pi hears of the refusal. (The
+  // bound fails a raise the loop never decides; it never orders anything.)
+  let pauseLanded = () => {};
+  const paused = new Promise((resolve) => (pauseLanded = resolve));
+  let raiseDecided = () => {};
+  const decided = new Promise((resolve) => (raiseDecided = resolve));
+  const outcomes = [];
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+        return async (batches, ...rest) => {
+          const result = await value.call(target, batches, ...rest);
+          if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.budget")) {
+            pauseLanded();
+            let timer;
+            await Promise.race([decided, new Promise((resolve) => (timer = setTimeout(resolve, 15_000)))]);
+            clearTimeout(timer);
+          }
+          return result;
+        };
+      },
+    });
+  const loopOf = (loop) => {
+    const command = loop.command.bind(loop);
+    loop.command = async (row) => {
+      const outcome = await command(row);
+      if (row.kind === "raise") {
+        outcomes.push(outcome);
+        raiseDecided();
+      }
+      return outcome;
+    };
+    return loop;
+  };
+  const w = await cappedRun(t, [{ say: "done" }], { journalOf, loopOf });
+  await paused;
+  await w.raise(5);
+  const row = await w.settled("ended", 30_000).catch(async (error) => {
+    throw new Error(`${error.message}; the raise's outcome in that claim: ${JSON.stringify(outcomes)}`);
+  });
+  assert.equal(row.state, "ended");
+  assert.equal(followUpsSent(w.sent, 5), 1, `one follow-up, at the raised cap: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+});
+
+test("a raise not above the run's cap is refused in the rule's words, and the run stays parked", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  await w.settled("parked");
+  const row = await w.raise(CAP);
+  const refused = await (async () => {
+    for (const from = Date.now(); Date.now() - from < 10_000; await sleep(20)) {
+      const now = await commandOf(w.server, row.id);
+      if (now.takenAt !== null) return now;
+    }
+    return commandOf(w.server, row.id);
+  })();
+  assert.equal(refused.refused, cap.checkRaise({ capUsd: CAP }, CAP).refused, `refused in checkRaise's words: ${JSON.stringify(refused)}`);
+  await sleep(STEADY.pollMs * 10);
+  const now = await w.server.runs.get("run-1");
+  assert.equal(now.state, "parked", "still parked");
+  assert.equal(followUpsSent(w.sent, CAP), 0, "no follow-up");
+});
+
+// Mirrors kernel-cap-park "a parked run's next step stays refused until the cap is raised, then goes": a raise above the
+// cap but short of the request's need resumes the run, and the cap refuses that request again, at the new figures.
+test("a raise above the cap but short of the request's need resumes the run once, and it parks again with a fresh pending budget", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  await w.settled("parked");
+  const [first] = await rootEntries(w.store, "agentrun.budget");
+  const short = Number(((CAP + first.pending.least_cap_usd) / 2).toFixed(6));
+  assert.ok(short > CAP && short < first.pending.least_cap_usd, `a raise between the cap and the least cap: ${short}`);
+  await w.raise(short);
+  await sleep(STEADY.pollMs * 10);
+  const again = await w.settled("parked");
+  const budgets = await rootEntries(w.store, "agentrun.budget");
+  assert.equal(budgets.length, 2, `parked again with a fresh budget entry: ${JSON.stringify(budgets)}`);
+  assert.equal(budgets[1].pending.cap_usd, short, "at the raised cap");
+  assert.equal(again.summary, budgets[1].words);
+  assert.equal(w.sent.length, 0, "no request reached the provider");
+});
+
+/** Waits for `done()` to hold, failing in `what`'s words after `ms`. */
+const until = async (done, what, ms = 20_000) => {
+  for (const from = Date.now(); !(await done()); await sleep(20)) if (Date.now() - from > ms) throw new Error(`not within ${ms} ms: ${what}`);
+};
+
+// The cap a raised run is held to is the raise's, at every admission, model requests included: the spec's figure is the
+// launch's, and the raise row is all the server writes.
+test("a run refused at its cap, parked and raised, is held to the raised cap: its next model request is admitted, never refused at the launch's cap", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }], {}, { capUsd: 0.0001 });
+  await w.settled("parked");
+  assert.equal(w.sent.length, 0, "the refused request never reached the provider");
+  const raised = await w.raise(1);
+  // The raise row taken (its takenAt), read from the store's command rows: never the journal while a claim writes it.
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the raise taken");
+  const row = await w.settledIn(["ended", "parked", "failed"]);
+  const budgets = await rootEntries(w.server, "agentrun.budget");
+  assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), [0.0001], "parked once, at the launch's cap, never again after the raise");
+  assert.equal(followUpsSent(w.sent, 1), 1, `the follow-up's request reached the provider, admitted under $1: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+});
+
+/** A runner lost once its raise entry has landed: its store claims once, and after the raise entry's commit no commit of
+ *  its lands and its renews are refused, so it is stuck after the raise was taken and before the resumed turn sent
+ *  anything (an order of events, no timing), and it claims no more. `reached`: once its next commit is asked for. */
+const lostAfterRaise = () => {
+  let lost = false;
+  let told = () => {};
+  const reached = new Promise((resolve) => (told = resolve));
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "commit") return typeof value === "function" ? value.bind(target) : value;
+        return async (batches, ...rest) => {
+          if (lost) {
+            told();
+            return new Promise(() => {});
+          }
+          const result = await value.call(target, batches, ...rest);
+          if (batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.raise")) lost = true;
+          return result;
+        };
+      },
+    });
+  return { hooks: { storeOf: (store) => claimsOnce(store, () => lost), journalOf }, reached };
+};
+
+test("a raised run taken over by another runner after its raise entry landed is held to the raised cap there: its next model request is admitted", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }], {}, { capUsd: 0.0001 });
+  await w.settled("parked");
+  await w.stopRunner();
+  await w.raise(1);
+  // The resuming runner takes the raise (its entry lands) and is stuck before its follow-up is sent; its claim then runs
+  // out (the store's clock moved past its until), ordered by that event, never by a short real lease.
+  const lost = lostAfterRaise();
+  w.startOne(lost.hooks);
+  await reached(lost.reached, "the resuming runner asks to commit after its raise entry landed");
+  assert.equal((await rootEntries(w.server, "agentrun.raise")).length, 1, "the raise entry landed");
+  assert.equal(w.sent.length, 0, "nothing sent before the takeover");
+  w.runOut();
+  // The next runner claims it once that lease ran out, from "running": its cap is read from the run's raise entry.
+  w.startOne();
+  const row = await w.settledIn(["ended", "parked", "failed"], 30_000);
+  const budgets = await rootEntries(w.server, "agentrun.budget");
+  assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), [0.0001], "parked once, at the launch's cap, never again on the new claim");
+  assert.equal(followUpsSent(w.sent, 1), 1, `the follow-up's request reached the provider, admitted under $1: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+});

@@ -1,28 +1,30 @@
 // DockerProvider against a fake docker program under the test's temp dir (test/fake-docker.mjs): it records each
 // call's argv and answers as the docker CLI does. No Docker and no daemon binary are needed.
 import assert from "node:assert/strict";
-import { chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, DockerProvider } from "../dist/index.js";
-import { fakeDocker, idOf, valuesOf, VERSION } from "./fake-docker.mjs";
+import { DockerProvider } from "../dist/docker.js";
+import { checkLifetime } from "../dist/index.js";
+import { PROTOCOL_VERSION } from "../dist/protocol.js";
+import { fakeDocker, idOf, removal, valuesOf, VERSION } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
-const ALLOWLIST = "a Docker computer cannot enforce an allowlist yet; ask for network none or open";
+const NO_LIST = 'an allowlist needs at least one name or CIDR; for no network ask for "none"';
 /** The user a computer runs as when neither the spec nor the provider names one: this process's, or 1000:1000 when its uid or gid is 0. */
 /** docker run's argv: create reads the host with docker info first. */
 const runOf = (all) => all.find((args) => args[0] === "run");
 const DEFAULT_USER = process.getuid() !== 0 && process.getgid() !== 0 ? `${process.getuid()}:${process.getgid()}` : "1000:1000";
 
-test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none or open, and exec, files and processes", () => {
+test("capabilities: a linux container with computerd as PID 1, whose lifetime the janitor enforces up to 30 days, network none, open or an allowlist, exec, files and processes, and a bind mount", () => {
 	const { provider } = fakeDocker();
 	assert.equal(provider.id, "docker");
 	assert.match(provider.version, /^\d+\.\d+\.\d+/);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "janitor",
-		network: ["none", "open"],
+		network: ["none", "open", "allow"],
+		allow: { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true },
 		networkReadBack: true,
 		isolation: "container",
 		os: "linux",
@@ -31,6 +33,8 @@ test("capabilities: a linux container with computerd as PID 1, whose lifetime th
 		maxLifetimeMs: 30 * 24 * 60 * 60 * 1000,
 		user: ["root", "uid"],
 		release: ["stop", "delete"],
+		stopDeletes: false,
+		mount: ["bind"],
 	});
 	assert.equal(provider.extend, undefined, "no extend(): the deadline is a label, which cannot change after create");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -46,18 +50,25 @@ test("check() refuses in words, field by field, with no docker call", () => {
 	for (const lifetimeMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, "600000"]) {
 		assert.deepEqual(refused({ ...SPEC, lifetimeMs }), ["lifetimeMs"], `lifetimeMs ${String(lifetimeMs)}`);
 	}
-	assert.deepEqual(provider.check({ ...SPEC, network: { allow: ["example.com"] } }), [{ field: "network", message: ALLOWLIST }]);
+	assert.deepEqual(provider.check({ ...SPEC, network: { allow: ["example.com"] } }), []);
+	assert.deepEqual(provider.check({ ...SPEC, network: { allow: [] } }), [{ field: "network", message: NO_LIST }]);
 	assert.deepEqual(refused({ ...SPEC, network: undefined }), ["network"]);
 	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
 	assert.deepEqual(refused({ ...SPEC, cpus: 0 }), ["cpus"]);
+	// A count whose quota is no whole number of microseconds (1e18 CPUs is a quota of 1e23 µs) is no --cpu-quota Docker takes.
+	assert.deepEqual(provider.check({ ...SPEC, cpus: 1e18 }), [{ field: "cpus", message: "cpus must be at most 90071992547" }]);
+	assert.deepEqual(provider.check({ ...SPEC, cpus: 90_071_992_547 }), []);
 	assert.deepEqual(refused({ ...SPEC, memoryMb: 1.5 }), ["memoryMb"]);
 	assert.deepEqual(refused({ ...SPEC, pids: 0 }), ["pids"]);
 	assert.deepEqual(refused({ ...SPEC, workdir: "relative" }), ["workdir"]);
 	assert.deepEqual(refused({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }), ["labels"]);
-	const gpu = provider.check({ ...SPEC, gpu: "a100" });
-	assert.equal(gpu.length, 1);
-	assert.equal(gpu[0].field, "gpu");
-	assert.match(gpu[0].message, /Docker computer does not support gpu/);
+	// Docker declares no gpu: any spec.gpu is refused once, in the words every provider shares.
+	for (const asked of ["a100", { type: "T4", count: 1 }]) {
+		const gpu = provider.check({ ...SPEC, gpu: asked });
+		assert.equal(gpu.length, 1, JSON.stringify(asked));
+		assert.equal(gpu[0].field, "gpu");
+		assert.match(gpu[0].message, /this provider offers no GPU/);
+	}
 	assert.deepEqual(refused({ lifetimeMs: 0, network: { allow: [] } }), ["image", "lifetimeMs", "network"]);
 	assert.equal(calls().length, 0);
 });
@@ -91,18 +102,18 @@ test("a lifetime is at most 30 days, and create() never throws on a spec check()
 
 test("create() on a refused spec makes no docker call", async () => {
 	const { provider, calls } = fakeDocker();
-	for (const spec of [{ ...SPEC, network: { allow: ["example.com"] } }, { ...SPEC, lifetimeMs: undefined }, { ...SPEC, gpu: 1 }]) {
+	for (const spec of [{ ...SPEC, network: { allow: [] } }, { ...SPEC, network: { allow: ["pypi.org:443"] } }, { ...SPEC, lifetimeMs: undefined }, { ...SPEC, gpu: 1 }]) {
 		const result = await provider.create(spec);
 		assert.equal(result.ok, false);
 		assert.equal(result.error.code, "refused");
 	}
-	const allow = await provider.create({ ...SPEC, network: { allow: ["example.com"] } });
-	assert.match(allow.error.message, /cannot enforce an allowlist yet/);
+	const allow = await provider.create({ ...SPEC, network: { allow: [] } });
+	assert.ok(allow.error.message.includes(NO_LIST), allow.error.message);
 	assert.deepEqual(calls(), []);
 });
 
 test("create() runs a hardened container with the daemon as its first process and a deadline label", async () => {
-	const { provider, calls, daemonPath } = fakeDocker();
+	const { provider, calls, bound } = fakeDocker();
 	const before = Date.now();
 	const result = await provider.create({ ...SPEC, labels: { team: "a" } });
 	assert.equal(result.ok, true, JSON.stringify(result));
@@ -125,7 +136,7 @@ test("create() runs a hardened container with the daemon as its first process an
 	assert.deepEqual(valuesOf(run, "--ipc"), ["private"], "never another daemon default, such as shareable");
 	assert.deepEqual(valuesOf(run, "--cgroupns"), ["private"], "never the host's, a cgroup v1 host's default");
 	assert.deepEqual(valuesOf(run, "--network"), ["none"]);
-	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${daemonPath},dst=/opt/agentrun/computerd,readonly`]);
+	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`], "the provider's private copy of the daemon");
 	assert.deepEqual(valuesOf(run, "--entrypoint"), ["/opt/agentrun/computerd"]);
 	assert.deepEqual(run.slice(-4), ["debian:bookworm-slim", "init", "--deadline", deadline], "PID 1 ends the computer at the deadline the label holds");
 	const [uid, gid] = DEFAULT_USER.split(":");
@@ -265,10 +276,29 @@ test("create() removes a container that is not running and says why", async () =
 	const { provider, calls } = fakeDocker({ running: false });
 	const result = await provider.create(SPEC);
 	assert.equal(result.ok, false);
-	assert.equal(result.error.code, "docker");
+	assert.deepEqual([result.error.code, result.error.vendor], ["vendor", "docker"]);
 	assert.match(result.error.message, /exec format error/);
-	const [, run, , remove] = calls();
-	assert.deepEqual(remove, ["rm", "--force", "--volumes", valuesOf(run, "--name")[0]]);
+	const [, run, , ...remove] = calls();
+	assert.deepEqual(remove, removal(valuesOf(run, "--name")[0]));
+});
+
+test("a computer whose lifetime ended before docker run finished says so, with both times, and is removed", async () => {
+	// Init exits 0 at its deadline, and here the deadline passed while docker run was still running: a Docker host that
+	// held the start, or a lifetime too short for it.
+	const exited = { State: { Running: false, Status: "exited", ExitCode: 0, Error: "" } };
+	const { provider, calls } = fakeDocker({ patch: exited });
+	const result = await provider.create({ ...SPEC, lifetimeMs: 1 });
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "timeout");
+	assert.match(result.error.message, /^the computer computer-[0-9a-f]{12}'s lifetime of 0\.001 s ended before docker run finished \(it took \d+(\.\d+)? s\), so init ended it and it was removed$/);
+	const [, run, , ...remove] = calls();
+	assert.deepEqual(remove, removal(valuesOf(run, "--name")[0]));
+	// Exit 0 with lifetime left, or another exit after the deadline, is not that: the words stay Docker's state.
+	for (const [patch, lifetimeMs] of [[exited, 600_000], [{ State: { ...exited.State, ExitCode: 1 } }, 1]]) {
+		const other = await fakeDocker({ patch }).provider.create({ ...SPEC, lifetimeMs });
+		assert.deepEqual([other.error.code, other.error.vendor], ["vendor", "docker"], JSON.stringify(other));
+		assert.match(other.error.message, new RegExp(`was not running after its start \\(status exited, exit code ${patch.State.ExitCode}\\), so it was removed$`));
+	}
 });
 
 test("create() with no daemon binary is not_found, with no docker call", async () => {
@@ -281,22 +311,13 @@ test("create() with no daemon binary is not_found, with no docker call", async (
 	assert.deepEqual(calls(), []);
 });
 
-test("create() with a daemon only its owner may run is refused, with no docker call", async () => {
-	const { provider, calls, daemonPath } = fakeDocker();
-	chmodSync(daemonPath, 0o700);
-	const result = await provider.create(SPEC);
-	assert.equal(result.ok, false);
-	assert.equal(result.error.code, "invalid");
-	assert.match(result.error.message, /mode 700.*chmod 755/);
-	assert.deepEqual(calls(), []);
-});
-
 test("release() stops or deletes, and a computer already gone is ok", async () => {
 	const { provider, calls } = fakeDocker();
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	assert.deepEqual(await provider.release(ref, "stop"), { ok: true, value: undefined });
 	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
-	assert.deepEqual(calls(), [["stop", ref.name], ["rm", "--force", "--volumes", ref.name]]);
+	const proxies = ["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${ref.name}`, "--format", "{{.ID}}"];
+	assert.deepEqual(calls(), [["stop", ref.name], proxies, ...removal(ref.name)], "each looks for the computer's egress proxy, by its label, and delete its volume too");
 	const gone = fakeDocker({ gone: true });
 	assert.deepEqual(await gone.provider.release(ref, "delete"), { ok: true, value: undefined });
 	assert.deepEqual(await gone.provider.release(ref, "stop"), { ok: true, value: undefined });
@@ -320,7 +341,7 @@ test("connect() opens the daemon over docker exec and says hello", async () => {
 	const ref = { id: "f".repeat(64), name: "computer-0123456789ab" };
 	const connected = await provider.connect(ref);
 	assert.equal(connected.ok, true, JSON.stringify(connected));
-	assert.deepEqual(connected.value.hello, { version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
+	assert.deepEqual(connected.value.hello, { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] });
 	assert.deepEqual(calls(), [["exec", "-i", ref.name, "/opt/agentrun/computerd", "stdio"]]);
 	await connected.value.close();
 	const after = await connected.value.client.call("ping", {});
@@ -362,8 +383,8 @@ test("create() deletes a computer whose own report drifts from its spec, and say
 	assert.match(result.error.message, /PidsLimit/);
 	assert.match(result.error.message, /CapDrop/);
 	assert.match(result.error.message, /version 0\.0\.1/);
-	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm"]);
-	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", name]);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm", "ps", "volume"]);
+	assert.deepEqual(calls().slice(-3), removal(name));
 	assert.deepEqual(names(), []);
 });
 
@@ -380,7 +401,7 @@ test("create() deletes a computer whose /work or socket tmpfs drifts on size", a
 		assert.equal(result.error.code, "refused");
 		const [path] = Object.keys(Tmpfs);
 		assert.match(result.error.message, new RegExp(`deleted: .*tmpfs ${path}: declared "[^"]*size=${path === "/work" ? 2048 : 1}m"`));
-		assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(runOf(calls()), "--name")[0]]);
+		assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
 		assert.deepEqual(names(), []);
 	}
 });
@@ -395,7 +416,7 @@ test("create() deletes a computer that runs as another user, without its tmpfs m
 	for (const words of [`User: declared "${DEFAULT_USER}", read back "0:0"`, "tmpfs /work", "tmpfs /run/agentrun", "CpuQuota: declared 200000, read back 0", "Cmd: declared"]) {
 		assert.ok(result.error.message.includes(words), `${words} in ${result.error.message}`);
 	}
-	assert.deepEqual(calls().at(-1), ["rm", "--force", "--volumes", valuesOf(runOf(calls()), "--name")[0]]);
+	assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
 	assert.deepEqual(names(), []);
 });
 
@@ -405,7 +426,7 @@ test("create() deletes a computer whose daemon reports another architecture than
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, /arch amd64.*arm64/);
-	assert.equal(calls().at(-1)[0], "rm");
+	assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
 	assert.deepEqual(names(), []);
 });
 
@@ -423,7 +444,7 @@ test("create() deletes a computer whose daemon does not answer hello", async () 
 	const result = await provider.create(SPEC);
 	assert.equal(result.ok, false);
 	assert.match(result.error.message, /OCI runtime exec failed/);
-	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm"]);
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "rm", "ps", "volume"]);
 	assert.deepEqual(names(), []);
 });
 
@@ -449,7 +470,7 @@ for (const [step, call] of [["inspect", "inspect"], ["hello", "exec"]]) {
 		assert.equal(result.ok, false, JSON.stringify(result));
 		assert.equal(result.error.code, "aborted");
 		assert.match(result.error.message, /computer-[0-9a-f]{12} was deleted/);
-		assert.equal(calls().at(-1)[0], "rm");
+		assert.deepEqual(calls().slice(-3), removal(valuesOf(runOf(calls()), "--name")[0]));
 		assert.deepEqual(names(), [], "nothing is left running");
 	});
 }
@@ -505,11 +526,11 @@ test("the host's enforcement is read once per provider, and a docker info that f
 	assert.equal((await provider.create(SPEC)).ok, true);
 	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec", "run", "inspect", "exec"]);
 	const host = await provider.host();
-	assert.deepEqual(host, { ok: true, value: { arch: "amd64", apparmor: false, selinux: false, problems: [] } });
+	assert.deepEqual(host, { ok: true, value: { arch: "amd64", apparmor: false, selinux: false, problems: [], engine: 29 } }, "the engine's major version from docker info's ServerVersion");
 	const broken = new DockerProvider({ daemonPath, docker: join(tmpdir(), "no-such-docker-cli") });
 	const first = await broken.host();
 	assert.equal(first.ok, false);
-	assert.equal(first.error.code, "docker");
+	assert.deepEqual([first.error.code, first.error.vendor], ["vendor", "docker"]);
 	assert.equal((await broken.host()).ok, false);
 });
 

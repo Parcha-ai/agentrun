@@ -97,6 +97,25 @@ export function cost(c: Cost | null | undefined, { ended = false }: { ended?: bo
   return `${dollars(c.usd)}${est(c)}`;
 }
 
+/** A run's cost as its header says it, beside its spend cap when it has one (`cap`, the run's `cost.cap_usd`): "$0.0059
+ *  est. of $1.00". A cost that is not one figure (unknown, or known so far with calls not priced) keeps its words, the cap
+ *  after them ("Unknown · cap $1.00"). `text`: the cost already worded (a workflow run's graph totals). No cap: the cost. */
+export function costOfCap(c: Cost | null | undefined, cap: number | null | undefined, { ended = false, text }: { ended?: boolean; text?: string } = {}): string {
+  const shown = text ?? cost(c, { ended });
+  if (typeof cap !== "number") return shown;
+  // One figure ("$0.0059 est.", "<$0.0001"): "of" the cap. A partial total ("$0.0188 + 2 unknown") or a word: the cap after.
+  const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !!c && c.usd !== null;
+  return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
+}
+const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;
+
+/** A spend cap in dollars as it was set: two places at least ($1.00, $2.50), more when the cap has them ($0.013), so a
+ *  raise finer than a cent still reads as a change. */
+export function capDollars(usd: number): string {
+  for (let places = 2; places < 8; places++) if (Number(usd.toFixed(places)) === usd) return `$${usd.toFixed(places)}`;
+  return `$${usd.toFixed(8)}`;
+}
+
 /** The run files a run's Markdown may link to: their paths as GET /v2/runs/{id}/files lists them, and `from`, the folder
  *  of the file the Markdown is in ("" for the run's answer), which its relative links are read from. */
 export type LinkedFiles = { paths: readonly string[]; from?: string };
@@ -143,3 +162,29 @@ export const openLinkedFile = (onOpen: (path: string) => void) => (e: MouseEvent
   const path = (e.target as Element).closest?.("[data-run-file]")?.getAttribute("data-run-file");
   if (path) { e.preventDefault(); onOpen(path); }
 };
+
+/** A trigger's payload's words, for a run with no input of its own before it: by the wrapper's scheme (a GitHub delivery
+ *  comes in as the webhook source with scheme github, serve's triggers.ts), else its source. */
+const payloadWords = (tag: string): string => {
+  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
+  return attr("scheme") === "github" || attr("source") === "github" ? "A GitHub event" : attr("source") === "webhook" ? "A webhook request" : "A trigger's request";
+};
+
+/** A run's title as the console shows it. A webhook or GitHub trigger's run (one with a `trigger`) has the trigger's input
+ *  and then the request's payload inside `<trigger-payload source="…" … untrusted>` (serve's triggers.ts); its title is the
+ *  input's line alone, the payload left to the Timeline. The server clips a title to 80 characters with an ellipsis
+ *  (runs.ts), so the wrapper may be cut anywhere, its tag name included: everything from its opening goes. With no input
+ *  before the payload, its source's words. A run no trigger started keeps its title as served. */
+export function runTitle(run: { title: string; trigger?: unknown }): string {
+  const { title } = run;
+  if (!run.trigger) return title;
+  let at = title.search(/<trigger-payload\b/);
+  if (at < 0) {
+    // Cut inside the tag name: a "<", "<trig", … just before the clip's ellipsis.
+    const cut = /<([a-z-]*)…$/.exec(title);
+    if (!cut || !"trigger-payload".startsWith(cut[1]!)) return title;
+    at = cut.index;
+  }
+  const own = title.slice(0, at).trim();
+  return own || payloadWords(title.slice(at));
+}

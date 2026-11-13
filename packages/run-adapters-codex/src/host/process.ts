@@ -7,7 +7,7 @@ import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
 export {
-  boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, toolKey, transcriptOf,
+  boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, resumeUnstartedCalls, toolKey, transcriptOf,
 } from "@parcha/agentrun-kernel/process";
 export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
@@ -105,6 +105,12 @@ export interface SessionMachine {
   onRolloutLine?(listener: (line: string) => void): void;
   /** Given the drive's hooks for a call the harness never sees (a remote MCP server's tool, mcp.ts). */
   onCalls?(hooks: CallHooks): void;
+  /** Told when the model proxy reads that the provider cut the turn's answer at its output limit, before Codex has the
+   *  piece that carries the stop (its output tokens, when the answer said them): the harness ends the turn there. */
+  onCut?(listener: (stop: { outputTokens?: number }) => void): void;
+  /** The harness opens a turn: the model proxy, which refuses answer requests once it has told the harness a turn's answer
+   *  stopped, admits them again (ModelProxy.openTurn). */
+  openTurn?(): void;
   /** Given Codex's `config.toml` settings before the harness writes them, to set what the session's own options decide
    *  and the harness does not (its web search, a key reserved from callers). */
   configure?(config: Record<string, TomlValue>): void;

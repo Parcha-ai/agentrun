@@ -26,6 +26,15 @@ describe("Timeline, a tool result", () => {
     expect(h).not.toContain("border-destructive");
     expect(h).not.toMatch(/>Error</);
   });
+  it("a call refused before it ran (a deny, a person's, one held for an approval the run ended without) reads Refused in a neutral chip, never the red Error", () => {
+    for (const summary of ["Refused: web_fetch example.com/page: Permission denied: web_fetch is set to deny on this server.", "Refused: write deny.md: Not run: the run was stopped while it waited"]) {
+      const h = html(row({ tool_name: "web_fetch", tool_status: "failed", refused: true, summary }));
+      expect(h).toMatch(/>Refused</);
+      expect(h).not.toMatch(/>Error</);
+      expect(h).not.toContain("border-destructive");
+      expect(h).not.toContain("text-destructive-text");
+    }
+  });
 });
 
 // QA: a browser step read "run" or "snapshot" above what it did: the browser tool's wire name. It reads as the timeline
@@ -40,9 +49,9 @@ describe("Timeline, a browser step", () => {
     expect(looked).not.toMatch(/>snapshot</);
     expect(html(row({ kind: "tool_use", tool_name: "browser_read", summary: "Read the page" }))).toMatch(/>Read the browser&#x27;s page</);
   });
-  it("leaves every other tool's name as it is", () => {
-    expect(html(row({ kind: "tool_use", tool_name: "write", summary: "Wrote notes.md" }))).toMatch(/>write</);
-    expect(html(row({ kind: "tool_use", tool_name: "web_fetch", summary: "Fetched example.com" }))).toMatch(/>web_fetch</);
+  it("says the common built-in tools in words", () => {
+    expect(html(row({ kind: "tool_use", tool_name: "write", summary: "Wrote notes.md" }))).toMatch(/>Write</);
+    expect(html(row({ kind: "tool_use", tool_name: "web_fetch", summary: "Fetched example.com" }))).toMatch(/>Fetch</);
   });
 });
 

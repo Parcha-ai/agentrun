@@ -127,15 +127,22 @@ test("this repository's shards cover every test file of every suite once, and ci
   const { config } = readConfig(root);
   const suites = readSuites(root, { config });
   const shards = testShards(root);
-  const files = (list) => list.filter((u) => u.kind !== 'typecheck').map((u) => u.id).sort();
+  const files = (list) => [...new Set(list.filter((u) => u.kind !== 'typecheck').map((u) => u.id))].sort();
   assert.deepEqual(files(Object.values(shards).flatMap((s) => s.units)), files(unitsOf(suites, readConfig(root).timings)));
   const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
   const testJob = workflow.jobs.test.strategy.matrix.shard;
   assert.deepEqual(testJob, ['checks', 'packages', 'source', ...Object.keys(shards)], 'the test job runs checks, packages, source and every shard');
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), Object.keys(shards).filter((name) => name.startsWith('lean-')), 'the lean job reads every lean shard\'s captures');
-  assert.deepEqual(workflow.jobs['pi-1-2'].strategy.matrix.part, ['consumer', ...Array.from({ length: config.pi.shards }, (_, i) => String(i + 1))], 'pi-1-2 runs the consumer and every part');
-  // The any pool's shards install poppler for serve's pdf_pages; the gh pool's run on GitHub's runners in the queue too.
+  // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
-  assert.deepEqual(config.pools.gh.suites, ['@parcha/pi-transport']);
+});
+
+test('a file a named pool lists runs once: the rest pool drops it from its own suite', () => {
+  const { config } = readConfig(root);
+  const shards = Object.values(testShards(root));
+  const seen = new Map();
+  for (const shard of shards) for (const unit of shard.units) if (unit.kind === 'file') seen.set(unit.path, (seen.get(unit.path) ?? 0) + 1);
+  assert.deepEqual([...seen].filter(([, n]) => n > 1), []);
+  assert.ok(config.rootSuites.includes('test:workflows') && seen.has('packages/serve/test/durable-crash-sweep.test.mjs'));
 });

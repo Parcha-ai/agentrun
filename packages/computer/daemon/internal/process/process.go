@@ -16,6 +16,8 @@ const (
 	MaxRead = 512 << 10
 	// MaxWaitMs bounds a read's long poll.
 	MaxWaitMs = 30_000
+	// LogBytes is how much of a process's output its log file keeps: the first 16 MiB.
+	LogBytes = 16 << 20
 )
 
 // Options size a table; zero values are the defaults.
@@ -24,6 +26,8 @@ type Options struct {
 	MaxEntries int
 	// RetainedBytes bounds the output every ring in the table, live or ended, holds together.
 	RetainedBytes int64
+	// LogBytes is how much a log file keeps.
+	LogBytes int64
 }
 
 type Size struct {
@@ -38,6 +42,13 @@ type StartParams struct {
 	User  string            `json:"user,omitempty"`
 	Pty   *Size             `json:"pty,omitempty"`
 	Stdin bool              `json:"stdin,omitempty"`
+	// Log is an absolute path for a new file the daemon writes the first LogBytes of the output to (logFile).
+	Log string `json:"log,omitempty"`
+	// WaitGroup: the process runs until its program and every process left in its group (with a pty, its session)
+	// have ended, and reports the program's own exit.
+	WaitGroup bool `json:"waitGroup,omitempty"`
+	// Orphans "keep": what the process started outside it runs on when it ends, to the computer's end.
+	Orphans string `json:"orphans,omitempty"`
 }
 
 type StartResult struct {
@@ -58,6 +69,14 @@ type ReadResult struct {
 	NextOffset int64  `json:"nextOffset"`
 	Dropped    int64  `json:"dropped"`
 	Exited     bool   `json:"exited"`
+	// Size is the stream's bytes so far: every byte since the process started, kept in the ring or dropped. For the log,
+	// the bytes the log holds.
+	Size int64 `json:"size"`
+	// Capped is the log's alone: output came past its LogBytes and was not written to it.
+	Capped bool `json:"capped,omitempty"`
+	// LogError is the log's alone: a write failed or wrote short, so the log stopped there for good and holds only the
+	// output before it; why.
+	LogError string `json:"logError,omitempty"`
 }
 
 type WriteParams struct {

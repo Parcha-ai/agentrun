@@ -40,7 +40,7 @@ function assertLevels(runs, read, what) {
 test("pi: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 120_000 }, async (t) => {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
-  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: `${gw.url}/v1`, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("pi-effort"))).status, 201);
   assertLevels(await byLevel(api, gw, "pi-effort", 60_000), (body) => body?.reasoning?.effort ?? null, "reasoning.effort");
@@ -49,7 +49,7 @@ test("pi: a run's effort low, medium or high reaches its Responses request as re
 test("codex, on its pinned binary: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 300_000, skip: noSetpriv }, async (t) => {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
-  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("codex-effort", { harness: "codex" }))).status, 201);
   assertLevels(await byLevel(api, gw, "codex-effort", 90_000), (body) => body?.reasoning?.effort ?? null, "reasoning.effort");
@@ -69,7 +69,7 @@ test("claude-agent, on its pinned CLI: a run's effort low, medium or high reache
 test("opencode, on its pinned binary: a run's effort low, medium or high reaches its Responses request as reasoning.effort, each level its own", { timeout: 300_000, skip: noSetpriv }, async (t) => {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
-  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6-sol" }, NAMES);
+  withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: KEY("gateway"), AGENT_MODEL: "openai/gpt-6.1-sol" }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("opencode-effort", { harness: "opencode" }))).status, 201);
   assertLevels(await byLevel(api, gw, "opencode-effort", 90_000), (body) => body?.reasoning?.effort ?? null, "reasoning.effort");

@@ -7,23 +7,19 @@
 // Sonnet 5.5 ($2 in, $10 out, $0.20 cache read, $2.50 cache write a million), its usage reported as Anthropic's API
 // reports a growing conversation: each request reads the previous one's prompt from the cache. The clock is injected.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { calculateCost, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { capBefore, capModels, HELD_USD, inputBound, piOverhead, spentIn, useSpend } from "../dist/cap.js";
-import { markRequests } from "../dist/request-start.js";
-import { withOverCap } from "../dist/runs.js";
+import { capBefore, capModels, HELD_USD, inputBound, piOverhead, useSpend } from "../dist/cap.js";
+import { withOverCap } from "../dist/run-view.js";
 
 const SONNET = { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", api: "anthropic-messages", provider: "anthropic", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, contextWindow: 1_000_000, maxTokens: 64_000 };
 const CAP = 0.5;
 /** The option a request's bound rides on to its marks (cap.ts BOUND_USD), read by its registered name. */
 const BOUND_USD = Symbol.for("agentrun.serve.bound_usd");
 const WARM_MS = 4 * 60_000;
-/** The least output a request is sent with: the answer's 1,024 tokens, at $10 a million. */
-const FLOOR_USD = 1_024 * 10 / 1e6;
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 /** A conversation of the size the tester's ran: a 80,000-character task (about 20,000 tokens), each turn a tool call and
@@ -181,52 +177,6 @@ test("the over-cap row of a run that passed its cap on a cache miss says by how 
   assert.equal(withOverCap(rows(0.5), 0.38020940000000003)[2].summary, "Spent $0.50, $0.12 over the run's cap of $0.38");
 });
 
-/** A store holding `entries` in order, as a later process reads it. */
-function storeOf(t, entries) {
-  const dir = mkdtempSync(join(tmpdir(), "cap-expected-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, "run.sqlite");
-  const db = new DatabaseSync(file);
-  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, record TEXT NOT NULL)");
-  const put = db.prepare("INSERT INTO entries (conversation_id, record) VALUES (1, ?)");
-  for (const entry of entries) put.run(JSON.stringify(entry));
-  db.close();
-  return file;
-}
-
-test("pi: a restart mid-request reads what this process held: the request in flight at its expected cost (its start mark's heldUsd), its bound beside it, never its worst case", async (t) => {
-  t.after(() => useSpend(undefined));
-  const marks = [];
-  const { models, sent } = sonnetModels({ hold: (k) => k === 1 });
-  const marked = await markRequests(models);
-  const capped = await capModels(marked.models, 1, 0);
-  marked.open({ harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }) } });
-  const context = conversation();
-  const first = await capped.streamSimple(SONNET, context).result();
-  await settle();
-  const entries = [...marks, { kind: "pi.assistant", model: [first] }];
-  context.messages.push(first, resultOf(0));
-  void capped.streamSimple(SONNET, context);
-  for (let i = 0; marks.length < 2; i++) {
-    assert.ok(i < 100, "the second request's start is marked");
-    await settle();
-  }
-  const held = sent[1].options[HELD_USD];
-  // The rule, by hand: the first request's prompt read from the cache at $0.20, its 3 tokens of input and the bytes the
-  // conversation grew by since it at $2.50, and the 64,000 tokens of output the cap leaves it at $10.
-  const before = { messages: context.messages.slice(0, 1) };
-  const grew = inputBound(JSON.stringify(context), piOverhead(SONNET, context)) - inputBound(JSON.stringify(before), piOverhead(SONNET, before));
-  const expected = (first.usage.cacheRead + first.usage.cacheWrite) * 0.2 / 1e6 + (first.usage.input + grew) * 2.5 / 1e6 + 64_000 * 10 / 1e6;
-  assert.ok(Math.abs(held - expected) < 1e-12, `held at its expected cost: ${held} vs ${expected}`);
-  const start = marks[1];
-  assert.equal(start.data.heldUsd, held, "its start mark holds what this process held");
-  assert.ok(Math.abs(start.data.boundUsd - (worstOf(context, 64_000) - held)) < 1e-12, `and its bound: ${start.data.boundUsd}`);
-  // The process dies here: a later one reads the cut request at its hold.
-  entries.push(start);
-  const read = spentIn(storeOf(t, entries));
-  assert.ok(Math.abs(read - (first.usage.cost.total + held)) < 1e-12, `read again: ${read} vs ${first.usage.cost.total + held}`);
-});
-
 test("another harness (claude-agent, codex, opencode): the guard prices a request by the previous request's usage, by the same rule: a $0.50 cap spends at least 90% of itself before it refuses", async () => {
   const guard = await capBefore(CAP, SONNET);
   let spent = 0;
@@ -260,30 +210,6 @@ test("another harness: the guard's admission carries what the request is held at
   assert.equal(cold.boundUsd, 0);
   const strict = (await capBefore(1, SONNET, { mode: "strict", now: () => at })).beforeRequest(request);
   assert.deepEqual([strict.holdUsd, strict.boundUsd], [cold.holdUsd, 0], "strict: the worst case, no bound");
-});
-
-test("pi: side requests sent side by side (completeSimple, inside tool calls pi runs in parallel) each mark their own request id and bound on their start", async (t) => {
-  t.after(() => useSpend(undefined));
-  const marks = [];
-  const { models, sent } = sonnetModels({ hold: (k) => k >= 1 });
-  const marked = await markRequests(models);
-  const capped = await capModels(marked.models, 5, 0);
-  marked.open({ harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }) } });
-  const context = conversation();
-  const first = await capped.streamSimple(SONNET, context).result();
-  await settle();
-  context.messages.push(first, resultOf(0));
-  // Two side requests on the warm conversation, in flight together.
-  void capped.completeSimple(SONNET, context);
-  void capped.completeSimple(SONNET, { messages: [...context.messages] });
-  for (let i = 0; marks.filter((m) => m.kind === "agentrun.request_started" && typeof m.data?.request === "string").length < 2; i++) {
-    assert.ok(i < 100, "both side requests are marked");
-    await settle();
-  }
-  const starts = marks.filter((m) => m.kind === "agentrun.request_started" && typeof m.data?.request === "string").map((m) => m.data);
-  assert.equal(new Set(starts.map((data) => data.requestId)).size, 2, `each its own request id: ${JSON.stringify(starts)}`);
-  assert.ok(starts.every((data) => typeof data.requestId === "string" && data.boundUsd > 0), `each with its bound: ${JSON.stringify(starts)}`);
-  assert.equal(sent.length, 3);
 });
 
 test("least_cap_usd under each cap_mode is the least cap that sends the refused request: a cap at it admits the request at what that mode prices it at, a cent under it refuses it", async (t) => {

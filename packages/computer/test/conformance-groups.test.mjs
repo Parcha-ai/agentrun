@@ -27,7 +27,7 @@ import {
 	runConformance,
 } from "../dist/index.js";
 import { fakeComputers } from "./fake-computer.mjs";
-import { fakeDevices, fakeFetch, png, pngOf, testClock } from "./fake-device.mjs";
+import { fakeDevices, fakeFetch, png, pngOf, testClock, virtualClock } from "./fake-device.mjs";
 
 const IMAGE = "fixture:image";
 const dir = mkdtempSync(join(tmpdir(), "computer-groups-"));
@@ -48,7 +48,7 @@ const run = (provider, ids, extra = {}) => runConformance(provider, { image: IMA
 const NEW_CASES = [
 	"health.kind-consistent",
 	"screen.screenshot-size",
-	"screen.stream",
+	"screen.watch",
 	"input.click-lands",
 	"input.type-text",
 	"input.key-table-refuses-unknown",
@@ -57,18 +57,18 @@ const NEW_CASES = [
 	"touch.swipe",
 	"touch.pinch",
 	"apps.install-launch",
-	"apps.ui-tree-shape",
+	"ui.observe-shape",
 	"lifetime.extend",
 ];
-const DESKTOP_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "screen.stream", "input.click-lands", "input.type-text", "input.key-table-refuses-unknown", "input.actions-stops-at-first-failure"];
-const PHONE_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "touch.tap", "touch.swipe", "touch.pinch", "apps.install-launch", "apps.ui-tree-shape"];
+const DESKTOP_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "screen.watch", "input.click-lands", "input.type-text", "input.key-table-refuses-unknown", "input.actions-stops-at-first-failure"];
+const PHONE_CASES = ["health.kind-consistent", "provider.check-refuses", "screen.screenshot-size", "touch.tap", "touch.swipe", "touch.pinch", "apps.install-launch", "ui.observe-shape"];
 
 test("the suite has the extension's 13 new cases, each at its level and with the needs the spec gives it", () => {
 	const levels = Object.fromEntries(byId(...NEW_CASES).map((c) => [c.id, [c.level, c.needs]]));
 	assert.deepEqual(levels, {
 		"health.kind-consistent": ["core", []],
 		"screen.screenshot-size": ["core", ["screen"]],
-		"screen.stream": ["full", ["stream"]],
+		"screen.watch": ["core", ["screen"]],
 		"input.click-lands": ["core", ["input.pointer"]],
 		"input.type-text": ["core", ["input.keys"]],
 		"input.key-table-refuses-unknown": ["core", ["input.keys"]],
@@ -77,17 +77,18 @@ test("the suite has the extension's 13 new cases, each at its level and with the
 		"touch.swipe": ["core", ["input.touch"]],
 		"touch.pinch": ["full", ["input.touch"]],
 		"apps.install-launch": ["core", ["apps.install", "apps", "files"]],
-		"apps.ui-tree-shape": ["core", ["apps.ui_tree"]],
+		"ui.observe-shape": ["core", ["ui"]],
 		"lifetime.extend": ["full", ["extend"]],
 	});
 });
 
-test("coreGroups: computerd brings exec, files, processes and network none; a desktop adds screen and keyboard and pointer; a phone needs screen and touch", () => {
+test("coreGroups: computerd brings exec, files, processes and network none (a child daemon its vendor's agent too); a desktop adds screen and keyboard and pointer; a phone needs screen and touch", () => {
 	const linux = ["exec", "files", "processes", "network:none"];
+	const child = [...linux, "vendor-agent"];
 	assert.deepEqual(coreGroups("linux", "pid1"), linux);
-	assert.deepEqual(coreGroups("linux", "child"), linux);
+	assert.deepEqual(coreGroups("linux", "child"), child);
 	assert.deepEqual(coreGroups("desktop", "pid1"), [...linux, "screen", "input.pointer", "input.keys"]);
-	assert.deepEqual(coreGroups("desktop", "child"), [...linux, "screen", "input.pointer", "input.keys"]);
+	assert.deepEqual(coreGroups("desktop", "child"), [...child, "screen", "input.pointer", "input.keys"]);
 	assert.deepEqual(coreGroups("desktop", "none"), ["screen", "input.pointer", "input.keys"]);
 	assert.deepEqual(coreGroups("android", "none"), ["screen", "input.touch"]);
 	assert.deepEqual(coreGroups("ios", "none"), ["screen", "input.touch"]);
@@ -145,7 +146,7 @@ test("KEYS is the spec's table, and a key is a name in it or one printable ASCII
 	]);
 	for (const key of ["enter", "f12", "capslock", "a", "A", "1", "/", "~", "!"]) assert.equal(isKey(key), true, key);
 	for (const key of ["Enter", "Return", "Hyper_Q", " ", "\t", "é", "ab", "", "F13", 1, null]) assert.equal(isKey(key), false, JSON.stringify(key));
-	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "apps.ui_tree"]);
+	assert.deepEqual(GROUPS, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "input.touch", "apps", "apps.install", "ui", "cdp", "stream", "downloads"]);
 });
 
 test("checkActions: the whole batch first: its shape, its length, each key, each action's group, a pixel scroll and the summed wait", () => {
@@ -301,7 +302,7 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 	const skipped = Object.fromEntries(report.results.filter((r) => r.status === "skip").map((r) => [r.id, [r.reason, r.undeclared]]));
 	assert.deepEqual(skipped, {
 		"screen.screenshot-size": ["the provider does not declare screen", ["screen"]],
-		"screen.stream": ["the provider has no stream()", ["stream"]],
+		"screen.watch": ["the provider does not declare screen", ["screen"]],
 		"input.click-lands": ["the provider does not declare input.pointer", ["input.pointer"]],
 		"input.type-text": ["the provider does not declare input.keys", ["input.keys"]],
 		"input.key-table-refuses-unknown": ["the provider does not declare input.keys", ["input.keys"]],
@@ -310,18 +311,18 @@ test("a linux computer with computerd as PID 1, as Docker declares, skips every 
 		"touch.swipe": ["the provider does not declare input.touch", ["input.touch"]],
 		"touch.pinch": ["the provider does not declare input.touch", ["input.touch"]],
 		"apps.install-launch": ["the provider does not declare apps.install", ["apps.install", "apps"]],
-		"apps.ui-tree-shape": ["the provider does not declare apps.ui_tree", ["apps.ui_tree"]],
+		"ui.observe-shape": ["the provider does not declare ui", ["ui"]],
 		"lifetime.extend": ["the provider has no extend()", ["extend"]],
 	});
 	assert.deepEqual(statuses(report)["health.kind-consistent"], "pass", reasons(report)["health.kind-consistent"]);
 	assert.deepEqual(statuses(report)["provider.check-refuses"], "pass", reasons(report)["provider.check-refuses"]);
 	assert.equal(report.core, "pass", formatReport(report));
-	assert.deepEqual(report.undeclared, ["screen", "stream", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "apps.ui_tree", "extend"]);
+	assert.deepEqual(report.undeclared, ["screen", "input.pointer", "input.keys", "input.touch", "apps.install", "apps", "ui", "extend"]);
 	const text = formatReport(report).trimEnd().split("\n");
-	assert.equal(text.at(-1), "core PASS 2/2 · 9 optional cases skipped, not declared · full 0/3 · screen stream input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared");
+	assert.equal(text.at(-1), "core PASS 2/2 · 10 optional cases skipped, not declared · full 0/2 · screen input.pointer input.keys input.touch apps.install apps ui extend not declared");
 	// A case its kind does not require is never filed under core: a linux computer's report has no core screen line.
 	assert.deepEqual(text.filter((line) => /^core (screen|input|touch|apps) /.test(line)), [], text.join("\n"));
-	assert.ok(text.some((line) => /^optional screen +screenshot-size +- 1$/.test(line)), text.join("\n"));
+	assert.ok(text.some((line) => /^optional screen +screenshot-size watch +- 2$/.test(line)), text.join("\n"));
 	assert.ok(text.includes("  - screen.screenshot-size: the provider does not declare screen"), text.join("\n"));
 });
 
@@ -350,6 +351,56 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
 });
 
+test("apps.launch-terminate needs apps alone: a phone with no ui group and no files is seen launching Settings in its screenshot", async () => {
+	const groups = ["screen", "input.touch", "apps"];
+	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(seen), { "apps.launch-terminate": "pass" }, reasons(seen)["apps.launch-terminate"]);
+	const hidden = await run(fakeDevices({ kind: "android", groups, broken: "launch-hidden" }).provider, ["apps.launch-terminate"]);
+	assert.deepEqual(statuses(hidden), { "apps.launch-terminate": "fail" });
+	assert.match(reasons(hidden)["apps.launch-terminate"], /^com\.android\.settings shown after apps\.launch: a screenshot other than the one before it/);
+});
+
+/** The lifetimes provider.deadline asked for, in order: the run's shared computer is not the case's. */
+const deadlineLifetimes = (made) => made.filter(({ spec }) => spec.labels?.["agentrun.conformance.case"] === "deadline").map(({ spec }) => spec.lifetimeMs);
+
+test("provider.deadline sees the end of a 45 s lifetime on the run's clock, with no wait in a test", { timeout: 10_000 }, async () => {
+	const { provider, made } = fakeDevices();
+	const report = await run(provider, ["provider.deadline"]);
+	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
+	assert.deepEqual(deadlineLifetimes(made), [45_000]);
+});
+
+/**
+ * provider.deadline on a host slow to start a computer, measured on a clock that reads no wall clock (virtualClock): the
+ * fake's creates take exactly their createMs on it, so what the case computes from them is exact. The run's shared
+ * computer is made first, at once; createMs then gives each of the case's creates in turn.
+ */
+const slowHost = (createMs) => {
+	const clock = virtualClock();
+	const { provider, made } = fakeDevices({ clock, createMs: [0, ...createMs] });
+	return { made, ran: run(provider, ["provider.deadline"], { clock }) };
+};
+
+test("provider.deadline, when the first create outlasts its 45 s lifetime, asks once more for exactly 45 s past twice what create took, and passes", async () => {
+	// 50 s of a 45 s lifetime fails as Docker's does; the retry asks for 45 + 2 x 50 = 145 s, takes 50 s, and leaves 95 s.
+	const { made, ran } = slowHost([50_000, 50_000]);
+	const report = await ran;
+	assert.deepEqual(statuses(report), { "provider.deadline": "pass" }, reasons(report)["provider.deadline"]);
+	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
+});
+
+test("provider.deadline skips in words, never passes, when the retry is still too slow for its lifetime", async () => {
+	const { made, ran } = slowHost([50_000, 1_000_000]);
+	const report = await ran;
+	assert.deepEqual(statuses(report), { "provider.deadline": "skip" });
+	assert.equal(
+		reasons(report)["provider.deadline"],
+		"create took 1000 s of a lifetime of 145 s (the first took 50 s of 45 s): this host starts a computer too slowly for the case to watch its deadline; desktop-3's lifetime of 145 s ended before create finished (it took 1000 s)",
+	);
+	assert.deepEqual(deadlineLifetimes(made), [45_000, 145_000]);
+	assert.equal(report.core, "fail", "a Core case that could not run is no pass");
+});
+
 /** For each case: a fake broken the way the case checks for, and what the failure says. */
 const BROKEN = [
 	["health.kind-consistent", { hello: { kind: "linux" } }, /hello's kind is the one the provider declares: expected "desktop", got "linux"/],
@@ -373,13 +424,18 @@ const BROKEN = [
 	["touch.swipe", { kind: "android", broken: "swipe-stuck" }, /a swipe to 180,192 was logged ending at 180,448/],
 	["touch.pinch", { kind: "android", broken: "pinch-together" }, /a pinch apart: the fingers went from 40 px apart to 20 px/],
 	["apps.install-launch", { kind: "android", broken: "terminate-stays" }, /ai\.agentrun\.fixture no longer in front after apps\.terminate: still not so/],
-	["apps.ui-tree-shape", { kind: "android", broken: "tree-types" }, /apps\.ui_tree: root\.children\[0\]\.enabled is "true", not a boolean/],
+	["ui.observe-shape", { kind: "android", broken: "ui-role" }, /^ui\.observe: nodes\[1\]\.role is "android\.widget\.Button", not one of the protocol's roles \(UI_ROLES\)/],
 	["lifetime.extend", { broken: "extend-noop" }, /list\(\) shows the deadline .*, not the extended/],
 	["lifetime.extend", { broken: "extend-past-cap" }, /extend past maxLifetimeMs \(7200001 ms\): expected an error, got ok/],
 	// Review (lifetime boundaries go unchecked): the cap counts from create, and an extend never moves the deadline earlier.
 	["lifetime.extend", { broken: "extend-shortens" }, /^extend to 60 s, earlier than the current deadline: expected an error, got ok/],
 	["lifetime.extend", { broken: "extend-per-call" }, /^extend to 7170 s, past create \+ maxLifetimeMs \(7200000 ms\): expected an error, got ok/],
-	["screen.stream", { broken: "stream-http" }, /the stream at http:\/\/stream\.example\.test: its scheme: expected "https:", got "http:"/],
+	["screen.watch", { broken: "watch-stale" }, /a pointer move to \d+,\d+ gave no new frame/],
+	["screen.watch", { broken: "watch-size" }, /the first frame's (JPEG|PNG) is \d+x\d+, not the \d+x\d+ it says/],
+	// Review (missing cursors pass; unreadable frames pass): a move must show the cursor where it went, and a frame decodes.
+	["screen.watch", { broken: "watch-no-cursor" }, /a pointer move to \d+,\d+ gave no frame with the cursor there/],
+	["screen.watch", { broken: "watch-corrupt-png" }, /^the first frame's PNG does not decode: the screenshot's PNG does not inflate/],
+	["screen.watch", { broken: "watch-corrupt-jpeg" }, /^the first frame's JPEG does not decode: .*no scan/],
 ];
 
 for (const [id, options, words] of BROKEN) {
@@ -410,20 +466,20 @@ test("a Core case whose group the kind requires fails when it is not declared; a
 	assert.deepEqual(report.undeclared, []);
 
 	const desktopWithApps = fakeDevices({ extend: false, stream: false });
-	const optional = await run(desktopWithApps.provider, ["input.click-lands", "touch.tap", "apps.ui-tree-shape", "screen.stream"]);
-	assert.deepEqual(statuses(optional), { "input.click-lands": "pass", "touch.tap": "skip", "apps.ui-tree-shape": "skip", "screen.stream": "skip" });
+	const optional = await run(desktopWithApps.provider, ["input.click-lands", "touch.tap", "ui.observe-shape", "screen.watch"]);
+	assert.deepEqual(statuses(optional), { "input.click-lands": "pass", "touch.tap": "skip", "ui.observe-shape": "skip", "screen.watch": "pass" }, formatReport(optional));
 	assert.equal(optional.core, "pass", formatReport(optional));
-	assert.deepEqual(optional.undeclared, ["stream", "input.touch", "apps.ui_tree"]);
-	assert.match(formatReport(optional), /core PASS 1\/1 · 2 optional cases skipped, not declared · full 0\/1/);
+	assert.deepEqual(optional.undeclared, ["input.touch", "ui"]);
+	assert.match(formatReport(optional), /core PASS 2\/2 · 2 optional cases skipped, not declared/);
 	assert.match(formatReport(optional), /^core input +click-lands +✓ 1$/m, "a group its kind requires stays under core");
 	assert.match(formatReport(optional), /^optional touch +tap +- 1$/m);
 });
 
-test("a phone that declares neither files nor apps.ui_tree skips the touch cases: no way to observe the effect", async () => {
+test("a phone that declares neither files nor ui skips the touch cases: no way to observe the effect", async () => {
 	const { provider } = fakeDevices({ kind: "android", groups: ["screen", "input.touch"] });
 	const report = await run(provider, ["touch.tap", "touch.swipe"]);
 	assert.deepEqual(statuses(report), { "touch.tap": "skip", "touch.swipe": "skip" });
-	assert.equal(reasons(report)["touch.tap"], "no way to observe the effect: declare files or apps.ui_tree");
+	assert.equal(reasons(report)["touch.tap"], "no way to observe the effect: declare files or ui");
 	assert.equal(report.core, "fail", "a skip for no way to observe is not a skip for an undeclared group: Core cannot pass on it");
 });
 

@@ -258,14 +258,15 @@ export const openStream: StreamFactory = (cdpUrl: string, handlers: StreamHandle
       } else return bad();
     },
 
-    async nav(message: NavMessage): Promise<void> {
+    async nav(message: NavMessage, live: () => boolean = () => true): Promise<void> {
       const sessionId = page();
       if (message === null || typeof message !== "object" || message.type !== "nav") return bad();
       if (message.action === "reload") { await request("Page.reload", {}, sessionId); return; }
       if (message.action === "back") {
         const history = await request("Page.getNavigationHistory", {}, sessionId);
         const entry = history?.entries?.[Number(history?.currentIndex) - 1];
-        if (!entry || !Number.isInteger(entry.id)) return;
+        // A command let go meanwhile (handed back, and the agent's call went on past the bound) does not move the page under it.
+        if (!entry || !Number.isInteger(entry.id) || !live()) return;
         await request("Page.navigateToHistoryEntry", { entryId: entry.id }, sessionId);
         return;
       }

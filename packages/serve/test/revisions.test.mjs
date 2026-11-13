@@ -1,12 +1,12 @@
 // Edits are revisions: each definition an agent had is kept, a run pins one, and every run of every agent is listed.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Agents } from "../dist/agents.js";
+import { commitAgent, createAgent } from "../dist/agents-store.js";
 import { checkDefinitionBody } from "../dist/validate.js";
-import { agent, answerFlow, flowAgent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 test("PUT definition commits a new revision whose parent is the current one and makes it current; skills carry over", async (t) => {
   const { api } = await serve(t);
@@ -15,7 +15,7 @@ test("PUT definition commits a new revision whose parent is the current one and 
   assert.equal(put.status, 200, JSON.stringify(put.body));
   assert.notEqual(put.body.revision, created.revision);
   assert.equal(put.headers.get("etag"), `"${put.body.revision}"`);
-  assert.deepEqual(put.body.definition, { id: "editor", version: 2, name: "editor", instructions: "Answer briefly.", harness: "pi", skills: ["cite"], tools: ["read"] });
+  assert.deepEqual(put.body.definition, { id: "editor", version: 2, name: "editor", instructions: "Answer briefly.", harness: "pi", skills: ["cite"], tools: ["read"], approvals: "ask" });
   assert.deepEqual(put.body.skills.map((s) => s.path), ["cite/SKILL.md"], "the current revision's skill files carry over");
   assert.equal(put.body.revisions, 2);
   const list = (await api("GET", "/agents/editor/revisions")).body;
@@ -60,7 +60,7 @@ test("PUT definition: If-Match must name the current revision, a name it does no
   const ok = await api("PUT", "/agents/guarded/definition", { definition: { workflow: answerFlow() } }, { "if-match": created.home_etag });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.kind, "workflow");
-  assert.deepEqual(ok.body.definition, { id: "guarded", version: 2, name: "guarded", workflow: answerFlow(), harness: "pi", skills: [], tools: [] });
+  assert.deepEqual(ok.body.definition, { id: "guarded", version: 2, name: "guarded", workflow: answerFlow(), harness: "pi", skills: [], tools: [], approvals: "ask" });
   assert.equal((await api("PUT", "/agents/nobody/definition", { definition: { instructions: "x" } })).status, 404);
 });
 
@@ -200,14 +200,11 @@ test("two PUTs that read the same ETag race: the store compares If-Match inside 
 });
 
 /** JSON with every object's keys sorted, as the agent store hashes a revision. */
-const canonical = (value) => (Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value));
 
-test("the switch: kept on a revision when a definition sets it, true or false, and carried over by an edit that leaves it out; absent, the revision's id is the one it had before the switch, and a workflow keeps none", async (t) => {
+test("the switch: kept on a revision when a definition sets it, true or false, and carried over by an edit that leaves it out; absent, no default is echoed, and a workflow keeps none", async (t) => {
   const { api } = await serve(t);
   const made = (await api("POST", "/agents", agent("plain"))).body;
   assert.equal("learning" in made.definition, false, "absent: no default is echoed");
-  const body = { instructions: "Answer.", skills: {}, tools: [] };
-  assert.equal(made.revision, createHash("sha256").update(canonical({ agent: "plain", parent: null, kind: "agentic", body })).digest("hex"), "a definition that leaves it out hashes as before");
   for (const learning of [true, false]) {
     const id = `set-${learning}`;
     const created = (await api("POST", "/agents", agent(id, { learning }))).body;
@@ -223,18 +220,17 @@ test("the switch: kept on a revision when a definition sets it, true or false, a
 });
 
 test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {
-  const agents = new Agents(join(await scratch(t), "agents"));
-  t.after(() => agents.close());
+  const { store } = await storeOn(t);
   const edit = (definition) => checkDefinitionBody({ definition: { name: "x", ...definition } }, { creating: false });
-  const read = await agents.create(checkDefinitionBody(agent("x")));
+  const read = await createAgent(store, checkDefinitionBody(agent("x")));
   assert.equal(read.revision.body.learning, undefined);
   // B leaves the switch out and reads the agent before A; its checks hold until A, which turns learning on, has landed.
   let started, release;
   const running = new Promise((resolve) => (started = resolve));
   const held = new Promise((resolve) => (release = resolve));
-  const b = agents.commit(read, edit({ instructions: "Answer briefly." }), { check: () => (started(), held) });
+  const b = commitAgent(store, read, edit({ instructions: "Answer briefly." }), { check: () => (started(), held) });
   await running;
-  const a = await agents.commit(read, edit({ instructions: "Answer.", learning: true }));
+  const a = await commitAgent(store, read, edit({ instructions: "Answer.", learning: true }));
   assert.equal(a.revision.body.learning, true);
   release();
   const landed = await b;

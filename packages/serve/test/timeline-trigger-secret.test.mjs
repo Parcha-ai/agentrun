@@ -27,15 +27,27 @@ async function pasted(t, api, id, forms) {
   const content = `Keep these: ${forms.hex}, ${forms.base64} and ${forms.body}. Hold, then echo, until ${go}.`;
   const run = await api("POST", `/agents/${id}/runs`, { input: { content } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  const live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
+  // The run reads working once it is claimed, a moment before its loop writes the message row: read the live pages again
+  // until one holds it. The run holds (the faux model waits for `go`), so it still works while they are read.
+  let live = await follow(api, run.body.run_id, ["working"], { deadlineMs: 60_000 });
+  const livePages = [...live.pages];
+  const liveRows = [...live.rows];
+  // Each read after the first goes on from the last page's cursor, so the server holds it (its long poll) until a row
+  // comes; one deadline bounds the whole wait.
+  const until = Date.now() + 60_000;
+  while (!liveRows.some((row) => row.kind === "user_message")) {
+    assert.ok(Date.now() < until, `a live page holds the message row: ${JSON.stringify(liveRows.map((row) => row.kind))}`);
+    live = await follow(api, run.body.run_id, ["working"], { after: live.after, deadlineMs: 60_000 });
+    livePages.push(...live.pages);
+    liveRows.push(...live.rows);
+  }
   assert.equal(live.last.status, "working", "the page was read while the run still worked");
-  assert.ok(live.rows.some((row) => row.kind === "user_message"), `a live page holds the message row: ${JSON.stringify(live.rows.map((row) => row.kind))}`);
   await writeFile(go, "");
   const done = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 90_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   assert.match(JSON.stringify(view), /On Keep these: .*: done\./, "the answer echoes the message, so it is checked with it");
   const listed = (await api("GET", "/runs")).body;
-  return JSON.stringify({ rows: done.rows, pages: [...live.pages, ...done.pages], view, listed });
+  return JSON.stringify({ rows: done.rows, pages: [...livePages, ...done.pages], view, listed });
 }
 
 test("a webhook trigger's secret pasted into a run's message, as hex, base64 or its bare key, is cut from every Timeline row, the run's title and its answer; after a rotation the new secret is cut the same", { timeout: 300_000 }, async (t) => {
@@ -44,12 +56,12 @@ test("a webhook trigger's secret pasted into a run's message, as hex, base64 or 
   assert.equal((await api("POST", "/agents", agent("target"))).status, 201);
   const created = await api("POST", "/triggers", hooked);
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const first = formsOf(created.body.secret);
+  const first = formsOf(created.body.signing_secret);
   const shown = await pasted(t, api, "pasted", first);
   for (const [form, value] of Object.entries(first)) assert.equal(holdsPiece(shown, value), false, `the secret's ${form} form shows nowhere: ${shown.slice(0, 600)}`);
   const rotated = await api("POST", `/triggers/${created.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
-  const next = formsOf(rotated.body.secret);
+  const next = formsOf(rotated.body.signing_secret);
   const after = await pasted(t, api, "rotated", next);
   for (const [form, value] of Object.entries(next)) assert.equal(holdsPiece(after, value), false, `the new secret's ${form} form shows nowhere: ${after.slice(0, 600)}`);
 });

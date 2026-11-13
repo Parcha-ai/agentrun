@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ToolsPage } from "./ToolsPage";
 import { type ToolGate, toolChoices, toolGates } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
+import { optionsOf, pick, valueOf } from "@/test/picker";
 
 // Settings → Tools: each tool's permission (allow, ask, deny) on this server, the owner's default named, beside the
 // providers. A change is saved at once, as the whole of the server's settings: what the page does not show (a catalog
@@ -39,9 +40,9 @@ async function open(start: ToolSettings, { askNeeds = false }: { askNeeds?: bool
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const row = (tool: string) => host.querySelector<HTMLTableRowElement>(`tr[data-tool="${tool}"]`);
-  const permission = (tool: string) => row(tool)!.querySelector<HTMLSelectElement>(`select[aria-label="${tool} permission"]`)!;
+  const permission = (tool: string) => row(tool)!.querySelector<HTMLButtonElement>(`button[aria-haspopup=listbox][aria-label="${tool} permission"]`)!;
   const choose = async (tool: string, value: string) => {
-    await act(async () => { const s = permission(tool); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, value); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(permission(tool), value);
     await settle();
   };
   return { host, puts, row, permission, choose };
@@ -51,12 +52,12 @@ describe("ToolsPage, each tool's permission", () => {
   it("lists every tool, each with the permissions offered for it and the owner's default named, in a table that scrolls on a phone", async () => {
     const page = await open({});
     expect(["read", "bash", "ask_person", "web_search"].map((t) => !!page.row(t))).toEqual([true, true, true, true]);
-    expect([...page.permission("read").options].map((o) => o.textContent)).toEqual(["allow (default)", "ask", "deny"]);
-    expect([...page.permission("ask_person").options].map((o) => o.textContent)).toEqual(["allow (default)", "deny"]);
-    expect(page.permission("bash").value).toBe("allow");
+    expect((await optionsOf(page.permission("read"))).map((o) => o.text)).toEqual(["allow (default)", "ask", "deny"]);
+    expect((await optionsOf(page.permission("ask_person"))).map((o) => o.text)).toEqual(["allow (default)", "deny"]);
+    expect(valueOf(page.permission("bash"))).toBe("allow");
     // A tool with no provider choice says so in the provider column; web_search keeps its provider select.
-    expect(page.row("read")!.querySelector("select[aria-label='read provider']")).toBeNull();
-    expect(page.row("web_search")!.querySelector("select[aria-label='web_search provider']")).toBeTruthy();
+    expect(page.row("read")!.querySelector("button[aria-haspopup=listbox][aria-label='read provider']")).toBeNull();
+    expect(page.row("web_search")!.querySelector("button[aria-haspopup=listbox][aria-label='web_search provider']")).toBeTruthy();
     expect(page.host.querySelector("table")!.parentElement!.className).toMatch(/overflow-x-auto/);
     expect([...page.host.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Permission", "Provider", "Resolves to", "Reset"]);
   });
@@ -70,7 +71,7 @@ describe("ToolsPage, each tool's permission", () => {
 
   it("a provider change keeps every permission set", async () => {
     const page = await open({ web_search: { permission: "ask" }, bash: { permission: "deny" } });
-    await act(async () => { const s = page.row("web_search")!.querySelector<HTMLSelectElement>("select[aria-label='web_search provider']")!; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(s, "native"); s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pick(page.row("web_search")!.querySelector<HTMLButtonElement>("button[aria-haspopup=listbox][aria-label='web_search provider']")!, "native");
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(page.puts).toEqual([{ web_search: { provider: "native", permission: "ask" }, bash: { permission: "deny" } }]);
   });
@@ -83,7 +84,7 @@ describe("ToolsPage, each tool's permission", () => {
 
   it("with accounts off, ask is offered disabled with why, and a tool already on ask says each call is refused", async () => {
     const page = await open({ "web_search": { permission: "ask" } }, { askNeeds: true });
-    const ask = [...page.permission("read").options].find((o) => o.value === "ask")!;
+    const ask = (await optionsOf(page.permission("read"))).find((o) => o.value === "ask")!;
     expect(ask.disabled).toBe(true);
     expect(page.host.textContent).toContain("Ask is off on this server: approving a call takes the owner's password sign-in, and this server runs with accounts off.");
     expect(page.row("web_search")!.textContent).toContain("Each call is refused: no one can approve it here.");

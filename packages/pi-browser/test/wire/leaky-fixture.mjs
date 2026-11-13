@@ -5,7 +5,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import { defineDoc, defineExtension, defineTool } from "@earendil-works/pi-durable";
 
-const Custody = defineDoc({ kind: "leaky.custody", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ note: "" }) });
+const Custody = defineDoc({ kind: "leaky.custody", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ note: "" }) });
 const text = (t, extra = {}) => { const content = [{ type: "text", text: t }]; return { content, output: content, ...extra }; };
 
 export const LEAKS = {

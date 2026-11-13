@@ -1,24 +1,28 @@
 #!/usr/bin/env node
 // The CLI's command table, from the OpenAPI document the server serves: one entry per operation it offers, and the
 // agentrun-cli skill from the same table (scripts/clients/skill.mjs): its SKILL.md and references/commands.md. The
-// TypeScript client's operations (scripts/clients/typescript.mjs) come from the same projection, under the same hash.
+// TypeScript client's operations (scripts/clients/typescript.mjs) and the Python client's (scripts/clients/python.mjs) come
+// from the same projection, under the same hash.
 // From the same document, the console's API types (scripts/clients/types.mjs): apps/console/src/lib/api.generated.ts.
 //   node scripts/generate-clients.mjs           write packages/agentrun/lib/commands.generated.mjs, the skill,
-//                                               packages/client/src/operations.generated.ts and the console's types
+//                                               packages/client/src/operations.generated.ts,
+//                                               python/agentrun/_generated.py and the console's types
 //   node scripts/generate-clients.mjs --check   fail when a committed file is not the document's, or the skill names a
 //                                               command or flag the CLI does not have
 // It reads the built server (packages/serve/dist), so it runs after the build. --out, --skill (the skill's folder),
-// --client (the TypeScript client's file), --types (the console's types), --resources and --document (a document as
-// JSON, in place of the built server's) name other files.
+// --client (the TypeScript client's file), --python (the Python client's file), --types (the console's types),
+// --resources and --document (a document as JSON, in place of the built server's) name other files.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
+import { ALL, FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
 import { SECRETS } from '../packages/agentrun/lib/login.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
+import { TEMPLATE_EVAL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
+import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
 import { typesOf, typesText } from './clients/types.mjs';
 import { isMain } from './is-main.mjs';
@@ -28,12 +32,13 @@ const OUTPUT = 'packages/agentrun/lib/commands.generated.mjs';
 const RESOURCES = 'scripts/clients/resources.json';
 const SKILL = 'packages/agentrun/skills/agentrun-cli';
 const CLIENT = 'packages/client/src/operations.generated.ts';
+const PYTHON = 'python/agentrun/_generated.py';
 const TYPES = 'apps/console/src/lib/api.generated.ts';
 // Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
 // may begin with one.
 const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, wait: WAIT, local: [...SECRETS, SKILL_INSTALL] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -138,9 +143,15 @@ export function operationsOf(doc) {
       found.push({
         operationId: op.operationId, method: method.toUpperCase(), path, tags: op.tags ?? [], summary: op.summary ?? firstLine(op.description),
         unsupported: op['x-agentrun-serve-unsupported'] !== undefined, parameters: [...params.values()],
+        // It writes a secret (the document marks a field of its body x-agentrun-secret, or the operation whole): the CLI,
+        // which holds only the token, has no command for it; the clients keep its method.
+        writesSecret: op['x-agentrun-secret'] === true || marksSecret(doc, op.requestBody),
+        // It works only from the owner's browser (the document marks it x-agentrun-browser-only, with why): an MCP
+        // sign-in's start, whose callback needs the cookie its answer sets there. No command and no client method.
+        browserOnly: typeof op['x-agentrun-browser-only'] === 'string',
         body: body === undefined ? null : {
           required: body.required === true, types: Object.keys(body.content ?? {}),
-          properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
+          properties: Object.entries(schema?.properties ?? {}).map(([name, property]) => ({ name, ...shapeOf(doc, property), ...(deref(doc, property)?.const !== undefined ? { const: deref(doc, property).const } : {}), required: schema.required?.includes(name) ?? false, description: firstLine(deref(doc, property)?.description) })),
           type: schema === undefined ? null : typeOf(doc, body.content['application/json'].schema),
           ...(example !== undefined ? { example } : {}),
         },
@@ -153,6 +164,22 @@ export function operationsOf(doc) {
     }
   }
   return found;
+}
+
+/** Whether `node` (in `doc`, each $ref followed once) marks a field `x-agentrun-secret: true`: as the server's
+ *  markedOperations (packages/serve/src/secret-writes.ts) reads the marks; a test holds the two to the same operations. */
+function marksSecret(doc, node, seen = new Set()) {
+  if (node === null || typeof node !== 'object' || seen.has(node)) return false;
+  seen.add(node);
+  if (!Array.isArray(node)) {
+    if (node['x-agentrun-secret'] === true) return true;
+    if (typeof node.$ref === 'string' && node.$ref.startsWith('#/')) {
+      let target = doc;
+      for (const part of node.$ref.slice(2).split('/')) target = target && typeof target === 'object' ? target[part] : undefined;
+      if (marksSecret(doc, target, seen)) return true;
+    }
+  }
+  return Object.values(node).some((value) => marksSecret(doc, value, seen));
 }
 
 /** The string fields of a body schema, each as its path of property names; `*` stands for any key of a map
@@ -198,12 +225,24 @@ export function problemsOf(ops, map) {
   for (const id of [...Object.keys(map.commands), ...map.secretBody, ...Object.keys(map.omit), ...Object.keys(map.multiSegment)]) {
     if (!ids.has(id)) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
   }
+  // An operation that writes a secret is left out of the CLI by its mark, never by hand: omitting it would drop its client
+  // method too. Its name in the map stays, as the client's method's.
+  for (const op of ops.filter((o) => o.writesSecret && map.omit[o.operationId] !== undefined)) problems.push(`${RESOURCES} omits ${op.operationId}, which writes a secret and is left out of the CLI by its mark already; omitting it drops its client method`);
+  for (const [id, fill] of Object.entries(map.bodyFill ?? {})) {
+    const op = ops.find((o) => o.operationId === id);
+    if (!op) problems.push(`${RESOURCES} names ${id}, which the document has no operation for`);
+    else for (const [name, value] of Object.entries(fill)) {
+      const property = op.body?.properties.find((p) => p.name === name);
+      if (!property) problems.push(`${RESOURCES} fills ${id}'s body field ${name}, which its body does not have`);
+      else if (property.const !== undefined && canonical(property.const) !== canonical(value)) problems.push(`${RESOURCES} fills ${id}'s body field ${name} with another value than its const`);
+    }
+  }
   for (const [id, name] of Object.entries(map.multiSegment)) {
     const op = ops.find((o) => o.operationId === id);
     if (op && !op.path.includes(`{${name}}`)) problems.push(`${RESOURCES} names ${id}'s path parameter ${name}, which its route ${op.path} does not have`);
   }
   const byName = new Map();
-  for (const op of ops) {
+  for (const op of ops.filter((o) => !o.writesSecret)) {
     const command = commandOf(op, map);
     const name = command.join(' ');
     if (byName.has(name)) problems.push(`${byName.get(name)} and ${op.operationId} are both "${name}"`);
@@ -223,7 +262,8 @@ export function problemsOf(ops, map) {
 export function commandsOf(ops, map) {
   const entries = [];
   for (const op of ops) {
-    if (op.unsupported || map.omit[op.operationId] !== undefined) continue;
+    // An operation that writes a secret has no command: the CLI holds only the token, which the server refuses on it.
+    if (op.unsupported || op.browserOnly || op.writesSecret || map.omit[op.operationId] !== undefined) continue;
     const flag = (p) => ({ name: p.name, ...(flagType(p) ?? { type: 'string' }), required: p.required, description: p.description });
     const query = op.parameters.filter((p) => p.in === 'query').map(flag);
     const taken = new Set([...GLOBAL_FLAGS, ...query.map((q) => flagOf(q.name))]);
@@ -234,6 +274,12 @@ export function commandsOf(ops, map) {
       const type = flagType(p);
       return type && !taken.has(flagOf(p.name)) ? [{ name: p.name, ...type, required: p.required, description: p.description }] : [];
     });
+    // What a body made of flags alone carries besides them: each required field the document fixes to one value (its
+    // const), and what the map fills (an MCP request's id). A whole --body is sent as given.
+    const bodyFill = secretBody ? {} : {
+      ...Object.fromEntries((op.body?.properties ?? []).filter((p) => p.required && p.const !== undefined).map((p) => [p.name, p.const])),
+      ...(map.bodyFill?.[op.operationId] ?? {}),
+    };
     entries.push({
       command: commandOf(op, map), operationId: op.operationId, method: op.method, path: op.path,
       pathParams: [...op.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]),
@@ -241,7 +287,7 @@ export function commandsOf(ops, map) {
       multiSegment: map.multiSegment[op.operationId] ? [map.multiSegment[op.operationId]] : [],
       // A secret body's string fields that are no secret, by their full path: every other one is cut from what is printed.
       ...(secretBody ? { publicFields: map.publicFields[op.operationId] ?? [] } : {}),
-      query, headers, bodyFlags, hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
+      query, headers, bodyFlags, ...(Object.keys(bodyFill).length ? { bodyFill } : {}), hasBody: op.body !== null, bodyRequired: op.body?.required === true, bodyTypes: op.body?.types ?? [], secretBody,
       // A working body, as the document gives it: the command's help prints it as a --body to paste. Never a secret body's.
       ...(op.body?.example !== undefined && !secretBody ? { example: op.body.example } : {}),
       // A download: its answer is the file's bytes, written as received.
@@ -288,11 +334,11 @@ export function tableText(ops, map) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' }, types: { type: 'string' } } });
-  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
+  const { values } = parseArgs({ options: { check: { type: 'boolean' }, out: { type: 'string' }, skill: { type: 'string' }, client: { type: 'string' }, python: { type: 'string' }, resources: { type: 'string' }, document: { type: 'string' }, types: { type: 'string' } } });
+  const map = { secretBody: [], omit: {}, multiSegment: {}, publicFields: {}, bodyFill: {}, ...JSON.parse(await readFile(resolve(root, values.resources ?? RESOURCES), 'utf8')) };
   const doc = values.document ? JSON.parse(await readFile(resolve(values.document), 'utf8')) : await servedDocument();
   const ops = operationsOf(doc);
-  const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map), ...clientProblems(ops, map, commandOf)];
+  const problems = [...problemsOf(ops, map), ...publicFieldProblems(doc, map), ...clientProblems(ops, map, commandOf), ...pythonProblems(ops, map, commandOf)];
   if (problems.length) {
     console.error(`The command map does not fit the document:\n${problems.map((p) => `  ${p}`).join('\n')}`);
     process.exitCode = 1;
@@ -304,7 +350,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf, hashOf(ops))], [values.types ?? TYPES, consoleTypesText(doc)]];
+  const outputs = [[values.out ?? OUTPUT, tableText(ops, map)], ...Object.entries(skill.files).map(([file, text]) => [join(values.skill ?? SKILL, file), text]), [values.client ?? CLIENT, clientText(ops, map, commandOf, hashOf(ops))], [values.python ?? PYTHON, pythonText(ops, map, commandOf, hashOf(ops))], [values.types ?? TYPES, consoleTypesText(doc)]];
   if (values.check) {
     const stale = [];
     for (const [file, text] of outputs) if (await readFile(resolve(root, file), 'utf8').catch(() => '') !== text) stale.push(file);
@@ -313,7 +359,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    console.log('The CLI command table, its skill, the TypeScript client\'s operations and the console\'s API types match the server\'s OpenAPI document');
+    console.log('The CLI command table, its skill, the TypeScript and Python clients\' operations and the console\'s API types match the server\'s OpenAPI document');
   } else {
     for (const [file, text] of outputs) {
       await mkdir(dirname(resolve(root, file)), { recursive: true });

@@ -9,7 +9,7 @@ import type { Run, TimelineRow } from "@/lib/v2";
 // approval. Its timeline holds the call, its result (the gate's "waits for a person's approval") and the approval's row,
 // which follows the result and shares its tool_use_id.
 const PENDING = { kind: "approval" as const, id: "ap_0123456789abcdef", tool: "web_fetch", call_id: "call_1", args_preview: "{\"url\":\"http://public.example/\"}", requested_at: "2026-11-04T10:00:02.000Z" };
-const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0,
+const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "run_1", agent_id: "fetcher", agent_version: 1, revision: "r1", kind: "agentic", status: "input_required", state: "waiting", title: "Read the page",
   created_at: "2026-11-04T10:00:00.000Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING,
 };
@@ -66,12 +66,12 @@ describe("RunDetail, a run waiting on a tool call's approval", () => {
       ...rows.slice(0, 4),
       row(4, { kind: "tool_result", summary: "Held for your approval", tool_name: "web_fetch", tool_use_id: "call_1" }),
       row(5, { id: "row_4:approval", kind: "tool_approval_requested", summary: `Asked your approval: web_fetch ${PENDING.args_preview}`, text: PENDING.args_preview, tool_name: "web_fetch", tool_use_id: "call_1" }),
-      row(6, { kind: "phase", origin: "server", summary: "AgentRun: web_fetch was refused: you declined it: use the cached copy", text: "web_fetch was refused: you declined it." }),
+      row(6, { kind: "phase", origin: "server", summary: "AgentRun: You declined web_fetch: use the cached copy", text: "You declined web_fetch." }),
     ];
     const shown = text(renderToStaticMarkup(createElement(RunDetail, { run: { ...run, status: "working", state: "working", pending: null }, agentName: "fetcher", messages: messageFeatures, harnessSteers: true, rows: served, files: [], actions: {}, onMessage: () => {}, onApprove: async () => null, tab: "timeline" })));
     const where = (words: string) => shown.indexOf(words);
     expect(where("Held for your approval")).toBeGreaterThan(-1);
     expect(where("Asked your approval: web_fetch")).toBeGreaterThan(where("Held for your approval"));
-    expect(where("web_fetch was refused: you declined it: use the cached copy")).toBeGreaterThan(where("Asked your approval: web_fetch"));
+    expect(where("You declined web_fetch: use the cached copy")).toBeGreaterThan(where("Asked your approval: web_fetch"));
   });
 });

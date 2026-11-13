@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == staleForegroundCommand {
 		os.Exit(staleForeground())
 	}
+	if len(os.Args) >= 3 && os.Args[1] == countSignalsCommand {
+		os.Exit(countSignals(os.Args[2:]))
+	}
 	os.Exit(m.Run())
 }
 
@@ -275,6 +278,10 @@ func TestTheRingKeepsTheLastBytesAndCountsWhatItDropped(t *testing.T) {
 	tbl := table(t, process.Options{RingBytes: 16})
 	p := start(t, tbl, process.StartParams{Argv: []string{"printf", "0123456789abcdefghij"}})
 	wait(t, tbl, p.ID)
+	// wait answers once the program has ended; its last bytes may still be on their way into the ring. A reader reads
+	// until exited, so the reads below see the whole ring however the pump and the wait are scheduled. What this first
+	// pass reads depends on how the pump split the bytes; the reads below check the ring.
+	readAll(t, tbl, p.ID, "stdout")
 	res, err := tbl.Read(context.Background(), process.ReadParams{ID: p.ID, Stream: "stdout", Offset: off(0)})
 	if err != nil || string(res.Data) != "456789abcdefghij" || res.Dropped != 4 || res.NextOffset != 20 || !res.Exited {
 		t.Fatalf("read below the ring: %+v %v", res, err)
@@ -533,9 +540,11 @@ func TestAWaitIsCancelled(t *testing.T) {
 
 func TestTheTableIsBounded(t *testing.T) {
 	tbl := table(t, process.Options{MaxEntries: 2})
+	// The first ends before the second starts, so it is unambiguously the oldest ended process. Started back to back,
+	// the two could end in either order, and the eviction below then took the second (CI flake, #2185's run).
 	first := start(t, tbl, process.StartParams{Argv: []string{"true"}})
-	second := start(t, tbl, process.StartParams{Argv: []string{"true"}})
 	wait(t, tbl, first.ID)
+	second := start(t, tbl, process.StartParams{Argv: []string{"true"}})
 	wait(t, tbl, second.ID)
 	third := start(t, tbl, process.StartParams{Argv: []string{"sleep", "300"}})
 	if _, err := tbl.Read(context.Background(), process.ReadParams{ID: first.ID, Stream: "stdout", Offset: off(0)}); err == nil || kindOf(t, err) != rpc.KindNotFound {

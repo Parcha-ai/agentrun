@@ -1,0 +1,11 @@
+# The apply this case runs against: the digest goes to the Slack channel C0MKTINTEL through a fake Slack MCP server
+# saved as `slack` (fixtures/slack-mcp.json, the shared fake-MCP fixture format). The apply grants the post tool alone,
+# so the run asks nobody. Every call the run makes is recorded for the tool_used grader.
+parameters:
+  competitors: "Quillforge (quillforge.example)"
+  channel: "C0MKTINTEL"
+  lookback_days: 7
+mcp:
+  slack: fixtures/slack-mcp.json
+grants:
+  - mcp:slack/slack_send_message

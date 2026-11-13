@@ -7,7 +7,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, ModalProvider, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { ModalProvider } from "../dist/modal.js";
 import * as modal from "../dist/modal.js";
 import { DAEMON, DAEMON_IMAGE, deferred, ENTRYPOINT_MARK, fakeModal, GVISOR_KERNEL, HELLO, UPLOAD_MARK, VERSION } from "./fake-modal.mjs";
 
@@ -17,7 +18,7 @@ const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const SPEC_TAG = "agentrun.computer.spec";
-const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443"];
+const PROBE_TARGETS = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 // The image route holds the daemon's path to root's alone in the image itself, right after the COPY (exec form).
 const LAYER = [`COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`, `RUN ${JSON.stringify(modal.modalCommands().hold)}`, "ENV HOME=/work", "WORKDIR /work"];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -35,7 +36,7 @@ const only = (fake) => {
 	return [...fake.sandboxes.values()][0];
 };
 /** The tags create gives a computer of spec, named name, with deadline and user. */
-const tagsFor = (spec, name, deadline, user = "1000:1000") => ({
+const tagsFor = (spec, name, deadline, user = "2510:2510") => ({
 	...spec.labels,
 	[COMPUTER]: "1",
 	[NAME]: name,
@@ -43,15 +44,13 @@ const tagsFor = (spec, name, deadline, user = "1000:1000") => ({
 	[SPEC_TAG]: JSON.stringify({
 		image: spec.image,
 		user,
-		network: spec.network,
 		cpus: spec.cpus ?? 2,
 		memoryMb: spec.memoryMb ?? 4096,
 		workdir: spec.workdir ?? "/work",
-		runtime: "vm",
 	}),
 });
 /** A computer as create leaves one, seeded straight into the fake. */
-const seeded = ({ spec = SPEC, name = "computer-0123456789ab", deadline = new Date(Date.now() + 600_000).toISOString(), user = "1000:1000", tags = {}, box = {}, running = true } = {}) => ({
+const seeded = ({ spec = SPEC, name = "computer-0123456789ab", deadline = new Date(Date.now() + 600_000).toISOString(), user = "2510:2510", tags = {}, box = {}, running = true } = {}) => ({
 	tags: { ...tagsFor(spec, name, deadline, user), ...tags },
 	running,
 	box: { uid: Number(user.split(":")[0]), gid: Number(user.split(":")[1]), network: spec.network === "none" ? "none" : "open", ...box },
@@ -73,19 +72,22 @@ test("the constructor refuses, in words, what would make a computer it cannot vo
 	assert.throws(make({ user: "alice" }), /uid:gid/);
 	assert.throws(make({ probeTargets: [] }), /probe/);
 	assert.throws(make({ probeTargets: ["example.com"] }), /host:port/);
+	assert.throws(make({ probeTargets: ["1.1.1.1:53/sctp"] }), /host:port/);
+	assert.throws(make({ probeTargets: ["1.1.1.1:53/"] }), /host:port/);
+	assert.doesNotThrow(make({ probeTargets: ["1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp", "example.com:443"] }), "a UDP target is host:port/udp");
 	assert.throws(make({ timeouts: { createMs: 0 } }), /createMs/);
 	assert.throws(() => new ModalProvider({ sdk: {}, app: APP, daemonImage: DAEMON_IMAGE }), /sdk/);
 	assert.deepEqual(fake.calls, [], "no SDK call");
 });
 
-test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none or open with no read-back, exec, files and processes", () => {
+test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none alone with no read-back, exec, files and processes, no agent port", () => {
 	const { provider, fake } = setup();
 	assert.equal(provider.id, "modal");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "vendor",
-		network: ["none", "open"],
+		network: ["none"],
 		networkReadBack: false,
 		isolation: "vm",
 		os: "linux",
@@ -94,7 +96,12 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		maxLifetimeMs: DAY_MS,
 		user: ["uid"],
 		release: ["delete"],
+		mount: ["archil"],
+		vendorAgentPorts: [],
+		// A GPU computer is gVisor's (Modal's one GPU runtime), preemptible, and takes no mount yet.
+		gpu: { types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"], max: 8, isolation: "gvisor", preemptible: true, mounts: [], unmounted: { why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true }, fence: "userns-netns" },
 	});
+	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend()");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -104,7 +111,7 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 test("check() takes a spec it can make, with no SDK call", () => {
 	const { provider, fake } = setup();
 	assert.deepEqual(provider.check(SPEC), []);
-	assert.deepEqual(provider.check({ ...SPEC, network: "open", cpus: 0.5, memoryMb: 512, labels: { team: "a", run: "r1" }, workdir: "/opt/app", user: "65534" }), []);
+	assert.deepEqual(provider.check({ ...SPEC, cpus: 0.5, memoryMb: 512, labels: { team: "a", run: "r1" }, workdir: "/opt/app", user: "65534" }), []);
 	assert.deepEqual(provider.check({ ...SPEC, user: "1000:0" }), [], "root's group, without root, is not root");
 	assert.deepEqual(provider.check({ ...SPEC, lifetimeMs: DAY_MS, user: "65534:65534" }), []);
 	assert.deepEqual(fake.calls, []);
@@ -126,10 +133,10 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 		);
 	}
 	assert.match(words({ ...SPEC, lifetimeMs: DAY_MS + 1 }, "lifetimeMs"), /at most 1 day \(86400000 ms\)/);
-	assert.deepEqual(refused({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }), ["network"]);
-	assert.match(words({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }, "network"), /cannot be read back/);
-	assert.match(words({ ...SPEC, network: { allow: ["8.8.8.0/24"] } }, "network"), /bypass/);
-	assert.match(words({ ...SPEC, network: { allow: ["example.com"] } }, "network"), /443/);
+	for (const network of ["open", { allow: ["8.8.8.0/24"] }, { allow: ["example.com"] }]) {
+		assert.deepEqual(refused({ ...SPEC, network }), ["network"], `network ${JSON.stringify(network)}`);
+		assert.match(words({ ...SPEC, network }, "network"), /network "none" only/);
+	}
 	for (const network of [undefined, "wifi", {}, { allow: "x" }]) assert.deepEqual(refused({ ...SPEC, network }), ["network"], `network ${JSON.stringify(network)}`);
 	for (const cpus of [0, -1, 0.1, "2", Number.NaN]) assert.deepEqual(refused({ ...SPEC, cpus }), ["cpus"], `cpus ${String(cpus)}`);
 	for (const memoryMb of [0, 1.5, "512"]) assert.deepEqual(refused({ ...SPEC, memoryMb }), ["memoryMb"], `memoryMb ${String(memoryMb)}`);
@@ -143,8 +150,12 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	}
 	for (const workdir of ["work", "/my work", "/w$HOME", "/w\nx", "/w\0"]) assert.deepEqual(refused({ ...SPEC, workdir }), ["workdir"], `workdir ${JSON.stringify(workdir)}`);
 	for (const user of ["alice", "-1", "1000:", "4294967295"]) assert.deepEqual(refused({ ...SPEC, user }), ["user"], `user ${user}`);
-	assert.deepEqual(refused({ ...SPEC, gpu: "A100" }), ["gpu"]);
-	assert.match(words({ ...SPEC, gpu: "A100" }, "gpu"), /gVisor/);
+	// A GPU is { type, count }: a type Modal offers, a count from 1 to 8.
+	for (const gpu of ["A100", { type: "A100" }, { type: "V100", count: 1 }, { type: "H100!", count: 1 }, { type: "T4", count: 0 }, { type: "T4", count: 9 }, { type: "T4", count: 1.5 }]) {
+		assert.deepEqual(refused({ ...SPEC, gpu }), ["gpu"], `gpu ${JSON.stringify(gpu)}`);
+	}
+	assert.match(words({ ...SPEC, gpu: { type: "V100", count: 1 } }, "gpu"), /not one this provider offers: T4, L4/);
+	assert.match(words({ ...SPEC, gpu: { type: "T4", count: 9 } }, "gpu"), /from 1 to 8/);
 	assert.deepEqual(refused({ ...SPEC, region: "us-east-1" }), ["region"]);
 	assert.deepEqual(fake.calls, [], "check made no SDK call");
 });
@@ -178,7 +189,7 @@ test("create: one VM sandbox with the daemon as its command, its tags, the drift
 	assert.ok(at >= before + SPEC.lifetimeMs && at <= after + SPEC.lifetimeMs, `deadline ${deadline}`);
 	assert.deepEqual(params, {
 		runtime: "vm",
-		command: [DAEMON, "init", "--deadline", deadline, "--user", "1000:1000"],
+		command: [DAEMON, "init", "--deadline", deadline, "--user", "2510:2510", "--own-network"],
 		timeoutMs: SPEC.lifetimeMs,
 		workdir: "/work",
 		cpu: 0.125,
@@ -199,17 +210,77 @@ test("create: one VM sandbox with the daemon as its command, its tags, the drift
 	assert.equal(made.terminated, 0);
 });
 
-test("create: open is no network field at all; sizes, user and workdir map onto Modal's fields", async () => {
-	const { provider, fake } = setup({ user: "2000:3000" });
-	const created = await provider.create({ ...SPEC, network: "open", cpus: 4, memoryMb: 100, workdir: "/opt/app", lifetimeMs: 1500 });
+test("create of a GPU computer: Modal's GPU option on its gVisor runtime, recorded in the spec tag, read back by attach; a VM's kernel on it is drift", async () => {
+	const gpu = { type: "A100-80GB", count: 2 };
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.check({ ...SPEC, gpu }), []);
+	const created = await provider.create({ ...SPEC, gpu });
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const params = createdParams(fake);
-	for (const key of ["blockNetwork", "outboundCidrAllowlist", "outboundDomainAllowlist"]) assert.equal(key in params, false, `${key} is not passed for open`);
+	assert.equal(params.runtime, "gvisor", "Modal offers GPUs on gVisor only");
+	assert.equal(params.gpu, "A100-80GB:2", "the SDK's gpu: the type, then :count");
+	const recorded = JSON.parse(params.tags[SPEC_TAG]);
+	assert.deepEqual(recorded.gpu, gpu, "the spec tag records the GPUs, and with them the runtime: gVisor, Modal's one GPU runtime");
+	assert.equal(params.command.at(-1), "--own-network", "one flag on every runtime: init picks how it makes the fence");
+	// gVisor's init made the fence inside a user namespace: hello read it back, and create says so in a note.
+	assert.ok(created.value.notes?.some((note) => note.startsWith("fence: userns-netns")), JSON.stringify(created.value.notes));
+	const attached = await provider.attach({ id: created.value.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.deepEqual(attached.value.spec.gpu, gpu, "attach reads back the GPUs create recorded");
+	// One GPU is the type alone, as Modal takes it.
+	const one = setup();
+	assert.equal((await one.provider.create({ ...SPEC, gpu: { type: "T4", count: 1 } })).ok, true);
+	assert.equal(createdParams(one.fake).gpu, "T4");
+	// A computer with no GPU stays on the VM runtime, with no gpu sent.
+	const plain = setup();
+	assert.equal((await plain.provider.create(SPEC)).ok, true);
+	assert.equal(createdParams(plain.fake).runtime, "vm");
+	assert.equal("gpu" in createdParams(plain.fake), false);
+	// A GPU computer whose probe reads a VM's kernel is not on Modal's GPU runtime: refused and terminated.
+	const drifted = setup({}, { box: { kernel: "7.2.6" } });
+	const refused = await drifted.provider.create({ ...SPEC, gpu });
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /runtime: declared gVisor \(a GPU computer\), read back another kernel/);
+	assert.equal(only(drifted.fake).running, false, "the drifted sandbox was terminated");
+});
+
+test("check() refuses a GPU with an Archil mount on Modal: its gVisor runtime has no proven Archil mount", () => {
+	const { provider } = setup();
+	const mount = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-modal-archil-0123456789abcdef" };
+	const spec = { ...SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "1" }, mount, gpu: { type: "T4", count: 1 } };
+	const refusals = provider.check(spec);
+	assert.ok(refusals.some((r) => r.field === "gpu" && /a GPU computer here takes no archil mount: Archil's FUSE mount isn't proven on Modal's gVisor runtime \(#2279\)/.test(r.message)), JSON.stringify(refusals));
+	assert.ok(!JSON.stringify(refusals).includes(mount.token));
+});
+
+test("check() and create() refuse a GPU spec with mount null in words, never by throwing (review: null mounts throw)", async () => {
+	const { provider, fake } = setup();
+	const spec = { ...SPEC, mount: null, gpu: { type: "T4", count: 1 } };
+	const refusals = provider.check(spec);
+	assert.ok(refusals.some((r) => r.field === "mount"), JSON.stringify(refusals));
+	const created = await provider.create(spec);
+	assert.equal(created.ok, false);
+	assert.equal(created.error.code, "refused", "check's refusal, as a result");
+	assert.equal(fake.sandboxes.size, 0, "nothing made");
+});
+
+test("create: sizes, user and workdir map onto Modal's fields; open makes nothing", async () => {
+	const { provider, fake } = setup({ user: "2000:3000" });
+	const created = await provider.create({ ...SPEC, cpus: 4, memoryMb: 100, workdir: "/opt/app", lifetimeMs: 1500 });
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const params = createdParams(fake);
+	assert.equal(params.blockNetwork, true);
+	for (const key of ["outboundCidrAllowlist", "outboundDomainAllowlist"]) assert.equal(key in params, false, `${key} is never passed`);
 	assert.equal(params.timeoutMs, 2000, "Modal takes whole seconds: the lifetime rounds up");
 	assert.deepEqual([params.cpu, params.cpuLimit, params.memoryMiB, params.memoryLimitMiB], [0.125, 2, 100, 100]);
 	assert.equal(params.workdir, "/opt/app");
-	assert.deepEqual(params.command.slice(-2), ["--user", "2000:3000"]);
+	assert.deepEqual(params.command.slice(-3), ["--user", "2000:3000", "--own-network"]);
 	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1].at(-1), "WORKDIR /opt/app");
+	const open = setup();
+	const refused = await open.provider.create({ ...SPEC, network: "open" });
+	assert.equal(refused.ok, false);
+	assert.match(refused.error.message, /network "none" only/);
+	assert.deepEqual(open.fake.calls, []);
 });
 
 test("create: spec.user is the daemon's --user", async () => {
@@ -217,7 +288,7 @@ test("create: spec.user is the daemon's --user", async () => {
 		const { provider, fake } = setup();
 		const created = await provider.create({ ...SPEC, user });
 		assert.equal(created.ok, true, `${user}: ${JSON.stringify(created)}`);
-		assert.deepEqual(createdParams(fake).command.slice(-2), ["--user", expected]);
+		assert.deepEqual(createdParams(fake).command.slice(-3), ["--user", expected, "--own-network"]);
 		assert.equal(JSON.parse(createdParams(fake).tags[SPEC_TAG]).user, expected);
 	}
 });
@@ -344,6 +415,9 @@ test("create: drift in the daemon's hello terminates the sandbox and refuses, fi
 	await driftedCreate({ box: { hello: { ...HELLO, groups: ["exec", "files"] } } }, /groups lack processes/);
 	await driftedCreate({ box: { hello: { ...HELLO, groups: [...HELLO.groups, "screen"] } } }, /offers groups screen/);
 	await driftedCreate({ box: { hello: { ...HELLO, kind: "desktop" } } }, /kind desktop, expected linux/);
+	// init --own-network says which fence holds its programs; a daemon that says none, or another, is not this one.
+	await driftedCreate({ box: { hello: { ...HELLO, fence: undefined } } }, /fence nothing: init was started with --own-network/);
+	await driftedCreate({ box: { hello: { ...HELLO, fence: "none" } } }, /fence none: /);
 });
 
 test("create: a sandbox whose kernel is gVisor's is refused as another runtime", async () => {
@@ -351,13 +425,29 @@ test("create: a sandbox whose kernel is gVisor's is refused as another runtime",
 });
 
 test("create: a daemon whose programs run as another user is refused", async () => {
-	await driftedCreate({ box: { uid: 0, gid: 0 } }, /user: declared 1000:1000, read back 0:0/);
+	await driftedCreate({ box: { uid: 0, gid: 0 } }, /user: declared 2510:2510, read back 0:0/);
 });
 
-test("create: network none that reaches an address is refused, and open never is for reaching one", async () => {
+test("create: network none that reaches an address is refused", async () => {
 	await driftedCreate({ box: { reached: ["1.1.1.1:443"] } }, /network: .*1\.1\.1\.1:443/);
-	const { provider } = setup({}, { box: { reached: ["1.1.1.1:443"] } });
-	assert.equal((await provider.create({ ...SPEC, network: "open" })).ok, true);
+});
+
+test("create: network none that answers on one target is refused, whatever the others only accepted", async () => {
+	const error = await driftedCreate({ box: { reached: ["1.1.1.1:443"], accepted: ["8.8.8.8:443", "[2606:4700:4700::1111]:443"] } }, /network: declared none, read back an answer from 1\.1\.1\.1:443/);
+	assert.equal(error.code, "refused");
+});
+
+test("create: network none whose probe targets only accepted, with no answer, is kept, and the accepts are named in its read-back words", async () => {
+	const { provider, fake } = setup({}, { box: { accepted: PROBE_TARGETS } });
+	const created = await provider.create(SPEC);
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const made = only(fake);
+	assert.equal(made.running, true);
+	assert.equal(made.terminated, 0);
+	assert.deepEqual([created.value.id, created.value.name], [made.id, made.tags[NAME]]);
+	assert.equal(created.value.notes?.length, 1, JSON.stringify(created.value));
+	assert.match(created.value.notes[0], /^network: none; accepted with no answer/);
+	assert.ok(created.value.notes[0].endsWith(PROBE_TARGETS.join(", ")), created.value.notes[0]);
 });
 
 test("create: tags that do not read back as given are drift", async () => {
@@ -366,11 +456,42 @@ test("create: tags that do not read back as given are drift", async () => {
 	await driftedCreate({ tags: { extra: "1" } }, /tag extra/);
 });
 
+test("create: a sandbox whose own command has already ended is refused with its exit code and the tail of its output", async () => {
+	// The Modal live run: every create's sandbox had shut down before the daemon's bridge, and the error said only that.
+	const error = await driftedCreate({ running: false, ended: { exitCode: 1, stdout: "", stderr: "computerd init: cannot make its own network: operation not permitted\n" } }, /finished/);
+	assert.match(error.message, /its command exited 1/);
+	assert.match(error.message, /computerd init: cannot make its own network: operation not permitted/);
+	// A sandbox that ended with no output says so, in words.
+	const quiet = await driftedCreate({ running: false, ended: { exitCode: 0 } }, /finished/);
+	assert.match(quiet.message, /its command exited 0, with no output/);
+});
+
+test("create: a sandbox Modal is shutting down when the bridge's exec starts (its init exited) is waited for, and refused with init's exit code and words", async () => {
+	// The Modal GPU live run (gVisor): the bridge's exec was refused with FAILED_PRECONDITION "Modal Sandbox is shutting
+	// down" while poll still read null, so the failure said nothing of why init ended.
+	const words = "computerd init: cannot make a network namespace of its own for init and its programs: operation not permitted";
+	const initExits = { exitCode: 1, stderr: `${words}\n`, polls: 3 };
+	for (const spec of [SPEC, { ...SPEC, gpu: { type: "T4", count: 1 } }]) {
+		const error = await driftedCreate({ initExits }, /shutting down/, spec, { timeouts: { endedMs: 2000, releasePollMs: 1 } });
+		assert.equal(error.code, "gone");
+		assert.match(error.message, /its command exited 1/);
+		assert.ok(error.message.includes(words), error.message);
+	}
+	// Bounded: a sandbox that is still shutting down when endedMs runs out is refused without its words, and terminated.
+	const slow = await driftedCreate({ initExits: { ...initExits, polls: 1_000_000 } }, /shutting down/, SPEC, { timeouts: { endedMs: 50, releasePollMs: 1 } });
+	assert.doesNotMatch(slow.message, /its command exited/);
+});
+
 test("create: a sandbox that is not running after create, or has no daemon, is refused", async () => {
 	await driftedCreate({ running: false }, /finished/);
 	await driftedCreate({ box: { daemon: false } }, /no daemon listens/, SPEC, { timeouts: { helloMs: 300 } });
 	await driftedCreate({ box: { probe: "fails" } }, /probe/);
 	await driftedCreate({ box: { probe: "garbled" } }, /probe/);
+});
+
+test("create: a probe report with no accepted list is refused in words, never read as nothing accepted", async () => {
+	const error = await driftedCreate({ box: { probe: "no-accepted" } }, /the probe in .* wrote a report with no accepted list/);
+	assert.equal(error.code, "refused");
 });
 
 test("create: a daemon that never answers hello is a timeout, and the sandbox is terminated", async () => {
@@ -420,7 +541,7 @@ test("modalCommands: the entrypoint and the upload are POSIX sh scripts, each ma
 	const commands = modalCommands({ deadline, user: "1000:1000", waitSeconds: 360, sha256: BINARY_SHA });
 	assert.deepEqual(commands.entrypoint.slice(0, 2), ["sh", "-c"]);
 	assert.ok(commands.entrypoint[2].startsWith(`${ENTRYPOINT_MARK}\n`));
-	assert.deepEqual(commands.entrypoint.slice(3), ["sh", DAEMON, "360", "/work", "init", "--deadline", deadline, "--user", "1000:1000"]);
+	assert.deepEqual(commands.entrypoint.slice(3), ["sh", DAEMON, "360", "/work", "init", "--deadline", deadline, "--user", "1000:1000", "--own-network"]);
 	assert.deepEqual(commands.upload.slice(0, 2), ["sh", "-c"]);
 	assert.ok(commands.upload[2].startsWith(`${UPLOAD_MARK}\n`));
 	assert.deepEqual(commands.upload.slice(3), ["sh", DAEMON, BINARY_SHA]);
@@ -457,7 +578,7 @@ test("create without daemonImage: the command is the entrypoint, the image has n
 	const deadline = params.tags[DEADLINE];
 	const at = Date.parse(deadline);
 	assert.ok(at >= before + SPEC.lifetimeMs && at <= after + SPEC.lifetimeMs, `deadline ${deadline}`);
-	const commands = modalCommands({ deadline, user: "1000:1000", waitSeconds: 360, sha256: BINARY_SHA });
+	const commands = modalCommands({ deadline, user: "2510:2510", waitSeconds: 360, sha256: BINARY_SHA });
 	assert.deepEqual(params.command, commands.entrypoint, "the sandbox's command is the entrypoint that waits for the daemon");
 	assert.equal(params.timeoutMs, SPEC.lifetimeMs, "Modal's timeout is the lifetime");
 	assert.equal(params.blockNetwork, true, "network none: the upload needs no network in the sandbox");
@@ -648,6 +769,11 @@ function runLocally(argv, { input, onSpawn } = {}) {
 		child.stderr.on("data", (chunk) => (stderr += chunk));
 		child.on("close", (code) => resolve({ code, stdout, stderr, pid: child.pid }));
 		onSpawn?.(child);
+		// A script that refuses before it reads its input exits with its stdin unread: the write's EPIPE is that exit, which
+		// the close above reports, never a failure of the run.
+		child.stdin.on("error", (error) => {
+			if (error.code !== "EPIPE") throw error;
+		});
 		child.stdin.end(input);
 	});
 }
@@ -687,7 +813,7 @@ test("the entrypoint execs the daemon once it is moved into place: same process,
 				}, 400),
 		});
 		assert.equal(ran.code, 0, JSON.stringify(ran));
-		assert.equal(ran.stdout, `pid ${ran.pid} home ${join(dir, "home")} args init --deadline ${deadline} --user 1000:1000\n`);
+		assert.equal(ran.stdout, `pid ${ran.pid} home ${join(dir, "home")} args init --deadline ${deadline} --user 1000:1000 --own-network\n`);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -802,7 +928,7 @@ test("list: this provider's running sandboxes with every label, by tags through 
 				seeded({ name: "computer-000000000001", tags: { team: "a" }, deadline }),
 				seeded({ name: "computer-000000000002", tags: { team: "a", [DEADLINE]: "tomorrow" } }),
 				seeded({ name: "computer-000000000003", tags: { team: "b" } }),
-				seeded({ name: "computer-000000000004", tags: { team: "a" }, spec: { ...SPEC, network: "open" } }),
+				seeded({ name: "computer-000000000004", tags: { team: "a" } }),
 				{ tags: { [COMPUTER]: "1", team: "a", [NAME]: "not-ours" } },
 				seeded({ name: "computer-000000000005", tags: { team: "a" }, running: false }),
 			],
@@ -815,7 +941,7 @@ test("list: this provider's running sandboxes with every label, by tags through 
 		[
 			["computer-000000000001", "running", "none", deadline],
 			["computer-000000000002", "running", "none", undefined],
-			["computer-000000000004", "running", "open", listed.value[2].deadline?.toISOString()],
+			["computer-000000000004", "running", "none", listed.value[2].deadline?.toISOString()],
 		],
 	);
 	assert.equal(listed.value[0].labels.team, "a");
@@ -874,7 +1000,6 @@ test("attach refuses a drifted computer in words and leaves it running", async (
 		[{ deadline: new Date(Date.now() + 2 * DAY_MS).toISOString() }, /24 hours/],
 		[{ deadline: "soon" }, /deadline/],
 		[{ tags: { [SPEC_TAG]: "not json" } }, /spec/],
-		[{ tags: { [SPEC_TAG]: JSON.stringify({ image: "x", user: "1000:1000", network: "none", cpus: 2, memoryMb: 4096, workdir: "/work", runtime: "gvisor" }) } }, /runtime/],
 	];
 	for (const [options, pattern] of cases) {
 		const { provider, fake } = setup({}, { sandboxes: [seeded(options)] });
@@ -899,21 +1024,18 @@ test("attach: an id that is not this provider's, or a sandbox that has finished,
 	assert.equal(fake.names().includes("sandbox.exec"), false);
 });
 
-test("network: none is read back by the probe from inside; open is open; a change is refused in words", async () => {
-	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", spec: { ...SPEC, network: "open" } })] });
+test("network: none is read back by the probe from inside; a change is refused in words", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded()] });
 	const none = refOf(fake);
-	const open = refOf(fake, "computer-000000000002");
 	assert.deepEqual(await provider.network(none), { ok: true, value: "none" });
 	assert.equal(fake.execRuns.length, 1, "none was probed");
-	assert.deepEqual(await provider.network(open), { ok: true, value: "open" });
-	assert.equal(fake.execRuns.length, 1, "open needs no probe: nothing is wider");
 	assert.deepEqual(await provider.network(none, "none"), { ok: true, value: "none" });
 	const wider = await provider.network(none, "open");
 	assert.equal(wider.error?.code, "refused");
-	assert.match(wider.error.message, /fixed at create/);
+	assert.match(wider.error.message, /network "none" only.*fixed at create/);
 	const allow = await provider.network(none, { allow: ["8.8.8.0/24"] });
 	assert.equal(allow.error?.code, "refused");
-	assert.match(allow.error.message, /cannot be read back/);
+	assert.match(allow.error.message, /network "none" only/);
 	assert.equal(fake.names().includes("sandbox.terminate"), false);
 });
 
@@ -923,6 +1045,28 @@ test("network: none that reaches an address reads back as another network, in wo
 	assert.equal(read.ok, true);
 	assert.match(read.value.other, /1\.1\.1\.1:443/);
 	assert.equal((await provider.network(refOf(fake), "none")).error?.code, "refused");
+});
+
+test("attach and network: none whose probe targets only accepted reads back none, the accepts named in attach's words", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded({ box: { accepted: ["1.1.1.1:443", "8.8.8.8:443"] } })] });
+	const ref = refOf(fake);
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.equal(attached.value.spec.network, "none");
+	assert.deepEqual(attached.value.notes, ["network: none; accepted with no answer (no bytes came back): 1.1.1.1:443, 8.8.8.8:443"]);
+	assert.deepEqual(await provider.network(ref), { ok: true, value: "none" });
+	assert.deepEqual(await provider.network(ref, "none"), { ok: true, value: "none" });
+});
+
+test("attach and network: none that answers on one target is refused and reads back another network, whatever the others only accepted", async () => {
+	const { provider, fake } = setup({}, { sandboxes: [seeded({ box: { reached: ["8.8.8.8:443"], accepted: ["1.1.1.1:443"] } })] });
+	const ref = refOf(fake);
+	const attached = await provider.attach({ id: ref.id });
+	assert.equal(attached.error?.code, "refused");
+	assert.match(attached.error.message, /network: declared none, read back an answer from 8\.8\.8\.8:443/);
+	const read = await provider.network(ref);
+	assert.equal(read.ok, true);
+	assert.match(read.value.other, /an answer came back from 8\.8\.8\.8:443/);
 });
 
 test("network: a computer that is not this provider's is not_found", async () => {
@@ -959,7 +1103,7 @@ test("release never terminates a sandbox that is not this provider's", async () 
 test("release: a terminate that fails is an error unless the sandbox has finished", async () => {
 	const { provider, fake } = setup({}, { sandboxes: [seeded(), seeded({ name: "computer-000000000002", running: false })], terminate: "fail" });
 	const failed = await provider.release(refOf(fake), "delete");
-	assert.equal(failed.error?.code, "modal");
+	assert.deepEqual([failed.error?.code, failed.error?.vendor], ["vendor", "modal"]);
 	assert.match(failed.error.message, /terminate failed/);
 	assert.deepEqual(await provider.release(refOf(fake, "computer-000000000002"), "delete"), { ok: true, value: undefined });
 });
@@ -1084,6 +1228,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 		daemonImage: "COMPUTER_MODAL_DAEMON_IMAGE",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
 	});
+	assert.deepEqual(Object.values(module.ARCHIL_ENV), ["COMPUTER_ARCHIL_DISK", "COMPUTER_ARCHIL_REGION", "COMPUTER_ARCHIL_TOKEN", "COMPUTER_ARCHIL_API_KEY", "COMPUTER_ARCHIL_S3_URL"], "the mount cases' disk is named apart from the provider's settings");
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 });
 
@@ -1211,6 +1356,139 @@ test("the conformance module refuses an ambient MODAL_SERVER_URL in words, befor
 	}
 });
 
+/** A Modal token passed as options, as serve passes its own MODAL_TOKEN_ID and MODAL_TOKEN_SECRET. */
+const TOKEN_OPTIONS = { tokenId: "fake-test-key", tokenSecret: "fake-test-key" };
+
+test("the provider's create() reads no environment: the token, the app and the server are options, and it keeps Modal's 24-hour cap", async () => {
+	const modalModule = await import("../dist/modal.js");
+	assert.equal(modalModule.ENV, undefined, "no ENV of names");
+	assert.equal(modalModule.fromEnv, undefined, "no fromEnv");
+	assert.equal(modalModule.modalServerUrl, undefined, "no reader of COMPUTER_MODAL_SERVER_URL");
+	const conformance = await import("../dist/conformance/modal.js");
+	const env = { ...DEV_TOKEN, COMPUTER_MODAL_APP: APP };
+	const refused = fakeClient();
+	await assert.rejects(conformance.createProvider({ env, ModalClient: refused.ModalClient, ...MODULE_TEST }), /set AGENTRUN_COMPUTER_LIVE_MODAL=1/);
+	assert.deepEqual(refused.made, [], "the conformance module makes no client without its live switch");
+	await withProcessEnv({ ...PROD_TOKEN, ...DEV_TOKEN, COMPUTER_MODAL_APP: "elsewhere", AGENTRUN_BOX_APP: "elsewhere", COMPUTER_MODAL_SERVER_URL: "https://prod.example.invalid:443" }, async () => {
+		const { ModalClient, made, servers } = fakeClient();
+		const provider = await modalModule.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: BINARY_PATH });
+		assert.equal(provider.id, "modal");
+		assert.equal(provider.capabilities().maxLifetimeMs, DAY_MS);
+		assert.deepEqual(made, [TOKEN_OPTIONS], "the token passed in, never one of the environment");
+		assert.deepEqual(servers, ["https://api.modal.com:443"], "the SDK's default server, not COMPUTER_MODAL_SERVER_URL");
+		const chosen = fakeClient();
+		await modalModule.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:443", ModalClient: chosen.ModalClient, daemonPath: BINARY_PATH });
+		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:443"], "options.serverUrl is the server");
+	});
+});
+
+test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.app, and refuses without it in words naming it", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const fake = fakeModal();
+		await withProcessEnv({ AGENTRUN_BOX_APP: "elsewhere" }, async () => {
+			const provider = await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, ModalClient: clientOf(fake), ...MODULE_TEST });
+			assert.equal((await provider.list({})).ok, true);
+		});
+		assert.deepEqual(fake.calls.find(([name]) => name === "apps.fromName").slice(0, 2), ["apps.fromName", APP]);
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(make({ env: { AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...DEV_TOKEN }, ModalClient, ...MODULE_TEST }), /COMPUTER_MODAL_APP/);
+		assert.deepEqual(made, []);
+	}
+});
+
+test("the provider's create() given both daemonImage and daemonPath takes the image: the daemon is copied from it, and nothing is uploaded", async () => {
+	const modalModule = await import("../dist/modal.js");
+	const fake = fakeModal();
+	const provider = await modalModule.create({ ...TOKEN_OPTIONS, app: APP, daemonImage: DAEMON_IMAGE, daemonPath: BINARY_PATH, ModalClient: clientOf(fake) });
+	assert.equal(provider.id, "modal");
+	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.deepEqual(fake.calls.find(([name]) => name === "image.dockerfileCommands")[1][0], `COPY --from=${DAEMON_IMAGE} /computerd ${DAEMON}`);
+	assert.deepEqual(fake.uploads, [], "no upload: the image wins");
+});
+
+test("the provider's create() refuses without options.app in words naming the option, before any client: COMPUTER_MODAL_APP or AGENTRUN_BOX_APP in the environment is never read", async () => {
+	const modalModule = await import("../dist/modal.js");
+	await withProcessEnv({ COMPUTER_MODAL_APP: APP, AGENTRUN_BOX_APP: APP }, async () => {
+		for (const app of [undefined, ""]) {
+			const { ModalClient, made } = fakeClient();
+			await assert.rejects(modalModule.create({ ...TOKEN_OPTIONS, ...(app === undefined ? {} : { app }), ModalClient, daemonPath: BINARY_PATH }), (error) => {
+				assert.match(error.message, /options\.app/);
+				assert.doesNotMatch(error.message, /COMPUTER_MODAL_APP|AGENTRUN_BOX_APP/);
+				return true;
+			});
+			assert.deepEqual(made, [], "no client is made without the app");
+		}
+	});
+	await withProcessEnv({ ...PROD_TOKEN, ...DEV_TOKEN }, async () => {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modalModule.create({ app: APP, ModalClient, daemonPath: BINARY_PATH }), (error) => {
+			assert.match(error.message, /options\.tokenId and options\.tokenSecret/);
+			assert.doesNotMatch(error.message, /prod-(id|token)-must-not-be-used|fake-dev-(id|secret)/);
+			return true;
+		});
+		assert.deepEqual(made, []);
+	});
+});
+
+test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one variable it reads, and makes no client", async () => {
+	const modalModule = await import("../dist/modal.js");
+	await withProcessEnv({ MODAL_SERVER_URL: "https://prod.example.invalid:443" }, async () => {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modalModule.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: BINARY_PATH }), (error) => {
+			assert.match(error.message, /MODAL_SERVER_URL is set/);
+			assert.match(error.message, /options\.serverUrl/);
+			return true;
+		});
+		assert.deepEqual(made, []);
+		assert.equal(process.env.MODAL_SERVER_URL, "https://prod.example.invalid:443", "and leaves it as it was");
+	});
+});
+
+test("client constructions run one at a time: each sees only its own MODAL_SERVER_URL, and process.env is put back after each, a failed one too", async () => {
+	const { modalClient } = await import("../dist/modal.js");
+	const servers = ["https://one.example.invalid:443", "https://two.example.invalid:443", "https://three.example.invalid:443"];
+	const seen = [];
+	let inside = 0;
+	function ModalClient(params) {
+		inside += 1;
+		seen.push({ server: process.env.MODAL_SERVER_URL, inside, tokenId: params.tokenId });
+		inside -= 1;
+		if (process.env.MODAL_SERVER_URL === servers[1]) throw new Error("the SDK failed");
+		return fakeModal().sdk;
+	}
+	const before = process.env.MODAL_SERVER_URL;
+	await withProcessEnv({ MODAL_SERVER_URL: "" }, async () => {
+		const made = servers.map((serverUrl) => modalClient({ ...TOKEN_OPTIONS, serverUrl, ModalClient }));
+		assert.equal(process.env.MODAL_SERVER_URL, "", "nothing is set before a construction's turn");
+		const settled = await Promise.allSettled(made);
+		assert.deepEqual(settled.map((s) => s.status), ["fulfilled", "rejected", "fulfilled"]);
+		assert.match(settled[1].reason.message, /the SDK failed/);
+		assert.deepEqual(seen.map((s) => s.server), servers, "each construction saw its own server, in turn");
+		assert.ok(seen.every((s) => s.inside === 1), "never two at once");
+		assert.equal(process.env.MODAL_SERVER_URL, "", "the empty value it held is put back");
+	});
+	assert.equal(process.env.MODAL_SERVER_URL, before);
+	const after = await modalClient({ ...TOKEN_OPTIONS, ModalClient });
+	assert.ok(after, "a failed construction leaves the turn free for the next");
+	assert.equal(seen.at(-1).server, "https://api.modal.com:443");
+	assert.equal(process.env.MODAL_SERVER_URL, before, "and unset again after it");
+});
+
+test("the CLI resolves --provider modal through the registry to the conformance module, which refuses without its live switch", async () => {
+	const { main } = await import("../dist/conformance/cli.js");
+	let err = "";
+	const stderr = { write: (text, done) => ((err += text), done?.(), true) };
+	const before = process.env.AGENTRUN_COMPUTER_LIVE_MODAL;
+	delete process.env.AGENTRUN_COMPUTER_LIVE_MODAL;
+	try {
+		assert.equal(await main(["--provider", "modal"], { stdout: stderr, stderr }), 1, err);
+	} finally {
+		if (before !== undefined) process.env.AGENTRUN_COMPUTER_LIVE_MODAL = before;
+	}
+	assert.match(err, /set AGENTRUN_COMPUTER_LIVE_MODAL=1/);
+});
+
 /** A ModalClient stand-in that answers with one given fake. */
 const clientOf = (fake) =>
 	function ModalClient() {
@@ -1261,4 +1539,49 @@ test("the drifted provider uploads a daemon built as <version>-drift, and needs 
 	assert.equal((await drifted.create(SPEC)).ok, true);
 	assert.equal(fake.uploads.length, 1, "the drifted daemon is uploaded like any other");
 	assert.doesNotMatch(JSON.stringify(fake.calls), /COPY/);
+});
+
+// The loopback block: whatever Modal runs inside a sandbox, the daemon's programs get a network of their own (init
+// --own-network) and run as 2510:2510. No listener of Modal's inside is documented, so no port is declared.
+
+test("the loopback block: network none only, no agent port declared, open refused in words", () => {
+	const { provider, fake } = setup();
+	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().vendorAgentPorts, []);
+	const refusals = provider.check({ ...SPEC, network: "open" });
+	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
+	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(fake.calls, []);
+});
+
+test("the loopback block: init starts with --own-network as 2510:2510 by default, on both routes", async () => {
+	// The upload route gets the test's own stand-in binary: a unit run has no built daemon in dist/.
+	for (const options of [{}, { daemonImage: undefined, daemonPath: BINARY_PATH }]) {
+		const { provider, fake } = setup(options);
+		const made = await provider.create(SPEC);
+		assert.equal(made.ok, true, JSON.stringify(made));
+		const command = createdParams(fake).command;
+		assert.deepEqual(command.slice(-3), ["--user", "2510:2510", "--own-network"], JSON.stringify(options));
+	}
+});
+
+test("the loopback block: a kernel's fallback tunnels, down and addressless, are no drift; one the computer's user could raise is", async () => {
+	// The Modal live run: Modal's VM kernel gives the programs' namespace tunl0, gre0, sit0 and the rest, down.
+	const quiet = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0", "gre0", "sit0"] } });
+	const made = await quiet.provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const raised = setup({}, { box: { interfaces: ["lo"], quiet: ["tunl0"], raised: ["tunl0"] } });
+	const refused = await raised.provider.create(SPEC);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /brought up tunl0/);
+});
+
+test("the loopback block: a daemon whose programs see more than their loopback is refused and terminated", async () => {
+	const { provider, fake } = setup({}, { box: { interfaces: ["lo", "eth0"] } });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, false);
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /daemon network: declared its own \(lo alone\), read back lo, eth0/);
+	assert.equal(only(fake).terminated, 1);
 });

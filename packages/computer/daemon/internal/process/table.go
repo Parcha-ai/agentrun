@@ -33,6 +33,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
@@ -79,6 +80,9 @@ func NewTable(opts Options) *Table {
 	if opts.RetainedBytes <= 0 {
 		opts.RetainedBytes = RetainedBytes
 	}
+	if opts.LogBytes <= 0 {
+		opts.LogBytes = LogBytes
+	}
 	return &Table{opts: opts, startSlot: make(chan struct{}, 1)}
 }
 
@@ -99,10 +103,15 @@ type proc struct {
 	input     *os.File
 	takesNone bool
 
+	// log is the file the first output goes to, when the start named one; nil otherwise.
+	log *logFile
+
 	mu       sync.Mutex
 	terminal *os.File
 	streams  map[string]*stream
 	changed  chan struct{}
+	// exiting: the program has exited, and its streams are being drained of what it wrote; ended closes after that.
+	exiting  bool
 	ended    chan struct{}
 	exitCode *int
 	signal   string
@@ -113,6 +122,12 @@ type stream struct {
 	ring
 	reader *os.File
 	eof    bool
+	// drained: the program has exited and every byte it wrote to this stream before then is in the ring and the log.
+	drained bool
+	// owed is what collect still has to handle before the stream is drained: the bytes left unread in it when collect
+	// first looked after the program exited (sampled), less what it has handled since.
+	owed    int
+	sampled bool
 }
 
 // notify wakes every read and wait parked on p. Hold p.mu.
@@ -145,10 +160,26 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 		return StartResult{}, rpc.Errorf(rpc.KindAborted, "process.start was cancelled while another start was in progress")
 	}
 	defer func() { <-t.startSlot }()
+	if params.Orphans != "" && params.Orphans != "keep" {
+		return StartResult{}, rpc.Errorf(rpc.KindInvalid, `orphans is "keep" or absent, not %q`, params.Orphans)
+	}
 	if err := t.checkRoom(); err != nil {
 		return StartResult{}, err
 	}
 	p := &proc{table: t, argv: params.Argv, pty: params.Pty != nil, writing: make(chan struct{}, 1), streams: map[string]*stream{}, changed: make(chan struct{}), ended: make(chan struct{})}
+	if params.Log != "" {
+		log, err := openLog(params.Log, t.opts.LogBytes)
+		if err != nil {
+			return StartResult{}, err
+		}
+		p.log = log
+		// A start that does not run its program leaves no log behind.
+		defer func() {
+			if p.g == nil {
+				log.discard()
+			}
+		}()
+	}
 	var stdin, stdout, stderr *os.File
 	var theirs []*os.File
 	if params.Pty != nil {
@@ -184,11 +215,14 @@ func (t *Table) Start(ctx context.Context, params StartParams) (StartResult, err
 			theirs = append(theirs, r)
 		}
 	}
-	g, err := execrun.Start(ctx, execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty}, stdin, stdout, stderr)
+	g, err := execrun.Start(ctx, execrun.Program{Argv: params.Argv, Cwd: params.Cwd, Env: params.Env, User: params.User, Terminal: p.pty, WaitGroup: params.WaitGroup, KeepOrphans: params.Orphans == "keep"}, stdin, stdout, stderr)
 	closeAll(theirs...)
 	if err != nil {
 		p.release()
 		return StartResult{}, err
+	}
+	if p.log != nil {
+		p.log.settle()
 	}
 	t.mu.Lock()
 	dropped := t.dropOldestEnded()
@@ -308,12 +342,19 @@ func (p *proc) releaseRings() int64 {
 	return freed
 }
 
-// collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO.
+// collect reads one stream into its ring until the stream ends: every writer closed it, or (for a terminal) EIO. Once
+// the program has exited, it also marks the stream drained when it has handled all the program wrote (markDrained):
+// watch's deadline wakes a read parked on an empty stream for that, and the stream is read on with no deadline after
+// it, for what a process left in the group still writes.
 func (p *proc) collect(s *stream) {
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := s.reader.Read(buf)
 		if n > 0 {
+			// The log first, so a read the notify below wakes finds the bytes in it too.
+			if p.log != nil {
+				p.log.write(buf[:n])
+			}
 			// Under t.mu, so the table counts and trims the bytes before anything else reads what it holds.
 			t := p.table
 			t.mu.Lock()
@@ -325,9 +366,14 @@ func (p *proc) collect(s *stream) {
 			t.trim()
 			t.mu.Unlock()
 		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			_ = s.reader.SetReadDeadline(time.Time{})
+			err = nil
+		}
 		if err != nil {
 			break
 		}
+		p.markDrained(s, n)
 	}
 	p.lockInput()
 	p.mu.Lock()
@@ -335,29 +381,104 @@ func (p *proc) collect(s *stream) {
 	if p.pty {
 		p.input, p.terminal = nil, nil
 	}
-	s.eof = true
+	s.eof, s.drained = true, true
 	p.notify()
 	p.mu.Unlock()
 	p.unlockInput()
 }
 
-// watch records how the process ended once its guard is done, and closes its stdin.
+// watch records how the process ended once its guard says so, and closes its stdin. A guard that keeps what the process
+// left outside it runs on after that: it is let go of only once it is done, so the daemon's hold on it never ends them.
 func (p *proc) watch() {
-	<-p.g.Done()
+	<-p.g.Ended()
 	code, signal, _ := p.g.Exit()
-	p.g.Close()
+	go func() {
+		<-p.g.Done()
+		p.g.Close()
+	}()
 	p.lockInput()
 	if !p.pty && p.input != nil {
 		_ = p.input.Close()
 		p.input = nil
 	}
 	p.unlockInput()
+	p.drain()
 	p.mu.Lock()
 	p.exitCode, p.signal, p.endedAt = code, signal, time.Now()
 	close(p.ended)
 	p.notify()
 	p.mu.Unlock()
 	p.table.hold(0)
+}
+
+// drain waits, once the program has exited, until every stream holds all it wrote: so a wait that returns, and a read
+// that says exited, come after the last of its output is in the rings and the log, never while a pipe still holds some.
+// It has no time limit: what it waits for is bytes already written, and what a process left in the group writes later
+// is never waited for (markDrained).
+func (p *proc) drain() {
+	p.mu.Lock()
+	p.exiting = true
+	p.mu.Unlock()
+	for _, s := range p.streams {
+		// Wakes a read parked on an empty stream, so collect sees the stream has nothing left. A stream that takes no
+		// deadline (closed already) is drained as it is.
+		if err := s.reader.SetReadDeadline(time.Now()); err != nil {
+			p.mu.Lock()
+			s.drained = true
+			p.mu.Unlock()
+		}
+	}
+	for {
+		p.mu.Lock()
+		done := true
+		for _, s := range p.streams {
+			done = done && s.drained
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		if done {
+			return
+		}
+		<-changed
+	}
+}
+
+// markDrained is collect's count, between reads, of handled bytes once the program has exited; handled is what it
+// handled since the last call. The first call after the exit takes how many bytes are left unread in the stream: every
+// byte the program wrote is in the ring and log already or among them, since collect holds no unhandled bytes between
+// reads. The stream is drained once collect has handled that many more, or once it reads empty. Bytes a process left
+// in the group writes after that are read on as before but never waited for, so they can't hold the end.
+func (p *proc) markDrained(s *stream, handled int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.exiting || s.drained {
+		return
+	}
+	if !s.sampled {
+		s.owed, s.sampled = unread(s.reader), true
+	} else {
+		s.owed -= handled
+	}
+	if s.owed <= 0 || unread(s.reader) == 0 {
+		s.drained = true
+		p.notify()
+	}
+}
+
+// unread is how many bytes wait in a pipe or terminal to be read (FIONREAD); one that can't be asked counts as empty.
+func unread(f *os.File) int {
+	conn, err := f.SyscallConn()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	_ = conn.Control(func(fd uintptr) {
+		var count int32
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCINQ, uintptr(unsafe.Pointer(&count))); errno == 0 {
+			n = int(count)
+		}
+	})
+	return n
 }
 
 // release closes what the daemon holds of a process that is dropped from the table, or never started.
@@ -369,6 +490,9 @@ func (p *proc) release() {
 	}
 	for _, s := range p.streams {
 		_ = s.reader.Close()
+	}
+	if p.log != nil {
+		p.log.close()
 	}
 }
 
@@ -389,10 +513,13 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 		return ReadResult{}, err
 	}
 	s := p.streams[params.Stream]
-	if s == nil {
+	if s == nil && (params.Stream != "log" || p.log == nil) {
 		names := "stdout and stderr"
 		if p.pty {
 			names = "pty"
+		}
+		if p.log != nil {
+			names += ", and log"
 		}
 		return ReadResult{}, rpc.Errorf(rpc.KindInvalid, "process %s has no stream %q; it has %s", p.id, params.Stream, names)
 	}
@@ -415,6 +542,9 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 	timer := time.NewTimer(time.Duration(params.WaitMs) * time.Millisecond)
 	defer timer.Stop()
 	waiting := params.WaitMs > 0
+	if s == nil {
+		return p.readLog(ctx, offset, max, waiting, timer)
+	}
 	for {
 		p.mu.Lock()
 		if offset > s.total {
@@ -425,12 +555,42 @@ func (t *Table) Read(ctx context.Context, params ReadParams) (ReadResult, error)
 		done := s.eof && p.hasEnded()
 		if !waiting || offset < s.total || done {
 			data, next, dropped := s.read(offset, max)
-			res := ReadResult{Data: data, NextOffset: next, Dropped: dropped, Exited: done && next == s.total}
+			res := ReadResult{Data: data, NextOffset: next, Dropped: dropped, Exited: done && next == s.total, Size: s.total}
 			p.mu.Unlock()
 			return res, nil
 		}
 		changed := p.changed
 		p.mu.Unlock()
+		select {
+		case <-changed:
+		case <-timer.C:
+			waiting = false
+		case <-ctx.Done():
+			return ReadResult{}, rpc.Errorf(rpc.KindAborted, "process.read was cancelled")
+		}
+	}
+}
+
+// readLog is Read of the "log" stream: at most max bytes from offset of the log, read through the daemon's own open
+// file. Its size is the bytes the log holds, and it says when output past them was dropped.
+func (p *proc) readLog(ctx context.Context, offset int64, max int, waiting bool, timer *time.Timer) (ReadResult, error) {
+	for {
+		p.mu.Lock()
+		done := p.hasEnded()
+		for _, s := range p.streams {
+			done = done && s.eof
+		}
+		changed := p.changed
+		p.mu.Unlock()
+		written, capped, failed := p.log.state()
+		if offset > written {
+			return ReadResult{}, rpc.Errorf(rpc.KindInvalid, "offset %d is past the end of %s's log, %d bytes so far", offset, p.id, written)
+		}
+		if !waiting || offset < written || done {
+			data := p.log.read(offset, int(min(int64(max), written-offset)))
+			next := offset + int64(len(data))
+			return ReadResult{Data: data, NextOffset: next, Exited: done && next == written, Size: written, Capped: capped, LogError: failed}, nil
+		}
 		select {
 		case <-changed:
 		case <-timer.C:

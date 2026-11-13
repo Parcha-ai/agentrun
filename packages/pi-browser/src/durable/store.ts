@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineTask, type ConversationDocToken, type ConversationId, type Cursor, type DocumentReader, type Harness, type TaskId, type TaskRuntime, type Tx } from "@earendil-works/pi-durable";
-import { backoffMs, moveRecord, notices } from "../core/custody.js";
+import { backoffMs, HANDOFF_POLL_MS, moveRecord, notices } from "../core/custody.js";
 import type { BrowserConfig, BrowserProvider, HandoffOutcome, HandoffPort, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "../core/host.js";
 import type { LeaseRef, LeaseState } from "../core/lease.js";
 
@@ -19,7 +19,7 @@ type ReleaseInput = { row: InventoryRow; notBefore?: number; found?: string[] };
 type ReleaseState = { phase: "release"; attempt: number; found?: string[] } | { phase: "confirm"; attempt: number; ids: string[]; polls: number };
 type ReleaseRuntime = TaskRuntime<ReleaseInput, ReleaseState, { released: number }, object>;
 export type HandoffInput = { row: InventoryRow; requestId: string; interactionId: string; completionCondition: string };
-type HandoffResult = { outcome: HandoffOutcome };
+type HandoffResult = { outcome: HandoffOutcome; reason?: string };
 
 export type StoreDeps = {
   name: string;
@@ -127,8 +127,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       }, context);
       return;
     }
-    await runtime.sleep(runtime.now() + backoffMs(attempt), context);
-    await runtime.commit(() => ({ status: "running", checkpoint: { phase: "release", attempt: attempt + 1, ...(found.length ? { found } : {}) } }), context);
+    // pi 1.5: the wait is a durable sleep. Its deadline is computed once on the Harness clock and stored with the sleep
+    // (the task's `until`), so a process that dies while it sleeps resumes at that same deadline, never a new one.
+    await runtime.sleepUntil(runtime.now() + backoffMs(attempt), { phase: "release", attempt: attempt + 1, ...(found.length ? { found } : {}) }, context);
   }
 
   const ReleaseTask = defineTask<ReleaseInput, ReleaseState, { released: number }, object>({
@@ -140,7 +141,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const { row, notBefore } = task.input;
         const { attempt } = task.state.checkpoint;
         const found = union(task.input.found, task.state.checkpoint.found);
-        if (attempt === 0 && notBefore && runtime.now() < notBefore) await runtime.sleep(notBefore, context);
+        // The create deadline from the task's input (durable): sleep to it, then this phase runs again at the same
+        // checkpoint, past the deadline.
+        if (attempt === 0 && notBefore && runtime.now() < notBefore) return runtime.sleepUntil(notBefore, task.state.checkpoint, context);
         let seen: string[] = [];
         // Ids the lookup found that the task does not hold yet are committed before any stop is sent: an attempt cut
         // between its stop and its next commit (the task's abort) leaves them for the abort handler, whose own lookup
@@ -163,8 +166,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         const { attempt, ids, polls } = task.state.checkpoint;
         const running = await step(runtime, async () => anyRunning(await providerOf(runtime, cidOf(row), row.plane, context), row, ids, runtime.signal), true);
         if (running && polls + 1 < CONFIRM_POLLS) {
-          await runtime.sleep(runtime.now() + backoffMs(polls), context);
-          await runtime.commit(() => ({ status: "running", checkpoint: { phase: "confirm", attempt, ids, polls: polls + 1 } }), context);
+          await runtime.sleepUntil(runtime.now() + backoffMs(polls), { phase: "confirm", attempt, ids, polls: polls + 1 }, context);
           return;
         }
         if (running) return retry(runtime, row, attempt, context, ids);
@@ -196,8 +198,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     },
   });
 
-  /** Polls the port until it answers, then gives the session back with the outcome's notice, if it is still held for
-   *  this request. */
+  /** Polls the port until it answers, every HANDOFF_POLL_MS while the answer is pending, then gives the session back with
+   *  the outcome's notice, if it is still held for this request. `attempt` counts the reads in a row that failed, which
+   *  back off (backoffMs); a read that answers "pending" starts it again. */
   const HandoffTask = defineTask<HandoffInput, { phase: "poll"; attempt: number }, HandoffResult, object>({
     name: `${name}.handoff`,
     version: 1,
@@ -216,17 +219,25 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
           return { status: "terminal", outcome: { status: "failed", error: { code: "handoff_ended", message: `${row.tag}: no longer held for ${requestId}` } } };
         }, context);
         if (over) return;
-        let answer: "pending" | HandoffOutcome = "pending";
+        let answer: "pending" | HandoffOutcome | { outcome: HandoffOutcome; reason: string } = "pending";
+        let failed = false;
         try { if (handoff) answer = await handoff.outcome(interactionId, runtime.signal); } catch (error) {
           if (runtime.signal.aborted) throw error;
           runtime.report(scrubbed(error));
+          failed = true;
         }
-        if (answer === "pending") {
-          await runtime.sleep(runtime.now() + backoffMs(attempt), context);
-          await runtime.commit(() => ({ status: "running", checkpoint: { phase: "poll", attempt: attempt + 1 } }), context);
+        // A person's answer can come at any moment: while it is pending, it is asked again at a short fixed interval, so
+        // a hand-back resumes the agent within one poll. A read that failed backs off instead.
+        if (failed) {
+          await runtime.sleepUntil(runtime.now() + backoffMs(attempt), { phase: "poll", attempt: attempt + 1 }, context);
           return;
         }
-        const outcome = answer;
+        if (answer === "pending") {
+          await runtime.sleepUntil(runtime.now() + HANDOFF_POLL_MS, { phase: "poll", attempt: 0 }, context);
+          return;
+        }
+        const outcome = typeof answer === "string" ? answer : answer.outcome;
+        const reason = typeof answer === "string" ? undefined : answer.reason;
         await runtime.commit(async (tx) => {
           const state = await tx.doc(Sessions, cidOf(row));
           const record = state.sessions.find((r) => r.tag === row.tag);
@@ -235,7 +246,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
             addNotice(state, notices.handedBack(outcome, completionCondition));
             handedBack?.(row.tag, record.fence ?? 0);
           }
-          return { status: "terminal", outcome: { status: "completed", result: { outcome } } };
+          return { status: "terminal", outcome: { status: "completed", result: { outcome, ...(reason ? { reason } : {}) } } };
         }, context);
       },
     },

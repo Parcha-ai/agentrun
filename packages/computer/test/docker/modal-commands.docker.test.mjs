@@ -1,8 +1,9 @@
 // The commands the Modal provider sends when it uploads the daemon, run where Modal would run them: a container started
 // as root (Modal containers always run as root) with no network, whose command is the provider's entrypoint, the
 // upload streamed into `docker exec -i` as the provider streams it into exec's stdin, and the bridge over
-// `docker exec -i ... computerd stdio`. On a Debian image (coreutils) and an Alpine one (BusyBox only). The containers
-// keep Docker's default capabilities, or every one: init leaves itself none, whatever user --user names, root included.
+// `docker exec -i ... computerd stdio`, and the provider's probe through it, refused at every target. On a Debian
+// image (coreutils) and an Alpine one (BusyBox only). The containers keep Docker's default capabilities and the two
+// init --own-network needs, or every one: init leaves itself none, whatever user --user names, root included.
 // AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and `npm run build:daemon`, and debian:bookworm-slim and
 // alpine:3.20 pulled. Each container is named computer-modal-<hex> and removed by that name, pass or fail.
 import assert from "node:assert/strict";
@@ -18,8 +19,29 @@ import * as modal from "../../dist/modal.js";
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
+/**
+ * The exit code of a container this test expects to end, by `docker wait`, which blocks until it does: no polling, no
+ * sleep. The bound is a hang's, not a speed's: 30 s timed out twice on a loaded host while the container was still on
+ * its way to the end the case checks, so it is 10 minutes, and its failure says the container never ended.
+ */
+const exitCodeOf = (name) => {
+	const waited = spawnSync("docker", ["wait", name], { encoding: "utf8", timeout: 600_000 });
+	assert.equal(waited.error, undefined, `the container ${name} did not end within 10 minutes: ${waited.error?.message}`);
+	return waited.stdout.trim();
+};
 const IMAGES = ["debian:bookworm-slim", "alpine:3.20"];
 const ZERO = "0000000000000000";
+/** What init --own-network needs of root: to make a network namespace and bring its loopback up. */
+const NAMESPACE_CAPS = ["--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN"];
+/**
+ * Root as Modal's gVisor gives it (live probe, gVisor sandboxes with a T4 and without, 11-11): no CAP_SYS_ADMIN or
+ * CAP_NET_ADMIN, so no network namespace of its own, but a user namespace with one is allowed. Docker's default
+ * capabilities, and no seccomp profile (Docker's default refuses a user namespace to a root without CAP_SYS_ADMIN;
+ * gVisor's does not). Faithful to gVisor in what root may make, not in its netstack. This stand-in passed while
+ * init still brought lo up with the SIOCSIFFLAGS ioctl, which gVisor refuses in a new namespace (ENOTTY, live on a T4,
+ * 11-11). Init now uses rtnetlink alone, and only a live gVisor run proves that part.
+ */
+const GVISOR_LIKE = ["--security-opt", "seccomp=unconfined"];
 const modalCommands = (options) => modal.modalCommands(options);
 
 /** A /proc status file's fields, by name. */
@@ -44,14 +66,15 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 	/**
 	 * A root container of image, network none, whose command is the provider's entrypoint with init's --user user. It
-	 * keeps Docker's default capabilities, as a vendor that runs every computer as root does; caps adds docker run flags.
+	 * keeps Docker's default capabilities and adds the two init --own-network needs, as Modal's root holds every one;
+	 * caps adds docker run flags.
 	 */
-	function sandbox(image, { waitSeconds = 120, user = "1000:1000", caps = [] } = {}) {
+	function sandbox(image, { waitSeconds = 120, user = "1000:1000", caps = [], root = NAMESPACE_CAPS } = {}) {
 		const name = `computer-modal-${randomBytes(6).toString("hex")}`;
 		names.push(name);
 		const deadline = new Date(Date.now() + 300_000).toISOString();
 		const commands = modalCommands({ deadline, user, waitSeconds });
-		docker("run", "--detach", "--name", name, "--network", "none", "--user", "0:0", ...caps, image, ...commands.entrypoint);
+		docker("run", "--detach", "--name", name, "--network", "none", "--user", "0:0", ...root, ...caps, image, ...commands.entrypoint);
 		return { name, deadline };
 	}
 
@@ -160,7 +183,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(fields.NoNewPrivs, "1");
 			// /proc/1/exe needs ptrace access to a process that changed its uid; its command line does not.
 			const argv = docker("exec", name, "cat", "/proc/1/cmdline").split("\0").filter(Boolean);
-			assert.deepEqual(argv, ["/opt/agentrun/computerd", "init", "--deadline", deadline, "--user", "1000:1000"], "the entrypoint exec'd the daemon: it is PID 1");
+			assert.deepEqual(argv, ["/opt/agentrun/computerd", "init", "--deadline", deadline, "--user", "1000:1000", "--own-network"], "the entrypoint exec'd the daemon: it is PID 1");
 
 			const child = spawn("docker", ["exec", "-i", name, ...modalCommands().stdio], { stdio: ["pipe", "pipe", "pipe"] });
 			children.push(child);
@@ -169,16 +192,38 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(hello.ok, true, JSON.stringify(hello));
 			assert.equal(hello.value.version, VERSION);
 			assert.equal(hello.value.arch, arch);
+			assert.equal(hello.value.fence, "netns", "root with CAP_SYS_ADMIN made the network namespace itself");
 			const ran = await client.call("exec.run", { argv: ["sh", "-c", 'id -u; echo "$HOME"'], timeoutMs: 10_000 });
 			assert.equal(ran.ok, true, JSON.stringify(ran));
 			assert.equal(Buffer.from(ran.value.stdout, "base64").toString(), "1000\n/work\n");
 			client.close();
 		});
 
+		it(`${image}: the provider's probe through the daemon with no network: every target, TCP and UDP, refused outright, none reached and none accepted`, async () => {
+			const { name } = sandbox(image);
+			upload(name);
+			const client = await connected(name);
+			// The Modal provider's default targets: TCP to 443, and DNS over UDP to 53 (UDP has no accept: no reply is refused).
+			const targets = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
+			const argv = ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])];
+			const ran = await client.call("exec.run", { argv, timeoutMs: 30_000 }, { signal: AbortSignal.timeout(40_000) });
+			client.close();
+			assert.equal(ran.ok, true, JSON.stringify(ran));
+			assert.equal(ran.value.exitCode, 0, Buffer.from(ran.value.stderr, "base64").toString());
+			const report = JSON.parse(Buffer.from(ran.value.stdout, "base64").toString());
+			assert.deepEqual(report.interfaces, ["lo"], "the daemon's programs see their own loopback alone");
+			assert.deepEqual(report.reached, [], "Docker's network none answers nothing");
+			assert.deepEqual(report.accepted, [], "Docker's network none accepts nothing either: each connection is refused outright");
+			assert.deepEqual(
+				report.results.map(({ target, protocol, outcome }) => [target, protocol, outcome]),
+				targets.map((target) => [target, target.endsWith("/udp") ? "dns" : "tls", "refused"]),
+			);
+		});
+
+		// Root as the computer's user is refused by init --own-network (below); its drop is the Docker daemon-mode tests'.
 		for (const [user, caps, words] of [
-			["0:0", [], "Docker's default capabilities"],
-			["0:0", ["--cap-add", "ALL"], "every capability (--cap-add ALL)"],
-			["1000:1000", [], "Docker's default capabilities"],
+			["1000:1000", ["--cap-add", "ALL"], "every capability (--cap-add ALL)"],
+			["1000:1000", [], "Docker's default capabilities and the namespace's two"],
 		]) {
 			it(`${image}: init --user ${user} in a root container with ${words} and no --cap-drop: every thread of init, and a program exec.run starts, hold no capability and set no_new_privs`, async () => {
 				const { name } = sandbox(image, { user, caps });
@@ -207,9 +252,9 @@ describe("the Modal provider's upload commands in a root container with no netwo
 		// Why the provider refuses root (ModalProvider.check, ROOT): Modal's exec of the bridge runs /opt/agentrun/computerd
 		// outside the daemon, with Modal's own root capabilities. After the upload that path is root's, 0755, in a root
 		// 0755 directory under a root / and /opt: a computer user that is not root writes none of them. Root with no
-		// capability still owns every one, so it renames another program over the path, and the next exec runs that one
-		// with the container's capabilities.
-		it(`${image}: after the upload, uid 1000 cannot write the daemon or any directory above it; uid 0 with no capability can, and the next exec of the bridge runs what it put there`, async () => {
+		// capability still owns every one, so it could rename another program over the path, and the next exec would run
+		// that one with the container's capabilities. Init --own-network refuses root as the computer's user outright.
+		it(`${image}: after the upload, uid 1000 cannot write the daemon or any directory above it; init refuses uid 0 for its programs, in words`, async () => {
 			const as = async (user) => {
 				const { name } = sandbox(image, { user });
 				upload(name);
@@ -231,24 +276,74 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			user.client.close();
 			assert.equal(docker("exec", user.name, "stat", "-c", "%u:%g %a %s", "/opt/agentrun/computerd").trim(), `0:0 755 ${daemon().bytes.length}`, "the daemon is as uploaded");
 
-			const root = await as("0:0");
-			const ran = await run(root.client, `grep CapEff /proc/self/status && ${replace}`);
-			root.client.close();
-			assert.equal(ran.code, 0, "root with no capability replaced the daemon: it owns /opt/agentrun");
-			assert.match(ran.out, new RegExp(`^CapEff:\\s+${ZERO}\\n$`), "and had no capability to do it with");
-			const bridged = spawnSync("docker", ["exec", root.name, ...modalCommands().stdio], { encoding: "utf8" });
-			assert.match(bridged.stdout, /^CapEff:\s+[0-9a-f]{16}\n$/);
-			assert.notEqual(bridged.stdout.trim().split(/\s+/)[1], ZERO, "the bridge's exec ran the replacement with the container's capabilities");
+			const { name } = sandbox(image, { user: "0:0" });
+			// Init refuses as soon as the daemon is moved into place, and ends the container while the upload still reads it
+			// back: the upload's own exit is not this case's (as with the bounding set's, below). It wrote and checked the
+			// daemon before the rename.
+			const { bytes, sha } = daemon();
+			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
+			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
+			const code = exitCodeOf(name);
+			assert.equal(code, "1", "init refused to start, and the container ended");
+			assert.match(spawnSync("docker", ["logs", name], { encoding: "utf8" }).stderr, /init refuses to start: --own-network refuses uid 0 for init's programs/);
 		});
 
 		it(`${image}: init that cannot empty its bounding set (root without CAP_SETPCAP) refuses to start, in words, and the container ends`, () => {
-			const { name } = sandbox(image, { user: "0:0", caps: ["--cap-drop", "SETPCAP"] });
-			upload(name);
-			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
+			const { name } = sandbox(image, { caps: ["--cap-drop", "SETPCAP"] });
+			// The upload's checks after its rename (each `ls` once the daemon is in place) are held 2 s, so the entrypoint,
+			// which polls every 0.2 s, starts init and init ends the container while the upload still runs, every time.
+			docker("exec", name, "sh", "-c", 'printf \'#!/bin/sh\\n[ -e /opt/agentrun/computerd ] && sleep 2\\nexec /bin/ls "$@"\\n\' > /usr/local/bin/ls && chmod 0755 /usr/local/bin/ls');
+			// So the upload's own exit is not this case's to require: the container's end cuts it. What it wrote, it
+			// checked before the rename, and the daemon it moved into place is the one that refused.
+			const { bytes, sha } = daemon();
+			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
+			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
+			const code = exitCodeOf(name);
 			assert.equal(code, "1");
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
 			assert.match(logs.stderr, /refuses to start/);
 			assert.match(logs.stderr, /bounding set/);
+		});
+
+		it(`${image}: init --own-network where root may not make a network namespace: inside a user namespace where one is allowed (as on gVisor), its programs as 1000 on their own loopback alone, hello saying userns-netns; refused in words naming both where neither is`, async () => {
+			// Docker's defaults: no CAP_SYS_ADMIN, and its seccomp profile refuses the user namespace too. Neither way: init
+			// refuses, in words naming both, and the computer ends.
+			const neither = sandbox(image, { root: [] });
+			upload(neither.name);
+			assert.equal(exitCodeOf(neither.name), "1", "init refused to start, and the container ended");
+			assert.match(spawnSync("docker", ["logs", neither.name], { encoding: "utf8" }).stderr, /init refuses to start: cannot make a network namespace of its own .*CAP_SYS_ADMIN.*, nor can it start itself again in a user and a network namespace of its own/);
+
+			// As on gVisor: the same flag, and init makes the namespace inside a user namespace.
+			const { name, deadline } = sandbox(image, { root: GVISOR_LIKE });
+			upload(name);
+			const client = await connected(name);
+			const hello = await client.call("hello", { client: "modal-commands test" });
+			assert.equal(hello.ok && hello.value.fence, "userns-netns", JSON.stringify(hello));
+			// PID 1 is the init that started the other: root, no capability left, no_new_privs set.
+			const pid1 = fieldsOf(docker("exec", name, "cat", "/proc/1/status"));
+			assert.deepEqual([pid1.Uid, pid1.CapEff, pid1.CapBnd, pid1.NoNewPrivs], ["0\t0\t0\t0", ZERO, ZERO, "1"], "the first init keeps nothing");
+			assert.deepEqual(docker("exec", name, "cat", "/proc/1/cmdline").split("\0").filter(Boolean), ["/opt/agentrun/computerd", "init", "--deadline", deadline, "--user", "1000:1000", "--own-network"]);
+			const outside = docker("exec", name, "sh", "-c", "readlink /proc/1/ns/net; readlink /proc/1/ns/user").trim().split("\n");
+			// A program exec.run starts: uid 1000, no capability, in another network and user namespace than PID 1's; what it
+			// writes in HOME is 1000's outside the user namespace too (every id maps to itself).
+			const ran = await client.call("exec.run", { argv: ["sh", "-c", "id -u; grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status; readlink /proc/self/ns/net; readlink /proc/self/ns/user; echo x > \"$HOME/owned.txt\""], timeoutMs: 10_000 });
+			assert.equal(ran.ok, true, JSON.stringify(ran));
+			const [id, capEff, capBnd, nnp, net, user] = Buffer.from(ran.value.stdout, "base64").toString().trim().split("\n");
+			assert.deepEqual([id, capEff.replace(/\s+/g, " "), capBnd.replace(/\s+/g, " "), nnp.replace(/\s+/g, " ")], ["1000", `CapEff: ${ZERO}`, `CapBnd: ${ZERO}`, "NoNewPrivs: 1"]);
+			assert.notEqual(net, outside[0], "the program's network namespace is not PID 1's");
+			assert.notEqual(user, outside[1], "the program's user namespace is not PID 1's");
+			assert.equal(docker("exec", name, "stat", "-c", "%u:%g", "/work", "/work/owned.txt").trim(), "1000:1000\n1000:1000", "HOME and a file a program made, seen from outside");
+			// The provider's probe, through the daemon: the loopback alone, every target refused.
+			const targets = ["1.1.1.1:443", "1.1.1.1:53/udp"];
+			const probed = await client.call("exec.run", { argv: ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])], timeoutMs: 30_000 }, { signal: AbortSignal.timeout(40_000) });
+			client.close();
+			assert.equal(probed.ok, true, JSON.stringify(probed));
+			const report = JSON.parse(Buffer.from(probed.value.stdout, "base64").toString());
+			assert.deepEqual(report.interfaces, ["lo"], "the daemon's programs see their own loopback alone");
+			assert.deepEqual([report.reached, report.accepted], [[], []]);
+			// SIGTERM to PID 1, as Modal's terminate sends: passed on, and the computer ends.
+			docker("kill", "--signal", "TERM", name);
+			assert.notEqual(exitCodeOf(name), "", "the computer ended on SIGTERM");
 		});
 
 		it(`${image}: an upload whose sha256 does not match exits 5 in words and leaves no daemon where the entrypoint looks`, () => {
@@ -262,7 +357,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 		it(`${image}: with no upload, the entrypoint's bounded wait ends the container nonzero, in words`, () => {
 			const { name } = sandbox(image, { waitSeconds: 2 });
-			const code = execFileSync("docker", ["wait", name], { encoding: "utf8", timeout: 30_000 }).trim();
+			const code = exitCodeOf(name);
 			assert.equal(code, "3");
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
 			assert.match(logs.stderr, /the daemon did not arrive at \/opt\/agentrun\/computerd within 2 s/);

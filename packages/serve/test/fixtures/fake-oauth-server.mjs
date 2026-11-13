@@ -9,17 +9,25 @@ import { createServer } from "node:http";
 const made = (prefix) => `${prefix}-${randomBytes(16).toString("hex")}`;
 
 /** `cimd`: it says it takes client metadata documents. `clients`: pre-registered `{client_id: client_secret}`.
- *  `expiresIn`: seconds an access token lives; null, it says none. */
-export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600 } = {}) {
+ *  `expiresIn`: seconds an access token lives; null, it says none. `registration: false`: no dynamic client registration
+ *  (no registration_endpoint, /register 404). `metadata: false`: no authorization server metadata at all. `reuseRevokes`:
+ *  a spent refresh token sent again revokes every token it gave (reuse detection, as a provider that rotates refresh
+ *  tokens may do). */
+export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3600, reuseRevokes = false, registration = true, metadata = true } = {}) {
   const log = [];
   const registered = new Map(Object.entries(clients).map(([id, secret]) => [id, { secret, redirect_uris: undefined }]));
   const codes = new Map();
   const access = new Set();
   const refresh = new Map();
+  const spent = new Set();
   const issued = [];
   let hanging = false;
   let failing = 0;
   let grantedUnanswered = false;
+  /** The next `/token` request's hold (holdNext): granted at once, its answer sent when the test lets it go. */
+  let holding;
+  /** Who waits on the next request to a path (`next`), each with its path. */
+  const nexts = [];
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, issuer());
     const chunks = [];
@@ -27,13 +35,16 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     const text = Buffer.concat(chunks).toString("utf8");
     const form = (req.headers["content-type"] ?? "").includes("json") ? JSON.parse(text || "{}") : Object.fromEntries(new URLSearchParams(text));
     log.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), form: Object.fromEntries(Object.entries(form).filter(([key]) => !/token|secret|code$|verifier/.test(key))) });
+    for (const waiter of nexts.filter((one) => one.path === url.pathname)) nexts.splice(nexts.indexOf(waiter), 1), waiter.heard(log.at(-1));
     const json = (status, body) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
     if (url.pathname === "/.well-known/oauth-authorization-server") {
+      // `metadata: false`: none published (an authorization server such as a code host's login, with fixed endpoints).
+      if (!metadata) return void res.writeHead(404).end();
       return json(200, {
         issuer: issuer(),
         authorization_endpoint: `${issuer()}/authorize`,
         token_endpoint: `${issuer()}/token`,
-        registration_endpoint: `${issuer()}/register`,
+        ...(registration ? { registration_endpoint: `${issuer()}/register` } : {}),
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         code_challenge_methods_supported: ["S256"],
@@ -43,6 +54,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       });
     }
     if (url.pathname === "/register" && req.method === "POST") {
+      // `registration: false`: apps can't register themselves; they come with a client registered by hand.
+      if (!registration) return void res.writeHead(404).end();
       const client_id = made("client");
       registered.set(client_id, { redirect_uris: form.redirect_uris });
       return json(201, { ...form, client_id, client_id_issued_at: Math.floor(Date.now() / 1000) });
@@ -64,7 +77,16 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       if (hanging) return; // never answered: its client's own timeout ends it
       if (failing) return void res.writeHead(failing, { "content-type": "text/plain" }).end("the token service is down");
       // The next one is granted (a refresh token rotated) but its answer never sent.
-      const answer = grantedUnanswered ? ((grantedUnanswered = false), () => {}) : json;
+      const hold = holding;
+      holding = undefined;
+      const answer = grantedUnanswered
+        ? ((grantedUnanswered = false), () => {})
+        : hold
+          ? (status, body) => {
+              hold.granted();
+              void hold.sent.then(() => json(status, body));
+            }
+          : json;
       const basic = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
       const [id, secret] = basic ? Buffer.from(basic[1], "base64").toString("utf8").split(":").map(decodeURIComponent) : [form.client_id, form.client_secret];
       const client = registered.get(id);
@@ -87,6 +109,8 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
       if (form.grant_type === "refresh_token") {
         const was = refresh.get(form.refresh_token);
         refresh.delete(form.refresh_token);
+        if (!was && reuseRevokes && spent.has(form.refresh_token)) refresh.clear(), access.clear();
+        spent.add(form.refresh_token);
         if (!was || was.client_id !== id) return answer(400, { error: "invalid_grant", error_description: "the refresh token is spent or revoked" });
         const set = grant();
         refresh.set(set.refresh_token, was);
@@ -115,6 +139,17 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
     heal: () => void ((hanging = false), (failing = 0)),
     /** The next `/token` request is granted (a refresh token is spent) but never answered. */
     grantUnanswered: () => void (grantedUnanswered = true),
+    /** The next `/token` request is granted at once (a refresh token is spent) and its answer held: `granted` resolves
+     *  once it is, and the answer leaves when `answer()` is called, as a reply still on the wire. */
+    holdNext: () => {
+      let granted, answer;
+      const hold = { granted: new Promise((resolve) => (granted = resolve)), sent: new Promise((resolve) => (answer = resolve)) };
+      holding = { granted, sent: hold.sent };
+      return { granted: hold.granted, answer };
+    },
+    /** The next request to `path` (default `/token`) as logged, once it has reached this server: it is handled in the same
+     *  turn, so a grant it makes (a refresh token spent) is made by the time the wait answers. */
+    next: (path = "/token") => new Promise((heard) => nexts.push({ path, heard })),
     /** Every access token given so far stops working, as at its expiry; refresh tokens still do. */
     expire: () => access.clear(),
     close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())),

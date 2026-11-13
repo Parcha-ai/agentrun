@@ -8,8 +8,9 @@
 const GLOBAL = ['base-url', 'data', 'help'];
 const flagOf = (name) => name.replace(/_/g, '-').toLowerCase();
 
-/** Every command of the CLI: the table's, with the flags follow.mjs adds to some, and the hand-written ones. */
-export function allCommands(table, { flags, wait, local }) {
+/** Every command of the CLI: the table's, with the flags follow.mjs adds to some (`--all` on each list command among
+ *  them), and the hand-written ones. */
+export function allCommands(table, { flags, all, wait, local }) {
   const generated = table.map((entry) => ({
     ...entry,
     flags: [
@@ -19,6 +20,7 @@ export function allCommands(table, { flags, wait, local }) {
         { name: '--body-type', value: 'TYPE', type: 'string', required: false, description: `The body's type, one of ${entry.bodyTypes.join(', ')}; any other than JSON is sent as given.` },
       ] : []),
       ...(flags[entry.operationId]?.help ?? []).map(([name, text]) => handFlag(name, text)),
+      ...(all.listing(entry) ? [handFlag(...all.help)] : []),
     ],
     route: `${entry.method} ${entry.path}`,
   }));
@@ -38,7 +40,7 @@ const find = (commands, operationId) => commands.find((entry) => entry.operation
 function capRecipe(commands) {
   const raise = find(commands, 'raiseRunCap');
   const approve = find(commands, 'answerApproval');
-  const intro = 'A run stopped at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.';
+  const intro = 'A run paused at its spend cap, or waiting for a tool call to be approved, exits 8 with `pending.kind` `budget` or `approval` in out.json.';
   if (!raise && !approve) {
     return [`${intro} This version of the CLI has no command for either yet; look for one among the run commands, and if there is none, the person raises the cap or approves the call in the console (the run's \`console_url\`):`, '',
       '```sh', 'agentrun runs --help', '# exit 0: the run commands, one per line', '```'];
@@ -55,7 +57,7 @@ function capRecipe(commands) {
       : 'A cap too small for the task stops the run before a request it cannot pay for:', '',
       '```sh',
       `agentrun runs start notes --max-cost-usd 0.05${strict ? ' --cap-mode strict' : ''} --body '{"input": {"content": "Write moon.md with everything known about the Moon."}}' --wait > out.json`,
-      '# exit 8 once it stops at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough',
+      '# exit 8 once it pauses at its cap: out.json has pending.kind budget, with cap_usd, spent_usd and suggested_cap_usd; 0 if the cap was enough',
       '```', '',
       'Only the person who set the cap raises it: ask them for the new cap (`pending.suggested_cap_usd` is one that lets it go on). Then the run goes on from where it stopped:', '',
       '```sh', `run=$(node -p 'require("./out.json").run_id')`, `${usage(raise).replace('RUN_ID', '"$run"')} ${field(1)}`, 'agentrun runs wait "$run" > out.json', '# exit 0 completed, as in recipe 2', '```', '');
@@ -141,6 +143,8 @@ export function skillText(commands, hash) {
     '',
     '`agentrun` drives an AgentRun server (the open platform\'s server for agents) through its API. It is the command `npm install -g @parcha/agentrun` puts on the PATH; without it, write `npx @parcha/agentrun` in its place. Each command prints the server\'s JSON answer on stdout, one line when piped, and an error\'s JSON on stderr. `agentrun help` lists the commands, `agentrun GROUP COMMAND --help` gives one\'s flags, and [references/commands.md](references/commands.md) has every command with its flags and route.',
     '',
+    'A list command (`agentrun agents list`, `agentrun runs list` and the others with `--cursor`) prints one page, with the `next_cursor` to pass as `--cursor` for the next; `--all` reads every page and prints them as one list, its `next_cursor` null.',
+    '',
     '## The server and the token',
     '',
     'The first of these that is set wins:',
@@ -155,7 +159,7 @@ export function skillText(commands, hash) {
     'agentrun login --base-url "$AGENTRUN_BASE_URL" < token.txt',
     '```',
     '',
-    'Never print, echo or log the token, and never pass it as an argument; the CLI never prints it. `agentrun logout` removes the config file. A tool key\'s value is read the same way, from stdin or a variable you name: `agentrun tool-keys set KEY_ID FIELD --from-env VAR` (`agentrun tool-keys list` names the keys and fields, never a value).',
+    'Never print, echo or log the token, and never pass it as an argument; the CLI never prints it. `agentrun logout` removes the config file. Keys and other secrets are set in the console, signed in: the token can\'t write one, so no command does (`agentrun tool-keys list` names the keys and fields, and whether each is set, never a value).',
     '',
     ...RECIPES(commands),
     '',
@@ -166,7 +170,12 @@ export function skillText(commands, hash) {
     '- 2: bad usage, nothing sent: a bad flag or argument, or a base URL that is not http or https or has a query, a fragment, a user or a password.',
     '- 3: the server cannot be reached.',
     '- 4: no token, the token was refused, or the config file, the local server\'s record or its token file was refused (open to others, or not what it should hold).',
+    '- 5: the server does not offer the command here: a 501, `unsupported_here`, its error saying why (a capability this server has off, say).',
     '- 8: the run waits on a person: a question, its spend cap, a stopped turn, or a paused workflow. stderr says what to run next.',
+    '',
+    '## From a program',
+    '',
+    'Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`; `npm install @parcha/agentrun-client` installs it. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command here is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.',
     '',
     '## Commands',
     '',
@@ -198,6 +207,7 @@ export function referenceText(commands, hash) {
       lines.push('');
       for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${f.type}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${cell(f.description)}` : ''}`);
     }
+    if (entry.bodyFill) lines.push('', `Built from flags alone, the body also has: ${Object.entries(entry.bodyFill).map(([name, value]) => `\`${name}\` \`${JSON.stringify(value)}\``).join(', ')}.`);
   }
   lines.push('');
   return lines.join('\n');

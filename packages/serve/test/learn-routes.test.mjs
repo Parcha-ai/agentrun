@@ -9,9 +9,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseNoteFile } from "../dist/learn/notes.js";
 import { note } from "./fixtures/faux-learn.mjs";
-import { copyOf, ended, git, LEARN, learnedIn, learner, made, objects, repoOf, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
+import { copyOf, ended, git, LEARN, learnedIn, learnedOnMain, learner, made, objects, repoOf, resnap, savedOf, settled, started, wholeIn } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { learningTestHooks } from "../dist/learning.js";
+import { folderTestHooks, forgetBodies } from "../dist/learn/folder.js";
+import { spiedWorkspace } from "./learn-support.mjs";
 import { agent, call, follow, runsFolders, scratch, serve, withEnv } from "./support.mjs";
 
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
@@ -92,7 +93,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // Run 2: its learning whole shows the drop, and its diff its proposal against its seed.
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
-  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, given: [{ file: "check-units.md", name: "Check units" }, { file: "quote-sources.md", name: "Quote sources" }], merged: null, pending: [], verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
+  assert.deepEqual({ ...learned2, at: undefined, detail: undefined, cost_usd: undefined, tokens: undefined }, { run: two, state: "dropped", reason: "grader", detail: undefined, at: undefined, seed: main1, given: [{ file: "check-units.md", name: "Check units" }, { file: "quote-sources.md", name: "Quote sources" }], merged: null, pending: [], used: { skills: [], workflows: [] }, verdict: { merge: false, reason: "A note is about the one case it came from.", items: [{ file: "prefers-tables.md", keep: false, question: "General", why: "It is about one case." }] }, problems: [], cost_usd: undefined, tokens: undefined });
   assert.ok(Object.keys(learned2.cost_usd).join() === "grade" && learned2.cost_usd.grade > 0 && learned2.tokens.grade.input > 0, JSON.stringify(learned2));
   assert.deepEqual((await api("GET", `/runs/${two}/learning/diff`)).body, { base: main1, head: null, files: [{ path: "prefers-tables.md", status: "added", patch: added(TABLES) }] });
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
@@ -133,7 +134,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal((await write(`${files}/quote-sources.md/retire`, undefined)).status, 428);
   const retired = await write(`${files}/quote-sources.md/retire`, undefined, { "if-match": before });
   assert.equal(retired.status, 200, retired.text);
-  assert.equal(retired.text, SOURCES.replace("type: reference\n", "type: reference\nstatus: retired\n"));
+  assert.equal(retired.text, SOURCES.replace("type: reference\n", "type: reference\nstatus: retired\nretired_from: active\n"));
   assert.equal(retired.headers.get("etag"), blob("quote-sources.md"));
   assert.equal((await write(`${files}/quote-sources.md/retire`, undefined, { "if-match": before })).status, 412, "a stale retire");
   const index = git(repo, ["show", "main:MEMORY.md"]);
@@ -273,8 +274,9 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   const state = () => ({
     main: git(outside, ["rev-parse", "main"]),
     objects: objects(outside),
-    files: Object.fromEntries(readdirSync(outside).filter((file) => file !== ".git").sort().map((file) => [file, readFileSync(join(outside, file), "utf8")])),
+    files: Object.fromEntries(readdirSync(outside).filter((file) => file !== ".git" && file !== ".agentrun").sort().map((file) => [file, readFileSync(join(outside, file), "utf8")])),
     git: readdirSync(join(outside, ".git")).sort(),
+    host: [readdirSync(join(outside, ".agentrun")).sort(), readFileSync(join(outside, ".agentrun", "snapshot.json"), "utf8")],
   });
   const before = state();
   assert.deepEqual(Object.keys(before.files), ["MEMORY.md", "check-units.md"]);
@@ -286,7 +288,7 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   ]) {
     const res = await send();
     assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], what);
-    assert.match(res.json.error.message, /symbolic link/, what);
+    assert.match(res.json.error.message, /^a link in the learning folder at disk\/agents\/linked-[0-9a-f]{16}\/learning can't be followed, .*; remove the link$/, what);
     assert.ok(!res.text.includes(outside), `${what}: the answer never names where the link points`);
   }
   // The reads check the same levels, making nothing: the view, its pages and a file answer the same error, holding none
@@ -294,14 +296,14 @@ test("a link planted at the agent's learning folder makes a person's edit, creat
   for (const path of ["/v2/agents/linked/learning", "/v2/agents/linked/learning/notes", "/v2/agents/linked/learning/log", `${files}/check-units.md`]) {
     const res = await call(port, { path, headers: headers() });
     assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], path);
-    assert.match(res.json.error.message, /symbolic link/, path);
+    assert.match(res.json.error.message, /^a link in the learning folder at disk\/agents\/linked-[0-9a-f]{16}\/learning can't be followed, .*; remove the link$/, path);
     for (const held of [outside, before.main, "Convert every amount"]) assert.ok(!res.text.includes(held), `${path}: the answer holds ${held}`);
   }
   assert.ok(lstatSync(repo).isSymbolicLink(), "the link is left where it was");
   assert.deepEqual(state(), before, "nothing written where the link points: main, its objects, its files and its .git as they were");
 });
 
-test("a restarted server counts an agent's runs that tried to learn from the learning ledger, as GET /stats does: its view's counts read with runs/ unreadable", { timeout: 180_000 }, async (t) => {
+test("a restarted server counts an agent's runs that tried to learn from the store, as GET /stats does: its view's counts read with runs/ unreadable", { timeout: 180_000 }, async (t) => {
   const first = await serve(t, { learning: "on", faux: LEARN });
   const { data } = first;
   await made(first.api, learner("counted", { plan: [["check-units.md", UNITS]], once: true }));
@@ -364,35 +366,39 @@ test("a commit's notes are read once: a later page and the view at the same main
     const res = await call(port, { method: "PUT", path: `${files}/${file}`, headers: { authorization: `Bearer ${token}`, "content-type": "text/markdown", "if-none-match": "*" }, body: text });
     assert.equal(res.status, 201, file);
   }
+  // Every read is the folder's snapshot and the bodies it names, through the workspace's file API: no git, no exec.
   const calls = [];
-  learningTestHooks.git = (args) => calls.push(args);
-  t.after(() => void (learningTestHooks.git = undefined));
-  /** The git calls since the last look that read history, a tree or a note, each with its page bounds, if any. */
-  const reads = () => calls.splice(0).filter(([command, ...rest]) => ["log", "rev-list", "ls-tree"].includes(command) || (command === "cat-file" && rest.includes("--batch"))).map((args) => [args[0], ...args.filter((arg) => /^--(skip|max-count)=/.test(arg))]);
+  folderTestHooks.workspace = spiedWorkspace(calls);
+  forgetBodies();
+  t.after(() => void (folderTestHooks.workspace = undefined));
+  /** The workspace calls since the last look, each its method and path (exec: its argv). */
+  const reads = () => calls.splice(0).map(([method, what]) => `${method} ${what}`);
 
-  // The first page at main reads its notes; the next, at the same commit, reads none of them again.
+  // The first page at main reads its one note; the next reads its own, and none read before again.
   const page1 = (await api("GET", "/agents/paged/learning/notes?limit=1")).body;
   assert.deepEqual([page1.items.map((n) => n.file), page1.total], [["c-three.md"], 3]);
-  assert.ok(reads().some(([command]) => command === "cat-file"), "the first page reads the notes");
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json", "read c-three.md"], "the first page reads the snapshot and its note");
   const page2 = (await api("GET", `/agents/paged/learning/notes?limit=1&cursor=${page1.next_cursor}`)).body;
   assert.deepEqual(page2.items.map((n) => n.file), ["b-two.md"]);
-  assert.deepEqual(reads(), [], "a later page at the same commit reads no note, tree or history");
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json", "read b-two.md"], "a later page reads its own note alone");
+  await api("GET", "/agents/paged/learning/notes?limit=1");
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"], "a note read once at its blob is not read again");
 
-  // The log reads its page's commits alone (skip and max-count), counting them once a commit.
+  // The log is the snapshot's: a page of it reads no note.
   const log1 = (await api("GET", "/agents/paged/learning/log?limit=1")).body;
   assert.deepEqual([log1.items.map((c) => c.reason), log1.total], [["created by a person: c-three.md"], 3]);
-  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=1"], ["rev-list"]]);
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
   const log2 = (await api("GET", `/agents/paged/learning/log?limit=1&cursor=${log1.next_cursor}`)).body;
   assert.deepEqual([log2.items.map((c) => c.reason), log2.total], [["created by a person: b-two.md"], 3]);
-  assert.deepEqual(reads(), [["log", "--skip=1", "--max-count=1"]]);
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
 
-  // The view at the same main: its notes as kept, its log's first page read, and its skills and workflows listed once
-  // (one tree read; a folder with none reads no history for them). A second view reads its log's page alone.
+  // The view at the same main: its notes, the index and the log; only what no read before read is read. A second view
+  // reads the snapshot alone.
   const view = (await api("GET", "/agents/paged/learning")).body;
   assert.deepEqual([view.notes.items.map((n) => n.file), view.log.items.length, view.skills, view.workflows], [["c-three.md", "b-two.md", "a-one.md"], 3, [], []]);
-  assert.deepEqual(reads().sort(), [["log", "--skip=0", "--max-count=20"], ["ls-tree"]]);
+  assert.deepEqual(reads().sort(), ["read .agentrun/snapshot.json", "read MEMORY.md", "read a-one.md"]);
   await api("GET", "/agents/paged/learning");
-  assert.deepEqual(reads(), [["log", "--skip=0", "--max-count=20"]]);
+  assert.deepEqual(reads(), ["read .agentrun/snapshot.json"]);
 });
 
 test("a note's name that holds a value made secret after it was written is never shown: the view, the notes, the log, the run's diff and the notes a run learned and used read it [redacted], its route answers the real name only to a caller who knows it, and a retire by it takes it out of the index", { timeout: 240_000 }, async (t) => {
@@ -439,7 +445,7 @@ test("a note's name that holds a value made secret after it was written is never
   assert.equal(old.status, 200);
   // A retire by that name revokes the note, whatever its name holds: out of the index, its answer and the log cut of it.
   const retire = await api("POST", `/agents/namer/learning/files/${named}/retire`, undefined, { "if-match": own.headers.get("etag") });
-  assert.deepEqual([retire.status, retire.body], [200, NEW.replace("supersedes: [old-plan.md]\n", "supersedes: [old-plan.md]\nstatus: retired\n")]);
+  assert.deepEqual([retire.status, retire.body], [200, NEW.replace("supersedes: [old-plan.md]\n", "supersedes: [old-plan.md]\nstatus: retired\nretired_from: active\n")]);
   assert.equal(git(repoOf(data, "namer"), ["show", "main:MEMORY.md"]), "", "no active note is left in the index");
   const after = (await api("GET", "/agents/namer/learning")).body;
   assert.deepEqual([after.index, after.log.items[0].by, after.log.items[0].reason, after.log.items[0].files], ["", { user: true }, "retired by a person: [redacted].md", ["MEMORY.md", "[redacted]"]]);
@@ -466,12 +472,13 @@ test("a key a person saves on the server is cut like the server's own secrets, f
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("saver", { plan: [[named, KEPT]], once: true }));
   const run = await ended(api, await started(api, "saver"));
-  settled(run.view, run.rows, "merged");
+  assert.equal((await learnedOnMain({ api, data }, "saver", run.view.run_id)).result?.ok, true);
   // A host commit too: a note whose text holds the value.
   const repo = repoOf(data, "saver");
   writeFileSync(join(repo, "host.md"), note("Host", "What the host wrote", `The pass is ${value}.\n`));
   git(repo, ["add", "host.md"]);
   git(repo, ["commit", "-q", "-m", "a host's hand"]);
+  await resnap(data, "saver");
   assert.ok(JSON.stringify((await api("GET", "/agents/saver/learning")).body).includes(value), "shown as it is while no secret");
 
   // Saved through the settings API, the server running on: each read after it cuts the value.
@@ -519,15 +526,16 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   writeFileSync(join(repo, "bare.md"), "no front matter\n");
   git(repo, ["add", "huge.md", "bare.md"]);
   git(repo, ["commit", "-q", "-m", "an operator's hand"]);
+  await resnap(data, "revoker");
   await first.close();
 
   // The server again, with the vault code as a launcher's secret (the model key).
   process.env.AGENT_MODEL_API_KEY = value;
   const { api } = await serve(t, { data });
   const etag = async (file) => (await api("GET", `${files}/${file}`)).headers.get("etag");
-  // The note at the cap retires, its status line on top of the cap.
+  // The note at the cap retires, its status lines (status, and the status it was retired from) on top of the cap.
   const capped = await api("POST", `${files}/full.md/retire`, undefined, { "if-match": await etag("full.md") });
-  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4112], JSON.stringify(capped.body).slice(0, 200));
+  assert.deepEqual([capped.status, Buffer.byteLength(capped.body)], [200, 4096 + Buffer.byteLength("status: retired\nretired_from: active\n")], JSON.stringify(capped.body).slice(0, 200));
   // The note holding the value made secret retires: out of the index, its answer and the log cut of the value.
   const vault = await api("POST", `${files}/vault.md/retire`, undefined, { "if-match": await etag("vault.md") });
   assert.equal(vault.status, 200, JSON.stringify(vault.body));
@@ -541,8 +549,11 @@ test("a retire is always the way out: a note at the 4 KB cap retires, and so doe
   const main = git(repo, ["rev-parse", "main"]);
   const huge = await api("POST", `${files}/huge.md/retire`, undefined, { "if-match": await etag("huge.md") });
   assert.deepEqual([huge.status, huge.body?.error?.problems?.map((p) => p.rule)], [400, ["too_large"]]);
-  const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": await etag("bare.md") });
-  assert.deepEqual([bare.status, bare.body?.error?.problems?.map((p) => p.rule)], [400, ["note"]]);
+  // A file with no front matter is no note: the snapshot every read reads names none by it, so it reads 404 and a retire
+  // by its blob is 412, as any file on main that is no note (the test below).
+  assert.equal((await api("GET", `${files}/bare.md`)).status, 404);
+  const bare = await api("POST", `${files}/bare.md/retire`, undefined, { "if-match": `"${git(repo, ["rev-parse", "main:bare.md"])}"` });
+  assert.deepEqual([bare.status, bare.body?.error?.code], [412, "precondition_failed"]);
   assert.equal(git(repo, ["rev-parse", "main"]), main, "nothing committed");
 });
 
@@ -594,6 +605,7 @@ test("a file on main that is not a note (over the read cap, not UTF-8, executabl
   git(repo, ["add", "big.md", "latin.md", "exec.md", "link.md"]);
   git(repo, ["update-index", "--chmod=+x", "exec.md"]);
   git(repo, ["commit", "-q", "-m", "an operator's hand"]);
+  await resnap(data, "holder");
   const tree = (file) => git(repo, ["ls-tree", "-l", "main", "--", file]);
   assert.deepEqual(["big.md", "latin.md", "exec.md", "link.md"].map((file) => tree(file).split(/\s+/)[0]), ["100644", "100644", "100755", "120000"]);
   const main = git(repo, ["rev-parse", "main"]);

@@ -10,7 +10,7 @@ import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { PendingApproval, Run, ToolSettings } from "@/lib/v2";
 
 // A first-time user's approval path: the card's Allow says it is for this call only; a call's arguments read as a list,
-// not as JSON; a tool's description in the agent editor stays two lines until asked for more; Settings → Tools puts each
+// not as JSON; a tool's description in the agent editor stays three lines until asked for more; Settings → Tools puts each
 // tool's permission beside its name.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -31,7 +31,7 @@ describe("the approval card's Allow", () => {
     const card = mount(createElement(ApprovalCard, { pending: PENDING, onAnswer: async () => null }));
     expect(buttons(card)).toEqual(["Allow once", "Deny"]);
     act(() => root?.unmount());
-    const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, run_id: "r1", agent_id: "a", agent_version: 1, revision: "rv", kind: "agentic", status: "input_required", state: "waiting", title: "T", created_at: "2026-11-05T10:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING };
+    const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, run_id: "r1", agent_id: "a", agent_version: 1, revision: "rv", kind: "agentic", status: "input_required", state: "waiting", title: "T", created_at: "2026-11-05T10:00:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, pending: PENDING };
     const strip = mount(createElement(NeedsYouStrip, { asking: [run], failed: [], live: [], agentName: () => "A", onAnswer: async () => null, onApprove: async () => null, onRunAgain: async () => ({ started: [], problem: null }), onStop: async () => null }));
     expect(buttons(strip.querySelector("section[aria-label='Approval required']")!)).toEqual(["Allow once", "Deny"]);
   });
@@ -55,17 +55,17 @@ describe("the call's arguments", () => {
 describe("a tool's description in the agent editor", () => {
   const LONG = "Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time.";
   const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
-  const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_fetch", available: true, summary: LONG }], thinking: [] };
-  it("is clamped to two lines (no display override), with more to show it whole", async () => {
+  const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "web_fetch", available: true, summary: LONG, harnesses: ["pi"] }], thinking: [] };
+  it("is clamped to three lines (no display override) where no blurb is served, with More to show it whole", async () => {
     const host = mount(createElement(AgentEditor, { agent, caps, step: "tools", onSave: async () => null }));
     await settle();
     const text = [...host.querySelectorAll("span")].find((s) => s.textContent === LONG)!;
-    expect(text.classList.contains("line-clamp-2")).toBe(true);
+    expect(text.classList.contains("line-clamp-3")).toBe(true);
     expect(text.classList.contains("block")).toBe(false);
-    const more = [...host.querySelectorAll("button")].find((b) => b.textContent === "more")!;
+    const more = [...host.querySelectorAll("button")].find((b) => b.textContent === "More")!;
     expect(more).toBeTruthy();
     await act(async () => { more.click(); });
-    expect(text.classList.contains("line-clamp-2")).toBe(false);
+    expect([...host.querySelectorAll("p, span")].some((el) => el.textContent === LONG && !el.classList.contains("line-clamp-3"))).toBe(true);
     // Asking for more never ticks the tool.
     expect(host.querySelector<HTMLInputElement>("input[value='web_fetch']")!.checked).toBe(false);
   });
@@ -79,7 +79,7 @@ describe("Settings → Tools", () => {
     await settle();
     expect([...host.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Tool", "Permission", "Provider", "Resolves to", "Reset"]);
     const cells = host.querySelectorAll("tr[data-tool='web_fetch'] td");
-    expect(cells[1]!.querySelector("select")!.getAttribute("aria-label")).toBe("web_fetch permission");
-    expect(cells[2]!.querySelector("select")!.getAttribute("aria-label")).toBe("web_fetch provider");
+    expect(cells[1]!.querySelector("button[aria-haspopup=listbox]")!.getAttribute("aria-label")).toBe("web_fetch permission");
+    expect(cells[2]!.querySelector("button[aria-haspopup=listbox]")!.getAttribute("aria-label")).toBe("web_fetch provider");
   });
 });

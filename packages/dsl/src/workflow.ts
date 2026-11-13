@@ -161,13 +161,6 @@ export function desugarWorkflow(workflow: Workflow): Workflow {
   return { ...workflow, root: visit(workflow.root) };
 }
 
-export function terminalArtifactType(workflow: Workflow): string | null {
-  const steps = workflow?.root?.node === "chain" ? (workflow.root as Extract<WorkflowNode, { node: "chain" }>).steps || [] : [workflow?.root];
-  const last = steps[steps.length - 1] as WorkflowNode | undefined;
-  if (!last || last.node !== "artifact") return null;
-  return last.type;
-}
-
 /** A predicate a `call` evaluates against ITS OWN RESULT: paths are result-relative. */
 export type CallPredicate = MechanicalPredicate;
 export type PollClause = { until: CallPredicate; fail_when?: CallPredicate; interval_s: number; deadline_s: number };
@@ -419,6 +412,9 @@ export type WorkflowDeps = {
   sop?: string;
   skill?: string;
   signal?: AbortSignal;
+  /** Called at each node's visit, before it runs (a loop's body each iteration, a map's body for each item): a host that
+   *  bounds the work a run does (a dry run's steps and deadline) counts it here, and throws to stop the run. */
+  onVisit?: (node: WorkflowNode) => void;
   /** Best-effort observation only: thrown errors and rejected promises are ignored.
    * Observers are never awaited. Use required checkpoints for durable lifecycle gates. */
   onEvent?: (event: WorkflowEvent) => void;
@@ -590,45 +586,6 @@ function resultPathMissing(shape: unknown, dotted: string): boolean {
     cursor = cursor[segment];
   }
   return false;
-}
-
-export function parseCsvRows(text: string): string[][] {
-  const rows: string[][] = [];
-  let field = "", row: string[] = [], inQuotes = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inQuotes) {
-      if (ch === '"' && text[i + 1] === '"') { field += '"'; i += 1; }
-      else if (ch === '"') inQuotes = false;
-      else field += ch;
-    } else if (ch === '"') inQuotes = true;
-    else if (ch === ",") { row.push(field); field = ""; }
-    else if (ch === "\n" || ch === "\r") {
-      if (ch === "\r" && text[i + 1] === "\n") i += 1;
-      row.push(field); field = "";
-      if (row.some((c) => c.trim() !== "")) rows.push(row);
-      row = [];
-    } else field += ch;
-  }
-  if (field !== "" || row.length) { row.push(field); if (row.some((c) => c.trim() !== "")) rows.push(row); }
-  return rows;
-}
-
-export function buildReferenceContext(files: Record<string, string>): { references: Record<string, string>; references_parsed: Record<string, { header: string[]; rows: string[][] }> } {
-  // Null prototypes: reference filenames are external data. On a plain object a name like
-  // "__proto__" hits the prototype SETTER on assignment — the file silently vanishes from
-  // the map (and worse shapes pollute it). A null-prototype object stores it as an ordinary
-  // own key, so every filename round-trips.
-  const references: Record<string, string> = Object.create(null);
-  const referencesParsed: Record<string, { header: string[]; rows: string[][] }> = Object.create(null);
-  for (const [name, body] of Object.entries(files)) {
-    references[name] = body;
-    if (name.toLowerCase().endsWith(".csv")) {
-      const rows = parseCsvRows(body);
-      if (rows.length) referencesParsed[name] = { header: rows[0], rows: rows.slice(1) };
-    }
-  }
-  return { references, references_parsed: referencesParsed };
 }
 
 /** Whether a field's schema lists the value itself: its own `const`, or a member of its own `enum`, or the same in the
@@ -2635,6 +2592,7 @@ function forwardObserver(observer: NonNullable<WorkflowDeps["onEvent"]>, transfo
 }
 
 async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
+  deps.onVisit?.(node);
   deps = withExecutionLocation(deps);
   const observer = deps.onEvent;
   if (observer && !guardedObservers.has(observer)) {
@@ -3131,6 +3089,8 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
   if (node.node === "sift") asked.push({ choice: node, types: questionsOf(node.out), count: null, what: `sift node "${label}"` });
   if (node.node === "pick") asked.push({ choice: node, types: ["choice"], count: 1, what: `pick node "${label}"` });
   if (node.node === "route" && !routesByValue(node)) asked.push({ choice: node as RouteByJudgmentNode, types: ["choice"], count: 1, what: `route node "${label}"` });
+  // A node's `verify` is asked of the host's default decision provider (no provider of its own): a host without it refuses the node.
+  if ("verify" in node && node.verify) { const types = questionsOf(node.verify.out); asked.push({ choice: {} as DecisionChoice, types, count: types.length, what: `${node.node} node "${label}" (verify)` }); }
   for (const pred of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
     if ((pred as AskPredicate | undefined)?.predicate === "ask") asked.push({ choice: pred as AskPredicate, types: ["noul"], count: 1, what: `${node.node} node "${label}" (ask predicate)` });
   }

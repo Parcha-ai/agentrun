@@ -180,18 +180,45 @@ func (k *desk) events() []event {
 	if err != nil {
 		return nil
 	}
+	out, err := eventsOf(data)
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	return out
+}
+
+// eventsOf parses the fixture's event log as read so far: whole lines only, since the fixture may be writing the last.
+func eventsOf(data []byte) ([]event, error) {
 	var out []event
-	for _, line := range strings.Split(string(data), "\n") {
+	whole := string(data)
+	if end := strings.LastIndexByte(whole, '\n'); end >= 0 {
+		whole = whole[:end]
+	} else {
+		whole = ""
+	}
+	for _, line := range strings.Split(whole, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		var e event
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			k.t.Fatalf("a log line that is not JSON: %q", line)
+			return nil, fmt.Errorf("a log line that is not JSON: %q", line)
 		}
 		out = append(out, e)
 	}
-	return out
+	return out, nil
+}
+
+// The fixture appends one JSON line per event while the test reads the log: a read can catch the last line half
+// written. That line is not an event yet; it is left for the next read, while a whole line that is not JSON still fails.
+func TestEventsOfLeavesAPartialLastLineForTheNextRead(t *testing.T) {
+	got, err := eventsOf([]byte("{\"event\":\"ready\"}\n{\"down\":false,\"event\""))
+	if err != nil || len(got) != 1 || got[0].Event != "ready" {
+		t.Fatalf("a partial last line: got %v, %v; want the ready event alone", got, err)
+	}
+	if _, err := eventsOf([]byte("{\"event\":\"ready\"}\nnot json\n")); err == nil {
+		t.Fatal("a whole line that is not JSON was taken")
+	}
 }
 
 func (k *desk) until(done func([]event) bool, what string) []event {

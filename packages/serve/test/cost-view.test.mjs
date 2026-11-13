@@ -1,7 +1,7 @@
 // A run's cost in its views, on its own: the rows' usage row, else what the store kept.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { costView } from "../dist/runs.js";
+import { costView } from "../dist/run-view.js";
 
 const usage = (usd, requests = 1) => ({ id: "1:usage", kind: "usage", summary: "", usage: { usd, requests } });
 

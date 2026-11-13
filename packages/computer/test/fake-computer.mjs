@@ -1,8 +1,15 @@
 // A fake provider whose computers are records in memory, each with a fake daemon on an in-memory stream: hello, ping,
 // files.mkdir, files.write and files.list over paths in memory, and exec.run, which answers id -u, cat /proc/self/status, env and a write to $HOME as a computer would
 // and echoes any other argv. Every other method is unsupported. No Docker, no daemon.
+// A computer made with a mount has the run's folder at /workspace: files.read, files.write and `cat` (with a cwd) there
+// reach the folder on this machine, the way a bind or an Archil mount reaches it.
+import { randomBytes } from "node:crypto";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { DaemonClient } from "../dist/index.js";
+import { checkGpu, DaemonClient, EPOCH_LABEL, epochOf, ownerLabels, RUN_LABEL } from "../dist/index.js";
+import { MAX_OUTPUT_BYTES, PROTOCOL_VERSION } from "../dist/protocol.js";
 
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 const ok = (value) => ({ ok: true, value });
@@ -10,13 +17,61 @@ const b64 = (text) => Buffer.from(text).toString("base64");
 
 const ALL_CAPABILITIES = "000001ffffffffff";
 const NO_CAPABILITIES = "0000000000000000";
+const WORKSPACE = "/workspace";
+
+/** The folder on this machine a path in the computer reaches through its mount, or undefined when it reaches none. */
+function bound(computer, path) {
+	if (computer.bound === undefined || !(path === WORKSPACE || path.startsWith(`${WORKSPACE}/`))) return undefined;
+	return join(computer.bound, path.slice(WORKSPACE.length));
+}
+
+/**
+ * What mount.archil-loop-tool-edit's tool runs, `sh -c 'printf "%s\n" "$1" >> "$2"' sh <line> <path>`: the line appended
+ * to a file under the mount, or refused as a tool that may not write it is (toolCannotWrite); undefined for any other argv.
+ */
+function appendOf(argv, computer) {
+	if (argv[0] !== "sh" || argv[1] !== "-c" || argv[2] !== 'printf "%s\\n" "$1" >> "$2"' || argv.length !== 6) return undefined;
+	const host = bound(computer, argv[5]);
+	if (host === undefined || computer.toolCannotWrite) return { exitCode: 2, stdout: "", stderr: `sh: 1: cannot create ${argv[5]}: Permission denied\n` };
+	appendFileSync(host, `${argv[4]}\n`);
+	return { exitCode: 0, stdout: "", stderr: "" };
+}
+
+/** What `cat <path>` with cwd prints in a computer with a mount, or undefined when argv is not that. */
+function catOf(argv, cwd, computer) {
+	if (argv[0] !== "cat" || argv.length !== 2) return undefined;
+	const path = argv[1].startsWith("/") ? argv[1] : `${cwd ?? "/work"}/${argv[1]}`;
+	if (!path.startsWith(`${WORKSPACE}/`)) return undefined;
+	const host = bound(computer, path);
+	try {
+		if (host === undefined) throw new Error("nothing is mounted at /workspace");
+		return { exitCode: 0, stdout: readFileSync(host, "utf8"), stderr: "" };
+	} catch {
+		return { exitCode: 1, stdout: "", stderr: `cat: ${argv[1]}: No such file or directory\n` };
+	}
+}
+
 /** What /proc/self/status reads in a computer that leaves its programs nothing: every set empty, no_new_privs set. */
 const UNPRIVILEGED = { CapInh: NO_CAPABILITIES, CapPrm: NO_CAPABILITIES, CapEff: NO_CAPABILITIES, CapBnd: NO_CAPABILITIES, CapAmb: NO_CAPABILITIES, NoNewPrivs: "1" };
 
 /** What exec.run of argv prints in a computer whose user is uid, as `user` (a name in users, or a uid) when given. */
-function output(argv, { uid, status, users, user }) {
+function output(argv, { uid, status, users, user, probe, pathSockets = [], socketSearchIncomplete = [] }) {
 	const who = user === undefined ? uid : String(users[user] ?? user);
 	if (argv[0] === "id" && argv[1] === "-u") return `${who}\n`;
+	if (argv[0] === "/opt/agentrun/computerd" && argv[1] === "probe") {
+		// computerd probe --connect <target>...: the interfaces the computer's programs see, the path unix sockets they
+		// connect to (none listed when pathSockets is "no list", a daemon too old to list them), and each target refused
+		// unless the fake's vendor agent answers it.
+		const asked = argv[2] === "--sockets";
+		const targets = argv.slice(asked ? 3 : 2).filter((_, i) => i % 2 === 1);
+		const answered = targets.filter((target) => probe.answers.includes(target));
+		const results = targets.map((target) => ({ target, protocol: "any", outcome: answered.includes(target) ? "answered" : "refused", bytes: answered.includes(target) ? 12 : 0, detail: "" }));
+		// As computerd reports them: each socket by its path and the type that connected (a bare path is a stream one), and
+		// the roots the search could not cover whole.
+		const listed = pathSockets === "no list" ? [] : pathSockets.map((socket) => (typeof socket === "string" ? { path: socket, type: "stream" } : socket));
+		const sockets = !asked || pathSockets === "no list" ? {} : { sockets: { sockets: listed, incomplete: socketSearchIncomplete } };
+		return `${JSON.stringify({ uid: Number(who), gid: Number(who), kernel: "6.8.0", interfaces: probe.interfaces, quiet: probe.quiet ?? [], raised: probe.raised ?? [], ...sockets, reached: answered, accepted: [], results })}\n`;
+	}
 	if (argv[0] === "cat" && argv[1] === "/proc/self/status") {
 		const lines = Object.entries(status).filter(([, value]) => value !== undefined);
 		return `Uid:\t${who}\n${lines.map(([field, value]) => `${field}:\t${value}\n`).join("")}`;
@@ -50,8 +105,19 @@ function processes(computer, method, params) {
 /** files.mkdir, files.write and files.list over a computer's tree of paths; list pages hold filesPage entries. */
 function files(computer, method, params) {
 	const tree = computer.tree;
+	const host = bound(computer, params.path);
+	if (host !== undefined && method === "files.write") {
+		writeFileSync(host, Buffer.from(params.data, "base64"), { mode: 0o644 });
+		return { size: Buffer.from(params.data, "base64").length };
+	}
+	if (method === "files.read") {
+		const data = host === undefined ? computer.contents.get(params.path) : (() => { try { return readFileSync(host); } catch { return undefined; } })();
+		if (data === undefined) return { error: { code: -32000, message: `no such file: ${params.path}`, data: { kind: "not_found" } } };
+		return { data: data.toString("base64"), eof: true, size: data.length };
+	}
 	if (method === "files.mkdir") tree.set(params.path, "dir");
 	if (method === "files.write") tree.set(params.path, "file");
+	if (method === "files.write") computer.contents.set(params.path, Buffer.from(params.data, "base64"));
 	if (method === "files.write") return { size: Buffer.from(params.data, "base64").length };
 	if (method !== "files.list") return {};
 	const depth = params.depth ?? 1;
@@ -79,12 +145,32 @@ function fakeDaemon(hello, computer) {
 			buffered = buffered.slice(at + 1);
 			if (typeof request.id !== "number") continue;
 			const reply = (body) => fromDaemon.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
-			if (request.method === "hello") reply({ result: hello });
+			// A desktop's hello says its display, as computerd's does.
+			if (request.method === "hello") reply({ result: hello.kind === "desktop" && computer.display !== undefined ? { ...hello, display: computer.display } : hello });
 			else if (request.method === "ping") reply({ result: {} });
-			else if (request.method === "exec.run") {
-				const stdout = output(request.params.argv, { ...computer, user: request.params.user });
-				reply({ result: { exitCode: 0, stdout: b64(stdout), stderr: "", timedOut: false, truncated: false } });
-			} else if (["files.mkdir", "files.write", "files.list"].includes(request.method)) reply({ result: files(computer, request.method, request.params) });
+			else if (request.method === "exec.run" && (request.params.maxOutput ?? 0) > MAX_OUTPUT_BYTES) {
+				// As computerd refuses it: more output than one reply line holds.
+				reply({ error: { code: -32602, message: `maxOutput ${request.params.maxOutput} is over the most a reply line holds, ${MAX_OUTPUT_BYTES}`, data: { kind: "invalid" } } });
+			} else if (request.method === "exec.run") {
+				const cat = catOf(request.params.argv, request.params.cwd, computer);
+				// A computer has no sudo for its user (the Archil image ships none).
+				const sudo = request.params.argv.join(" ").includes("sudo -n") ? { exitCode: 127, stdout: "", stderr: "sh: sudo: not found\n" } : undefined;
+				// nvidia-smi -L: one line per GPU the computer was made with and its user sees, else not found.
+				const smi =
+					request.params.argv[0] === "sh" && request.params.argv[2] === "nvidia-smi -L"
+						? computer.gpus
+							? { exitCode: 0, stdout: Array.from({ length: computer.gpus.count }, (_, i) => `GPU ${i}: NVIDIA ${computer.gpus.type} (UUID: GPU-${i}-fake)\n`).join(""), stderr: "" }
+							: { exitCode: 127, stdout: "", stderr: "sh: nvidia-smi: not found\n" }
+						: undefined;
+				const ran = cat ?? sudo ?? smi ?? appendOf(request.params.argv, computer) ?? { exitCode: 0, stdout: output(request.params.argv, { ...computer, user: request.params.user }), stderr: "" };
+				reply({ result: { exitCode: ran.exitCode, stdout: b64(ran.stdout), stderr: b64(ran.stderr), timedOut: false, truncated: false } });
+			} else if (request.method === "files.read" && request.params.path === "/proc/self/environ") {
+				// Root's once init has dropped to its programs' uid (non-dumpable), as on a real computer: unreadable.
+				reply({ error: { code: -32000, message: "open /proc/self/environ: permission denied", data: { kind: "denied" } } });
+			} else if (["files.mkdir", "files.write", "files.list", "files.read"].includes(request.method)) {
+				const result = files(computer, request.method, request.params);
+				reply(result.error ? { error: result.error } : { result });
+			}
 			else if (["process.start", "process.wait", "process.signal", "process.list"].includes(request.method)) {
 				const result = processes(computer, request.method, request.params);
 				if (result === undefined) reply({ error: { code: -32000, message: `no process ${request.params.id}`, data: { kind: "not_found" } } });
@@ -105,7 +191,10 @@ function fakeDaemon(hello, computer) {
  * - `status`: /proc/self/status fields over the unprivileged ones, in every computer (a value of undefined drops the
  *   line); `statusForUser`: the same, in a computer whose spec asked for a user.
  * - `createRejects`: create rejects with that message. `createIgnoresCheck`: create makes a computer check refuses.
+ * - `notes`: create returns these notes beside the ref, as a provider records what a read-back found (silent accepts).
  * - `listPage`: how many processes one process.list page holds. `filesPage`: how many entries one files.list page holds.
+ * - `declaresStopDeletes`: capabilities().stopDeletes, left out unless given. `stopIgnored`: a stop does nothing, and the
+ *   computer runs on.
  * - `networkSwitches`: network() applies a change to a network the provider declares, instead of refusing every change.
  *   Each network() call that asks for a policy is in `calls` as ["network", name, policy].
  * - `attachSpec`: merged over the spec attach reports (null: attach reports none).
@@ -113,6 +202,27 @@ function fakeDaemon(hello, computer) {
  *   `unsupported` and leaves the computer running, unless `stopAnyway`; `stopDeletes`: a stop deletes the computer.
  * - `kind`, `mode` (capabilities().daemon), `groups`, `maxLifetimeMs`: what capabilities() declares; check() refuses a
  *   lifetime past maxLifetimeMs. `hello` is merged over the hello the daemon gives.
+ * - `mount`: the mount kinds capabilities() declares (absent: none); check() refuses any other kind. A computer made with
+ *   a mount reaches the run's folder at /workspace: a bind's path, or an Archil mount's folder under `disks[disk]`, a
+ *   folder on this machine standing for the disk. attach() and list() read the mount back, without the token.
+ * - `brokenMount`: "unbound" (the mount is read back, but nothing is bound at /workspace), "no-read-back" (attach and
+ *   list report no mount), "token-in-read-back" (attach reports the token), "token-in-label" (the computer carries the
+ *   token as a label), "check-ignores" (check() takes any mount kind, declared or not), "host-refuses" (check()
+ *   refuses even a kind the provider declares, as a Docker host that remaps user ids refuses a bind), "no-region"
+ *   (an Archil mount reads back without its region).
+ * - `listIgnoresLabels`: list() gives every computer, whatever labels it was asked for.
+ * - `failRelease`: labels; a release of a computer that carries all of them fails ("refused", in words) and leaves it.
+ * - `vendorAgentPorts`: capabilities().vendorAgentPorts, left out unless given. `probeInterfaces`: the interfaces
+ *   `computerd probe` reports (default the loopback alone); `agentAnswers`: the probe targets that answer (default none).
+ * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
+ *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
+ *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
+ *   claim's run and epoch, refusing a claim of the same run below the epoch it carries. Without it, an owner and a detach
+ *   are refused in words. `brokenPersistence`: "detach-deletes" (a detach deletes the computer), "forgets" (an attach
+ *   brings it back with no files), "no-fence" (a claim below the epoch is taken).
+ * - `gpu`: capabilities().gpu, left out unless given (a computer asked with one has it, read back by attach and listed by
+ *   nvidia-smi -L inside); `gpuUnseen`: its programs see no GPU (nvidia-smi not found); `gpuReadBack`: what attach
+ *   reports instead; `checkIgnoresGpu`: check() takes any spec.gpu, declared or not.
  */
 export function fakeComputers({
 	id = "fake",
@@ -139,13 +249,51 @@ export function fakeComputers({
 	createRejects,
 	createIgnoresCheck = false,
 	listPage = 100,
+	notes,
+	declaresStopDeletes,
+	stopIgnored = false,
 	networkSwitches = false,
 	attachSpec = {},
 	release = ["stop", "delete"],
 	stopAnyway = false,
 	stopDeletes = false,
 	filesPage = 100,
+	mount,
+	disks = {},
+	brokenMount,
+	listIgnoresLabels = false,
+	failRelease,
+	vendorAgentPorts,
+	probeInterfaces = ["lo"],
+	probeQuiet = [],
+	probeRaised = [],
+	agentAnswers = [],
+	toolCannotWrite = false,
+	pathSockets = [],
+	socketSearchIncomplete = [],
+	display,
+	persistence,
+	brokenPersistence,
+	gpu,
+	gpuUnseen = false,
+	gpuReadBack,
+	checkIgnoresGpu = false,
 } = {}) {
+	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
+	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
+	const readBack = (asked, labels = {}) => {
+		if (asked === undefined || brokenMount === "no-read-back") return {};
+		if (asked.kind === "bind") return { mount: { kind: "bind", path: asked.path } };
+		const epoch = epochOf(labels);
+		if (!epoch.ok) return { mount: { other: `an Archil mount of ${asked.disk}:/${asked.folder}: ${epoch.error.message}` } };
+		const region = brokenMount === "no-region" ? {} : { region: asked.region };
+		const token = brokenMount === "token-in-read-back" ? { token: asked.token } : {};
+		return { mount: { kind: "archil", disk: asked.disk, ...region, folder: asked.folder, exclusive: true, epoch: epoch.value, ...token } };
+	};
+	const folderOf = (asked) => {
+		if (asked === undefined || brokenMount === "unbound") return undefined;
+		return asked.kind === "bind" ? asked.path : join(disks[asked.disk], asked.folder);
+	};
 	const computers = new Map();
 	const made = [];
 	const calls = [];
@@ -154,13 +302,38 @@ export function fakeComputers({
 	const provider = {
 		id,
 		version,
-		capabilities: () => ({ kind, lifetime, network, isolation: "container", os: "linux", daemon: mode, groups, maxLifetimeMs, release, ...(user ? { user } : {}) }),
+		capabilities: () => ({
+			kind,
+			lifetime,
+			network,
+			isolation: "container",
+			os: "linux",
+			daemon: mode,
+			groups,
+			maxLifetimeMs,
+			release,
+			...(user ? { user } : {}),
+			...(mount ? { mount } : {}),
+			...(vendorAgentPorts ? { vendorAgentPorts } : {}),
+			...(persistence ? { persistence } : {}),
+			...(gpu ? { gpu } : {}),
+		}),
 		check(spec) {
 			const refusals = [];
-			if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
+			if (spec.mount !== undefined && !(mount ?? []).includes(spec.mount.kind) && brokenMount !== "check-ignores") {
+				refusals.push({ field: "mount", message: `this provider takes no mount of kind ${spec.mount.kind}` });
+			} else if (spec.mount !== undefined && brokenMount === "host-refuses") {
+				refusals.push({ field: "mount", message: "this host cannot bind the run folder" });
+			}
+			if (spec.owner !== undefined && !persistence) refusals.push({ field: "owner", message: "this fake keeps no computer for an agent" });
+			else if (spec.owner !== undefined && spec.lifetimeMs !== undefined) refusals.push({ field: "lifetimeMs", message: "an agent's computer has no run deadline" });
+			else if (spec.owner !== undefined) {
+				// An agent's computer: no lifetime to check.
+			} else if (!(Number.isSafeInteger(spec.lifetimeMs) && spec.lifetimeMs > 0)) refusals.push({ field: "lifetimeMs", message: "lifetimeMs is required" });
 			else if (spec.lifetimeMs > maxLifetimeMs) refusals.push({ field: "lifetimeMs", message: `lifetimeMs is at most ${maxLifetimeMs} ms` });
 			const kind = typeof spec.network === "string" ? spec.network : "allow";
 			if (!network.includes(kind)) refusals.push({ field: "network", message: `network ${kind} is not offered` });
+			if (!checkIgnoresGpu) refusals.push(...checkGpu(spec.gpu, { gpu }));
 			return refusals;
 		},
 		async create(spec) {
@@ -175,9 +348,16 @@ export function fakeComputers({
 			const record = {
 				ref: { id: `id-${next}`, name },
 				image: spec.image,
-				labels: { ...spec.labels },
+				labels: {
+					...spec.labels,
+					...(brokenMount === "token-in-label" && spec.mount?.token ? { "mount.token": spec.mount.token } : {}),
+					...(spec.owner !== undefined ? ownerLabels(spec.owner) : {}),
+				},
 				network: spec.network,
-				deadline: new Date(Date.now() + spec.lifetimeMs),
+				mount: spec.mount,
+				owner: spec.owner,
+				gpu: spec.gpu,
+				deadline: spec.owner !== undefined ? undefined : new Date(Date.now() + spec.lifetimeMs),
 				state: "running",
 				daemon: {
 					uid: spec.user ?? String(uid),
@@ -191,28 +371,55 @@ export function fakeComputers({
 					processes: [],
 					listPage,
 					tree: new Map(),
+					contents: new Map(),
 					filesPage,
+					bound: folderOf(spec.mount),
+					toolCannotWrite,
+					pathSockets,
+					socketSearchIncomplete,
+					display,
+					...(spec.gpu && !gpuUnseen ? { gpus: spec.gpu } : {}),
+					probe: { interfaces: probeInterfaces, quiet: probeQuiet, raised: probeRaised, answers: agentAnswers },
 				},
 			};
 			computers.set(name, record);
 			made.push({ name, labels: record.labels });
-			return ok(record.ref);
+			return ok(notes ? { ...record.ref, notes } : record.ref);
 		},
-		async attach(ref) {
+		async attach(ref, context = {}) {
 			const found = [...computers.values()].filter((c) =>
 				"id" in ref ? c.ref.id === ref.id : Object.entries(ref.labels).every(([k, v]) => c.labels[k] === v),
 			);
 			if (found.length === 0) return fail("not_found", "no such computer");
 			if (found.length > 1) return fail("invalid", `${found.length} computers match`);
 			const [c] = found;
+			const claim = context.claim;
+			if (claim !== undefined) {
+				if (!persistence || c.owner === undefined) return fail("refused", `${c.ref.name} is a run's computer: no claim takes it`);
+				const carried = epochOf(c.labels);
+				if (c.labels[RUN_LABEL] === claim.run && carried.ok && claim.epoch < carried.value && brokenPersistence !== "no-fence") {
+					return fail("refused", `fenced: ${c.ref.name} carries run ${claim.run} at epoch ${carried.value}, above the claim's ${claim.epoch}`);
+				}
+				c.labels = { ...c.labels, [RUN_LABEL]: claim.run, [EPOCH_LABEL]: String(claim.epoch) };
+				if (c.state === "stopped") {
+					// Back from a detach: with resume as it was; else booted again from its kept disk, no process running.
+					if (!persistence.resume) c.daemon.processes = [];
+					if (brokenPersistence === "forgets") c.daemon.contents = new Map();
+				}
+				c.state = "running";
+				c.detachedAt = undefined;
+			}
 			const [u, g = u] = c.daemon.uid.split(":");
-			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline };
+			const gpus = gpuReadBack === undefined ? c.gpu : gpuReadBack;
+			const read = { image: c.image, user: `${u}:${g}`, network: c.network, deadline: c.deadline, ...readBack(c.mount, c.labels), ...(gpus ? { gpu: gpus } : {}) };
 			return ok(attachSpec === null ? { ...c.ref } : { ...c.ref, spec: { ...read, ...attachSpec } });
 		},
 		async list(labels) {
 			calls.push(["list", labels]);
-			const found = [...computers.values()].filter((c) => Object.entries(labels).every(([k, v]) => c.labels[k] === v));
-			return ok(found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network })));
+			const found = [...computers.values()].filter((c) => listIgnoresLabels || Object.entries(labels).every(([k, v]) => c.labels[k] === v));
+			return ok(
+				found.map((c) => ({ ref: c.ref, labels: c.labels, deadline: c.deadline, state: c.state, network: c.network, ...readBack(c.mount, c.labels), ...(c.detachedAt ? { detachedAt: c.detachedAt } : {}) })),
+			);
 		},
 		async network(ref, policy) {
 			const record = computers.get(ref.name);
@@ -227,7 +434,7 @@ export function fakeComputers({
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
 			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
-			const value = { version, os: "linux", kind, arch: "amd64", groups, ...hello };
+			const value = { protocol: PROTOCOL_VERSION, version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
 			const client = new DaemonClient(fakeDaemon(value, computers.get(ref.name).daemon));
@@ -241,13 +448,76 @@ export function fakeComputers({
 		async release(ref, how) {
 			calls.push(["release", ref.name, how]);
 			if (releaseHangs) return new Promise(() => {});
+			if (how === "stop" && stopIgnored) return ok(undefined);
 			const record = computers.get(ref.name);
+			if (record && failRelease && Object.entries(failRelease).every(([k, v]) => record.labels[k] === v)) {
+				return fail("refused", `the fake cannot ${how} ${ref.name}`);
+			}
 			if (how === "stop" && !release.includes("stop") && !stopAnyway) return fail("unsupported", "this fake has no stop that keeps a computer; release it with delete");
+			if (how === "detach") {
+				if (!persistence) return fail("unsupported", "this fake keeps no computer for an agent: release it with delete");
+				if (record && record.owner === undefined) return fail("refused", `${ref.name} is a run's computer: it does not detach`);
+				if (record && brokenPersistence === "detach-deletes") computers.delete(ref.name);
+				else if (record) Object.assign(record, { state: "stopped", detachedAt: new Date() });
+				return ok(undefined);
+			}
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
 			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
 			return ok(undefined);
 		},
 	};
+	// stopDeletes as declared, apart from the line that declares the rest.
+	if (declaresStopDeletes !== undefined) {
+		const declared = provider.capabilities;
+		provider.capabilities = () => ({ ...declared(), stopDeletes: declaresStopDeletes });
+	}
 	return { provider, made, calls, alive: () => [...computers.keys()], open: () => connections };
+}
+
+/**
+ * Run folders for the fake, as a provider's conformance module gives them: `mountFor(kind)` makes a fresh folder on this
+ * machine and the mount that reaches it (a bind of it, or an Archil folder on the fake disk `disks` names), read and
+ * written from outside the computer. `closed()` names each folder's mount once the runner has closed it.
+ */
+export function fakeRunFolders() {
+	// Made on the first Archil folder only, so a run of bind folders leaves no disk behind.
+	let made;
+	const diskDir = () => (made ??= mkdtempSync(join(tmpdir(), "computer-fake-disk-")));
+	const closed = [];
+	const at = (dir, mount) => ({
+		mount,
+		read: async (path) => {
+			try {
+				return readFileSync(join(dir, path));
+			} catch {
+				return undefined;
+			}
+		},
+		// A path ending in / is a folder, as the disk's object API makes one.
+		write: async (path, data) => (path.endsWith("/") ? mkdirSync(join(dir, path), { recursive: true }) : writeFileSync(join(dir, path), data)),
+		close: async () => {
+			closed.push(mount);
+			rmSync(dir, { recursive: true, force: true });
+		},
+	});
+	const mountFor = (kind) => {
+		if (kind === "bind") {
+			const dir = realpathSync(mkdtempSync(join(tmpdir(), "computer-run-")));
+			return at(dir, { kind: "bind", path: dir });
+		}
+		if (kind !== "archil") return undefined;
+		const folder = `runs/${randomBytes(4).toString("hex")}`;
+		mkdirSync(join(diskDir(), folder), { recursive: true });
+		return at(join(diskDir(), folder), { kind: "archil", disk: "fake-disk", region: "fake-region-1", folder, token: `archil-token-${randomBytes(8).toString("hex")}` });
+	};
+	const disks = {
+		get "fake-disk"() {
+			return diskDir();
+		},
+	};
+	const remove = () => {
+		if (made !== undefined) rmSync(made, { recursive: true, force: true });
+	};
+	return { mountFor, disks, closed: () => closed, remove };
 }

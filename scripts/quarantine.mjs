@@ -4,7 +4,7 @@
 // pull request until the test is fixed and its entry removed (or, with the lead's yes, the entry renewed).
 //
 // A quarantined test carries its skip inline, so no test imports this file:
-//   test("name", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F33 (tl-tools) until 2026-11-06T01:00Z, scripts/quarantine.json" }, ...)
+//   test("name", { skip: process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED && "quarantined F33 (tools) until 2026-11-06T01:00Z, scripts/quarantine.json" }, ...)
 // (vitest: `it.skipIf(process.env.CI && !process.env.AGENTRUN_RUN_QUARANTINED)("name", ...)` with the same marker in a comment
 // on that line). Locally the test still runs; AGENTRUN_RUN_QUARANTINED=1 runs it on CI too.
 //

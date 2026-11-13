@@ -2,15 +2,15 @@
 // adds to the run's usage row.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS } from "@parcha/pi-durable-agent/timeline";
+import { CAPS } from "../dist/timeline/index.js";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
-import { soFarOf } from "../dist/runs.js";
+import { soFarOf } from "../dist/run-view.js";
 
 const receipt = (over = {}) => ({
   id: "d1", at: "2026-10-29T23:00:00.000Z", node: "document_checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered",
   answers: { is_coi: { type: "noul", noul: 0.97 }, internally_consistent: { type: "noul", noul: 0.09 } }, cost_usd: 0.004, ...over,
 });
-/** Userinfo is built at run time, so no credential-shaped URL sits in the source (as pi-durable-agent's timeline tests do). */
+/** Userinfo is built at run time, so no credential-shaped URL sits in the source. */
 const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
 const usageRow = (usd, requests) => ({ id: "1:usage", timestamp: "2026-10-29T23:00:05.000Z", created_at: "2026-10-29T23:00:05.000Z", kind: "usage", summary: "Cost so far", agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, usage: { usd, requests } });
 

@@ -1,8 +1,9 @@
 // One booking rule (booking.ts) for a request the model proxy forwards under a cap, through the runner's booking: never
 // under-count. A gateway that gave up (504, 524) books the hold, since the provider was still at work. A request refused
 // at connect never left: nothing. An error answer cut part way is still an error answer: nothing. Any other failure once
-// the request left books the hold, and a later process reads the figure the first one booked, as written. No network:
-// the provider is a scripted fetch.
+// the request left books the hold, and a later process reads the figure the first one booked, as written. An error answer
+// passes on the provider's retry headers, so the client's retry waits as long as the provider asked. No network: the
+// provider is a scripted fetch.
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
@@ -66,6 +67,35 @@ test('a guard: a reset once the request left, an error answer, and an answer cut
   assert.equal((await booked(t, refusedWith('ECONNRESET'))).booking.spentUsd(), HOLD, 'a reset: the hold');
   assert.equal((await booked(t, async () => new Response('slow down', { status: 429 }))).booking.spentUsd(), 0, 'a 429: nothing');
   assert.equal((await booked(t, cut(200))).booking.spentUsd(), HOLD, 'an answer cut part way: the hold');
+});
+
+/** The status and headers the client gets for one request through the proxy, with `fetch` as the provider. */
+async function answered(t, fetch) {
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => ({}), afterRequest: async () => {} }, price: () => 0.001, log: () => {}, fetch }, KEY);
+  t.after(() => p.close());
+  const { hostname, port } = new URL(p.url);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => { res.resume(); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers })); });
+    req.on('error', reject);
+    req.end('{}');
+  });
+}
+const RETRY = { 'retry-after': '1', 'retry-after-ms': '1000', 'x-should-retry': 'true' };
+
+test("an error answer passes on the provider's word on asking again (retry-after, retry-after-ms, x-should-retry), so the client's retry waits as asked; its other headers stay behind", async (t) => {
+  for (const status of [429, 503]) {
+    const { status: got, headers } = await answered(t, async () => new Response('{"error":{"message":"fleet capacity exhausted"}}', { status, headers: { 'content-type': 'application/json', ...RETRY, 'set-cookie': 'session=provider-cookie', 'x-provider-internal': 'kept back' } }));
+    assert.equal(got, status);
+    for (const [name, value] of Object.entries(RETRY)) assert.equal(headers[name], value, `${status}: ${name} passed on`);
+    assert.equal(headers['set-cookie'], undefined, `${status}: a cookie stays behind`);
+    assert.equal(headers['x-provider-internal'], undefined, `${status}: another header stays behind`);
+  }
+});
+
+test("a guard: an answer that is no error passes on no retry header, as before", async (t) => {
+  const { status, headers } = await answered(t, async () => new Response('{"usage":{"in":1,"out":1}}', { status: 200, headers: { 'content-type': 'application/json', ...RETRY } }));
+  assert.equal(status, 200);
+  for (const name of Object.keys(RETRY)) assert.equal(headers[name], undefined, `${name} not passed on`);
 });
 
 test('a guard: a record from before the booking rule (no booked figure) is read as it always was', async () => {

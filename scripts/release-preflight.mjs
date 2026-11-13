@@ -9,22 +9,22 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
-import { hasVersionSection, loadFragments, ownVersionPackages, unreleasedSection } from './changes.mjs';
+import { changelogPaths, fold, hasVersionSection, loadFragments, ownVersionPackages, previousRelease, sectionDate, unreleasedSection } from './changes.mjs';
 import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
-// The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
-// packages after them that depend on none of them (the TypeScript client, client, depends on no package at all) or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent,
+// The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev, which uses it), the
+// packages after them that depend on none of them (pi-browser; the computer protocol, computer, and the TypeScript client, client, depend on no package at all), serve (@parcha/agentrun-serve), which uses the packages before it,
 // and agentrun (`npx @parcha/agentrun`, on its own version line), which depends on serve at its exact version, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', 'pi-browser': '@parcha/pi-browser', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The packages on a version line of their own (changes.mjs says why), checked and named at their manifest's version.
 export { ownVersionPackages };
 const releaseVersion = (directory, manifest, workspaceVersion) => (ownVersionPackages.includes(directory) ? manifest.version : workspaceVersion);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
-export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, transport: true, agent: true, serve: true, decisions: true, adapters: true, network: 'prohibited' };
+export const runtimeSmokeChecks = { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, client: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,8 +74,7 @@ export function checkManifest(manifest, directory, version, license, workspaceVe
   assert.equal(manifest.publishConfig?.access, 'public', 'Publication must explicitly be public');
   assert.equal(manifest.publishConfig?.tag, 'beta', 'This release workflow only publishes beta');
   if (manifest.publishConfig.registry !== undefined) assert.equal(manifest.publishConfig.registry, 'https://registry.npmjs.org/', 'Unexpected publication registry');
-  if (directory === 'jev' || directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
-  if (directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-jev'], version, 'Pi must use the exact Jev release version');
+  if (directory === 'jev') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
   // `npx @parcha/agentrun` installs the server it was released with: its one dependency, at this release's exact version.
   if (directory === 'agentrun') assert.deepEqual(manifest.dependencies, { '@parcha/agentrun-serve': workspaceVersion }, `@parcha/agentrun must depend on @parcha/agentrun-serve at the release version ${workspaceVersion}, and on nothing else`);
 }
@@ -98,11 +97,47 @@ export async function checkReleaseAudit(root, counts, now = Date.now()) {
   assert.deepEqual(blocking, [], 'High dependency advisories block publication');
 }
 
+/**
+ * Refuses a working tree that is not the tagged commit plus the release workflow's fold of `version` (node scripts/changes.mjs --fold):
+ * the only changes are the fragments the tag carried, deleted, and changelogs, and every changelog is exactly what that fold writes,
+ * recomputed here from the tag's own changelogs, manifests and fragments. The fragments a tag carries belong to pull requests that
+ * merged after the release pull request's fold; their code is in the tag, so the archives' changelogs list them. Returns their names.
+ */
+export async function checkReleaseTree(root, tag, version) {
+  const git = async args => (await exec('git', args, { cwd: root, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  const ref = `refs/tags/${tag}`;
+  const date = sectionDate(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), version);
+  assert.ok(date, `CHANGELOG.md has no dated section for ${version}`);
+  const scratch = await mkdtemp(join(tmpdir(), 'agentrun-release-fold-'));
+  try {
+    // What the fold reads, as the tag has it: the changelogs, the package manifests (held or published), and changes/.
+    const paths = (await git(['ls-tree', '-r', '--name-only', ref, '--', 'CHANGELOG.md', 'changes', 'packages'])).split('\n')
+      .filter(path => path === 'CHANGELOG.md' || /^changes\/[^/]+$/.test(path) || /^packages\/[^/]+\/(?:package\.json|CHANGELOG\.md)$/.test(path));
+    for (const path of paths) {
+      await mkdir(dirname(join(scratch, path)), { recursive: true });
+      await writeFile(join(scratch, path), await git(['show', `${ref}:${path}`]));
+    }
+    const carried = (await loadFragments(scratch)).map(fragment => fragment.file);
+    await fold(scratch, version, date, { previous: await previousRelease(root, version) });
+    const strays = (await git(['status', '--porcelain', '--untracked-files=all'])).split('\n').filter(Boolean).filter(line => {
+      const [code, path] = [line.slice(0, 2).trim(), line.slice(3)];
+      return !((code === 'D' && carried.includes(path.slice('changes/'.length)) && path.startsWith('changes/')) || (code === 'M' && paths.includes(path) && path.endsWith('CHANGELOG.md')));
+    });
+    assert.deepEqual(strays, [], 'Release source must be the tagged commit plus the changelog fold (node scripts/changes.mjs --fold); nothing else may differ');
+    const text = path => readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    const differs = [];
+    for (const path of await changelogPaths(root)) if (await text(join(root, path)) !== await text(join(scratch, path))) differs.push(path);
+    assert.deepEqual(differs, [], `These changelogs are not the fold of ${tag}'s fragments into ${version}; run node scripts/changes.mjs --fold ${version} on the tag and change nothing else`);
+    return carried;
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
 export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   const workspace = await json(join(root, 'package.json'));
   assert.match(workspace.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'Only an explicit beta version can be released');
   assert.equal(tag, `v${workspace.version}`, 'Tag must match the exact workspace version');
-  // The release folds the changes/ fragments into the changelogs first (node scripts/changes.mjs --fold <version>).
+  // The release workflow folds the changes/ fragments its tag carries into the changelogs first (node scripts/changes.mjs --fold <version>),
+  // uncommitted, so the archives it verifies and publishes carry them.
   const unfolded = await loadFragments(root);
   assert.deepEqual(unfolded.map(fragment => fragment.file), [], 'Unfolded changelog fragments remain in changes/; run node scripts/changes.mjs --fold');
   assert.ok(hasVersionSection(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), workspace.version), `CHANGELOG.md has no section for ${workspace.version}`);
@@ -117,7 +152,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   if (checkGit) {
     commit = await command('git', ['rev-parse', 'HEAD'], root);
     assert.equal(await command('git', ['rev-parse', `refs/tags/${tag}^{commit}`], root), commit, 'Release tag must identify the checked-out source');
-    assert.equal(await command('git', ['status', '--porcelain'], root), '', 'Release source must be committed and clean');
+    await checkReleaseTree(root, tag, workspace.version);
     if (process.env.GITHUB_ACTIONS === 'true') checkReleaseDispatch(tag, commit, process.env);
   }
   const receipt = await json(join(root, '.release/verification.json'));

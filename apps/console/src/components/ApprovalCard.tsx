@@ -1,6 +1,7 @@
 import { ShieldQuestion } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/field";
 import { argsShown, priceLine } from "@/lib/approval";
 import { cn } from "@/lib/utils";
 import type { PendingApproval } from "@/lib/v2";
@@ -42,26 +43,26 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
   return (
     <section aria-label="Approval required" className={cn("min-w-0 border border-warning/50 bg-warning/5", compact ? "p-4" : "p-4 md:p-5")}>
       {heading}
-      <p className={cn("caps flex items-center gap-2 text-[11px] text-warning-text", heading && "mt-2")}><ShieldQuestion className="size-3.5" aria-hidden /> Approval required</p>
-      <p className="mt-2 text-[15px] leading-snug">The agent wants to run <span className="break-all font-mono text-[14px]">{pending.tool}</span>.</p>
-      <pre aria-label={`${pending.tool} arguments`} title={pending.args_preview} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all border bg-card p-3 font-mono text-[12px] leading-[1.6]", compact ? "max-h-28" : "max-h-64")}>{argsShown(pending.args_preview)}</pre>
-      {price && <p className="mt-2 font-mono text-[12px] text-muted-foreground">{price}</p>}
+      <p className={cn("caps flex items-center gap-2 text-label text-warning-text", heading && "mt-2")}><ShieldQuestion className="size-3.5" aria-hidden /> Approval required</p>
+      <p className="mt-2 text-prose leading-snug">The agent wants to run <span className="break-all font-mono text-lead">{pending.tool}</span>.</p>
+      <pre aria-label={`${pending.tool} arguments`} title={pending.args_preview} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all border bg-card p-3 font-mono text-small leading-[1.6]", compact ? "max-h-28" : "max-h-64")}>{argsShown(pending.args_preview)}</pre>
+      {price && <p className="mt-2 font-mono text-small text-muted-foreground">{price}</p>}
       {said ? (
-        <p className="mt-3 font-mono text-[13px] text-success-text" role="status">{said === "allow" ? "Allowed. The run goes on." : "Denied. The agent reads why and goes on."}</p>
+        <p className="mt-3 font-mono text-body text-success-text" role="status">{said === "allow" ? "Allowed. The run goes on." : "Denied. The agent reads why and goes on."}</p>
       ) : (
         <div className="mt-3 space-y-2">
           <label className="block">
-            <span className="text-[12px] text-muted-foreground">Tell the agent why (optional, sent with Deny)</span>
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX} rows={compact ? 1 : 2} disabled={busy}
-              className="mt-1 block w-full resize-y border bg-background px-3 py-2 text-[14px] outline-none focus:border-border-strong disabled:opacity-60" />
+            <span className="text-small text-muted-foreground">Tell the agent why (optional, sent with Deny)</span>
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX} rows={compact ? 1 : 2} disabled={busy}
+              className="mt-1 block resize-y py-2 font-sans text-lead" />
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="solid" size="sm" disabled={busy} onClick={() => void answer("allow")}>Allow once</Button>
             <Button type="button" size="sm" disabled={busy} onClick={() => void answer("deny")}>Deny</Button>
-            {busy && <span className="font-mono text-[12px] text-muted-foreground">Sending…</span>}
+            {busy && <span className="font-mono text-small text-muted-foreground">Sending…</span>}
           </div>
-          {!compact && <p className="text-[12px] text-muted-foreground">or type what to do instead; sending it declines this call</p>}
-          {problem && <p className="font-mono text-[12px] text-destructive-text" role="alert">{problem}</p>}
+          {!compact && <p className="text-small text-muted-foreground">or type what to do instead; sending it declines this call</p>}
+          {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
         </div>
       )}
     </section>
