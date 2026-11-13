@@ -35,11 +35,13 @@ export const pairedOf = (row: PairedComputerRow): PairedComputer => ({
   labels: { ...row.labels },
 });
 
-/** The setting kinds the attach path has no connection for, with why and what to pair instead: a browser session needs
- *  a CDP connection, which the attach socket does not carry. Kind-based, never by OS: a driver whose hello serves one of
+/** The setting kinds the attach path cannot serve, with why and what to pair instead: a browser session needs a CDP
+ *  connection, which the attach socket does not carry, and a sandbox needs the run's folder mounted, which a paired
+ *  computer has no mount for (resolve-computer.ts refuses a sandbox without one). Kind-based, never by OS: a driver whose hello serves one of
  *  these and no other kind is refused at pairing, and a paired row of one serves nothing. */
 const ATTACH_CANNOT: Readonly<Partial<Record<ComputerSettingKind, string>>> = {
   browser: "a paired computer can't serve browser sessions yet, so pair a desktop or phone driver",
+  sandbox: "a paired computer can't mount a run's folder yet, so no agent could run a sandbox on it: pair a desktop or phone driver",
 };
 
 /** What a driver's hello lacks to serve `kind`, by the kind registry's rule (the computer package's SETTING_KINDS, which
