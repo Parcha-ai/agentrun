@@ -53,13 +53,14 @@ import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { mcpServersOf } from "../tool-gate.js";
-import { claimSecrets, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
+import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
-import { TOOL_PLANE_ENV } from "../tool-plane.js";
+import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
+import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliModelWorked, cliRunMetrics } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { pastOf, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
@@ -500,7 +501,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
       // own MCP as the loop wraps it. Its model nodes run on the session's one model: what each node's trace says it ran on.
       gate.learn(workflows);
-      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), modelName: () => chosen.model.modelId });
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId });
     }
   }
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
@@ -533,6 +534,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     signIns: signInReads(deps.store, deps.sealKey),
     handed: handedKeys,
     stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
+    // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
+    decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
@@ -570,20 +573,19 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // session of its journal), as a pi run's are at its answers' costs and tokens.
     endPatch: async () => {
       const entries = await entriesOf(deps.journal(claim), ROOT_CONVERSATION_ID, context);
-      // Its tokens and model requests, and its model requests' cost, from one read of its booking (cliRunMetrics); its
-      // decisions (a learned workflow's) at what they were booked at too.
+      // Its tokens and model requests, and its model requests' cost, from one read of its booking (cliRunMetrics). Its
+      // model requests and its decisions (a learned workflow's, LS-07) at what they were booked at (bookedSpend), and its
+      // paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own session,
+      // are the run's cost (runEndCost: unknown when any part is), as the pi spec's.
       const all = (await journalEntries(deps.journal(claim), context)) as never;
       const booked = bookedSpend(all, "model");
       const metrics = cliRunMetrics(entries as never, booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}` });
       // A run whose model answered or called a tool with no request booked (its requests went past its model proxy) spent
       // what no booking read: unknown, never the $0 an empty booking sums to.
       const model = booked.requests === 0 && cliModelWorked(entries as never) ? null : booked.usd;
-      const decisions = bookedSpend(all, "decisions").usd;
-      const costUsd = model === null || decisions === null ? null : model + decisions;
       // Its paid tool calls (a Parallel extract or search, a monid call), booked on the run's one ledger in their own
-      // session, are the run's cost too, as the pi spec's.
-      const paid = run.ledger?.paid ? run.ledger.paid.spentUsd() : 0;
-      const total = costUsd === null || paid === null ? null : costUsd + paid;
+      // session, and its decisions (a learned workflow's decision nodes) are the run's cost too, as the pi spec's.
+      const total = runEndCost({ model, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
       return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined) } };
     },
