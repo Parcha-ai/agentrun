@@ -75,21 +75,37 @@ export interface WorkspaceHolder {
 /**
  * The workspace a provider's computers live in: `given` when its settings name one; else the key's account's sole one
  * (soleWorkspace), read on the first call that needs it and kept. A read that fails is not kept: the next call reads again.
+ * Calls that come while a read is under way share it. The shared read is bounded by timeoutMs alone, never by one
+ * caller's signal, so one caller giving up never fails the others: a caller whose signal fires stops waiting, answered
+ * "aborted", and the read goes on for the rest.
  */
 export function workspaceHolder(given: string | undefined, rest: OrgoRest, timeoutMs: number): WorkspaceHolder {
 	let id = given;
 	let reading: Promise<Result<string>> | undefined;
+	const shared = (): Promise<Result<string>> =>
+		(reading ??= soleWorkspace(rest, { timeoutMs }).then((found) => {
+			reading = undefined;
+			if (found.ok) id = found.value;
+			return found;
+		}));
 	return {
 		get id() {
 			return id;
 		},
 		async read(signal) {
 			if (id !== undefined) return ok(id);
-			reading ??= soleWorkspace(rest, { timeoutMs, ...(signal ? { signal } : {}) });
-			const found = await reading;
-			reading = undefined;
-			if (found.ok) id = found.value;
-			return found;
+			if (signal?.aborted) return fail("aborted", "the Orgo workspace read was aborted before it was sent");
+			if (!signal) return shared();
+			let stop: () => void = () => {};
+			const stopped = new Promise<Result<string>>((resolve) => {
+				stop = () => resolve(fail("aborted", "the Orgo workspace read was aborted; it goes on for other callers"));
+				signal.addEventListener("abort", stop, { once: true });
+			});
+			try {
+				return await Promise.race([shared(), stopped]);
+			} finally {
+				signal.removeEventListener("abort", stop);
+			}
 		},
 	};
 }

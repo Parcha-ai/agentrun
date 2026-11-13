@@ -377,23 +377,31 @@ function KeyChoices({ v2, provider: p, writable, onSave }: { v2: Client; provide
   if (!answer) return <p role="status" className="mt-3 text-small text-muted-foreground">Reading the choices…</p>;
   return (
     <div className="mt-3 space-y-3">
-      {answer.choices.map((choice) => (
-        <div key={choice.key} data-choices={choice.key} className="border bg-card p-3">
-          <p className="caps mb-2 text-small font-semibold">{choice.key}</p>
-          {"why" in choice
-            ? <p data-why className="font-mono text-small text-warning-text">{choice.why}</p>
-            : <>
-                <Picker label={`${p.name} ${choice.key}`} value={saving?.key === choice.key ? saving.value : choice.saved ?? ""} disabled={!writable || saving !== null}
-                  options={choice.options.map((option) => ({ value: option.value, label: option.label }))} placeholder="Pick one"
-                  onChange={(value) => void pick(choice, value)} className="w-full max-w-md" />
-                <p data-choice-note className="mt-2 text-small text-muted-foreground">
-                  {choice.saved !== undefined ? "Picked and saved on this server."
-                    : choice.options.length === 1 ? `The only one, ${choice.options[0]!.label}, is used while none is picked.`
-                    : `${choice.options.length} to pick from. Pick the one this server's computers use.`}
-                </p>
-              </>}
-        </div>
-      ))}
+      {answer.choices.map((choice) => {
+        // The key as the page knows it: set from the environment, the server reads that and a pick here is never used;
+        // set but not among the options (gone from the vendor's list), the server still uses the saved one until a pick.
+        const secret = p.secrets.find((one) => keyOf(one.name) === choice.key);
+        const env = secret?.source === "env";
+        return (
+          <div key={choice.key} data-choices={choice.key} className="border bg-card p-3">
+            <p className="caps mb-2 text-small font-semibold">{choice.key}</p>
+            {"why" in choice
+              ? <p data-why className="font-mono text-small text-warning-text">{choice.why}</p>
+              : <>
+                  <Picker label={`${p.name} ${choice.key}`} value={saving?.key === choice.key ? saving.value : choice.saved ?? ""} disabled={!writable || env || saving !== null}
+                    options={choice.options.map((option) => ({ value: option.value, label: option.label }))} placeholder="Pick one"
+                    onChange={(value) => void pick(choice, value)} className="w-full max-w-md" />
+                  <p data-choice-note className={`mt-2 text-small ${secret?.set && choice.saved === undefined ? "text-warning-text" : "text-muted-foreground"}`}>
+                    {env ? `Set in the environment where AgentRun starts, and that one is used: change ${choice.key} there.`
+                      : choice.saved !== undefined ? "Picked and saved on this server."
+                      : secret?.set ? `The ${choice.key} saved on this server is not one of these any more, and runs still ask for it: pick one.`
+                      : choice.options.length === 1 ? `The only one, ${choice.options[0]!.label}, is used while none is picked.`
+                      : `${choice.options.length} to pick from. Pick the one this server's computers use.`}
+                  </p>
+                </>}
+          </div>
+        );
+      })}
       {problem && <p role="alert" className="font-mono text-small text-destructive-text">{problem}</p>}
     </div>
   );

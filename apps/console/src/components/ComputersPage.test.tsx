@@ -281,6 +281,24 @@ describe("Settings → Computers", () => {
     expect(unsaved.calls.some((c) => c.path.endsWith("/choices"))).toBe(false);
   });
 
+  it("a picked key set in the environment: the picker is off and says that one is used; a saved one no longer offered: says so", async () => {
+    const WS = "computer:orgo:ORGO_WORKSPACE_ID";
+    const options = [{ value: "ws-a", label: "Alpha team" }, { value: "ws-b", label: "Beta team" }];
+    const fromEnv: ComputerProvider = { ...orgo, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", true, "env")], picked: [WS] };
+    const env = server([{ paired: [], kinds: [kind("desktop", [fromEnv])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options, saved: "ws-a" }] }]);
+    const first = await open(env.v2);
+    const envRow = first.row("Desktop", "Orgo");
+    expect(envRow.querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.disabled).toBe(true);
+    expect(envRow.querySelector("[data-choice-note]")?.textContent).toBe("Set in the environment where AgentRun starts, and that one is used: change ORGO_WORKSPACE_ID there.");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const gone: ComputerProvider = { ...fromEnv, secrets: [secret("orgo", "ORGO_API_KEY", true), secret("orgo", "ORGO_WORKSPACE_ID", true)] };
+    const stale = server([{ paired: [], kinds: [kind("desktop", [gone])] }], undefined, [{ choices: [{ key: "ORGO_WORKSPACE_ID", options }] }]);
+    const second = await open(stale.v2);
+    const staleRow = second.row("Desktop", "Orgo");
+    expect(staleRow.querySelector<HTMLButtonElement>('[data-choices="ORGO_WORKSPACE_ID"] button[aria-haspopup="listbox"]')!.disabled).toBe(false);
+    expect(staleRow.querySelector("[data-choice-note]")?.textContent).toBe("The ORGO_WORKSPACE_ID saved on this server is not one of these any more, and runs still ask for it: pick one.");
+  });
+
   it("tests a provider: the server's passed with its detail, or failed with its why, wherever the provider shows", async () => {
     const { v2, calls } = server([view()], (c) => json(200, c.path.endsWith("/orgo/test") ? { ok: true, detail: "Orgo answered: 3 computers on this account" } : { ok: false, why: E2B_WHY }));
     const { row, click } = await open(v2);

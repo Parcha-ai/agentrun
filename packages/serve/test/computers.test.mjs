@@ -417,9 +417,9 @@ test("a picked key (Orgo's workspace): the view lists it under picked, and choic
   // No key saved yet: why, naming the key to save; nothing made.
   assert.deepEqual(await routes.choices("orgo"), { choices: [{ key: "ORGO_WORKSPACE_ID", why: "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers" }] });
   assert.deepEqual(made, []);
-  await routes.saveKeys("orgo", { ORGO_API_KEY: "fake-orgo-key" });
+  await routes.saveKeys("orgo", { ORGO_API_KEY: "fake-test-key" });
   assert.deepEqual(await routes.choices("orgo"), { choices: [{ key: "ORGO_WORKSPACE_ID", options: workspaces }] });
-  assert.deepEqual(made, [{ apiKey: "fake-orgo-key" }]);
+  assert.deepEqual(made, [{ apiKey: "fake-test-key" }]);
   // Picked: saved under the key, as any key is, and marked saved among the options.
   const saved = await routes.saveKeys("orgo", { ORGO_WORKSPACE_ID: "ws-b" });
   assert.equal(saved.secrets.find((one) => one.name === "computer:orgo:ORGO_WORKSPACE_ID").set, true);
