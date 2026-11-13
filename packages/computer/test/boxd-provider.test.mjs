@@ -531,6 +531,32 @@ test("a machine this provider did not make is never attached, connected or relea
 	assert.equal((await provider.attach({ id: lookalike.id })).error.code, "not_found");
 });
 
+test("a saved reference to a computer in another org is not found by attach, connect, network, extend or release, and nothing is deleted", async () => {
+	const { fake, provider } = setup({ maxLifetimeMs: 3_600_000 });
+	const made = await provider.create(SPEC);
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const ref = { id: made.value.id, name: made.value.name };
+	// The same key, a provider set to another org: the machine reads back by its id, with its own org.
+	for (const org of ["other", "org-other"]) {
+		const elsewhere = new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, maxLifetimeMs: 3_600_000 });
+		const bridges = fake.bridges.length;
+		const labels = { ...only(fake).labels };
+		for (const result of [await elsewhere.attach({ id: ref.id }), await elsewhere.connect(ref), await elsewhere.network(ref), await elsewhere.extend(ref, 120_000), await elsewhere.release(ref, "delete")]) {
+			assert.equal(result.ok, false, JSON.stringify(result));
+			assert.equal(result.error.code, "not_found", JSON.stringify(result));
+		}
+		assert.deepEqual(fake.deletes, []);
+		assert.equal(fake.bridges.length, bridges, "no connection is opened to a machine of another org");
+		assert.deepEqual(only(fake).labels, labels);
+	}
+	// The org by its id is the org too, and the provider that made the computer still releases it.
+	const byId = new BoxdProvider({ apiKey: KEY, Boxd: fake.Boxd, org: "org-acme", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, maxLifetimeMs: 3_600_000 });
+	const attached = await byId.attach({ id: ref.id });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	assert.deepEqual(fake.deletes, [ref.id]);
+});
+
 test("extend moves init's deadline and the label the janitor reads, never earlier and never past the cap", async () => {
 	const { fake, provider } = setup({ maxLifetimeMs: 3_600_000 });
 	const made = await provider.create({ ...SPEC, lifetimeMs: 60_000 });

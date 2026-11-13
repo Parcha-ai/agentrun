@@ -104,7 +104,7 @@ export function fakeBoxd({ create = "ok", landMs = 30, snapshotLabels = {}, mach
 			idle: { suspendAfter: config.autoSuspendTimeout ?? 900, hibernateAfter: 14_400, destroyAfter: 0 },
 			resources: { vcpu: config.vcpu ?? 2, memoryBytes: Number.parseInt(config.memory ?? "8G", 10) * 1024 ** 3 },
 			networking: { isolated, networks: [] },
-			org: { id: "org-1", name: org },
+			org: { id: `org-${org}`, name: org },
 			region: "fra",
 			deleteAt: null,
 			source: fromSnapshot === undefined ? null : { kind: "snapshot", name: fromSnapshot, version: 1, id: "snap-1" },

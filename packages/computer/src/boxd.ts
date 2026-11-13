@@ -915,7 +915,7 @@ export class BoxdProvider implements ComputerProvider {
 		for (const key of Object.keys(machine.labels ?? {})) {
 			if (key.startsWith("agentrun.") && !(key in labels)) found.push(`label ${key}: create wrote none, read back ${show(machine.labels[key])} (from the snapshot)`);
 		}
-		if (this.#org !== undefined && machine.org?.name !== this.#org && machine.org?.id !== this.#org) mismatch("org", this.#org, machine.org?.name);
+		if (!this.#inOrg(machine)) mismatch("org", this.#org, machine.org?.name);
 		if (this.#size !== undefined) {
 			if (machine.resources?.vcpu !== this.#size.vcpu) mismatch("vcpu", this.#size.vcpu, machine.resources?.vcpu);
 			const memory = machine.resources?.memoryBytes;
@@ -923,6 +923,15 @@ export class BoxdProvider implements ComputerProvider {
 		}
 		if (!RUNNING.has(machine.status)) mismatch("status", "running", machine.status);
 		return found;
+	}
+
+	/**
+	 * Whether the machine is in the provider's org, by the org's name or id as boxd reads it back. machines.get takes an
+	 * id alone, so every call that reads a machine by its id asks this before it uses or deletes it. A provider with no
+	 * org set has none to hold a machine to.
+	 */
+	#inOrg(machine: BoxdMachine): boolean {
+		return this.#org === undefined || machine.org?.name === this.#org || machine.org?.id === this.#org;
 	}
 
 	/** machines.get, bounded by requestMs; not_found for a machine boxd does not have. */
@@ -935,7 +944,7 @@ export class BoxdProvider implements ComputerProvider {
 	async #own(ref: ComputerRef, signal?: AbortSignal): Promise<Result<BoxdMachine>> {
 		const found = await this.#get(ref.id, signal);
 		if (!found.ok) return found.error.code === "not_found" ? fail("not_found", `no boxd computer is ${ref.name} (${ref.id})`) : found;
-		if (!ours(this.#name, found.value, ref.name) || GOING.has(found.value.status)) return fail("not_found", `no boxd computer named ${ref.name} has the id ${ref.id}`);
+		if (!ours(this.#name, found.value, ref.name) || !this.#inOrg(found.value) || GOING.has(found.value.status)) return fail("not_found", `no boxd computer named ${ref.name} has the id ${ref.id}`);
 		return found;
 	}
 
@@ -1070,7 +1079,7 @@ export class BoxdProvider implements ComputerProvider {
 			if (typeof id !== "string" || !MACHINE_ID.test(id)) return fail("invalid", `${String(id)} is not a boxd machine id`);
 			const found = await this.#get(id, signal);
 			if (!found.ok) return found.error.code === "not_found" ? fail("not_found", `no boxd computer has the id ${id}`) : found;
-			if (!ours(this.#name, found.value) || GOING.has(found.value.status)) return fail("not_found", `no boxd computer has the id ${id}`);
+			if (!ours(this.#name, found.value) || !this.#inOrg(found.value) || GOING.has(found.value.status)) return fail("not_found", `no boxd computer has the id ${id}`);
 			return this.#attached(found.value, signal);
 		}
 		const problem = filterProblem(given.labels);
@@ -1277,9 +1286,9 @@ export class BoxdProvider implements ComputerProvider {
 	}
 
 	/**
-	 * delete reads the machine back to check it is this provider's, then deletes it, both never signalled, so a release
-	 * after an abort still sends the delete; it is idempotent: one boxd no longer has is ok. A delete is not read back at
-	 * once by every call, so release then waits (#settle) until get answers not found and the listing no
+	 * delete reads the machine back to check it is this provider's and in its org, then deletes it, both never signalled,
+	 * so a release after an abort still sends the delete; it is idempotent: one boxd no longer has is ok. A delete is not
+	 * read back at once by every call, so release then waits (#settle) until get answers not found and the listing no
 	 * longer shows it, within goneMs and the caller's signal, the one step the signal ends.
 	 */
 	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
@@ -1289,7 +1298,7 @@ export class BoxdProvider implements ComputerProvider {
 		if (how === "stop") return fail("unsupported", STOP);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
-		if (!ours(this.#name, found.value, ref.name)) return fail("not_found", `no boxd computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
+		if (!ours(this.#name, found.value, ref.name) || !this.#inOrg(found.value)) return fail("not_found", `no boxd computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
 		const deleted = await this.#delete(ref.id);
 		return deleted.ok ? this.#settle(ref, signal) : deleted;
 	}

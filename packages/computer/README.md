@@ -2546,6 +2546,9 @@ on neither loopback.
   earlier, and never past create's time plus the cap. Two providers may extend one computer at once: the label never
   moves back, and after writing it extend asks init again, so a deadline another extend moved later is the one the
   label takes and the one extend answers.
+- With `org` set, every call that reads a machine by its id (`attach({ id })`, `connect`, `network`, `extend`,
+  `release`) holds the machine boxd reads back to that org, by name or id. One in another org is `not_found` and left
+  as it is, as a saved reference from before the setting changed would be.
 - `release(ref, "delete")` reads the machine back to check it is this provider's, deletes it, and waits until
   `machines.get` answers not found and the label listing no longer shows it, twice running, within `goneMs` (120 s).
   `release(ref, "stop")` is refused in words.
