@@ -3,7 +3,7 @@ import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
 import { cost, soFar, runTitle } from "@/lib/format";
 import { waitingWords } from "@/lib/learning";
-import { ago, choicesOf, failureGroups } from "@/lib/needs";
+import { ago, choicesOf, failureCount, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
@@ -16,8 +16,10 @@ import type { BudgetPending, ComputerAsk, HandBackOutcome, PendingApproval, Run 
 export type NeedsYouProps = {
   /** Runs waiting on a person's answer (`input_required`, with their `pending`: a question, or a tool call's approval). */
   asking: readonly Run[];
-  /** Failed runs; imported history is left out, and identical failures are said once. */
+  /** The failed runs of the last 24 h; imported history is left out, and identical failures are said once. */
   failed: readonly Run[];
+  /** How many runs failed in all (GET /v2/stats `runs.failed`), for the link to every one of them. */
+  failedAll?: number;
   /** Runs at work now. */
   live: readonly Run[];
   /** The active agents whose learned items wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
@@ -45,7 +47,7 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
-export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, onAnswer, onApprove, onHandBack, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
+export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], agentName, onAnswer, onApprove, onHandBack, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
   const groups = failureGroups(failed);
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
@@ -75,7 +77,7 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
   });
   // What a run waits on now, as `what` names it: its card shows the words itself while it waits on the same thing.
   const waitsOn = (r: Run) => { const ask = askOf(r); return r.pending?.kind === "approval" ? r.pending.id : ask ? `ask:${ask.asked_at}` : null; };
-  const failures = groups.reduce((n, g) => n + g.runs.length, 0);
+  const failures = failureCount(failed);
   const waiting = learning.filter((a) => a.pending > 0);
   const learned = waiting.reduce((n, a) => n + a.pending, 0);
   const needs = asking.length + failures + learned;
@@ -104,8 +106,8 @@ export function NeedsYouStrip({ asking, failed, live, learning = [], agentName, 
       {groups.length > 0 && (
         <div className="border">
           <p className="caps flex items-center justify-between border-b px-4 py-2.5 text-label text-muted-foreground">
-            <span>Failed · {failures}</span>
-            <a href="#/runs?status=failed" className="normal-case tracking-normal hover:text-foreground">All failed runs →</a>
+            <span>Failed in the last 24 h · {failures}</span>
+            <a href="#/runs?status=failed" className="normal-case tracking-normal hover:text-foreground">{failedAll === undefined ? "All failed runs →" : `All ${failedAll} failed ${failedAll === 1 ? "run" : "runs"} →`}</a>
           </p>
           <ul>{groups.map((g) => <Failure key={g.message} message={g.message} runs={g.runs} agentName={agentName} at={at} onRunAgain={onRunAgain} />)}</ul>
         </div>

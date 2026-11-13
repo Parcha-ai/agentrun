@@ -5,6 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { NativeLearningSwitch } from "@/components/NativeAgent";
+import { CostPerRun } from "@/components/CostPerRun";
+import { LearnFromCsv } from "@/components/LearnFromCsv";
+import { HeldOutTest } from "@/components/HeldOutTest";
+import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
@@ -75,6 +79,8 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
   const [held, setHeld] = useState(false);
   const refreshHolds = useMemo<RefreshHolds>(() => ({ items: new Set<symbol>(), changed: setHeld }), []);
   const [adding, setAdding] = useRefreshState(refreshHolds);
+  // Bumped when a batch from a CSV ends: the chart reads again, with the tab.
+  const [batchEnds, setBatchEnds] = useState(0);
   const asked = useRef(0);
   const reading = useRef(false);
   const live = useRef(true);
@@ -205,6 +211,9 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
     <div className="space-y-6">
       {stale}
       <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} onAdd={readOnly ? undefined : () => setAdding(true)} />
+      <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
+      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet />
       <NotKept runs={runs} />
     </div>
   );
@@ -227,7 +236,11 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
           </ul>
         </section>
       )}
-      {shownImpact(view.impact) ? <ImpactCard impact={view.impact} /> : view.impact === null && on && <p className="font-mono text-small text-muted-foreground">{IMPACT_LATER}</p>}
+      <HeldOutTest v2={v2} agentId={agent.agent_id} />
+      {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
+      {on && !readOnly && <LearnFromCsv v2={v2} agentId={agent.agent_id} onFinished={() => { setBatchEnds((n) => n + 1); void read(); }} />}
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
@@ -300,7 +313,6 @@ function RefreshFailed({ error, onRetry }: { error: unknown; onRetry: () => void
 
 /** Said where the before and after goes until the server has one (it needs two runs on each side of the first thing the
  *  agent learned: a note, a skill or a workflow). */
-const IMPACT_LATER = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
 
 /** A titled box at the side, as Mission Control's lists are: a bordered section under a caps header. */
 function Panel({ title, children, label }: { title: string; children: ReactNode; label?: string }) {

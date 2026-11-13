@@ -17,7 +17,7 @@ import { SpendCapMinimum } from "@/lib/spendCap";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
-const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none." } as const;
+const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
 
@@ -72,6 +72,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [revision, setRevision] = useState("");
   const [effort, setEffort] = useState("");
   const [cap, setCap] = useState("");
+  const [repo, setRepo] = useState("");
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
@@ -91,12 +92,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
   const attachments = useAttachments({ upload, remove: removeUpload, limits, frozen: sending });
-  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds });
+  const built = startBody(kind, { text, revision, effort, maxCostUsd: cap, fileIds: attachments.fileIds, repo });
   const body: StartBody = built.ok ? built.body : { input: kind === "agentic" ? { content: text } : text, ...(attachments.fileIds.length ? { file_ids: attachments.fileIds } : {}) };
   const key = agentId ? keys.keyFor(agentId, body) : "";
   const code = lang === "curl" ? curlFor(origin, agentId, body, key)
-    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_TOKEN}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
-  const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim() || !!effort || attachments.fileIds.length > 0 || attachments.busy);
+    : `const res = await fetch(${JSON.stringify(`${origin}/v2/agents/${agentId || "{agent_id}"}/runs`)}, {\n  method: "POST",\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n    "Content-Type": "application/json",\n    "Idempotency-Key": ${JSON.stringify(key)},\n  },\n  body: JSON.stringify(${JSON.stringify(body, null, 2).replace(/\n/g, "\n  ")}),\n});\nconsole.log(res.status, await res.json());`;
+  const nativeBlocked = !!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch || !!cap.trim() || !!effort || !!repo.trim() || attachments.fileIds.length > 0 || attachments.busy);
   const send = async () => {
     if (sdk || nativeBlocked || !built.ok || !onSend || attachments.busy) return;
     setSending(true);
@@ -132,14 +133,14 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-            {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable. Use files already in the source project; uploaded attachments and effort overrides are unsupported.</p>{nativeBlocked && <p className="text-warning-text">{cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : effort || attachments.fileIds.length ? "This request has managed effort or attachments. Native execution uses its source configuration and project files." : "Verify a connected native launch before sending a run."}</p>}{!!effort && <Button size="sm" onClick={() => setEffort("")}>Use native configured effort</Button>}{attachments.fileIds.length > 0 && <Button size="sm" onClick={() => attachments.clear()}>Remove uploaded attachments</Button>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={`#/agents/${encodeURIComponent(agentId)}`} className="underline underline-offset-2">Open native connection</a></div>}
+            {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable. Use files already in the source project; uploaded attachments and effort overrides are unsupported.</p>{nativeBlocked && <p className="text-warning-text">{repo.trim() ? "This request selects a repository. Native execution uses its source project." : cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : effort || attachments.fileIds.length ? "This request has managed effort or attachments. Native execution uses its source configuration and project files." : "Verify a connected native launch before sending a run."}</p>}{!!repo.trim() && <Button size="sm" onClick={() => setRepo("")}>Use native source repository</Button>}{!!effort && <Button size="sm" onClick={() => setEffort("")}>Use native configured effort</Button>}{attachments.fileIds.length > 0 && <Button size="sm" onClick={() => attachments.clear()}>Remove uploaded attachments</Button>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={`#/agents/${encodeURIComponent(agentId)}`} className="underline underline-offset-2">Open native connection</a></div>}
 
             <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-body text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
               <>
                 <pre className="overflow-auto border bg-card p-4 font-mono text-small leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
                 {/* The files the request's file_ids come from, and how far they are sent, in this view too. */}
-                {!native && <Label name="file_ids" note="Empty names none.">
+                {!native && <Label name="file_ids" note={NOTES.file_ids}>
                   <FilePicker attachments={attachments} limits={limits} />
                 </Label>}
               </>
@@ -154,7 +155,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                     </p>
                   )}
                 </Label>
-                {!native && <Label name="file_ids" note="Empty names none.">
+                {!native && <Label name="file_ids" note={NOTES.file_ids}>
                   <FilePicker attachments={attachments} limits={limits} />
                 </Label>}
                 <Label name="revision" note="Empty runs the current revision.">
@@ -165,9 +166,13 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Picker label="Effort" value={effort} onChange={setEffort} className="w-full"
                     options={["", ...efforts].map((value) => ({ value, label: value || "Agent default" }))} />
                 </Label>}
+                {kind === "agentic" && !native && <Label name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
+                  <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
+                </Label>}
                 {kind === "agentic" && !native && (
                   <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
                     <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                    <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
                 )}
               </>
@@ -193,7 +198,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <>
               <div className="flex gap-5 border-b px-5 text-small md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
               <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_TOKEN in your environment.</footer>
+              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
             <>
@@ -208,7 +213,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               {result.runId && live ? (
                 // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
                 <>
-                  <div className="min-h-0 flex-1 overflow-hidden border-b">{live(result.runId)}</div>
+                  <div className="min-h-0 flex-1 overflow-hidden border-b short:overflow-auto">{live(result.runId)}</div>
                   <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-small leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>

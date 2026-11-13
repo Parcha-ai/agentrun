@@ -16,6 +16,9 @@ import { DockerProvider } from "../dist/docker.js";
 import { COPY_NAME, DAEMON_BYTES, fakeDocker, valuesOf } from "./fake-docker.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
+let requests = 0;
+/** A create's context: a new request each time. */
+const req = () => ({ requestId: `docker-daemon-${++requests}` });
 const runOf = (all) => all.find((args) => args[0] === "run");
 /** The source of the daemon's bind in docker run's argv. */
 const boundIn = (calls) => /^type=bind,src=(.*),dst=\/opt\/agentrun\/computerd,readonly$/.exec(valuesOf(runOf(calls), "--mount")[0] ?? "")?.[1];
@@ -34,7 +37,7 @@ test("create() takes a daemon only its owner may run, as npm installs it under u
 	const umask = process.umask(0o077);
 	try {
 		const { provider, calls, daemonPath, bound, cache } = fakeDocker({ daemonMode: 0o700 });
-		const result = await provider.create(SPEC);
+		const result = await provider.create(SPEC, req());
 		assert.equal(result.ok, true, JSON.stringify(result));
 		const source = boundIn(calls());
 		assert.equal(source, bound);
@@ -58,15 +61,15 @@ test("create() takes a daemon only its owner may run, as npm installs it under u
 
 test("every create binds the one copy; a copy whose bytes or mode are not the daemon's is replaced before it is bound", async () => {
 	const { provider, calls, bound } = fakeDocker({ daemonMode: 0o700 });
-	assert.equal((await provider.create(SPEC)).ok, true);
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	const runs = () => calls().filter((args) => args[0] === "run");
 	assert.deepEqual(runs().map((run) => boundIn([run])), [bound, bound]);
 	writeFileSync(bound, "other bytes");
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	assert.equal(readFileSync(bound, "utf8"), DAEMON_BYTES, "a copy with other bytes is replaced");
 	chmodSync(bound, 0o700);
-	assert.equal((await provider.create(SPEC)).ok, true);
+	assert.equal((await provider.create(SPEC, req())).ok, true);
 	assert.equal(statSync(bound).mode & 0o7777, 0o755, "a copy with another mode is replaced");
 	assert.deepEqual(runs().map((run) => boundIn([run])), [bound, bound, bound, bound]);
 	assert.deepEqual(readdirSync(dirname(bound)), [COPY_NAME], "no temporary file is left");
@@ -84,7 +87,7 @@ test("a daemon the provider has not copied yet is copied into ~/.cache/agentrun-
 		assert.equal(defaultDaemonCache(), join(home, ".cache", "agentrun-computer"));
 		assert.equal(defaultDaemonCache({ XDG_CACHE_HOME: xdg }), join(home, ".cache", "agentrun-computer"), "it takes no environment either");
 		const provider = new DockerProvider({ daemonPath, docker: program });
-		assert.equal((await provider.create(SPEC)).ok, true);
+		assert.equal((await provider.create(SPEC, req())).ok, true);
 	} finally {
 		for (const [name, value] of Object.entries(before)) {
 			if (value === undefined) delete process.env[name];
@@ -119,7 +122,7 @@ test("a cache directory that is a symbolic link is refused in words, with no doc
 	const link = join(fresh(), "cache");
 	symlinkSync(target, link);
 	const { provider, calls } = fakeDocker({ daemonMode: 0o700, daemonCache: link });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, /daemon copy directory .*cache is a symbolic link.*never follows/);
@@ -131,7 +134,7 @@ test("a cache directory others may enter is refused in words and left as it is",
 	for (const mode of [0o755, 0o750, 0o701]) {
 		const cache = fresh(mode);
 		const { provider, calls } = fakeDocker({ daemonCache: cache });
-		const result = await provider.create(SPEC);
+		const result = await provider.create(SPEC, req());
 		assert.equal(result.ok, false, mode.toString(8));
 		assert.equal(result.error.code, "refused");
 		assert.match(result.error.message, new RegExp(`daemon copy directory .* has mode 0${mode.toString(8)}; it must be 0700`));
@@ -150,7 +153,7 @@ test("a cache directory another user owns is refused in words", async () => {
 		cache = ["/usr", "/etc", "/"].find((path) => statSync(path).uid !== process.getuid());
 	}
 	const { provider, calls } = fakeDocker({ daemonCache: cache });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, /daemon copy directory .* is owned by uid \d+, not this process's uid \d+/);
@@ -160,7 +163,7 @@ test("a cache directory another user owns is refused in words", async () => {
 test("a cache directory under a directory others may write, and so swap it out, is refused in words", async () => {
 	const open = fresh(0o777);
 	const { provider, calls } = fakeDocker({ daemonCache: join(open, "cache") });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, new RegExp(`${open} has mode 0777: a user other than its owner may write it`));
@@ -173,7 +176,7 @@ test("a symbolic link at the copy's own name is refused in words and not followe
 	writeFileSync(target, "not the daemon", { mode: 0o600 });
 	symlinkSync(target, join(cache, COPY_NAME));
 	const { provider, calls } = fakeDocker({ daemonCache: cache });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, new RegExp(`${COPY_NAME} is a symbolic link.*never follows`));
@@ -185,10 +188,10 @@ test("a symbolic link at the copy's own name is refused in words and not followe
 test("a cached copy this user cannot open (mode 0000 or 0111) is replaced by create and by attach, never left to fail them", async () => {
 	for (const mode of [0o000, 0o111]) {
 		const { provider, bound } = fakeDocker({ daemonMode: 0o700 });
-		const created = await provider.create(SPEC);
+		const created = await provider.create(SPEC, req());
 		assert.equal(created.ok, true, JSON.stringify(created));
 		chmodSync(bound, mode);
-		const again = await provider.create(SPEC);
+		const again = await provider.create(SPEC, req());
 		assert.equal(again.ok, true, `${mode.toString(8)}: ${JSON.stringify(again)}`);
 		assert.equal(statSync(bound).mode & 0o7777, 0o755);
 		assert.equal(readFileSync(bound, "utf8"), DAEMON_BYTES);
@@ -206,7 +209,7 @@ test("a file another user owns at the copy's name is refused in words, not repla
 	writeFileSync(planted, DAEMON_BYTES, { mode: 0o755 });
 	chownSync(planted, 65534, 65534);
 	const { provider, calls } = fakeDocker({ daemonCache: cache });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "refused");
 	assert.match(result.error.message, new RegExp(`${COPY_NAME} is owned by uid 65534, not this process's uid 0`));
@@ -278,7 +281,7 @@ test("a copy directory that keeps vanishing, an unreadable directory above it, a
 
 test("a daemon this process cannot read is refused in words, with no docker call", { skip: process.getuid() === 0 ? "root reads any file" : false }, async () => {
 	const { provider, calls, daemonPath } = fakeDocker({ daemonMode: 0o000 });
-	const result = await provider.create(SPEC);
+	const result = await provider.create(SPEC, req());
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "invalid");
 	assert.match(result.error.message, new RegExp(`the daemon at ${daemonPath} cannot be read by this process`));

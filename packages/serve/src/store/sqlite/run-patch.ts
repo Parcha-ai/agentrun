@@ -4,20 +4,21 @@
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
 import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
-import { type Dialect, SQLITE } from "../dialect.js";
+import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { writeLaunch } from "./run-launch.js";
 
 /** A learning run's launch body: the learning harness, the run that learned as its input, and where it runs (on the
  *  runner, no box: its only writes are the learning folder's one script). */
-/** A learning run's launch: harness "learning", its input the run that learned, and `model`, the grade model when one is
- *  named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main caps no grade. */
+/** A learning run's launch: harness "learning", its input the run that learned (and the round it grades, past the first),
+ *  and `model`, the grade model when one is named (gradeModelOf; none: the agent's own grades it, as main's). No cap: main
+ *  caps no grade. */
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
 
-export const learningLaunchOf = (runId: string, model?: string) => ({ harness: "learning", input: { runId }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
+export const learningLaunchOf = (runId: string, model?: string, round = 1) => ({ harness: "learning", input: { runId, ...(round > 1 ? { round } : {}) }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}) });
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
  *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
@@ -89,13 +90,13 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning, of the run's own agent, naming the learning run the same end queues (wherever the end
-      // lists it); kept once (an end replayed after a crash keeps the first).
+      // The run's kept learning of one round, of the run's own agent, naming the learning run the same end queues (wherever
+      // the end lists it); kept once a round (an end replayed after a crash keeps the first).
       case "learning_proposals": {
         const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id) DO NOTHING",
-          JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, ?, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id, round) DO NOTHING",
+          each.row.round ?? 1, JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
         );
         break;
       }
@@ -108,7 +109,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
         // the run that learned. Written once, as the run is.
         if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model) }, now);
+          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round) }, now);
         }
         break;
     }
@@ -136,9 +137,28 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  claim, which runs it as a new turn, and only the run's other rows are refused. Every message so lands on one path: in
  *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it.
  *  A person's stop is the same (reopenableWhere): a message waiting at it is the run's next turn, as main's stop leaves a
- *  message submitted before it to run; a cancel's refuses it. */
+ *  message submitted before it to run; a cancel's refuses it. A run left final here has its launch secrets erased (its
+ *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote. */
 export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
+  // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
+  // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
+  // words) and the cancel is taken, so a read never goes cancelled, then completed. Its message waiting is refused below.
+  // A stop's end is the same (state 'stopped', outcome 'stopped': a CLI turn its harness interrupted on its own, or a
+  // person's stop): it would leave the run open to a message, so the cancel wins it too, and the run takes no more.
+  if (state === "ended" || state === "stopped") {
+    const won = await tx.get<{ id: string }>(
+      `UPDATE runs SET state = 'stopped', outcome = 'cancelled', summary = 'cancelled' WHERE id = ? AND (state = 'ended' OR (state = 'stopped' AND outcome = 'stopped'))
+        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.refused IS NULL AND commands.kind = 'cancel') RETURNING id`,
+      runId,
+    );
+    if (won) {
+      await tx.run("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel'", now, runId);
+      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason("stopped"), runId);
+      await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+      return;
+    }
+  }
   if (state === "ended" || state === "stopped") {
     const reopened = await tx.get<{ id: string }>(
       `UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(dialect)}
@@ -146,9 +166,12 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
       runId,
     );
     if (reopened) {
-      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL AND kind <> 'steer'", now, endedReason(state), runId);
+      await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL AND kind <> 'steer'`, now, endedReason(state), runId);
       return;
     }
   }
-  await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
+  await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL`, now, endedReason(state), runId);
+  // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
+  // hands its own (runs.reopen).
+  await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
 }

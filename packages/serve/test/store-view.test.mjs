@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
-const { viewOverStore, summaryOverStore, momentOverStore } = await import("../dist/store-view.js");
+const { viewOverStore, summaryOverStore, momentOverStore, answerOf } =await import("../dist/store-view.js");
 const { raiseCap, approve } = await import("../dist/runs-over-store.js");
 
 const context = BACKGROUND_CONTEXT;
@@ -29,6 +29,16 @@ async function conversation(store, claim, { ask, answer, usd }) {
   const a = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: answer }], usage: { cost: { total: usd } }, timestamp: 0 }] };
   await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: u }, { type: "entry", value: a }], context);
 }
+
+test("answerOf: a message a trigger or the server queued is a turn boundary, so a follow-up with no text of its own has no answer; a note never is", () => {
+  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, text: id, ...extra });
+  const answered = [row("u1", "user_message"), row("a1", "final_answer")];
+  for (const origin of ["trigger", "server"]) {
+    assert.equal(answerOf([...answered, row("m2", "phase", { origin })]), null, `a ${origin} message after the answer`);
+  }
+  assert.equal(answerOf([...answered, row("m2:note", "phase", { origin: "server" })]), "a1", "a note the server told the model is no message");
+  assert.equal(answerOf([...answered, row("u2", "user_message", { agent_label: "learning" })]), "a1", "a labelled row is no boundary");
+});
 
 test("a completed run's view reads the whole answer, cost and shape from the store", async (t) => {
   const { store } = await storeOn(t);

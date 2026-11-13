@@ -27,6 +27,8 @@ describe("a prepared template request", () => {
       raw({ body: { ...body, parameters: { secret_value: "unexpected" } } }),
       raw({ body: { ...body, grants: ["mcp:other/write"] } }),
       raw({ body: { ...body, overrides: { approvals: "sometimes" } } }),
+      raw({ body: { ...body, overrides: { approvals: ["never"] } } }),
+      raw({ body: { ...body, overrides: { approvals: ["ask"] } } }),
       raw({ body: { ...body, overrides: { approvals: "ask", tools: ["shell"] } } }),
       raw({ body: { ...body, parameters: { comment: "false" } } }),
       raw({ body: { ...body, parameters: { repo: 3 } } }),

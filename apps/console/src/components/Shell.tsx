@@ -60,13 +60,13 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
   const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
   const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
   return (
-    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 md:hidden">
+    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground roomy:flex-row">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 roomy:hidden">
         <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
         <Button size="icon" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-4" aria-hidden /></Button>
       </header>
-      <aside className={cn("shrink-0 flex-col border-r bg-background md:flex md:h-dvh md:overflow-y-auto md:w-sidebar", open ? "flex max-h-[60dvh] overflow-y-auto border-b md:max-h-none" : "hidden")}>
-        <div className="hidden h-12 shrink-0 items-center border-b px-4 md:flex">
+      <aside className={cn("shrink-0 flex-col border-r bg-background roomy:flex roomy:h-dvh roomy:overflow-y-auto roomy:w-sidebar", open ? "flex max-h-[60dvh] overflow-y-auto border-b roomy:max-h-none" : "hidden")}>
+        <div className="hidden h-12 shrink-0 items-center border-b px-4 roomy:flex">
           <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
         </div>
         <nav aria-label="Navigation" className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3">

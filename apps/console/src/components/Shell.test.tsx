@@ -110,12 +110,21 @@ describe("Shell's sidebar on a short screen", () => {
     const aside = host.querySelector("aside")!;
     const navigation = aside.querySelector('nav[aria-label="Navigation"]')!;
     const signOut = [...aside.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Sign out")!;
-    expect(aside.className.split(" ")).toContain("md:h-dvh");
+    expect(aside.className.split(" ")).toContain("roomy:h-dvh");
     expect(navigation.className.split(" ")).toEqual(expect.arrayContaining(["min-h-0", "flex-1", "overflow-y-auto"]));
     expect(navigation.contains(signOut)).toBe(false);
     expect(signOut.parentElement?.className.split(" ")).toContain("shrink-0");
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Navigation"]')!.click());
     expect(aside.className.split(" ")).toEqual(expect.arrayContaining(["max-h-[60dvh]", "overflow-y-auto"]));
+  });
+
+  // jsdom applies no media query: the sidebar's variant is `roomy:` (md wide AND over 500 px tall), never `md:` alone, so a phone
+  // on its side gets the top bar. The e2e flow phone-landscape measures it in a real browser.
+  it("shows at roomy sizes only, never at a plain md width", () => {
+    mount();
+    const all = [document.querySelector("aside")!, document.querySelector("header")!, document.querySelector("aside")!.parentElement!];
+    for (const el of all) expect(el.className.split(" ").some((c) => c.startsWith("md:"))).toBe(false);
+    expect(document.querySelector("header")!.className.split(" ")).toContain("roomy:hidden");
   });
 });
 

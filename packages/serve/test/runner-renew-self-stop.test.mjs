@@ -71,10 +71,12 @@ test("a renew refused as Fenced (the store's clock jumped and another runner too
   const { server, clock, record, events } = await held(t, faux, { pollMs: 60_000 });
   const loop = faux.loops[0];
 
-  // The store's now jumps past the claim's until, and another runner claims the run: the epoch moves.
+  // The store's now jumps past the claim's until, and another runner claims the run: the epoch moves. The fence moves at
+  // the jump: from then a renew is answered Fenced, which can come while the other runner's claim is still on its way, so
+  // the order is taken before the jump, never after the claim returns.
+  const movedOrder = nextOrder();
   clock.skewMs = TIMING.leaseMs * 2;
   const taken = await server.claim("run-1", "runner-z", { leaseMs: 60_000 });
-  const movedOrder = nextOrder();
   assert.equal(taken?.epoch, 2, "the other runner's claim");
   // The next renew is answered Fenced, and the runner stops the loop on that answer: no deadline is reached (the lease is
   // long). Waited for by its event, never measured on the clock.

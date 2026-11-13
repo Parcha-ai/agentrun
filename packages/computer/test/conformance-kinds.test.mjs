@@ -27,7 +27,7 @@ test("kindCases: desktop runs the screen and input cases and its optional shell;
 	for (const id of ["exec.argv", "screen.screenshot-size", "input.click-lands", "input.type-text"]) assert.ok(desktop.includes(id), id);
 	assert.ok(!desktop.includes("touch.tap"));
 	const phone = ids(kindCases("phone"));
-	for (const id of ["screen.screenshot-size", "touch.tap", "input.type-text", "apps.ui-tree-shape", "health.hello"]) assert.ok(phone.includes(id), id);
+	for (const id of ["screen.screenshot-size", "touch.tap", "input.type-text", "ui.observe-shape", "health.hello"]) assert.ok(phone.includes(id), id);
 	for (const id of ["exec.argv", "input.click-lands", "apps.install-launch"]) assert.ok(!phone.includes(id), `${id}: it needs a group phone neither requires nor allows`);
 	const browser = ids(kindCases("browser"));
 	assert.ok(browser.includes("health.hello") && !browser.includes("exec.argv") && !browser.includes("screen.screenshot-size"), browser.join(" "));

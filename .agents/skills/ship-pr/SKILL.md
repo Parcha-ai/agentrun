@@ -20,7 +20,7 @@ slot for paid runs, a model gateway) live outside the repository: in the file `S
 
 | Fact | Value |
 |---|---|
-| Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, ALLGREEN, up to 5 entries, squash |
+| Protection | ruleset `main`: pull request, 1 approval, stale approvals dismissed on push, threads resolved, linear history; merge queue, HEADGREEN, up to 5 entries, squash |
 | Required checks | `verify` and `lean`; `gh api repos/{owner}/{repo}/rulesets` is the authority. Every other job (stranger, floors, `pi-1-2`, `real-chrome`, `lean`) is a merge condition by this skill, not by the ruleset: a red one is fixed or named with its cause in the batch line |
 | Toolchain | Node 24.22.3 or later (`.nvmrc`); npm 11. Regenerate `package-lock.json` only with npm 11 (`--package-lock-only`), never by hand |
 | Changelog | a fragment in `changes/` per pull request with a user-visible change; no pull request edits an `Unreleased` section (`changes/README.md`) |

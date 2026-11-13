@@ -707,6 +707,8 @@ test("the server applies each migration once, in one transaction, recording its 
   await second.close();
   const rows = await sql(schema, "SELECT version, name, sha256 FROM schema_migrations ORDER BY version");
   assert.deepEqual(rows.map((row) => [Number(row.version), row.name, row.sha256]), migrations.map((m) => [m.version, m.name, m.sha256]), "each applied once");
+  // store_meta keeps the version the last migration set: each migration after the first sets its own.
+  assert.deepEqual((await sql(schema, "SELECT schema_version FROM store_meta WHERE singleton = 1")).map((row) => Number(row.schema_version)), [migrations.at(-1).version], "store_meta at the last migration's version");
 });
 
 test("a migration that fails leaves nothing of it: the schema's version is unchanged and its tables absent", ONLY, async (t) => {
@@ -739,8 +741,10 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   await store.close();
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
   // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
-  // again from 0003 (0004 on runs.outcome's check runs twice unharmed).
+  // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host and 0008's tables, made only where
+  // missing, run twice unharmed; 0009's column is dropped, as a build before it left it).
   await sql(schema, "DROP INDEX commands_one_answer");
+  await sql(schema, "ALTER TABLE commands DROP COLUMN answer");
   await sql(schema, "DELETE FROM schema_migrations WHERE version >= 3");
   const answer = async (kind, call) => (await sql(schema, "INSERT INTO commands (run_id, kind, body, created_at) VALUES ('run-1', $1, $2, 0) RETURNING id", kind, JSON.stringify({ approval: call })))[0].id;
   const first = await answer("approve", "call-1");

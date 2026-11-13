@@ -6,6 +6,9 @@
 // - `Learn once: <JSON>`: the same, less the files the run's `# Learned` names already, in the index or a note's heading
 //   (a later run of the agent adds none);
 // - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
+// A user message that starts "Review: " is a reviewer's word on the run's answer: the end-of-run turn answers it as a note,
+// `reviewed.md`, its body the review's words (superseding the note a "Wrong: <file>" in it names). A later end-of-run turn of the same run (a follow-up's: its prompt says it
+// looked back before) answers that note alone.
 // On pi, "Fail the job." has the job's turn fail (the model's error), and the end-of-run turn is answered all the same.
 // A user message "Remember for next time: <text>" is what a person asks the agent to keep: on pi the job turn writes it
 // to `.learning/notes.txt` first and says it saved it (what models do), and the end-of-run turn, which reads the whole
@@ -60,8 +63,17 @@ const remembered = (users) => {
   const said = users.map((text) => /Remember for next time: (.+)/.exec(text)?.[1]).filter(Boolean);
   return said.length ? [["remembered.md", `---\nname: What the user asked to keep\ndescription: The user's standing request\ntype: user\n---\n${said.join("\n")}\n`]] : [];
 };
-/** The end-of-run turn's whole answer, from the instructions in `system` and the conversation's user messages. */
-const reflection = (system, users) => /^Answer: (".*")$/m.exec(system)?.[1] ? JSON.parse(/^Answer: (".*")$/m.exec(system)[1]) : answerWith([...planned(system), ...remembered(users)]);
+/** A reviewer's word on the run's answer, in `users` (the user messages' texts): a message that starts "Review: ", the
+ *  note the end-of-run turn gives for it (one, the newest review's). */
+const reviewed = (users) => {
+  const review = users.findLast((text) => text.startsWith("Review: "));
+  // A review that says "Wrong: <file>" corrects a note an earlier round added: the note supersedes it.
+  const wrong = review && /Wrong: (\S+\.md)/.exec(review)?.[1];
+  return review ? [["reviewed.md", note("What the reviewer said", "The reviewer's answer for a case like this one", `${review.slice("Review: ".length)}\n`, wrong ? `supersedes: [${wrong}]\n` : "")]] : [];
+};
+/** The end-of-run turn's whole answer, from the instructions in `system` and the conversation's user messages. A later
+ *  look-back of the same run (its prompt says it looked back before: a follow-up's) keeps only what a review taught. */
+const reflection = (system, users, later = false) => /^Answer: (".*")$/m.exec(system)?.[1] ? JSON.parse(/^Answer: (".*")$/m.exec(system)[1]) : answerWith(later ? reviewed(users) : [...planned(system), ...remembered(users), ...reviewed(users)]);
 
 const answerOf = (system) => (/Say your prompt\./.test(system) ? system : "Job answer.");
 /** The paths the instructions in `system` have the job read before it answers. */
@@ -106,12 +118,15 @@ function grade(prompt, faux) {
       const name = /^workflows\/([^/]+)\/workflow\.json$/.exec(file)?.[1];
       const skill = name && fenced(`skills/${name}/SKILL.md, the skill this draft keeps as a workflow (not graded)`);
       const drops = Boolean(skill?.includes("Grand total:")) && !fenced(`${file}, new`)?.includes("Grand total");
-      return drops ? { file, decision: "drop", question: "Format", why: "Its output cannot give the skill's format: no Grand total line." } : { file, decision: "keep", why: "It holds." };
+      return drops ? { file, decision: "drop", question: "Format", why: "Its output cannot give the skill's format: no Grand total line." } : { file, decision: "keep", general: true, why: "It holds." };
     });
     return faux.message(JSON.stringify({ merge: items.some(({ decision }) => decision === "keep"), reason: "Judged each item.", items }));
   }
   return verdictOf(rules, files, faux);
 }
+
+/** A later look-back of the same run (learn/reflect.ts reflectPrompt `later`): its prompt says it looked back before. */
+const LATER = /^You looked back on this run before\./m;
 
 /** How many times the grader was asked each prompt (the host asks again, with the same prompt, an answer it could not read). */
 const ASKS = new Map();
@@ -136,15 +151,15 @@ function verdictOf(rules, files, faux) {
   // "Grade: shop <file>.": what the user asked to remember, dropped on General as one shop's policy, as a weak grader
   // does; the verdict then merges nothing.
   const shop = /Grade: shop (\S+\.md)\./.exec(rules)?.[1];
-  if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", origin: "run", why: "It holds as a general rule." })) }));
+  if (shop) return faux.message(JSON.stringify({ merge: false, reason: "The note records a policy specific to this shop, so it is not general enough to keep.", items: files.map((file) => (file === shop ? { file, decision: "drop", origin: "you", question: "General", why: "It records a shop-specific refund policy rather than a general rule." } : { file, decision: "keep", general: true, origin: "run", why: "It holds as a general rule." })) }));
   const kept = (file) => keep && file !== dropped;
   // "Grade: omit <file>.": an answer that gives that file no item, which the host refuses (parseVerdict).
   const omitted = /Grade: omit (\S+\.(?:md|json))\./.exec(rules)?.[1];
-  if (omitted) return faux.message(JSON.stringify({ merge: true, reason: "Each note is general and new.", items: files.filter((file) => file !== omitted).map((file) => ({ file, decision: "keep", why: "It holds." })) }));
+  if (omitted) return faux.message(JSON.stringify({ merge: true, reason: "Each note is general and new.", items: files.filter((file) => file !== omitted).map((file) => ({ file, decision: "keep", general: true, why: "It holds." })) }));
   return faux.message(JSON.stringify({
     merge: (keep && !dropped) || rules.includes("Grade: sly."),
     reason: keep && !dropped ? "Each note is general and new." : saying ? `A note is about ${saying} alone, which no later run can use. Drop it.` : long ? `A note is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it.` : "A note is about the one case it came from.",
-    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", origin: "you", why: "The user asked to keep it." } : { file, decision: kept(file) ? "keep" : "drop", ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
+    items: files.map((file) => (file === waits && kept(file) ? { file, decision: "pending", general: true, origin: "you", question: "Risky", why: "The user asked for a rule that widens trust." } : file === risky && kept(file) ? { file, decision: "keep", general: true, origin: "run", question: "Risky", why: "The run's own rule widens trust in a seller." } : file === theirs && kept(file) ? { file, decision: "keep", general: true, origin: "you", why: "The user asked to keep it." } : { file, decision: kept(file) ? "keep" : "drop", general: kept(file), ...(kept(file) ? {} : { question: "General" }), why: kept(file) ? "It holds as a general rule." : saying ? `It is about ${saying} alone, which no later run can use. Drop it.` : long ? "It is about the one case it came from, and it holds nothing a later run of this agent could use on another shop, so it is not kept. Drop it." : "It is about one case." })),
   }));
 }
 
@@ -190,7 +205,7 @@ export default function reply(context, faux) {
     if (/Reflect slowly\./.test(system)) return slow(faux, 60_000, "Too late.");
     // "Reflect by writing first.": the end-of-run turn tries to write a note as a file first, then answers.
     if (/Reflect by writing first\./.test(system) && done === 0) return faux.message(faux.toolCall("write", { path: ".learning/written.md", content: "A note as a file.\n" }), { stopReason: "toolUse" });
-    return faux.message(reflection(system, users));
+    return faux.message(reflection(system, users, LATER.test(last)));
   })();
 }
 

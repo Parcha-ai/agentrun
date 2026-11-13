@@ -150,7 +150,8 @@ describe("the run page's header on a phone", () => {
     const host = mount(createElement(RunHeader, { run, agentName: "Invoice checker", actions: { onArchive: () => {} } }));
     const header = host.querySelector("header")!;
     expect(classes(header)).toContain("max-sm:py-3");
-    expect(classes(header.querySelector("h1"))).toEqual(expect.arrayContaining(["max-sm:text-lg", "max-sm:line-clamp-2"]));
+    // main's title is two lines at every width (line-clamp-2); the phone only shrinks its type.
+    expect(classes(header.querySelector("h1"))).toEqual(expect.arrayContaining(["max-sm:text-lg", "line-clamp-2"]));
     expect(wide(header.querySelector("h1"))).toContain("text-2xl");
     // The title's column and the facts' box step aside below 640: the facts and the actions share one wrapping row.
     const row = header.querySelector("[data-phone-row]")!;

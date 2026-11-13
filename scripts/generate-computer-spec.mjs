@@ -32,7 +32,7 @@ const generator = TJS.buildGenerator(program, {
 });
 if (!generator) throw new Error('packages/computer did not compile for the schema generator');
 // The wire's own names: the method table, and the types a reader looks up on their own.
-const symbols = ['DaemonMethods', 'DaemonErrorKind', 'Group', 'ComputerKind', 'ComputerOs', 'InputAction'];
+const symbols = ['DaemonMethods', 'DaemonErrorKind', 'Group', 'ComputerKind', 'ComputerOs', 'InputAction', 'UiStep', 'UiRole', 'UiRoute'];
 const generated = generator.getSchemaForSymbols(symbols, true, true);
 
 // Imported type aliases may be named by an absolute compiler path: replace those names and their references, so the
@@ -185,12 +185,24 @@ const constants = {
     maxActions: number('MAX_ACTIONS'),
     maxBatchWaitMs: number('MAX_BATCH_WAIT_MS'),
     maxKeyRepeat: number('MAX_KEY_REPEAT'),
+    launchWindowMs: number('LAUNCH_WINDOW_MS'),
     maxUiNodes: number('MAX_UI_NODES'),
+    maxSteps: number('MAX_STEPS'),
+    maxExpectMs: number('MAX_EXPECT_MS'),
+    defaultExpectMs: number('DEFAULT_EXPECT_MS'),
+    maxSettleMs: number('MAX_SETTLE_MS'),
+    setHoldMs: number('SET_HOLD_MS'),
+    minImageEdge: number('MIN_IMAGE_EDGE'),
+    maxImageEdge: number('MAX_IMAGE_EDGE'),
+    defaultImageEdge: number('DEFAULT_IMAGE_EDGE'),
   },
   errorKinds: [...(definitions.DaemonErrorKind?.enum ?? [])].sort(),
   groups: [...protocol.GROUPS],
   providerGroups: [...protocol.PROVIDER_GROUPS],
+  features: { ...protocol.FEATURES },
   keys: [...protocol.KEYS],
+  uiRoles: [...protocol.UI_ROLES],
+  uiFlags: [...protocol.UI_FLAGS],
 };
 if (constants.errorKinds.length === 0) throw new Error('DaemonErrorKind did not produce its kinds');
 

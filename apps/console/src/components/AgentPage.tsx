@@ -13,6 +13,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "@/components/NativeAgent";
 import { nativeStateLabel } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
+import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
@@ -73,10 +74,10 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learni
   useEffect(() => {
     let live = true;
     setAgent(null); setError(null); setStats(undefined); setStale(false);
-    rereads.current++;
+    floor.current = ++rereads.current;
     v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError({ cause: e }); });
     v2.statsOver({ from: rangeFrom(FIRST_RANGE), agent: agentId }).then((r) => { if (live) setStats(r); }, () => { if (live) setStats(null); });
-    return () => { live = false; rereads.current++; };
+    return () => { live = false; floor.current = ++rereads.current; };
   }, [v2, agentId, tries]);
   // The agent read again after a write on the page: the Learning tab's own (an approve, a retire, an edit: `onChanged`)
   // and the learning switch's save (`onAgent`, whose answer carries no `tools`: only GET /v2/agents/{id} serves them, so
@@ -84,28 +85,42 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learni
   // newest read lands, so one answered last never puts back an older count or revision. A read that fails says so, with
   // a retry.
   const rereads = useRef(0);
+  // The newest read that landed, and the oldest a read may be and still land: a write's own read raises it, so a poll that
+  // began before the write never puts back an older revision, while polls among themselves land in the order they began
+  // (a read slower than the poll interval still lands, never starved by the next tick's).
+  const landed = useRef(0);
+  const floor = useRef(0);
   const [stale, setStale] = useState(false);
-  const reread = () => {
+  // `quiet`: a read that waits for the next tick (or says so itself) on a failure rather than raise the page's retry.
+  // `raise`: a write's read, which lifts the floor. It answers whether the page now shows a read that began at or after
+  // this one: true when this read applied, or was dropped (superseded) with a newer read already applied. A read that
+  // failed, or was dropped while the newer one is still open or failed, answers false: nothing on the page reflects it.
+  const reread = (quiet = false, raise = !quiet): Promise<boolean> => {
     const n = ++rereads.current;
+    if (raise) floor.current = n;
     return v2.getAgent(agentId).then(
-      (r) => { if (n === rereads.current) { setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } },
-      () => { if (n === rereads.current) setStale(true); },
+      (r) => { if (n > landed.current && n >= floor.current) { landed.current = n; setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } return landed.current >= n; },
+      () => { if (n === rereads.current && !quiet) setStale(true); return landed.current >= n; },
     );
   };
-  const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); reread(); };
+  const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); void reread(); };
+  const onChanged = () => void reread();
+  const poll = () => void reread(true, false);
+  // The agent read again after a Forget: through the same guarded read, and quiet, since the Forget says a failed one itself.
+  const afterForget = () => reread(true, true);
   const analytics = stats === undefined ? undefined : stats !== null;
   if (error) return error.cause instanceof ClientError && error.cause.status === 404
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
     : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
   if (!agent) return <AgentSkeleton />;
-  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} reread={reread} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} notes={notes} />;
+  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} notes={notes} />;
 }
 
-function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, notes, places }: {
-  agent: Agent; onAgent: (agent: Agent) => void; reread: () => Promise<void>; stale: boolean; v2: Client; go: (hash: string) => void;
+function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, notes, places }: {
+  agent: Agent; onAgent: (agent: Agent) => void; onSignInsAgent: (agent: Agent) => void; reread: (quiet?: boolean, raise?: boolean) => Promise<boolean>; onChanged: () => void; poll: () => void; afterForget: () => Promise<boolean>; stale: boolean; v2: Client; go: (hash: string) => void;
   stats: Stats | null | undefined; analytics: boolean | undefined; routePrefix?: string | null; harnesses?: HarnessInfo[]; tab?: string; learning?: "on" | "off" | null; notes?: string[]; places?: Places | null;
 }) {
-  const history = useRunHistory(agent, v2, reread);
+  const history = useRunHistory(agent, v2, reread, () => reread(false, false));
   const [factsOpen, setFactsOpen] = useState(false);
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
@@ -174,6 +189,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
           {stale && <Banner tone="error">Couldn't refresh this agent. <Button size="sm" onClick={() => void reread()}>Retry</Button></Banner>}
+          <SignIns agent={agent} v2={v2} onAgent={onSignInsAgent} poll={poll} refresh={afterForget} />
           {native && <NativeAgent agent={agent} v2={v2} learning={learning} onAgent={onAgent} onChanged={async () => { refreshNative(); await reread(); }} />}
           {!native && <section className="border bg-card p-4" aria-label="Agent configuration">
             <h2 className="mb-4 text-body font-semibold">Configuration</h2>
@@ -192,7 +208,7 @@ function AgentDetail({ agent, onAgent, reread, stale, v2, go, stats, analytics, 
         <section className="min-w-0" aria-label="Agent workspace">
           <Tabs id="agent-views" label="Agent views" value={at.id} onChange={(value) => go(agentHash(agent.agent_id, value))} tabs={tabs.map((t) => ({ id: t.id, label: <>{t.label}{t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}</> }))} className="mb-5 overflow-x-auto px-0 md:px-0" />
           <div {...tabPanelProps("agent-views", at.id)} aria-label={waiting ? undefined : at.label}>
-            {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} focus={notes} learning={learning} onAgent={onAgent} onChanged={reread} places={places} />}
+            {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
           </div>
         </section>
       </main>
@@ -209,7 +225,7 @@ type RunHistory = {
 /** Refresh through the oldest loaded run or past its start time if it was archived. Both current and legacy servers
  * order by start time descending, but use different tie-breakers; don't infer equal-time order from run ids. Bound
  * ambiguous refreshes to the loaded pages plus one shift page, preserving the snapshot until explicit recovery. */
-function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<void>): RunHistory {
+function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<unknown>, poll: () => Promise<unknown>): RunHistory {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
@@ -220,12 +236,12 @@ function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<void>): R
   const shown = useRef<Run[]>([]);
   const pages = useRef(0);
   const busy = useRef(false);
-  const read = async (after: string | null, metadata = false, reset = false) => {
+  const read = async (after: string | null, metadata = false, reset = false, background = false) => {
     if (busy.current) return;
     busy.current = true;
     const n = ++asked.current;
     setReading(true); setMore(!!after);
-    const metadataRead = metadata ? reread() : Promise.resolve();
+    const metadataRead = metadata ? (background ? poll() : reread()) : Promise.resolve();
     try {
       let next = after;
       let loaded: Run[] = [];
@@ -261,7 +277,7 @@ function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<void>): R
   useEffect(() => {
     busy.current = false; shown.current = []; pages.current = 0; setRuns(null); setCursor(null); setError(null); setLimited(false);
     void read(null);
-    const refreshVisible = () => { if (!document.hidden) void read(null, true); };
+    const refreshVisible = () => { if (!document.hidden) void read(null, true, false, true); };
     window.addEventListener("focus", refreshVisible);
     document.addEventListener("visibilitychange", refreshVisible);
     const timer = window.setInterval(refreshVisible, 10_000);

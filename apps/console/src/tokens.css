@@ -57,6 +57,12 @@
   --wf-tool: 207 70% 41%;
   --wf-exit: 251 55% 53%;
 
+  /* A chart's series: the path a run took (the cost per run chart). One fixed order, checked for colour-blind
+     separation on the card in both themes; a mark in one is always also named by a legend and a label. */
+  --chart-agent: 213 67.7% 50.2%;
+  --chart-handed-back: 159 73.3% 39.6%;
+  --chart-workflow: 17 82.1% 56.3%;
+
   /* Square fields and surfaces; rounded action buttons and a softer build composer. */
   --radius: 0px;
   --radius-composer: 1rem;
@@ -127,6 +133,9 @@
   --wf-openrouter: 234 89% 74%;
   --wf-tool: 206 83% 65%;
   --wf-exit: 253 100% 81%;
+  --chart-agent: 213 76.8% 56.1%;
+  --chart-handed-back: 159 72.7% 35.9%;
+  --chart-workflow: 17 70.2% 50%;
   --shadow-float: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
 }
 

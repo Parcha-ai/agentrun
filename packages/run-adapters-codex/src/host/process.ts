@@ -2,7 +2,7 @@
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import { toolBridge as kernelToolBridge, type ToolBridge, type ToolBridgeOptions } from "@parcha/agentrun-kernel/process";
-import type { ToolImage } from "@parcha/agentrun-kernel";
+import type { JsonValue, ToolImage } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
@@ -11,26 +11,29 @@ export {
 } from "@parcha/agentrun-kernel/process";
 export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
-/** The kernel's tool bridge, keeping each call's images by its call id until the answer to Codex takes them
- *  (`takeImages`, code-mode.ts): the harness answers Codex with a result's text, and code mode's request handler adds
- *  the images as `inputImage` items. */
-export interface ImageBridge extends ToolBridge {
-  takeImages(callId: string): readonly ToolImage[] | undefined;
+/** What a call answered beside its text: its images, and its value (a computer tool's, its images' data left out). */
+export type CallExtras = { readonly images?: readonly ToolImage[]; readonly structured?: JsonValue };
+
+/** The kernel's tool bridge, keeping each call's images and value by its call id until the answer to Codex takes them
+ *  (`take`, code-mode.ts): the harness answers Codex with a result's text, and code mode's request handler adds the
+ *  images as `inputImage` items, or, for a script's nested call of a tool with a value, answers the value. */
+export interface ExtrasBridge extends ToolBridge {
+  take(callId: string): CallExtras | undefined;
 }
 
-export function toolBridge(ctx: Parameters<typeof kernelToolBridge>[0], tools: Parameters<typeof kernelToolBridge>[1], options?: ToolBridgeOptions): ImageBridge {
+export function toolBridge(ctx: Parameters<typeof kernelToolBridge>[0], tools: Parameters<typeof kernelToolBridge>[1], options?: ToolBridgeOptions): ExtrasBridge {
   const bridge = kernelToolBridge(ctx, tools, options);
-  const images = new Map<string, readonly ToolImage[]>();
+  const extras = new Map<string, CallExtras>();
   return {
     ...bridge,
     call: async (name, args, callId, signal) => {
       const result = await bridge.call(name, args, callId, signal);
-      if (callId && result.images?.length) images.set(callId, result.images);
+      if (callId && (result.images?.length || result.structured !== undefined)) extras.set(callId, { ...(result.images?.length ? { images: result.images } : {}), ...(result.structured !== undefined ? { structured: result.structured } : {}) });
       return result;
     },
-    takeImages: (callId) => {
-      const taken = images.get(callId);
-      images.delete(callId);
+    take: (callId) => {
+      const taken = extras.get(callId);
+      extras.delete(callId);
       return taken;
     },
   };

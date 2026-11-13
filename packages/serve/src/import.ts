@@ -504,9 +504,12 @@ function merged(parts: readonly Session[]): Session {
   // Known only when each file's is: a file whose spending is unknown (an unpriced model, no cost written) leaves the
   // session's unknown, never a part of it stored as the whole.
   const costUsd = priced.length < parts.length ? undefined : first.source === "claude-code" ? Math.max(...priced) : priced.reduce((n, cost) => n + cost, 0);
-  const { model: _model, startedAt: _start, endedAt: _end, costUsd: _cost, firstPrompt: _prompt, effort: _effort, ...rest } = first;
+  const { model: _model, startedAt: _start, endedAt: _end, costUsd: _cost, firstPrompt: _prompt, sourceTitle: _sourceTitle, titleText: _title, effort: _effort, ...rest } = first;
   const model = last.model ?? first.model;
   const firstPrompt = ordered.find((part) => part.firstPrompt !== undefined)?.firstPrompt;
+  // The session's title as its latest file wrote it, and the person's first words as its first file has them.
+  const sourceTitle = ordered.findLast((part) => part.sourceTitle !== undefined)?.sourceTitle;
+  const titleText = ordered.find((part) => part.titleText !== undefined)?.titleText;
   return {
     ...rest,
     ...(model ? { model } : {}),
@@ -515,6 +518,8 @@ function merged(parts: readonly Session[]): Session {
     state: last.state,
     ...(costUsd !== undefined ? { costUsd } : {}),
     ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+    ...(sourceTitle !== undefined ? { sourceTitle } : {}),
+    ...(titleText !== undefined ? { titleText } : {}),
     turns,
     users: sum("users"),
     activeMs: sum("activeMs"),
@@ -912,13 +917,28 @@ async function revisionFor(
   return { id, create: { id, kind: "agentic", body, skills, note } };
 }
 
+/** An imported run's title, whole: the source's own (Claude Code's), else the person's first words, else where the
+ *  session ran ("Session in billing-api"), never a CLI's command markup. A folder a key touches (as `keptName` judges it,
+ *  a key across the folder and its parent among them) is not named at all: the cut of the title matches only a whole key,
+ *  so the piece of one the folder holds would be left in it. */
+function runTitleOf(session: Pick<Session, "sourceTitle" | "titleText" | "cwd" | "source">, cut: Cut): string {
+  const generic = `${session.source} session`;
+  if (session.sourceTitle !== undefined) return session.sourceTitle;
+  if (session.titleText !== undefined) return session.titleText;
+  const cwd = session.cwd ?? "";
+  const parts = cwd.split("/");
+  const last = parts.findLastIndex((segment) => segment !== "");
+  if (last < 0) return generic;
+  return touchedSegments(cwd, cut).includes(last) ? generic : `Session in ${parts[last]}`;
+}
+
 /** The secrets this server made and keeps, by value: its API token and its sign-in sessions' secret (still files beside the
  *  store), and its webhook's signing secret (`whsec_...`; webhooks.ts) and every value a trigger source keeps sealed, as
- *  store rows (server-secrets-store.ts), opened with the seal key of `env`, which the caller has (a dry run over a store that
- *  keeps no secret has none, and does not ask); each signing secret's key in every spelling too. One pasted into a
+ *  store rows (server-secrets-store.ts), opened with the seal key of `env`, which the caller has (a dry run over a store
+ *  that keeps no secret has none, and does not ask); each signing secret's key in every spelling too. One pasted into a
  *  session is this server's own, so an import cuts it wherever it is, as it cuts the environment's keys. Not among them: a key-shaped value this server did not make (a
  *  `whsec_` from elsewhere). The per-run door token is gone (the runner cutover deleted it). A sealed value that does not
- *  open is said to `say`: the import goes on, and does not cut it. */
+ *  open is said to `say` (the webhook's secret once, naming the data directory): the import goes on, and does not cut it. */
 export async function ownSecrets(store: { triggerSettings: Pick<Store["triggerSettings"], "get" | "put" | "removeScope">; flush(): Promise<void> }, data: string, env: NodeJS.ProcessEnv, say: (fields: Record<string, string>) => void = () => {}): Promise<string[]> {
   if (!sealKeyOf(env[SEAL_KEY_ENV])) throw new Error(`the server's own secrets open only under its seal key (${SEAL_KEY_ENV}), and none was handed`);
   return (await openServerSecretsOverStore(store, data, env, TRIGGER_ADAPTERS, say)).secrets.values();
@@ -988,12 +1008,16 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       // Every file of it read: one holding only copies adds no records, but its subagents' folder is read with the rest.
       const searched: Session[] = [];
       let read: SourceFile | undefined;
+      // The session's own title as the file written last holds it: a moved copy's /rename too, though its turns are
+      // copies the import leaves out.
+      let titled: { at: number; title: string } | undefined;
       let changed = false;
       for (const { file } of files) {
         const stats = await stat(file).catch(() => null);
         const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
         if (!part || !stats) continue;
         searched.push(part);
+        if (part.sourceTitle !== undefined && (!titled || stats.mtimeMs >= titled.at)) titled = { at: stats.mtimeMs, title: part.sourceTitle };
         // A file of it holding only copies adds nothing to it.
         if (ownless(part)) {
           report.skipped.push({ what: file, why: "holds only records of sessions imported already", kind: "copies" });
@@ -1005,6 +1029,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       }
       if (!read) continue;
       const session = merged(parts);
+      if (titled) session.sourceTitle = titled.title;
       // A file of it changed since the scan above (a session still being written): what it holds now, read through
       // secretlint again before any of it is cut.
       if (changed) add(await keysInSessions(parts));
@@ -1023,7 +1048,9 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
       if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
       const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
-      const title = clip(text(session.firstPrompt ?? `${session.source} session`), 120);
+      // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
+      // match no cut.
+      const title = clip(text(runTitleOf(session, text)).replace(/\s+/g, " ").trim(), 120);
       await store.importRun({
         id: randomUUID(),
         agentId: project.agentId,
@@ -1033,7 +1060,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
         state: session.state === "completed" ? "ended" : session.state,
         ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
-        ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
+        ...((answer ?? session.titleText) ? { summary: text(answer ?? session.titleText!) } : {}),
         metrics,
         startedAt: Date.parse(session.startedAt ?? epoch0),
         endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),

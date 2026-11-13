@@ -1,12 +1,11 @@
 // Settings → Computers and the owner's Archil settings on a served server, as the switch wires them (server.ts): under
 // --faux (every served test's), the registry is faux-computers.ts's three providers. GET /v2/computers lists them, a
 // saved key makes faux-sandbox ready, faux-broken's test says why, capabilities.features.computers names the offered
-// kinds, the Archil routes turn Mode 2 on and off, and the run's desktop view, take-over and hand-back refuse in words
-// until their store-backed work lands. A faux desktop's page is served only by a live faux desktop. No provider is called.
+// kinds, the Archil routes turn Mode 2 on and off, and the run's desktop view refuses an unknown run. No provider is
+// called.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomBytes } from "node:crypto";
-import { FAUX_VIEW_PATH } from "../dist/faux-computers.js";
 import { SECRET_WRITE_PATHS, serve as served, withEnv } from "./support.mjs";
 
 // A computer key's save and any PUT of the Archil settings are secret writes (computers.ts, archil-routes.ts), and a run's
@@ -67,12 +66,10 @@ test("served handed no seal key: the server makes its own at the start (seal-key
   assert.deepEqual([on.body.on, on.body.secret.set], [true, true]);
 });
 
-test("served: a run's desktop view, take-over and hand-back refuse in words until the store-backed take-over lands; a faux page exists only for a live faux desktop", async (t) => {
+test("served: a run's desktop view refuses an unknown run, and the token never reads one", async (t) => {
   const { api, baseUrl, token } = await serve(t, { runner: false });
   const view = await api("GET", "/runs/run-404/computer");
   assert.equal(view.status, 404, "no run, read from the owner's session");
   const byToken = await fetch(`${baseUrl}/runs/run-404/computer`, { headers: { authorization: `Bearer ${token}` } });
   assert.equal(byToken.status, 403, "the token never reads a run's live computer view, a run or none");
-  const page = await fetch(`${new URL(baseUrl).origin}${FAUX_VIEW_PATH}/faux-desktop-1/view`);
-  assert.equal(page.status, 404, "no faux desktop was started");
 });

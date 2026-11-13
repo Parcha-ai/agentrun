@@ -20,7 +20,7 @@ const skip = problem && process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY !== '1'
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-skills-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 const MODEL = 'claude-sonnet-5-5';
-const SMALL = 'claude-haiku-4-5';
+const SMALL = 'claude-haiku-5-5';
 const CANARY = 'CANARY-RESEARCH-METHOD';
 const SKILL = { name: 'research-method', files: { 'SKILL.md': `---\nname: research-method\ndescription: How this host researches.\n---\n${CANARY}: cite every source you fetched.\n`, 'reference/sources.md': 'Primary sources first.\n' } };
 

@@ -1,0 +1,5 @@
+{
+  "package": "@parcha/agentrun-client",
+  "expect": "no-key path missing",
+  "reason": "The client README constructs an authenticated server client and requires an AgentRun API key; its SDK learning examples also require native authentication. No credential-free newcomer command is documented."
+}

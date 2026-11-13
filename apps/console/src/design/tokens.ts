@@ -10,6 +10,7 @@ export const COLOR_TOKENS = {
   line: ["border", "border-strong", "input", "ring"],
   run: ["run-active"],
   workflow: ["wf-jev", "wf-parallel", "wf-openrouter", "wf-tool", "wf-exit"],
+  chart: ["chart-agent", "chart-handed-back", "chart-workflow"],
 } as const;
 
 /** The type scale: the class, its size, and what it is for. */

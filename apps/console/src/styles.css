@@ -39,6 +39,8 @@
   .report ol { @apply mb-4 list-decimal pl-6; }
   .report code { @apply bg-muted px-1 font-mono text-body; }
   .report pre { @apply mb-4 overflow-x-auto border bg-card p-4 font-mono text-small leading-[1.8]; }
+  /* A code block's code is the block's text: no inline code's tint per line. */
+  .report pre code { @apply bg-transparent p-0; }
   .report table { @apply mb-4 w-full border-collapse text-lead leading-5; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
   .report th { @apply caps text-label text-muted-foreground; }

@@ -57,10 +57,12 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
       </nav>
       {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
           share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
-      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row">
-        <div className="min-w-0 flex-1 self-stretch max-sm:contents">
+      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row sm:flex-wrap">
+        {/* The title's column keeps 16rem to itself (sm:basis-64): when the actions would squeeze it below that, they wrap onto
+            their own row (a Playground's half page at 1500 px, four actions while the run works). */}
+        <div className="min-w-0 flex-1 self-stretch max-sm:contents sm:basis-64">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="break-words text-2xl font-semibold leading-tight max-sm:line-clamp-2 max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
+          <h1 className="line-clamp-2 break-words text-2xl font-semibold leading-tight max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-small text-muted-foreground max-sm:contents">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
@@ -78,7 +80,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           {run.status === "completed" && run.review && <p className="mt-2 text-body text-warning-text max-sm:mt-0 max-sm:basis-full">Needs review: {run.review.reason}</p>}
         </div>
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             {raisable && (
               <Button size="sm" onClick={() => setRaising((r) => !r)} aria-expanded={raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
                 <CircleDollarSign aria-hidden /> Raise the cap

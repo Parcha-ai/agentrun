@@ -58,6 +58,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `ring` | (the global focus rule) | The keyboard focus ring. |
 | `run-active`, `run-error-surface` | `text-run-active`, `bg-run-error` | A working run; a failed run's panel. |
 | `wf-jev`, `wf-parallel`, `wf-openrouter`, `wf-tool`, `wf-exit` | `text-wf-jev` | The workflow graph: who does a step's work. |
+| `chart-agent`, `chart-handed-back`, `chart-workflow` | `fill-chart-agent` | A chart's series, in this order: the path a run took. Marks only; words stay `text-foreground`. |
 
 **A tone is a pair.** The bare name fills, borders and dots. The `-text` name writes words. `text-success` on a
 white page fails contrast; `text-success-text` passes. The same holds for orange: `text-primary` is for a mark on a
@@ -172,6 +173,7 @@ Import from `@/components/ui`.
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
 | A field with an icon or buttons inside its edge | A box with `fieldBoxClass` around `<Input bare>` or `<Textarea bare>` | A field with `outline-none` and no focus of its own. |
 | A choice from a list | `Picker` (opens under its field), for every list; inside a `Field` the label, hint and error are wired to it | A bare `<select>`. |
+| One value out of a run of whole steps (a revision) | `Slider`: a native range, quiet (a thin `border-strong` track, a small `foreground` dot), with a `label` and a `valueText` in words | A bare `<input type="range">`. |
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox`; a native input with `accent-primary` where a row has its own layout | |
 | On or off, taking effect at once | `Switch` | A checkbox. |
@@ -229,10 +231,10 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 
 ## Layout and responsiveness
 
-- **The shell** is a 220px sidebar and a main column. Under `md` (768px) the sidebar becomes a top bar with a menu.
+- **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
   Banners sit above the page, outside its scroller. `main` is the page's only scroller.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
-  phone. `short:` is for a viewport under 500px tall (a phone on its side). Do not add a breakpoint.
+  phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
 - **Widths.** A page of forms or text is `max-w-page`; a page of data is `max-w-page-wide`. A line of prose is at
   most `max-w-prose`.
 - A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel.
@@ -265,7 +267,9 @@ After a change to a token, also look: `npm run storybook`, then "Design system /
 ## The catalogue over MCP, and stories as tests
 
 `npm run storybook` in `apps/console` also serves the catalogue to coding agents over MCP, at
-`http://127.0.0.1:6006/mcp` (Streamable HTTP; add it to an agent as an HTTP MCP server). Its tools list the components
+`http://127.0.0.1:6006/mcp` (Streamable HTTP; add it to an agent as an HTTP MCP server, on an AgentRun started with
+`AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which a server needs before it takes an MCP server on loopback: set it only on a machine
+you alone use). Its tools list the components
 and stories (`docs-list`), show a component's or a story's documentation (`docs-show`, `docs-show-story`), find the
 stories that render a source file (`stories-find-by-component`) or that changed (`stories-changed`), give a story's
 preview URL (`stories-preview`), say how to write a story (`get-storybook-story-instructions`), and run story tests

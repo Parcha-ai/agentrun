@@ -282,7 +282,7 @@ export class SdkRuns {
       let room = 256 * 1024;
       return flows.filter((flow) => {
         const bytes = Buffer.byteLength(JSON.stringify(flow));
-        if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
+        if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, undefined, binding.workflow_adapters).length) return false;
         room -= bytes;
         return true;
       });

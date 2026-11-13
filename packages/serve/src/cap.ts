@@ -44,10 +44,7 @@
 // on a refusal for room and waits for a raise without its process, a workflow's refused step waits where it stands
 // (RunSpend.wait, budget.ts): a model node's request before it is sent, a call node's call and a decision before they are
 // admitted again. A refusal inside a call node's effect is told to the call (capRefusals), never only to the model.
-import { readRunDbSync } from "./run-db.js";
-import { durableDecisions } from "./workflow/readers.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync } from "node:fs";
 import { imageInputOf, providerInputOverhead } from "@parcha/agentrun-kernel/host";
 import { bookRequest, type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "@parcha/agentrun-kernel";
 import { type EntryLike, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
@@ -503,79 +500,6 @@ export function spentFrom(rows: readonly EntryLike[]): number | null {
   return entries.reduce((sum, entry) => sum + costOf(entry), 0);
 }
 
-/** A workflow decision's charge as the cap counted it (decision-cap.ts): `call` names the request, `usd` what it charged,
- *  or its hold when it said none. The run's shown cost reads its decisions from their receipts; this is the cap's own
- *  reading, kept so a later process counts each decision as this one did. costOf counts none, so nothing counts twice. */
-export const DECISION_COST = "agentrun.decision_cost";
-/** A decision request's hold, kept before it is sent (decision-cap.ts): with no DECISION_COST after it, its process died
- *  while it was out, and it counts at this figure. */
-export const DECISION_HOLD = "agentrun.decision_hold";
-
-/** What a workflow run's decisions cost, in its store: what the next process adds to spentFrom's reading. Per decision
- *  (its id):
- *  - booked (DECISION_COST entries, at its charge, its hold, or $0 for nothing charged): the larger of what was booked,
- *    with any hold no booking ended, and what its receipts say it cost (the costs the timeline's decision rows sum);
- *  - else, with a receipt that names its charge: that charge (its booking lost after the receipt);
- *  - else, with a hold (DECISION_HOLD, kept once the driver admitted the request, right before its send): that hold, the
- *    figure the live process held, since the request may have been out when its process died; never $0;
- *  - else nothing: no hold is kept before the admission, so a request never sent is never counted.
- *  A booking with no decision id is counted as it is. */
-export function decisionSpentIn(storeFile: string): number {
-  const booked = new Map<string, number>();
-  /** The decisions with any booking, a $0 one included. */
-  const ended = new Set<string>();
-  /** Each decision's holds kept and not yet followed by a booking, in order. */
-  const open = new Map<string, number[]>();
-  let loose = 0;
-  for (const entry of entriesIn(storeFile)) {
-    if (entry.kind !== DECISION_COST && entry.kind !== DECISION_HOLD) continue;
-    const data = entry.data as { usd?: unknown; decision?: unknown } | undefined;
-    const usd = figureOf(data?.usd);
-    const id = typeof data?.decision === "string" ? data.decision : undefined;
-    if (entry.kind === DECISION_HOLD) {
-      if (id !== undefined && usd !== undefined) open.set(id, [...(open.get(id) ?? []), usd]);
-      continue;
-    }
-    // A booking ends its decision's oldest hold still open, whatever it charged ($0 for nothing sent).
-    if (id !== undefined) {
-      ended.add(id);
-      open.get(id)?.shift();
-    }
-    if (usd === undefined || !(usd > 0)) continue;
-    if (id !== undefined) booked.set(id, (booked.get(id) ?? 0) + usd);
-    else loose += usd;
-  }
-  const receipted = new Map<string, number>();
-  let receipts: Array<Record<string, unknown>> = [];
-  // Receipts that cannot be read leave the bookings alone to say it.
-  if (existsSync(storeFile)) try { receipts = durableDecisions(storeFile, { unlocked: true }); } catch { receipts = []; }
-  for (const receipt of receipts) {
-    const usd = figureOf(receipt.cost_usd);
-    // A stored receipt row names its decision `decision_id` (workflow/decision-recovery.ts rowOf).
-    const id = typeof receipt.decision_id === "string" ? receipt.decision_id : typeof receipt.id === "string" ? receipt.id : undefined;
-    if (id !== undefined && usd !== undefined && usd > 0) receipted.set(id, (receipted.get(id) ?? 0) + usd);
-  }
-  let sum = loose;
-  for (const id of new Set([...ended, ...booked.keys(), ...receipted.keys(), ...open.keys()])) {
-    const held = (open.get(id) ?? []).reduce((total, usd) => total + (usd > 0 ? usd : 0), 0);
-    if (ended.has(id)) sum += Math.max((booked.get(id) ?? 0) + held, receipted.get(id) ?? 0);
-    else if (receipted.has(id)) sum += receipted.get(id)!;
-    else sum += held;
-  }
-  return sum;
-}
-
-/** The entries of the run's store, in order (none when it has no store yet). */
-function entriesIn(storeFile: string): EntryLike[] {
-  if (!existsSync(storeFile)) return [];
-  // Fresh, read-only and lock-free (run-db.ts), as the cap's readings did.
-  const rows: EntryLike[] = [];
-  readRunDbSync(storeFile, false, (db) => {
-    rows.length = 0;
-    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) rows.push(JSON.parse(String((row as { record: string }).record)) as EntryLike);
-  });
-  return rows;
-}
 /** /usage's meters for a run that ended, from its store: `tools`, each TOOL_COST's `usd`, unknown (null) when one is,
  *  or when a call was cut (marked, never settled: what it charged no one knows); and `tokens`, the rest of its root
  *  conversation as its settled timeline prices it; `browser`, the part of `tools` that is browser session time

@@ -9,7 +9,7 @@ import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { ended, learner, made, reflectRows, sleep, started } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 /** The end-of-run turn's message (reflectPrompt). */
 const ASKED = /Answer with one block per note to keep\./;
@@ -23,7 +23,7 @@ test("on claude-agent, a run reads reflecting while its end-of-run turn runs: af
   const fake = await fakeAnthropic({
     reply: async (r) => {
       if (r.text.includes("Answer with one JSON object and nothing else")) {
-        return { text: JSON.stringify({ merge: true, reason: "General and new.", items: [{ file: "check-units.md", decision: "keep", why: "It holds as a general rule." }] }) };
+        return { text: JSON.stringify({ merge: true, reason: "General and new.", items: [{ file: "check-units.md", decision: "keep", general: true, why: "It holds as a general rule." }] }) };
       }
       // The end-of-run turn: held open until the test has read the run while it runs.
       if (r.messages.some((m) => m.role === "user" && ASKED.test(textOf(m)))) {

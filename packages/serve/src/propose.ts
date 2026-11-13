@@ -11,6 +11,7 @@ import type { DraftAsk } from "./learn/skills.js";
 import { join } from "node:path";
 import { type Change, checkProposal, type DraftDryRun, draftDryRun, draftFiles, NOTE_BLOCK, unstorable, parseReflection, type Problem, redactSecrets, shortMessage, SKILL_BLOCK, SKILLS_DIR, WORKFLOW_BLOCK, WORKFLOWS_DIR } from "./learn/index.js";
 import { folderAt, readLearning, readSnapshot, type Snapshot } from "./learn/folder.js";
+import type { DraftDecisions } from "./learn/skills.js";
 import { baseOf } from "./learn/seed-check.js";
 import { parseNoteFile, ruleOf } from "./learn/notes.js";
 import { writeDurable } from "./files.js";
@@ -91,7 +92,7 @@ async function seedAt(lw: Workspace, seed: string, wanted: (snapshot: Snapshot) 
  *  `skills/<name>/SKILL.md`; a draft at `workflows/<name>/workflow.json`, with the README.md the host writes from the
  *  description its block gives. `outcome`, how the run's job ended (only a completed run adds or changes a skill);
  *  `tools`, those a draft may name (tools.ts learnedWorkflowTools); `refuse`: this host's secrets. */
-export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; workflows?: false; workflowAdapters?: readonly ("runNode" | "runJudge")[] }): Promise<Proposed> => {
+export const proposeRun = async (input: { folder: Workspace; runDir: string; seed: string; notesSeed?: string; turn: Turn; refuse: readonly string[]; outcome?: string; tools?: readonly string[]; gated?: Readonly<Record<string, string>>; deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>; ask?: DraftAsk; decisions?: DraftDecisions; workflowAdapters?: readonly ("runNode" | "runJudge")[]; workflows?: false }): Promise<Proposed> => {
   const parsed = parseReflection(input.turn.answer);
   // Each skill and draft as the folder would hold it, keyed by its block (kind and name) so the changes keep the
   // answer's order; a draft is its two files, given together or not at all. A draft's `example:` line, by its
@@ -115,11 +116,19 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   const { snapshot, texts } = await seedAt(input.folder, input.seed, (seedSnapshot) => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...given.flat().map(({ file }) => file), ...draftSkills, ...activeOf(seedSnapshot)] : []));
   if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
   const { base: seedBase, kept } = baseOf(snapshot);
-  const rules = new Map(activeOf(snapshot).flatMap((file): [string, string][] => {
-    const note = texts.has(file) ? parseNoteFile(file, texts.get(file)!) : undefined;
+  // A later round's notes are checked against the main the earlier rounds merged into (`notesSeed`: a note round 1 added
+  // is a supersedes target and a duplicate rule), while a skill's or a draft's files keep `seed` as their conflict base:
+  // the run was laid from it, so a file changed on main since is a conflict, never written over.
+  const noted = input.notesSeed && input.notesSeed !== input.seed
+    ? await seedAt(input.folder, input.notesSeed, (seedSnapshot) => (parsed.ok ? [...parsed.notes.map(({ file }) => file), ...activeOf(seedSnapshot)] : []))
+    : { snapshot, texts };
+  const rules = new Map(activeOf(noted.snapshot).flatMap((file): [string, string][] => {
+    const note = noted.texts.has(file) ? parseNoteFile(file, noted.texts.get(file)!) : undefined;
     return note && !Array.isArray(note) ? [[ruleOf(note.body), file]] : [];
   }));
-  const base = { ...seedBase, rules };
+  const learnedPath = (path: string) => path.startsWith(`${SKILLS_DIR}/`) || path.startsWith(`${WORKFLOWS_DIR}/`);
+  const notedBase = baseOf(noted.snapshot).base;
+  const base = { files: [...[...notedBase.files].filter((path) => !learnedPath(path)), ...[...seedBase.files].filter(learnedPath)], active: notedBase.active, rules };
   const held = new Set(base.files);
   const files = given.filter((group) => group.some(({ file, text }) => texts.get(file) !== text)).flat();
   const changeOf = ({ file, text }: { file: string; text: string }): Change => ({ path: file, status: held.has(file) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) });
@@ -130,7 +139,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   const changes: Change[] = parsed.order.flatMap(({ kind, name }): Change[] => {
     if (kind === NOTE_BLOCK) {
       const text = noteTexts.get(name)!;
-      return texts.get(name) !== text ? [changeOf({ file: name, text })] : [];
+      return noted.texts.get(name) !== text ? [changeOf({ file: name, text })] : [];
     }
     return (fileGroups.get(keyOf(kind, name)) ?? []).filter(({ file }) => changed.has(file)).map(changeOf);
   });
@@ -144,7 +153,7 @@ export const proposeRun = async (input: { folder: Workspace; runDir: string; see
   if (leaky.length) return { state: "dropped", reason: "checker", problems: leaky };
   // A skill or a draft whose seed text has a status is a person's call (retired, or waiting for their OK): never changed.
   const dryRuns: Record<string, DraftDryRun> = {};
-  const check = (some: Change[]) => checkProposal({ workflowAdapters: input.workflowAdapters, base, changes: some, refuseValues: input.refuse, ...(input.workflows === false ? { workflows: false as const } : {}), ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.ask ? { ask: input.ask } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
+  const check = (some: Change[]) => checkProposal({ workflowAdapters: input.workflowAdapters, base, changes: some, refuseValues: input.refuse, ...(input.workflows === false ? { workflows: false as const } : {}), ...(kept.length ? { kept } : {}), ...(input.outcome === undefined ? {} : { outcome: input.outcome }), ...(input.tools ? { tools: input.tools } : {}), ...(input.gated ? { gated: input.gated } : {}), ...(input.deniedBy ? { deniedBy: input.deniedBy } : {}), ...(input.ask ? { ask: input.ask } : {}), ...(input.decisions ? { decisions: input.decisions } : {}), ...(dsl ? { dsl, dryRuns } : {}) });
   // The static checks first, every one (validateWorkflow with executeCode: false, draftProblems' refusal of code nodes,
   // caps, secrets): a draft they refuse is never dry-run, nor is any when they refuse the answer whole. Then each draft
   // left is dry-run on its example, else on a synthesized input (learn/skills.ts draftDryRun): every model and tool

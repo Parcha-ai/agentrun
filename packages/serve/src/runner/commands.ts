@@ -7,8 +7,10 @@ import type { Command } from "./loop-contract.js";
 /** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good.
  *  browser_hand_back is a person's answer to the agent's browser hand-over (runner/hand-back.ts). computer_take_over and
  *  computer_hand_back are a person's turn with the run's desktop or phone (computer-commands.ts, runner/computer-journal.ts).
- *  pause and resume are a workflow run's (runs.ts pause). */
-export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise", "browser_hand_back", "computer_take_over", "computer_hand_back", "pause", "resume"]);
+ *  computer_call is the computer call channel's: one protocol call on the run's computer (computer-channel.ts,
+ *  runner/computer-channel.ts). computer_start and computer_release are the owner's, for a computer the run holds
+ *  (computer-held.ts, runner/held-run.ts). pause and resume are a workflow run's (runs.ts pause). */
+export const COMMAND_KINDS: ReadonlySet<string> = new Set(["stop", "cancel", "steer", "approve", "deny", "raise", "browser_hand_back", "computer_take_over", "computer_hand_back", "computer_start", "computer_call", "computer_release", "pause", "resume"]);
 
 export interface CommandInput {
   readonly kind: string;
@@ -17,10 +19,20 @@ export interface CommandInput {
 
 /** The store's insert: refuses a run that is final (RunFinal) in the insert itself, so it never races the run's end. */
 export interface CommandSink {
-  command(runId: string, command: { kind: string; body: Record<string, unknown> }): Promise<Command>;
+  command(runId: string, command: { kind: string; body: Record<string, unknown> }, options?: { launchSealed?: Uint8Array }): Promise<Command>;
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
+/** Whether `value` is the JSON text of an object (not an array, not null). */
+const objectText = (value: unknown): boolean => {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+};
 
 /** Why a command's body is wrong for its kind, or undefined when it is right. */
 function bodyProblem(kind: string, body: Record<string, unknown>): string | undefined {
@@ -51,9 +63,18 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       if (text(body.take)) return undefined;
       if (!text(body.ask)) return "a computer hand-back names the take it ends (take) or the ask it answers (ask)";
       return body.outcome === "done" || body.outcome === "cancelled" ? undefined : "a computer hand-back's outcome is done or cancelled";
+    case "computer_call":
+      if (!text(body.method)) return "a computer call names its protocol method";
+      // A call answers no park (answers: false), so a row written as its run parks never wakes it.
+      if (body.answers !== false) return "a computer call answers no park (answers: false)";
+      // Its params as one JSON text (computer-channel.ts callComputer), so a settle's jsonb never decodes what was typed.
+      return body.params === undefined || objectText(body.params) ? undefined : "a computer call's params are a JSON object's text";
+    case "computer_start":
+    case "computer_release":
     case "pause":
     case "resume":
-      // A workflow run's pause or resume (POST /runs/{id}/pause, /resume): the run's runner takes it; it carries nothing.
+      // A held run's start or release (POST /runs/{id}/start, /computer/release), or a workflow run's pause or resume
+      // (POST /runs/{id}/pause, /resume): the run's runner takes it; it carries nothing.
       return Object.keys(body).length === 0 ? undefined : `a ${kind} carries nothing`;
     default:
       return undefined;
@@ -62,14 +83,14 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
 
 /** Inserts a command row for a run, after checking its kind and body. Rejects RunFinal (from the store) when the run is
  *  final, and a TypeError for a kind or body no runner would take. */
-export async function sendCommand(store: CommandSink, runId: string, input: CommandInput): Promise<Command> {
+export async function sendCommand(store: CommandSink, runId: string, input: CommandInput, options?: { launchSealed?: Uint8Array }): Promise<Command> {
   if (!COMMAND_KINDS.has(input.kind)) {
     throw new TypeError(`a command's kind is one of ${[...COMMAND_KINDS].join(", ")}, not ${JSON.stringify(input.kind)}`);
   }
   const body = input.body ?? {};
   const problem = bodyProblem(input.kind, body);
   if (problem) throw new TypeError(problem);
-  return store.command(runId, { kind: input.kind, body });
+  return store.command(runId, { kind: input.kind, body }, ...(options ? [options] : []));
 }
 
 /** The reason a command still untaken when its run ended is refused with: the store's own words (the write that makes a

@@ -8,7 +8,8 @@
 //   readMain   main as the grader reads it, from the folder's snapshot (learn/commit.ts readMain);
 //   commit     the folder's one write (learn/commit.ts learningCommit);
 //   merged     the run's merge when it is on main already, with the texts its own commit holds (learn/commit.ts mergedAt),
-//              for a resume after its commit.
+//              for a resume after its commit;
+//   general    the generality pre-check (learn/general.ts), on this host's Jev, when it has one (passed in by the wiring).
 
 import { learningCommit, type LearningChange, mainTexts, mergedAt, readMain } from "../learn/commit.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -20,7 +21,7 @@ import type { LoopFactory } from "./loop-contract.js";
 /** The harness a learning run's launch names (store/sqlite/run-patch.ts learningLaunchOf). */
 export const LEARNING_HARNESS = "learning";
 
-export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now"> {
+export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now" | "general" | "generalThreshold"> {
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
   /** The server's data directory: where each agent's learning folder is. */
   readonly data: string;
@@ -38,22 +39,30 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
   return createLearningLoop({
     sourceOf: async (learningRunId) => {
       const launch = await store.runs.launch(learningRunId);
-      const runId = objectOf(objectOf(launch.body).input).runId;
+      const input = objectOf(objectOf(launch.body).input);
+      const runId = input.runId;
       if (typeof runId !== "string") return undefined;
       const source = await store.runs.get(runId);
       if (!source) return undefined;
-      let instructions:unknown;
-      try{instructions=deps.sourceInstructions ? await deps.sourceInstructions(runId) : objectOf((await store.agents.revision(source.revisionId))?.body).instructions;}
-      catch(error){return {runId,agentId:source.agentId,policyError:error instanceof Error?error.message:String(error)};}
-      return { runId, agentId: source.agentId, ...(typeof instructions === "string" ? { instructions } : {}),...(deps.sourceInstructions?{nativeInstructions:true as const}:{}) };
+      const round = Number.isSafeInteger(input.round) && (input.round as number) > 1 ? { round: input.round as number } : {};
+      let instructions: unknown;
+      try {
+        instructions = deps.sourceInstructions ? await deps.sourceInstructions(runId) : objectOf((await store.agents.revision(source.revisionId))?.body).instructions;
+      } catch (error) {
+        return { runId, ...round, agentId: source.agentId, policyError: error instanceof Error ? error.message : String(error) };
+      }
+      return { runId, ...round, agentId: source.agentId, ...(typeof instructions === "string" ? { instructions } : {}), ...(deps.sourceInstructions ? { nativeInstructions: true as const } : {}) };
     },
-    proposal: (runId) => store.learning.proposal(runId),
+    proposal: (runId, round) => store.learning.proposal(runId, round),
     ask: deps.ask,
     folder: (agentId) => learningWorkspace({ mode: "local", agentId, data: deps.data, ...(deps.log ? { log: deps.log } : {}) }),
     readMain: async (ws, proposal) => (await readMain(ws as Workspace, { notes: proposal.notes })) as GradeMain | { readonly problems: readonly Problem[] },
     commit: async (ws, change) => (await learningCommit(ws as Workspace, change as LearningChange)) as LearningCommitResult,
     mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
-    merged: (ws, runId, paths) => mergedAt(ws as Workspace, runId, paths),
+    merged: (ws, runId, paths, round) => mergedAt(ws as Workspace, runId, paths, round),
     ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.general ? { general: deps.general } : {}),
+    ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}),
+    ...(deps.log ? { log: deps.log } : {}),
   });
 }

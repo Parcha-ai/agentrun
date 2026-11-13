@@ -29,11 +29,12 @@ import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
-import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
+import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
 import { redactedAnswer } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
@@ -42,6 +43,7 @@ import { waitingAsk } from "./browser-commands.js";
 import { runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
+import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
@@ -114,6 +116,9 @@ export type ToolHost = {
    *  binding reads `liveViewers`, never them directly. Absent, no viewer is handed over (browser-live.ts
    *  sessionHandovers), and nothing is written in the run's folder. */
   liveViewers?: { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> };
+  /** On a runner on another host than its server (live-reach.ts runnerLiveOf): where its browser's viewer listens, the host
+   *  its hand-over names, and the key the server's proof is checked with. Absent: loopback. */
+  liveAt?: RunnerLive;
   /** The one store, for the live-viewer seam above, the run's saved sign-in (its runs and sign-ins, read under `claim`),
    *  the sign-in verify the runner saves, and the Screen tab's ended state (settings: browser-wait-ended.ts). */
   store?: LiveViewerStore & Pick<Store, "runs" | "signIns" | "settings">;
@@ -140,6 +145,9 @@ export type ToolHost = {
    *  claim's provider, whatever the tool plane picked. Absent: the plane's vendor, opened the same way (browser-computer.ts
    *  planeBrowser). */
   browserComputer?: ClaimBrowser;
+  /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
+   *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
+  search?: SearchOn;
 };
 
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
@@ -154,7 +162,7 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 
 /** What a call node's effect gets from the run's process: its signal, environment and work directory, one completion
  *  on the run's models (the `llm` tool's), and the ledger its paid requests are booked in (paid-calls.ts). */
-export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger };
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -277,12 +285,26 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
   },
 });
 
-/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. */
-function cutStrings<T>(value: T, cut: (text: string) => string): T {
+/** An image block's `data` kept whole by the cut: its base64 is an image a model can be sent (attach-images.ts
+ *  unattachable: a PNG, JPEG, GIF or WebP whose bytes are the type it names and whose header says its size), and its
+ *  decoded bytes, read as text, hold nothing the cut takes out (a held value written after a valid header). */
+const wholeImage = (block: { readonly data?: unknown; readonly mimeType?: unknown }, cut: (text: string) => string): boolean => {
+  if (unattachable(block) !== undefined) return false;
+  const bytes = Buffer.from(block.data as string, "base64").toString("latin1");
+  return cut(bytes) === bytes;
+};
+
+/** Every string in `value` (a tool's answer: its content, its details) passed through `cut`; anything else as it is. An
+ *  image block's `data` that is an image (wholeImage) is its pixels' base64, not text, and is kept whole: the cut reads a
+ *  run of more than 8,192 characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), which no model
+ *  takes as an image. Any other `data`, on a block of any type, is cut like every other string. */
+export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   if (typeof value === "string") return cut(value) as T;
-  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut)) as T;
+  if (Array.isArray(value)) return value.map((item) => cutAnswer(item, cut)) as T;
   if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cutStrings(item, cut)])) as T;
+    const block = value as { type?: unknown; data?: unknown; mimeType?: unknown };
+    const keep = block.type === "image" && wholeImage(block, cut);
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, keep && key === "data" ? item : cutAnswer(item, cut)])) as T;
   }
   return value;
 }
@@ -294,7 +316,7 @@ function answersCutInside(tool: ToolRegistration, cut: (text: string) => string)
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutStrings(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -463,7 +485,14 @@ const browserTool: ToolEntry = {
         return { outcome: stood.state, at: stood.at, ...(stood.reason !== undefined ? { reason: stood.reason } : {}) };
       },
     });
-    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) } });
+    // On a runner on another host than its server, the viewer listens on the runner's live address and takes no page or
+    // socket without the server's proof for its own path id (live-reach.ts).
+    const at = host.liveAt;
+    const admit = at ? (req: { readonly url?: string; readonly headers: Record<string, string | string[] | undefined> }) => {
+      const id = /^\/v\/([A-Za-z0-9_-]{22})(?:\/ws)?(?:\?|$)/.exec(req.url ?? "")?.[1];
+      return id !== undefined && provenFor(req as never, at, id);
+    } : undefined;
+    const view = createLiveView({ hostOrigin: "'self'", gates, takeOver: { take: (tag) => hands.take(tag) }, ...(at ? { listen: { bind: at.bind, host: at.host }, admit: admit! } : {}) });
     const watched = handedProvider ? liveViewProvider(handedProvider as never, view) : undefined;
     const provider = () => {
       if (refused) throw refused;
@@ -471,7 +500,7 @@ const browserTool: ToolEntry = {
     };
     // Each session's viewer reaches the server as it launches, and goes as it ends: through the store, under the run's claim
     // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
-    const viewers = live.sessionHandovers(host.liveViewers);
+    const viewers = live.sessionHandovers(host.liveViewers, at?.host);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
@@ -629,8 +658,9 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
-    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env)) as unknown as ToolRegistration),
-    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal)),
+    // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
+    bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search)) as unknown as ToolRegistration),
+    effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
   browser: browserTool,
   // monid's catalog on one key (monid.ts): every harness calls each by its wire name, `monid_discover` and the rest.

@@ -79,8 +79,13 @@ name: the tools its definition grants that a workflow's call node runs on this s
 server's tool settings and the agent's own): a draft whose call node calls one, a composed workflow's inner node too, is
 refused in the words a workflow revision's call node is, and the end-of-run prompt offers only tools set to allow. A model node that names any tool is refused: a learned
 workflow's model node runs without tools. So is a node the learned runner cannot run: a learned workflow runs model
-and tool-call nodes, and a judge, pick or sift node (or a route by question, a verify, an ask) needs a decision provider a
-run is not given. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
+and tool-call nodes, and decision nodes (a judge, pick or sift node, a route by question, a verify, an ask) on a run
+that has decision providers. A decision node's provider (the one it names, else the run's default) must be one the
+run has a key for and answer what the node asks, and the run's gate holds it under the provider's bare id (`jev`,
+`parallel`, `openrouter`: a settings key that is allow by default, allow or deny): set to deny, the draft is refused in
+the gate's words. Each decision is admitted on
+the run's one cap before it is sent and booked at what it charged (`learned-workflow.ts`); one the cap has no room for
+is never sent, and the run pauses on the refusal. So is an agent node that asks more than the learned runner's 8 turns, or `context: "fork"` (each node
 starts a fresh session). With no list, a draft that names any tool is refused. A draft
 holds no node that runs code: no `code` node, and no call `via: "shell"` or `via: "executor"`.
 
@@ -109,11 +114,13 @@ a path), so it is fenced as data, never outside a fence.
 
 `MEMORY.md` is one line per active note, by file name, `- [name](file.md) — description`, built by the host from the
 notes' front matter every time it merges. A run whose agent's active notes fit its learning budget reads every one
-whole. Past it, the run reads the notes that bear on its first message whole, best first, while they fit, then one line
-for each of the rest, `- <name> (<file>): <description>`, in place of the index: at most 200 lines, within 25 KB, as
-Claude Code loads its own. Each note is scored by a lexical match, with no model call (`learn/relevance.ts`: BM25 over its
-name, description and body). A first message that shares no word with any note reads the index's first 200 lines, then
-the notes changed last, whole, while they fit.
+whole. Past it, the run reads the notes that bear on its first message whole, best first, while they fit the budget,
+then one line each for the next while they fit what is left, `- <name> (<file>): <description>`, in place of the index:
+at most 200 lines, within 25 KB, as Claude Code loads its own. Whole notes take the budget before lines do: a line for
+every note would leave no room for one whole past ~50 notes. A note that shares no word with the first message is a line
+at most. Each note is scored by a lexical match, with no model call (`learn/relevance.ts`: BM25 over its name,
+description and body). A first message that shares no word with any note reads the notes changed last the same way.
+The notes the section gives neither way are left out, and the run's log names them (`notesLeftOut` on its launch).
 
 ## What a run may propose
 
@@ -210,7 +217,12 @@ Over a cap is refused, never cut.
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
 
-Whether a note holds one case's data is the grader's judgment, not the checker's.
+Whether a note holds one case's data is not the checker's to judge. Before the grader, one Jev question per new note
+(`learn/general.ts`, on the Jev model and keys decision nodes use) asks whether it holds for the job's inputs other than
+the one it came from; a note rated below the bar (0.5, `AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`) is dropped there,
+its reason on the verdict and its cost the grade's. When Jev cannot run, the grader reads every note, the grade's
+entry keeps why (`unchecked`), the run's learning end says so, and the grade's cost is unknown (null). The grader's
+General question is then a gate: it answers `general` for every item, and one it says is not general is never kept.
 
 ## The grade
 

@@ -11,7 +11,7 @@ import type { KindVerdict } from "./kind.js";
 /** Core: what a computer of its kind must do. Full: an optional capability, tested only where it is declared. */
 export type Level = "core" | "full";
 /** The suite's own grouping of its cases, the first part of each case id; not the protocol's Group. */
-export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "lifetime" | "browser" | "gpu";
+export type CaseGroup = "health" | "exec" | "files" | "process" | "provider" | "drift" | "isolation" | "mount" | "screen" | "input" | "touch" | "apps" | "ui" | "lifetime" | "browser" | "gpu";
 
 /**
  * What a case needs: a group (declared by both the provider's capabilities().groups and the computer's hello), a
@@ -114,8 +114,9 @@ export interface CaseContext {
 	/**
 	 * Calls create with this whole spec, through by (default the provider), and gives its result as it is. The runner
 	 * waits for it: a computer it makes is deleted when the case ends, or as it comes after that, named in cleanup.late.
+	 * Each attempt is a new request (a fresh request id) unless requestId names one, as a retry of the same request does.
 	 */
-	attempt(spec: ComputerSpec, by?: ComputerProvider): Promise<Result<ComputerRef>>;
+	attempt(spec: ComputerSpec, by?: ComputerProvider, requestId?: string): Promise<Result<ComputerRef>>;
 	/** A computer the case made through another provider (the drifted one): deleted through it when the case ends. */
 	track(ref: ComputerRef, by?: ComputerProvider): void;
 	/** A further connection, to the case's computer or another; fails the case when connect refuses. */
@@ -244,9 +245,10 @@ export interface ConformanceReport {
 	undeclared: Capability[];
 	/**
 	 * The computers of this run deleted, those still there after it, what went wrong, and the computers a provider gave
-	 * after their case had ended (each deleted as it came).
+	 * after their case had ended (each deleted as it came). sweep: for a provider on the shared machine-host adapter, the
+	 * live sweep of the run's label at its end (conformance/sweep.ts): nothing left behind is stillThere empty.
 	 */
-	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[] };
+	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[]; sweep?: { swept: number; gone: number; stillThere: string[]; leftAlone: number } };
 	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
 	notes?: string[];
 	/**

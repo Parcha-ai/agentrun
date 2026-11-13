@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { childCommands, type DaemonExpected, daemonDrift, installerOf, shellCommand } from "./child.js";
+import { childCommands, type DaemonExpected, daemonDrift, installerOf, shellCommand } from "./hosted/scripts.js";
 import { OWN_NETWORK_ONLY, readOwnNetwork, TOOL_USER } from "./isolation.js";
 import { DaemonClient } from "./client.js";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
@@ -19,8 +19,10 @@ import { checkMount, type MountKind, type MountReadBack, readBackOf } from "./mo
 import {
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
+	type ArchilEgress,
 	type ArchilMount,
 	type ArchilRoot,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilRefusals,
@@ -41,6 +43,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
@@ -110,6 +113,12 @@ export interface DaytonaProviderOptions {
 	sandboxClass?: "container" | "linux-vm";
 	/** The Daytona target (region); default the organization's. */
 	target?: string;
+	/**
+	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
+	 * lane>` such as 10.60.0.40:18100:42050 (parcha-proxy's archil-egress): for a target whose runners reach Archil only
+	 * through it. Unset, the client reaches Archil as the sandbox's network allows, as before.
+	 */
+	archilEgress?: string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -182,6 +191,8 @@ interface CallInit {
 	retry?: boolean;
 	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
 	anyStatus?: boolean;
+	/** This one status is a value, with its status, not a failure (and not retried). */
+	answerStatus?: number;
 }
 
 /**
@@ -494,7 +505,7 @@ class Rest {
 					signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 				});
 				const bytes = new Uint8Array(await response.arrayBuffer());
-				if (response.ok || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
+				if (response.ok || response.status === init.answerStatus || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				retryable = response.status === 429 || response.status >= 500;
 				failure = errorOf(codeOf(response.status, text), `${what}: ${response.status} ${text}`, "daytona");
@@ -651,6 +662,7 @@ export class DaytonaProvider implements ComputerProvider {
 	readonly #arch: string;
 	readonly #class: "container" | "linux-vm";
 	readonly #target: string | undefined;
+	readonly #archilEgress: ArchilEgress | undefined;
 	/** The snapshot its GPU computers are made from, their GPU, and the mounts they take. */
 	readonly #gpu: DaytonaGpuSnapshot;
 	readonly #uid: string;
@@ -669,6 +681,7 @@ export class DaytonaProvider implements ComputerProvider {
 		arch = "amd64",
 		sandboxClass = "container",
 		target,
+		archilEgress,
 		gpuSnapshot,
 		daemonUser = TOOL_USER,
 		autoStopMinutes = 0,
@@ -699,6 +712,7 @@ export class DaytonaProvider implements ComputerProvider {
 		this.#arch = arch;
 		this.#class = sandboxClass;
 		this.#target = target;
+		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		this.#gpu = daytonaGpuSnapshot(gpuSnapshot);
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#webSocket = webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike);
@@ -773,7 +787,8 @@ export class DaytonaProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		let daemon: Buffer;
@@ -854,9 +869,7 @@ export class DaytonaProvider implements ComputerProvider {
 		const toolbox = await this.#toolbox(sb, signal);
 		if (!toolbox.ok) return toolbox;
 		const staging = `${STAGING}${randomBytes(8).toString("hex")}`;
-		const form = new FormData();
-		form.append("file", new Blob([new Uint8Array(daemon)]), "computerd");
-		const uploaded = await this.#rest.call("POST", `${toolbox.value}/files/upload-v2?${new URLSearchParams({ path: staging })}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs }, signal);
+		const uploaded = await this.#upload(toolbox.value, staging, daemon, signal);
 		if (!uploaded.ok) return fail(uploaded.error.code, `the daemon's upload was refused: ${uploaded.error.message}`);
 		// Init's flags are built here (childCommands): every remote computer, an Archil one included, starts init with
 		// --own-network, init and every tool in a network namespace of their own, loopback alone; the archil client and
@@ -882,6 +895,7 @@ export class DaytonaProvider implements ComputerProvider {
 				self: ref,
 				releaseOlder: () => releaseOlder(this, run, epoch as number, signal ? { signal } : {}),
 				timeoutMs: this.#timeouts.execMs,
+				...(this.#archilEgress ? { egress: this.#archilEgress } : {}),
 				...(signal ? { signal } : {}),
 			});
 			if (!mounted.ok) return mounted;
@@ -1041,6 +1055,26 @@ export class DaytonaProvider implements ComputerProvider {
 		}
 		if (url.protocol !== "https:") return vendorFail("daytona",`the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
 		return ok(`${url.href.replace(/\/+$/, "")}/${encodeURIComponent(sb.id)}`);
+	}
+
+	/**
+	 * A file's bytes to `path` in the sandbox: files/upload-v2, else files/upload. An older toolbox, as a self-hosted
+	 * Daytona's runners may run (the open daemon's routes, daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/server.go),
+	 * has no files/upload-v2 and answers it 404; its files/upload takes the same form (a path query, the bytes as
+	 * "file"). A 404 alone moves to the older route, so a refusal of any other kind is never sent twice.
+	 */
+	async #upload(toolbox: string, path: string, bytes: Buffer, signal?: AbortSignal): Promise<Result<Answer>> {
+		const query = new URLSearchParams({ path });
+		const send = (route: string, answerStatus?: number) => {
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array(bytes)]), "computerd");
+			return this.#rest.call("POST", `${toolbox}/${route}?${query}`, { form, retry: true, timeoutMs: this.#timeouts.uploadMs, ...(answerStatus === undefined ? {} : { answerStatus }) }, signal);
+		};
+		const current = await send("files/upload-v2", 404);
+		if (!current.ok || current.value.status !== 404) return current;
+		const missing = `POST ${new URL(`${toolbox}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.value.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
+		const older = await send("files/upload");
+		return older.ok ? older : fail(older.error.code, `${missing}, then ${older.error.message}`);
 	}
 
 	async #execute(toolbox: string, command: string, signal?: AbortSignal): Promise<Result<{ exitCode: number; result: string }>> {

@@ -9,13 +9,13 @@ const body = { runtime: "claude-agent-sdk", input: "Check release status.", inst
 const modelFlow = { v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "extract", label: "answer", out: "Answer", as: "answer", instructions: "Report readiness." } };
 
 test("SDK workflows reject model nodes without the backend adapter, including nested workflows", () => {
-  assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(modelFlow), [], {}, {}, undefined, [])), /requires runNode/);
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(modelFlow), [], {}, {}, undefined, ["runNode"]), []);
+  assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(modelFlow), [], {}, {}, undefined, undefined, [])), /requires runNode/);
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(modelFlow), [], {}, {}, undefined, undefined, ["runNode"]), []);
   const nested = { ...modelFlow, root: { node: "workflow", label: "nested", workflow: modelFlow, input: {}, out: "Answer", as: "answer" } };
-  assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(nested), [], {}, {}, undefined, [])), /requires runNode/);
+  assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(nested), [], {}, {}, undefined, undefined, [])), /requires runNode/);
   const judged = { ...modelFlow, schemas: { ...modelFlow.schemas, Check: { type: "object", properties: { right: { type: "boolean", description: "Is the answer correct?" } }, required: ["right"] } }, root: { node: "chain", steps: [modelFlow.root, { node: "judge", label: "check", state: { answer: "{answer}" }, out: "Check", as: "check" }] } };
-  assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(judged), [], {}, {}, undefined, ["runNode"])), /requires runJudge/);
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(judged), [], {}, {}, undefined, ["runNode", "runJudge"]), []);
+  assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(judged), [], {}, {}, undefined, undefined, ["runNode"])), /requires runJudge/);
+  assert.deepEqual(draftProblems(dsl, JSON.stringify(judged), [], {}, {}, undefined, undefined, ["runNode", "runJudge"]), []);
 });
 
 test("SDK workflow manifests opt in while learning Off remains Off; malformed and overbroad manifests fail", async (t) => {

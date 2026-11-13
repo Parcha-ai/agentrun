@@ -26,4 +26,3 @@ export function nativeStateLabel(target: NativeTarget | NativeBinding) {
   if ("connected" in target && !target.connected) return "Disconnected";
   return target.state === "ready" ? "Ready to run" : target.state === "needs_attention" ? "Needs attention" : "Needs verification";
 }
-

@@ -9,7 +9,7 @@
 import type { DescriptorKey, DescriptorSetting, HostCommand, ParkedConfiguration, ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MountKind } from "./mount.js";
-import type { ComputerKind, Group } from "./protocol.js";
+import type { ComputerKind, Group, HelloResult } from "./protocol.js";
 import type { ComputerCapabilities, NetworkForm } from "./provider.js";
 import type { Result } from "./result.js";
 
@@ -33,8 +33,8 @@ export interface SettingKindSpec {
 export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec>> = {
 	none: { machineKinds: [], required: [], optional: [] },
 	sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-	desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-	phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+	desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
+	phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
 	browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 };
 
@@ -61,10 +61,27 @@ export function servingRefusals(capabilities: KindCapabilities, kind: ComputerSe
 	if (spec.machineKinds.length === 0) return [`kind ${kind} is no computer: no provider serves it`];
 	const refusals: string[] = [];
 	if (!spec.machineKinds.includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.machineKinds.join(" or ")} machine, not a ${capabilities.kind} one`);
-	const groups = Array.isArray(capabilities.groups) ? capabilities.groups : [];
-	const missing = spec.required.filter((group) => !groups.includes(group));
+	const missing = missingGroups(spec, capabilities.groups);
 	if (missing.length > 0) refusals.push(`kind ${kind} needs groups ${missing.join(", ")}, which the provider does not declare`);
 	return refusals;
+}
+
+/** The groups a setting kind requires that `groups` lacks; a groups that is no list lacks them all. */
+function missingGroups(spec: SettingKindSpec, groups: unknown): Group[] {
+	const declared: readonly unknown[] = Array.isArray(groups) ? groups : [];
+	return spec.required.filter((group) => !declared.includes(group));
+}
+
+/**
+ * The groups a computer's hello must add to serve the setting kind its machine kind belongs to: the required groups
+ * hello.groups lacks, for the SETTING_KINDS entry whose machineKinds holds hello.kind. Empty when it serves that kind.
+ * A desktop that declares no input.pointer can't be given to an agent, so serve refuses it at connect and pairing, and
+ * health.kind-served fails a driver whose hello says so.
+ */
+export function kindServed(hello: Pick<HelloResult, "kind" | "groups">): Group[] {
+	const kind = SETTING_KIND_NAMES.find((name) => SETTING_KINDS[name].machineKinds.includes(hello.kind));
+	if (kind === undefined) return [];
+	return missingGroups(SETTING_KINDS[kind], hello.groups);
 }
 
 /** Whether a provider with these capabilities serves the kind: its machine kind is one of the kind's, and it declares every required group. */

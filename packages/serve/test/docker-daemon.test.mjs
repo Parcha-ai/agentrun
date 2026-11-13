@@ -9,11 +9,11 @@ import { computerReadiness } from "../dist/workspace/index.js";
 import { KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
 /** Mode 1 (run folders on this server's disk): a vendor sandbox can't reach them until Archil is on. */
-const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
+const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
 /** Mode 2 (run folders on Archil): a vendor sandbox mounts them. */
-const NO_DOCKER_SANDBOX_ARCHIL = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal or E2B for a sandbox.";
+const NO_DOCKER_SANDBOX_ARCHIL = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B or Agent37 for a sandbox.";
 /** Either mode: a desktop holds no run folder, so any vendor's works. */
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B or Orgo for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. E2B, Agent37 or Orgo for a desktop.";
 
 /** A stand-in ask that answers each call with the next of `answers`, counting calls. */
 function asks(...answers) {

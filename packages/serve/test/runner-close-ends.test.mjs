@@ -103,6 +103,8 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
     get(target, prop) {
       if (prop === "commandsOf") return (...args) => (stall ? new Promise(() => {}) : target.commandsOf(...args));
       if (prop === "commands") return (...args) => target.commands(...args).finally(() => delivered());
+      // The row is meant to reach the runner only through its poll and the close's read: a write's wake would hand it on.
+      if (prop === "watchCommands") return () => () => {};
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
     },

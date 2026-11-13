@@ -31,7 +31,7 @@ function MissionFrame({ actions, children }: { actions?: React.ReactNode; childr
  *  or failed (each count a link to its list), what they cost (said with its basis, never $0 for a cost not known), runs
  *  per agent, and the latest runs with their agent, duration and cost, with the runs' tokens, time, success and tools
  *  over the range picked (MissionAnalytics). Before the owner's first run, `startHere` sits above the data; it never replaces it. */
-export function MissionControl({ view, error, onRetry, scope, needsYou, asking, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode }) {
+export function MissionControl({ view, error, onRetry, scope, needsYou, asking, failed, live, startHere, actions }: { view: MissionView | null; error?: Problem | null; onRetry?: () => void; scope?: AnalyticsScope; needsYou?: React.ReactNode; asking?: number | null; failed?: number | null; live?: number | null; startHere?: React.ReactNode; actions?: React.ReactNode }) {
   if (error) return <MissionFrame actions={actions}><ProblemCard problem={error} onRetry={onRetry} /></MissionFrame>;
   if (!view) return <MissionFrame actions={actions}><MissionSkeleton /></MissionFrame>;
   const name = (id: string) => view.perAgent.find((a) => a.agentId === id)?.name ?? id;
@@ -44,12 +44,17 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
     ["Runs", String(view.runs.total), "#/runs"],
     // Running runs the server can't tell the state of are in no other count: said under Active, never dropped. Active
     // counts queued, working and paused runs, which no one list holds, so it links nowhere (Needs you lists the working).
-    ["Active", String(view.runs.active), undefined, undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
+    // Running now (Needs you) lists the working ones only: where that differs, the tile says how many are running now.
+    ["Active", String(view.runs.active), undefined, undefined, [typeof live === "number" && live !== view.runs.active ? `${live} running now` : "", view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : ""].filter(Boolean).join(" · ") || undefined],
     // What Needs you lists, counted from the same runs (asksPerson): a stopped run asks nothing, so it is not counted (it
     // shows in Recent runs as Stopped). Still being read: a dash. With no list beside it: the server's own count.
     ["Needs input", asking === null ? "–" : String(asking ?? view.runs.needsInput), "#/runs?status=input_required", (asking ?? view.runs.needsInput) ? "text-warning-text" : undefined],
-    // Escalated runs waiting for review are counted apart from the failed: said under Failed, never in it.
-    ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, view.runs.needsReview ? `${view.runs.needsReview} ${view.runs.needsReview === 1 ? "needs" : "need"} review` : undefined],
+    // What Needs you lists, the failures of the last 24 h (imported history left out), under that window's name, with
+    // every failed run (the server's count) one click away; still being read: a dash. With no list beside it: the server's
+    // count, all of them. Escalated runs waiting for review are counted apart from the failed: said under it, never in it.
+    failed === undefined
+      ? ["Failed", String(view.runs.failed), "#/runs?status=failed", view.runs.failed ? "text-destructive-text" : undefined, review(view.runs.needsReview)]
+      : ["Failed · last 24 h", failed === null ? "–" : String(failed), "#/runs?status=failed", failed ? "text-destructive-text" : undefined, [`See all ${view.runs.failed}`, review(view.runs.needsReview) ?? ""].filter(Boolean).join(" · ")],
   ];
   return (
     <MissionFrame actions={actions}>
@@ -100,6 +105,9 @@ export function MissionControl({ view, error, onRetry, scope, needsYou, asking, 
     </MissionFrame>
   );
 }
+
+/** "2 need review", for the runs escalated to a person; nothing for none. */
+const review = (n: number) => (n ? `${n} ${n === 1 ? "needs" : "need"} review` : undefined);
 
 /** What the analytics on screen cover, read from their own answer (not the range picked, whose answer may still be on
  *  its way): "Runs started in the last 30 days", or since the date asked, of one agent when it names one. */

@@ -7,13 +7,14 @@
 //   no computer.
 // - faux-broken: a sandbox with no key, whose test always fails: it is never reached. It starts no computer.
 // - faux-desktop: a desktop with no key. Its run computer answers screen.shot (a plain grey screen) and input.actions
-//   (each action done, none performed). Its live view is a page serve itself answers on its own address, view-only or
-//   driving, so the run's take-over and hand-back have a viewer to open; after the release the page is gone.
+//   (each action done, none performed). Its watch gives the run's live view grey frames and takes its input, so a --faux
+//   run's desktop is watched and taken over through the same proxied viewer a real one's is; the release ends it.
 import { crc32, deflateSync } from "node:zlib";
-import type { HelloResult } from "@parcha/agentrun-computer";
+import type { HelloResult, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import type { KeyTable, ProviderFactories } from "./computer-keys.js";
 import type { ComputerKind } from "./computer-setting.js";
 import type { KindCapabilities, KindRegistry, ProviderEntry, SettingKindSpec } from "./computers.js";
+import type { WatchOf } from "./workspace/computer-for-claim.js";
 import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-computer.js";
 
 // The computer package's setting kinds and servingRefusals, as its kinds.ts gives them (the swap to its exports
@@ -21,8 +22,8 @@ import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-
 const SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>> = {
   none: { machineKinds: [], required: [], optional: [] },
   sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "apps.ui_tree", "stream"] },
+  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
+  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
   browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
 } as unknown as Readonly<Record<ComputerKind, SettingKindSpec>>;
 const KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerKind[];
@@ -87,55 +88,82 @@ function greyPng(width: number, height: number): Buffer {
 const WIDTH = 1280;
 const HEIGHT = 800;
 
-/** A started faux desktop: the claim's LaunchedComputer, with the provider's live stream of its screen. */
-export type FauxDesktop = LaunchedComputer & {
-  stream(options: { readonly viewOnly: boolean }): Promise<{ readonly url: string }>;
-};
+/** How long a faux desktop's watch waits after a frame's ack before it gives the next. */
+const FRAME_MS = 1_000;
 
-/** The path a faux desktop's live view is served at, on serve's own address: FAUX_VIEW_PATH/<id>/view or /drive. */
-export const FAUX_VIEW_PATH = "/faux/desktops";
+/** A started faux desktop: the claim's LaunchedComputer, with its provider's watch of its screen (ComputerProvider.watch
+ *  bound to it), which feeds the run's proxied live view (computer-live.ts) as a real desktop's does. */
+export type FauxDesktop = LaunchedComputer & { readonly watch: WatchOf };
 
-/** What serve takes in place of the computer package under --faux. */
+/** What serve and its runner take in place of the computer package under --faux. */
 export interface FauxComputers {
   readonly kinds: KindRegistry;
   readonly factories: ProviderFactories;
   readonly keyTable: KeyTable;
   /** The claim's launch: a faux desktop; the faux sandboxes start nothing, in words. */
   launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>> }): Promise<FauxDesktop>;
-  /** The live view's page for a path under FAUX_VIEW_PATH, for serve to answer; undefined for any other path, or a
-   *  desktop that is released or never was. */
-  viewPage(pathname: string): string | undefined;
+  /** Whether a provider id is one of these (the claim's launch takes it): any other is the package's. */
+  owns(provider: string): boolean;
 }
 
-/**
- * --faux's computers. `viewerBase` is serve's own address (scheme, host and port), so a faux desktop's live view is a page
- * serve itself answers (viewPage), with no other listener. The server answers FAUX_VIEW_PATH with viewPage only under
- * --faux.
- */
-export function fauxComputers({ viewerBase }: { readonly viewerBase: string }): FauxComputers {
-  const live = new Set<string>();
+/** --faux's computers: the server's Settings → Computers and start check read them, and its runner's claim launches them. */
+export function fauxComputers(): FauxComputers {
   let started = 0;
 
   /** A faux desktop for a run: screen.shot gives a grey screen, input.actions does each action and performs none, and its
-   *  live view is its page on serve, view-only or driving, until the release. */
+   *  watch gives the same grey frame, the next a second after each ack, and takes every input (performing none) until it
+   *  is closed or the desktop is released, which ends it gone. */
   function fauxDesktop(): FauxDesktop {
     const id = `faux-desktop-${++started}`;
     const png = greyPng(WIDTH, HEIGHT);
-    live.add(id);
-    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS] };
+    const watches = new Set<() => void>();
+    const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS], screen: { width: WIDTH, height: HEIGHT, scale: 1 } };
     const call = async (method: string, params: Record<string, unknown>) => {
       if (method === "hello") return { ok: true, value: hello };
       if (method === "screen.shot") return { ok: true, value: { id: `${id}-shot`, data: png.toString("base64"), eof: true, size: png.length, width: WIDTH, height: HEIGHT } };
       if (method === "input.actions") return { ok: true, value: { done: Array.isArray(params.actions) ? params.actions.length : 0 } };
       return { ok: false, error: { code: "unsupported", message: `the faux desktop has no ${method}` } };
     };
+    const watch: WatchOf = async (handlers: ScreenWatchHandlers, options: WatchOptions) => {
+      let open = true;
+      let seq = 0;
+      let timer: NodeJS.Timeout | undefined;
+      const stop = () => {
+        open = false;
+        clearTimeout(timer);
+        watches.delete(gone);
+        options.signal?.removeEventListener("abort", stop);
+      };
+      const gone = () => {
+        if (!open) return;
+        stop();
+        handlers.ended({ code: "gone", message: `the faux desktop ${id} was released` });
+      };
+      const give = () => {
+        if (!open) return;
+        handlers.frame({ seq: ++seq, format: "png", bytes: png, width: WIDTH, height: HEIGHT, frameWidth: WIDTH, frameHeight: HEIGHT }, () => {
+          if (open) (timer = setTimeout(give, FRAME_MS)).unref();
+        });
+      };
+      if (options.signal?.aborted) return { ok: false, error: { code: "aborted", message: "the watch was cancelled before it began" } };
+      options.signal?.addEventListener("abort", stop, { once: true });
+      watches.add(gone);
+      setImmediate(give);
+      const screen: ScreenWatch = {
+        input: async (actions) => (open ? { ok: true, value: { done: actions.length } } : { ok: false, error: { code: "gone", message: `the faux desktop ${id}'s watch is closed` } }),
+        close: async () => stop(),
+      };
+      return { ok: true, value: screen };
+    };
     return {
       id,
       groups: [...DESKTOP_GROUPS],
       hello,
       client: { call } as unknown as LaunchedComputer["client"],
-      stream: async ({ viewOnly }) => ({ url: new URL(`${FAUX_VIEW_PATH}/${id}/${viewOnly ? "view" : "drive"}`, viewerBase).href }),
-      release: async () => void live.delete(id),
+      watch,
+      release: async () => {
+        for (const end of [...watches]) end();
+      },
     };
   }
 
@@ -147,11 +175,6 @@ export function fauxComputers({ viewerBase }: { readonly viewerBase: string }): 
       if (entryOf.id === "faux-desktop" && spec.kind === "desktop") return fauxDesktop();
       throw new Error(`${entryOf.label} starts no computer: under --faux, only Faux desktop does (set this agent's computer to desktop on Faux desktop, or none)`);
     },
-    viewPage(pathname) {
-      const match = new RegExp(`^${FAUX_VIEW_PATH}/(faux-desktop-\\d+)/(view|drive)$`).exec(pathname);
-      if (!match || !live.has(match[1]!)) return undefined;
-      const driving = match[2] === "drive";
-      return `<!doctype html><meta charset="utf-8"><title>Faux desktop ${match[1]}</title><body style="background:#c0c0c0;font:16px sans-serif"><p>Faux desktop ${match[1]}: ${driving ? "driving (taken over)" : "watching (view only)"}</p></body>`;
-    },
+    owns: (provider) => PROVIDERS.some((one) => one.id === provider),
   };
 }

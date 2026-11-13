@@ -83,7 +83,13 @@ export async function learnedDecisionKeys(deps: ClaimSecretsDeps, workflows: rea
     }
     for (const id of providersNamed(nodes)) named.add(id);
   }
-  const providers = [...named].filter((id) => allowed(id));
+  return hostDecisionKeys(deps, [...named].filter((id) => allowed(id)));
+}
+
+/** The host's keys of the decision providers `providers` (bare ids), read as claimSecrets reads its keys and scoped by
+ *  decisionKeysFor; none for none. learnedDecisionKeys hands them to a run; a learning end (LS-07) builds its check's
+ *  providers on them, host-side, never handed to the run. A fresh object per call. */
+export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readonly string[]): Promise<Record<string, string>> {
   if (!providers.length) return {};
   return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false });
 }

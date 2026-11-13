@@ -39,7 +39,7 @@ export function readTemplateDraft(raw: string | undefined, t: TemplateView): { b
     if (!object(b) || Object.keys(b).some((k) => !["parameters", "grants", "overrides"].includes(k))
       || !object(b.parameters) || Object.entries(b.parameters).some(([k, v]) => !parameter(k, v))
       || (b.grants !== undefined && (!Array.isArray(b.grants) || b.grants.some((g) => typeof g !== "string" || !t.mcp.some((m) => m.tools.some((tool) => tool.tool === g)))))
-      || !object(b.overrides) || Object.keys(b.overrides).some((k) => k !== "approvals") || !["ask", "never"].includes(String(b.overrides.approvals))) return invalid;
+      || !object(b.overrides) || Object.keys(b.overrides).some((k) => k !== "approvals") || (b.overrides.approvals !== "ask" && b.overrides.approvals !== "never")) return invalid;
     return { body: b as TemplateApply };
   } catch { return invalid; }
 }

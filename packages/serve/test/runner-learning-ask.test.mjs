@@ -16,12 +16,12 @@ const { journalSessions } = await import("../dist/runner/sessions.js");
 const { runLearningEnd } = await import("../dist/store-reads/learning.js");
 const { beforeRequestOf } = await import("../../run-adapters/dist/kernel/cap/index.js");
 
-const MODEL = "claude-sonnet-4-5";
+const MODEL = "claude-sonnet-5-5";
 /** The grader's model as the cap prices it, and the same price for the proxy's booking: Sonnet's list price. */
 const GRADER = Object.freeze({ id: MODEL, api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const price = (_model, usage) => (usage.input * 3 + usage.output * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
 const NOTE = { file: "retries.md", text: "---\nname: Retries\ndescription: Retry a flaky fetch twice\ntype: reference\n---\nRetry a flaky fetch twice.\n" };
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", why: "useful" }] });
+const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "retries.md", decision: "keep", general: true, why: "useful" }] });
 /** What the grader's answer used: 1,200 input tokens and 40 output, $0.0042 at Sonnet's price. */
 const USED = { input: 1_200, output: 40 };
 const eight = (usd) => Math.round(usd * 1e8) / 1e8;

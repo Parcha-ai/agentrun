@@ -41,7 +41,7 @@ const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { hostMemory, runsMemoryMib } = await import("../dist/host.js");
 
 const LAUNCHER = fileURLToPath(new URL("../launcher/agentrun-serve", import.meta.url));
-const MODEL = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
+const MODEL = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
 const READY = /^Runner (\S+) ready: store sqlite schema v(\d+), (\d+) loops$/;
 const SEAL = Buffer.alloc(32, 5).toString("base64");
 /** The ready line of a runner on `kind`'s store. */
@@ -147,6 +147,12 @@ test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing
   const loops = runnerChild(t, ["--data", "/nowhere", "--loops", "0"]);
   assert.deepEqual(await loops.exited, { code: 2, signal: null });
   assert.match(loops.err.join("\n"), /--loops is a whole number of runs above zero, not "0"/);
+});
+
+test("Archil settings in the runner's environment that are not whole: the runner exits 2 in words naming what is missing, and claims nothing", async (t) => {
+  const child = runnerChild(t, ["--data", scratch(t, "agentrun-runner-archil-")], { AGENTRUN_ARCHIL_REGION: "aws-us-east-1" });
+  assert.deepEqual(await child.exited, { code: 2, signal: null });
+  assert.match(child.err.join("\n"), /started with AGENTRUN_ARCHIL_REGION but not AGENTRUN_ARCHIL_S3_URL/);
 });
 
 test("the equals form: `runner --data=-odd-dir --loops=2 --name=runner-eq` opens that data directory (a name that starts with a dash) under those loops and that name", async (t) => {

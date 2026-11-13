@@ -67,6 +67,10 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningNotes: async (_id: string, cursor: string) => { calls.push(`notes after ${cursor}`); return (fake.notes ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     learningLog: async (_id: string, cursor: string) => { calls.push(`log after ${cursor}`); return (fake.log ?? (async () => ({ items: [], total: 0, next_cursor: null })))(cursor); },
     capabilities: async () => { calls.push("capabilities"); return fake.caps ?? {}; },
+    // The cost per run chart's read (CostPerRun.test.tsx draws it): no run yet.
+    learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
+    learningCost: async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null } }),
+    learningEvals: async () => ({ agent: a.agent_id, latest: null, evals: [] }),
     promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -465,15 +469,9 @@ describe("the before and after", () => {
     const t = await open(agent(true), { learning: async () => view({ impact: null }) });
     expect(t.host.querySelector('section[aria-label^="Since it learned"]')).toBeNull();
   });
-  it("until there is one, one quiet line says when it will show", async () => {
-    const LINE = "After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.";
+  it("until there is one, no line stands in for it (the cost per run says what to do next)", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: null }) });
-    expect(t.text()).toContain(LINE);
-    expect(t.host.querySelectorAll("p").length).toBeGreaterThan(0);
-    expect([...t.host.querySelectorAll("p")].filter((x) => x.textContent === LINE)).toHaveLength(1);
-    act(() => root?.unmount()); document.body.innerHTML = "";
-    // With learning off, no run will fill it: nothing is promised.
-    expect((await open(agent(false), { learning: async () => view({ impact: null }) })).text()).not.toContain(LINE);
+    expect(t.text()).not.toContain("this shows what learning changed");
   });
 });
 
@@ -1711,9 +1709,4 @@ describe("the before and after of an agent that learned only skills or workflows
       expect(t.text()).not.toContain("the next run starts with nothing learned");
     });
   }
-  it("until there is one, its line names the first thing it learned, not its first note", async () => {
-    const t = await open(agent(true), { learning: async () => view({ impact: null }) });
-    expect(t.text()).toContain("After two runs on each side of the first thing it learned (a note, a skill or a workflow), this shows what learning changed.");
-    expect(t.text()).not.toContain("its first note");
-  });
 });

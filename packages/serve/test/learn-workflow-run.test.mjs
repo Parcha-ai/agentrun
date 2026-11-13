@@ -77,7 +77,7 @@ async function routed(t, harness) {
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const key = ["not-a-secret", "gateway"].join("-");
-  if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
+  if (harness === "claude-agent") withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, ["AGENT_MODEL_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_PRICE"]);
   else withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: key, AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
   return { faux: undefined };
 }
@@ -117,7 +117,7 @@ test("learned_workflow's description shows each workflow's input as its schema s
 // LS-07: the tool's description is sent with every model request of a run that has learned workflows, so it says what a
 // model needs to call it right and no more: what it does (one call, by name, a JSON input with the listed fields, "*"
 // marking a required one), what it answers, and each workflow's input fields and what it does, one line each. Its
-// parameters say nothing the description says already. Sizes pinned: 1 workflow 216 -> 180 tokens on gpt-5-4-mini.
+// parameters say nothing the description says already. Sizes pinned: 1 workflow 216 -> 180 tokens on gpt-6-1-sol.
 test("learned_workflow's description is short: one line of what it does, one line a workflow, its fields before what it does; its parameters carry no words of their own", () => {
   const said = learnedWorkflowDescription([{ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(answerFlow()) }]);
   const lines = said.split("\n");
@@ -284,7 +284,7 @@ test("a learned workflow whose later node is a judge is refused before any node 
   const { runId, rows } = await ran(api, data, "late-judge", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
-  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" requires runJudge/, JSON.stringify(result));
+  assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" names the decision provider jev, which this host does not have/, JSON.stringify(result));
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
@@ -367,7 +367,7 @@ test("a learned workflow's call node through a paid web tool is booked under the
 test("a claude-agent run's learned workflow searches natively through the session's proxy: its call node's web_search on the provider's hosted search, at the operator's gateway", { timeout: 120_000, skip: "bug: on the runner a learned call node's native web_search finds no model (hosted-search.ts reads the per-process runModels, which a runner never sets), so it answers { error }" }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
-  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-4-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   const { rows } = await ran(api, data, "native-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
@@ -378,7 +378,7 @@ test("a claude-agent run's learned workflow searches natively through the sessio
   assert.deepEqual(sent.map((call) => call.path), ["/v1/messages"], "one request to the provider's hosted search");
 });
 
-test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: "bug: on the runner a learned call node's native web_search finds no model (hosted-search.ts reads the per-process runModels, which a runner never sets), so it answers { error }" }, async (t) => {
+test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-5.5) with a direct key searches natively on the model its run prepared: the dashed one its models hold", { timeout: 120_000, skip: "bug: on the runner a learned call node's native web_search finds no model (hosted-search.ts reads the per-process runModels, which a runner never sets), so it answers { error }" }, async (t) => {
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   // The session's proxy forwards to claude-agent's own provider: ANTHROPIC_BASE_URL, set here for the server, at the
@@ -386,7 +386,7 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-4.5) w
   const base = await upstreamAt(t);
   assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/, "the provider is the loopback faux upstream");
   const guardLog = join(dir, "guard.jsonl");
-  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: base, AGENT_MODEL: "anthropic/claude-sonnet-4.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream, NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "OPENROUTER_API_KEY", "NODE_OPTIONS", "NET_GUARD_LOG"]);
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: base, AGENT_MODEL: "anthropic/claude-sonnet-5.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream, NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "OPENROUTER_API_KEY", "NODE_OPTIONS", "NET_GUARD_LOG"]);
   assert.equal(process.env.ANTHROPIC_BASE_URL, base, "the server's env names it");
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);

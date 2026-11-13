@@ -66,6 +66,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
 	type NetworkPolicy,
 	type NetworkSpec,
@@ -195,7 +196,8 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	 * spec.browser is the session's own options, each refused by check() unless declared; a profile is made first if
 	 * Kernel does not know it.
 	 */
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");

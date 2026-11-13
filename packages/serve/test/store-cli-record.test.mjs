@@ -187,8 +187,29 @@ test("a CLI's parked MCP call ended without being sent (refused, or withdrawn by
     entry(await j.mintId(), "agentrun.answer", { callId: "c1", decision: "deny", note: "not now" }),
     entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "refused", output: "Denied: not now" }),
   ], context);
-  const results = shown(await runTimeline(store, "run-1", context)).filter((r) => r.kind === "tool_result");
+  const rows = await runTimeline(store, "run-1", context);
+  const results = shown(rows).filter((r) => r.kind === "tool_result");
   assert.deepEqual(results.map((r) => r.preview), ["Denied: not now"]);
+  // Refused, as pi's refused call reads: marked `refused` (the console's neutral chip, never its red Error), named so.
+  const result = rows.find((r) => r.kind === "tool_result");
+  assert.equal(result.refused, true, JSON.stringify(result));
+  assert.match(result.summary, /^Refused: /);
+});
+
+test("a CLI call that ran and failed is not marked refused: it keeps its failure's words and status", async (t) => {
+  const { store } = await storeOn(t);
+  const cli = await claimed(store);
+  const j = store.journal(cli);
+  await commitWrites(j, [
+    { type: "conversation", value: { id: ROOT } },
+    entry(await j.mintId(), "agentrun.message", { role: "person", text: "Add 2 and 3." }),
+    entry(await j.mintId(), "agentrun.call.start", { callId: "c1", tool: "mcp__fake__add", input: { a: 2, b: 3 }, replaySafe: false }),
+    entry(await j.mintId(), "agentrun.call.end", { callId: "c1", status: "failed", output: "add: the server is down" }),
+  ], context);
+  const result = (await runTimeline(store, "run-1", context)).find((r) => r.kind === "tool_result");
+  assert.equal(result.tool_status, "failed");
+  assert.equal(result.refused, undefined, JSON.stringify(result));
+  assert.doesNotMatch(result.summary, /^Refused: /);
 });
 
 test("a pi run is untouched: it still folds its usage row, which a CLI run has none of", async (t) => {
@@ -356,7 +377,7 @@ test("a running CLI run whose booked request has no figure lists its spend unkno
     entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
     { type: "conversation", value: { id: conv } },
     entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
-    { type: "entry", value: { id: req, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "claude-sonnet-4-5" } } },
+    { type: "entry", value: { id: req, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "claude-sonnet-5-5" } } },
     { type: "entry", value: { id: turn, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: null } } },
     entry(await j.mintId(), "agentrun.message", { role: "model", text: "Working." }),
   ], context);

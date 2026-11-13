@@ -66,4 +66,3 @@ The native Linux shell sandbox requires namespace support. For a restricted cont
 Native SDK reference: [OpenAI's Codex TypeScript SDK](https://github.com/openai/codex/blob/main/sdk/typescript/README.md).
 
 SDK run evidence must finish within one hour of registration. A backend task that exceeds that deadline is not replayed; AgentRun records an unknown execution outcome and does not infer new learning.
-

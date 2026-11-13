@@ -5,9 +5,10 @@
 // echoes it back. One read of the store across all its planes (store.sealedSecrets): tool, model, computer and Archil keys
 // (sealed_keys); MCP credentials, their headers' values and OAuth tokens and client secret (mcp_servers), and a sign-in in
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
-// and webhook secret among them, and the outbound webhook's signing secret (trigger_settings), but a field its source marks public; browser sign-in pointers, live
-// and forgotten; live viewer tokens; a launch's sealed part. Beside the store, what the data directory keeps where the
-// runner shares it (server-secrets.ts besideTheStore: the owner's API token and the sign-in session secret). Each value in every spelling the server's list has
+// and webhook secret among them, and the outbound webhook's signing secret, each it held before too (trigger_settings),
+// but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
+// part. Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
+// owner's API token and the sign-in session secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
 import { unseal } from "../sealing.js";
@@ -53,6 +54,20 @@ function jsonSecrets(text: string): string[] {
   return out;
 }
 
+/** A launch's sealed JSON: its own listed values (jsonSecrets), and each handed MCP credential's headers (store/seal.ts
+ *  sealRunMcpAuth: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed. */
+function launchSecrets(text: string): string[] {
+  const out = jsonSecrets(text);
+  let mcp: unknown;
+  try {
+    mcp = (JSON.parse(text) as { mcp?: unknown } | null)?.mcp;
+  } catch {
+    return out;
+  }
+  if (mcp && typeof mcp === "object") for (const entry of Object.values(mcp)) out.push(...jsonSecrets(JSON.stringify(entry)));
+  return out;
+}
+
 /** A PEM key whole, and each of its base64 lines (the short last one too), as the server lists one (sealed-settings-store.ts). */
 const pemForms = (value: string): string[] => [value, ...value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("-----"))];
 
@@ -69,7 +84,7 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "mcp_oauth_pending":
       return { listed: jsonSecrets(plain), whole: [] };
     case "run_launch":
-      return { listed: plain.trimStart().startsWith("{") ? jsonSecrets(plain) : [plain], whole: [] };
+      return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }

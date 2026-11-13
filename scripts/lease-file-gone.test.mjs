@@ -16,6 +16,7 @@ const ALLOWED = new Map([
   ['packages/serve/src/openapi/agentrun-v2.openapi.json', "a refusal: a home pack never carries a run's run.json"],
   ['packages/dsl/test/graph-status-escalated.test.mjs', 'a fixture named escalated-run.json'],
   ['packages/dsl/test/validation-issues.test.mjs', 'a fixture named not-run.json'],
+  ['packages/computer/daemon-macos/Tests/ComputerdKitTests/InputTests.swift', 'a Swift call, InputBatch(...).run(json(actions)): the pattern is a regex, and this is no file'],
 ]);
 
 function hits() {

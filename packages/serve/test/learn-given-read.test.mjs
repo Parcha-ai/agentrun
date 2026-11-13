@@ -18,11 +18,15 @@ test("given: a run whose notes all fit its budget is given each one whole, and t
   assert.deepEqual(learning.learnedParts(seed, { budget: 8000, read: true, shown }).given.map(({ file, name }) => [file, name]).sort(), [["tables.md", "Answer in tables"], ["units.md", "Check units"]]);
 });
 
-test("given: past the budget, the notes given whole and those its index names are given; a note in neither is not", () => {
+// Past the budget a run reads notes whole, then one line each, never the index (learning.ts withinBudget): at 500 bytes the
+// small note is whole, one big note a line, and the other big one is left out.
+test("given: past the budget, the notes given whole and those given a line are given; a note given neither way is not, and is left out", () => {
   const big = note({ name: "Big", body: `${"x".repeat(3000)}\n` });
   const seed = seedOf({ "units.md": note({ name: "Check units" }), "big.md": big, "other.md": note({ name: "Other", body: `${"y".repeat(3000)}\n` }) }, "- [Check units](units.md) — units\n- [Big](big.md) — big\n");
-  const given = learning.learnedParts(seed, { budget: 900, read: true, shown }).given.map(({ file }) => file).sort();
-  assert.deepEqual(given, ["big.md", "units.md"], JSON.stringify(given));
+  const { section, given, left } = learning.learnedParts(seed, { budget: 500, read: true, shown });
+  assert.deepEqual(given.map(({ file }) => file).sort(), ["big.md", "units.md"], section);
+  assert.deepEqual(left.map(({ file }) => file), ["other.md"], section);
+  assert.ok(section.includes("## Check units (units.md)") && section.includes("- Big (big.md): ") && !section.includes("other.md"), section);
 });
 
 test("a run's learning shows given and read, never used: given from its start, read once it settled", () => {

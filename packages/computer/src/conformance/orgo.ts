@@ -1,7 +1,7 @@
 // Orgo for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider orgo [--image <template>]`.
 // It makes real Orgo desktops, so it runs only with AGENTRUN_COMPUTER_LIVE_ORGO=1 and a key the lead has OKed, under
-// COMPUTER_ORGO_API_KEY (never ORGO_API_KEY), in the workspace COMPUTER_ORGO_WORKSPACE names. The live switch is checked
-// first, before any other setting is read.
+// COMPUTER_ORGO_API_KEY (never ORGO_API_KEY), in the workspace COMPUTER_ORGO_WORKSPACE names, or the key's account's one
+// workspace when it names none. The live switch is checked first, before any other setting is read.
 //
 // COMPUTER_ORGO_OS picks the desktop: linux (the default), windows or macos. On Linux the daemon is uploaded into each
 // computer (dist/computerd-linux-amd64, `npm run build:daemon`); the drifted provider uploads one built with Go as
@@ -21,7 +21,7 @@ export const ENV = {
 	template: "COMPUTER_ORGO_TEMPLATE",
 	/** Required: an Orgo API key (never ORGO_API_KEY, which a host may hold for another account). */
 	key: "COMPUTER_ORGO_API_KEY",
-	/** Required: the workspace the run's computers live in. */
+	/** The workspace the run's computers live in; default the key's account's one workspace (several are refused in words). */
 	workspace: "COMPUTER_ORGO_WORKSPACE",
 	/** Orgo's API; default https://www.orgo.ai/api. */
 	apiUrl: "COMPUTER_ORGO_API_URL",
@@ -67,14 +67,13 @@ function osOf(env: Record<string, string | undefined>): Os {
 	return os;
 }
 
-/** The provider's settings from COMPUTER_ORGO_* alone: the key, the workspace, and Orgo's API when named. No word holds the key. */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): { apiKey: string; workspaceId: string; apiUrl?: string } {
+/** The provider's settings from COMPUTER_ORGO_* alone: the key, and the workspace and Orgo's API when named. No word holds the key. */
+export function settingsFromEnv(env: Record<string, string | undefined> = process.env): { apiKey: string; workspaceId?: string; apiUrl?: string } {
 	const apiKey = env[ORGO_ENV.key];
 	if (!apiKey) throw new Error(`set ${ORGO_ENV.key} to an Orgo API key: the Orgo module reads it there and nowhere else, never from ORGO_API_KEY`);
-	const workspaceId = env[ORGO_ENV.workspace];
-	if (!workspaceId) throw new Error(`set ${ORGO_ENV.workspace} to the Orgo workspace the run's computers live in`);
+	const workspaceId = env[ORGO_ENV.workspace] || undefined;
 	const apiUrl = env[ORGO_ENV.apiUrl] || undefined;
-	return { apiKey, workspaceId, ...(apiUrl ? { apiUrl } : {}) };
+	return { apiKey, ...(workspaceId ? { workspaceId } : {}), ...(apiUrl ? { apiUrl } : {}) };
 }
 
 /** The image every computer of the run starts from: "windows" or "macos" for those desktops; else COMPUTER_ORGO_TEMPLATE, or Orgo's base desktop. */

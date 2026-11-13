@@ -1,6 +1,7 @@
 import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HELD_POLL_MS } from "./SignIns";
 import { AgentPage, agentHash } from "./AgentPage";
 import { agentFixture, archivedAgents, editorCaps, recorded } from "@/fixtures";
 import type { Places } from "@/lib/place";
@@ -16,19 +17,20 @@ afterEach(() => { act(() => roots.splice(0).forEach((root) => root.unmount())); 
 const settle = async () => { await act(async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); }); };
 type Page = { runs: Run[]; next_cursor: string | null };
 type Opts = {
-  runs?: Run[]; next?: string | null; read?: (cursor: string | null) => Promise<Page>; agentRead?: () => Promise<Agent>;
+  runs?: Run[]; next?: string | null; read?: (cursor: string | null) => Promise<Page>; agentRead?: () => Promise<Agent>; reads?: (n: number) => Promise<Agent>;
   tab?: string; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null };
   harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[];
   places?: Places | null; learning?: "on" | "off" | null; strict?: boolean; agentError?: unknown;
 };
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, read, agentRead, tab, stats = async () => statsWith(ANALYTICS), models, harnesses, places, learning, strict, agentError }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, read, agentRead, reads, tab, stats = async () => statsWith(ANALYTICS), models, harnesses, places, learning, strict, agentError }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const starts = vi.fn(); const timelines = vi.fn();
   const statsAsked: string[] = [];
+  let agentReads = 0;
   const v2 = {
     statsOver: async ({ from, agent: of }: { from?: string; agent?: string }) => { statsAsked.push(`stats ${of} from ${from}`); return stats(); },
-    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; return { agent: agentRead ? await agentRead() : agent, etag: null }; },
+    getAgent: async (id: string) => { asked.push(`agent ${id}`); if (agentError) throw agentError; const n = agentReads++; return { agent: reads ? await reads(n) : agentRead ? await agentRead() : agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor: string | null, archived: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
       return read ? read(cursor) : { runs, next_cursor: next };
@@ -50,6 +52,47 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
 }
 
 describe("AgentPage overview and run workspace", () => {
+  it("a held sign-in's poll never lands over a newer read: a slow answer that began first is dropped", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const base = agentFixture("lead-scorer");
+      const held = { ...base, sign_ins: [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: null, secret: { name: "browserbase sign-in", set: true, source: "sign-in", changed_at: "2026-11-05T08:00:00.000Z" } }] } as Agent;
+      const done = { ...base, revision: "r2", sign_ins: [] } as Agent;
+      let slow!: () => void;
+      // Read 0 is the page's own; read 1 (the first poll) answers late with the held list; read 2 (the second poll) answers at once.
+      const page = await open(held, { reads: (n) => n === 0 ? Promise.resolve(held) : n === 1 ? new Promise<Agent>((r) => { slow = () => r(held); }) : Promise.resolve(done) });
+      const forgetting = () => page.host.querySelector('section[aria-label="Sign-ins"]');
+      expect(forgetting()).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+      expect(forgetting()).toBeNull();
+      await act(async () => { slow(); });
+      for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+      expect(forgetting()).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a held sign-in's poll whose reads each outlast the interval still lands: the next tick never starves it", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const base = agentFixture("lead-scorer");
+      const held = { ...base, sign_ins: [{ key: "default", provider: "browserbase", state: "held", held_by: "run-1", verified_at: null, secret: { name: "browserbase sign-in", set: true, source: "sign-in", changed_at: "2026-11-05T08:00:00.000Z" } }] } as Agent;
+      const done = { ...base, revision: "r2", sign_ins: [] } as Agent;
+      const answers: ((a: Agent) => void)[] = [];
+      // Read 0 is the page's own; every poll read stays open past the next tick.
+      const page = await open(held, { reads: (n) => n === 0 ? Promise.resolve(held) : new Promise<Agent>((r) => { answers.push(r); }) });
+      const forgetting = () => page.host.querySelector('section[aria-label="Sign-ins"]');
+      expect(forgetting()).toBeTruthy();
+      for (let i = 0; i < 3; i++) await act(async () => { vi.advanceTimersByTime(HELD_POLL_MS); });
+      expect(answers.length).toBeGreaterThanOrEqual(2);
+      await act(async () => { answers[0](done); });
+      for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); });
+      expect(forgetting()).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+
   it("keeps the agent overview beside a scoped runs table, with no embedded execution composer or transcript", async () => {
     const page = await open(agentFixture("invoice-checker"));
     expect(page.host.querySelector('aside[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
