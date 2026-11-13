@@ -137,7 +137,8 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  claim, which runs it as a new turn, and only the run's other rows are refused. Every message so lands on one path: in
  *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it.
  *  A person's stop is the same (reopenableWhere): a message waiting at it is the run's next turn, as main's stop leaves a
- *  message submitted before it to run; a cancel's refuses it. */
+ *  message submitted before it to run; a cancel's refuses it. A run left final here has its launch secrets erased (its
+ *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote. */
 export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
   if (state === "ended" || state === "stopped") {
@@ -152,4 +153,7 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
     }
   }
   await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason(state), runId);
+  // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
+  // hands its own (runs.reopen).
+  await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
 }

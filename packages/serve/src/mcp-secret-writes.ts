@@ -17,6 +17,9 @@ import { isObject } from "./validate.js";
 export function mcpWritesSecret(operation: string, body: unknown): boolean {
   if (operation === "putMcpPrivateHosts" || operation === "startMcpOAuth") return true;
   if (operation !== "saveMcpServer" || !isObject(body) || !isObject(body.auth)) return false;
+  // A per_run server keeps no credential: headers sent with its save only list its tools, as a preview's do. The
+  // credentials it later receives are the ones each run's own caller hands it (mcp_auth).
+  if (body.auth.type === "per_run") return false;
   const { token, headers } = body.auth;
   return token !== undefined || (isObject(headers) && Object.keys(headers).length > 0);
 }

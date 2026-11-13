@@ -88,7 +88,7 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	const key = (name, option, required = true) => ({ name, option, required });
 	assert.deepEqual(rows, [
 		{ id: "docker", label: "Docker", keys: [], metered: false },
-		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false)], metered: true },
+		{ id: "daytona", label: "Daytona", keys: [key("DAYTONA_API_KEY", "apiKey"), key("DAYTONA_API_URL", "apiUrl", false), key("DAYTONA_TARGET", "target", false), key("DAYTONA_ARCHIL_EGRESS", "archilEgress", false)], metered: true },
 		{ id: "modal", label: "Modal", keys: [key("MODAL_TOKEN_ID", "tokenId"), key("MODAL_TOKEN_SECRET", "tokenSecret")], metered: true },
 		{ id: "e2b", label: "E2B", keys: [key("E2B_API_KEY", "apiKey")], metered: true },
 		{ id: "orgo", label: "Orgo", keys: [key("ORGO_API_KEY", "apiKey"), key("ORGO_WORKSPACE_ID", "workspaceId")], metered: true },
@@ -99,9 +99,12 @@ test("PROVIDERS is the agreed table of ids, labels, key names, mounts and meteri
 	]);
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
-	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, local, ledger, hostEnv, parked }]));
+	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }]));
 	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
+	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
+	// other provider declares one.
+	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then PATH.
@@ -200,6 +203,8 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
 		[{ ledger: {} }, /ledger names the option it fills/],
+		[{ imageEnv: "acme image" }, /imageEnv is an environment variable name/],
+		[{ imageEnv: "" }, /imageEnv is an environment variable name/],
 		[{ hostCommand: { command: "/usr/bin/adb", from: "Android platform-tools" } }, /hostCommand's command is a program's name, with no path/],
 		[{ hostCommand: { command: "adb", from: " " } }, /hostCommand says in words what installs it/],
 		[{ hostCommand: { command: "adb", from: "Android platform-tools", builds: ["linux x64"] } }, /hostCommand's builds are machines as Node names them/],
