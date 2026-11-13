@@ -182,9 +182,12 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
-    const id = ref ?? ([env[TIER_ENV[tier]], env.AGENT_MODEL].includes(named) ? undefined : named);
+    // A name equal to one of the host's configured ids (the picker lists them: model-form.ts pickerCandidates) is that
+    // host id whoever names it, so a revision that picks it is sent what the host configured, never a cut of it.
+    const configured = [env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].includes(named);
+    const id = ref ?? (configured ? undefined : named);
     const slash = id?.indexOf("/") ?? -1;
-    const sent = id && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
+    const sent = id && !configured && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
   if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
