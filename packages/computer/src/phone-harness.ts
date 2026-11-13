@@ -957,7 +957,7 @@ class AdbClient implements ComputerClient {
 	/** The ui group over uiautomator and adb's input; a dump waits for the phone to be idle, so every look is settled. */
 	readonly #ui = new UiEngine(
 		new AdbUiSource(
-			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), input: (actions, signal) => this.#input(actions, signal) },
+			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), check: (actions) => this.#check(actions), input: (actions, signal) => this.#input(actions, signal) },
 			() => this.#size,
 		),
 		{ quietMs: 0 },
@@ -1303,21 +1303,33 @@ class AdbClient implements ComputerClient {
 		});
 	}
 
-	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
+	/** Every action's commands, or the first one the phone cannot do: a batch is checked whole before any of it runs. */
+	#plan(actions: unknown): Plan[] | NonNullable<InputActionsResult["failed"]> {
 		const refused = checkActions(actions, PHONE_GROUPS);
-		if (refused !== undefined) return ok({ done: 0, failed: refused } satisfies InputActionsResult);
-		const list = actions as InputAction[];
+		if (refused !== undefined) return refused;
 		const plans: Plan[] = [];
-		for (const [index, action] of list.entries()) {
+		for (const [index, action] of (actions as InputAction[]).entries()) {
 			const plan = this.#commands(action);
-			if ("kind" in plan) return ok({ done: 0, failed: { index, kind: plan.kind, message: `action ${index}: ${plan.message}` } } satisfies InputActionsResult);
+			if ("kind" in plan) return { index, kind: plan.kind, message: `action ${index}: ${plan.message}` };
 			for (const at of pointsOf(action)) {
 				if (at[0] < 0 || at[1] < 0 || at[0] >= this.#size[0] || at[1] >= this.#size[1]) {
-					return ok({ done: 0, failed: { index, kind: "invalid", message: `action ${index}: ${show(at)} is off the ${this.#size[0]}x${this.#size[1]} screen` } } satisfies InputActionsResult);
+					return { index, kind: "invalid", message: `action ${index}: ${show(at)} is off the ${this.#size[0]}x${this.#size[1]} screen` };
 				}
 			}
 			plans.push(plan);
 		}
+		return plans;
+	}
+
+	/** Whether the phone would take this batch, run nothing. */
+	#check(actions: InputAction[]): Result<void> {
+		const plans = this.#plan(actions);
+		return Array.isArray(plans) ? ok(undefined) : fail(plans.kind, plans.message.replace(/^action \d+: /, ""));
+	}
+
+	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
+		const plans = this.#plan(actions);
+		if (!Array.isArray(plans)) return ok({ done: 0, failed: plans } satisfies InputActionsResult);
 		// A cancel stops the batch at the action it is on: before its wait, after it, and before each command.
 		const cancelled = (index: number): Call => ok({ done: index, failed: { index, kind: "aborted", message: `action ${index}: the batch was aborted; actions ${index} on did not run` } } satisfies InputActionsResult);
 		for (const [index, plan] of plans.entries()) {

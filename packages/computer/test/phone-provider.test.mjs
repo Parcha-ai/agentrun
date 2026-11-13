@@ -961,9 +961,11 @@ test("set clears a multiline field's whole text wherever the tap leaves the care
 	// A field holding two lines, the caret left by the tap at the end of the first (where MOVE_END would stop).
 	let text = "first line\nsecond line";
 	let caret = text.indexOf("\n");
+	const xml = `<hierarchy><node index="0" class="android.widget.EditText" package="com.example" text="first line&#10;second line" content-desc="Notes" focused="true" bounds="[0,0][400,200]" /></hierarchy>`;
 	const phone = {
 		scale: () => 1,
-		dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }),
+		dump: async () => ({ ok: true, value: xml }),
+		check: () => ({ ok: true, value: undefined }),
 		async input(actions) {
 			for (const action of actions) this.one(action);
 			return { ok: true, value: undefined };
@@ -981,7 +983,8 @@ test("set clears a multiline field's whole text wherever the tap leaves the care
 		},
 	};
 	const source = new AdbUiSource(phone, () => [400, 400]);
-	const element = { key: "k", role: "textbox", name: "Notes", value: text, bounds: [0, 0, 400, 200] };
+	const [element] = parseUiElements(xml, 1, [400, 400]).value.elements;
+	assert.equal(element.value, text);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [element] };
 	const ran = await source.run({ set: "@e1", value: "new" }, { element, view, foreground: true }, new AbortController().signal);
 	assert.equal(ran.ok, true, JSON.stringify(ran));
@@ -999,7 +1002,7 @@ test("an empty field's hint is not its value: an expect never meets it; a field 
 	assert.equal(typed.value, "maps");
 	// The dump cannot say the hint is showing, so the field may hold that very text: a set erases it anyway.
 	const ran = [];
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 50]);
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: xml("Search apps").replace("<node ", '<node focused="true" ') }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 50]);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 100, 50] }, elements: [empty] };
 	const set = await source.run({ set: "@e1", value: "maps" }, { element: empty, view, foreground: true }, new AbortController().signal);
 	assert.equal(set.ok, true, JSON.stringify(set));
@@ -1017,7 +1020,7 @@ test("a labeled control keeps the other text it shows as its desc; a step on a d
 	assert.equal(button.desc, "Pay $5");
 	assert.deepEqual(field.flags, ["disabled"]);
 	const ran = [];
-	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 120]);
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 120]);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 120] }, elements: [button, field] };
 	for (const step of [{ set: "@e2", value: "new" }, { type: "new", into: "@e2" }]) {
 		const refused = await source.run(step, { element: field, view, foreground: true }, new AbortController().signal);
@@ -1038,9 +1041,43 @@ test("a field in a recycled list row is keyed by what its row shows: the row's n
 	assert.equal(fieldOf(plain).key, fieldOf(plain.replace('text="a"', 'text="ab"')).key, "a field outside a list keeps its key as before");
 });
 
+test("type into a ref that is no field is refused with nothing sent; a field that does not take the focus gets nothing typed", async () => {
+	const screen = (focused) =>
+		`<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Send" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" content-desc="To" ${focused === "to" ? 'focused="true" ' : ""}bounds="[0,60][100,110]" /><node index="2" class="android.widget.EditText" package="com.example" content-desc="Body" ${focused === "body" ? 'focused="true" ' : ""}bounds="[0,120][100,170]" /></hierarchy>`;
+	const [button, to] = parseUiElements(screen(), 1, [100, 180]).value.elements;
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 180] }, elements: parseUiElements(screen(), 1, [100, 180]).value.elements };
+	let ran = [];
+	let after = screen("to");
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: true, value: after }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 180]);
+	const run = (step, element) => source.run(step, { element, view, foreground: true }, new AbortController().signal);
+	const notField = await run({ type: "hello", into: "@e1" }, button);
+	assert.equal(notField.error?.code, "refused", JSON.stringify(notField));
+	assert.equal(notField.error.message, "@e1 is a button, not a text field: type into a field");
+	assert.deepEqual(ran, [], "nothing reached the phone");
+	// The tap leaves the focus in another field (or opened another app): the tap ran, nothing was typed.
+	for (const elsewhere of [screen("body"), screen(), `<hierarchy><node index="0" class="android.widget.EditText" package="com.other" focused="true" bounds="[0,0][100,50]" /></hierarchy>`]) {
+		[ran, after] = [[], elsewhere];
+		for (const step of [{ type: "hello", into: "@e2" }, { set: "@e2", value: "hello" }]) {
+			const missed = await run(step, to);
+			assert.equal(missed.error?.code, "refused", JSON.stringify(missed));
+			assert.equal(missed.error.message, "@e2 did not take focus: nothing typed");
+		}
+		assert.deepEqual(ran, [{ type: "tap", at: [50, 85] }, { type: "tap", at: [50, 85] }], "only the taps ran");
+	}
+	// It takes the focus: the text follows the tap.
+	[ran, after] = [[], screen("to")];
+	assert.equal((await run({ type: "hello", into: "@e2" }, to)).ok, true);
+	assert.deepEqual(ran, [{ type: "tap", at: [50, 85] }, { type: "type", text: "hello" }]);
+	// At a point, the tap must leave a field focused.
+	[ran, after] = [[], screen()];
+	const point = await run({ type: "hello", into: [50, 25] }, undefined);
+	assert.equal(point.error?.message, "[50,25] did not take focus: nothing typed");
+	assert.deepEqual(ran, [{ type: "tap", at: [50, 25] }]);
+});
+
 test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
 	const ran = [];
-	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) };
+	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), check: () => ({ ok: true, value: undefined }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) };
 	const source = new AdbUiSource(phone, () => [400, 400]);
 	const view = { app: { id: "com.example", name: "Example" }, window: { id: "w", bounds: [0, 0, 400, 400] }, elements: [] };
 	const toggle = { key: "t", role: "switch", name: "Wi-Fi", bounds: [0, 0, 100, 40] };

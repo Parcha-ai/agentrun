@@ -15,6 +15,11 @@ export interface AdbUiPhone {
 	 * limits) before it runs the first, so a step that would fail part way (after a set's deletes, say) changes nothing.
 	 */
 	input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>>;
+	/**
+	 * Whether input would take these actions, running none: a step that taps a field and reads its focus before it
+	 * types checks what it will type first, so text the phone cannot type sends not even the tap.
+	 */
+	check(actions: InputAction[]): Result<void>;
 }
 
 const FEATURES: Features = {
@@ -247,9 +252,21 @@ export class AdbUiSource implements UiSource {
 			if (erase > most) return fail("limit", `set ${step.set}: the field holds ${erase} characters, more than the ${most} a phone driven over adb clears in one step`);
 			const keys: InputAction[] = [];
 			for (const key of ["backspace", "delete"]) for (let left = erase; left > 0; left -= MAX_KEY_REPEAT) keys.push({ type: "key", keys: [key], repeat: Math.min(MAX_KEY_REPEAT, left) });
-			return done(await input({ type: "tap", at: at(step.set) }, ...keys, ...(step.value === "" ? [] : [{ type: "type" as const, text: step.value }])));
+			const rest = [...keys, ...(step.value === "" ? [] : [{ type: "type" as const, text: step.value }])];
+			const tapped = await this.#focus(at(step.set), target, step.set, rest, signal);
+			if (!tapped.ok) return tapped;
+			return done(await input(...rest));
 		}
-		if ("type" in step) return done(await input(...(step.into === undefined ? [] : [{ type: "tap" as const, at: at(step.into) }]), { type: "type", text: step.type }));
+		if ("type" in step) {
+			const typed: InputAction[] = [{ type: "type", text: step.type }];
+			if (step.into !== undefined) {
+				// Text typed after a tap on anything but a field goes to whatever field has the focus, so a ref is a field's.
+				if (element !== undefined && element.role !== "textbox" && element.role !== "searchbox") return fail("refused", `${step.into} is a ${element.role}, not a text field: type into a field`);
+				const tapped = await this.#focus(at(step.into), element, Array.isArray(step.into) ? JSON.stringify(step.into) : step.into, typed, signal);
+				if (!tapped.ok) return tapped;
+			}
+			return done(await input(...typed));
+		}
 		if ("key" in step) {
 			const keys = chordKeys(step.key);
 			if (keys.length > 1) return fail("unsupported", `key ${step.key}: a phone driven over adb presses one key at a time`);
@@ -265,5 +282,25 @@ export class AdbUiSource implements UiSource {
 		}
 		if ("drag" in step) return done(await input({ type: "swipe", path: step.drag.map(px), ...(step.ms === undefined ? {} : { ms: step.ms }) }));
 		return fail("unsupported", "this step is not one a phone driven over adb takes");
+	}
+
+	/**
+	 * A tap that gives a field the focus before text goes in, and a look that it did: the tap may open another app or
+	 * leave the focus elsewhere, and text typed then lands in some other field. A field named by its ref must be the
+	 * focused element; a tap at a point must leave a field focused. Otherwise nothing more is sent. What follows the tap
+	 * is checked first, so a step the phone cannot finish sends not even the tap.
+	 */
+	async #focus(point: [number, number], field: UiElement | undefined, named: string, then: InputAction[], signal: AbortSignal): Promise<Result<void>> {
+		const whole = this.phone.check([{ type: "tap", at: point }, ...then]);
+		if (!whole.ok) return whole;
+		const tapped = await this.phone.input([{ type: "tap", at: point }], signal);
+		if (!tapped.ok) return tapped;
+		const dumped = await this.phone.dump(signal);
+		if (!dumped.ok) return dumped;
+		const view = parseUiElements(dumped.value, this.phone.scale(), this.screen());
+		if (!view.ok) return view;
+		const focused = view.value.elements.find((element) => element.flags?.includes("focused"));
+		const took = field === undefined ? focused?.role === "textbox" || focused?.role === "searchbox" : focused?.key === field.key;
+		return took ? ok(undefined) : fail("refused", `${named} did not take focus: nothing typed`);
 	}
 }

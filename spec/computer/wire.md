@@ -212,6 +212,9 @@ The result:
 - A step that may not run answers `{"error": {"kind", "message"}}`, and it is the last result: the steps after it do
   not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`, `refused`. A
   step on a disabled control by its ref is refused `refused`: a field's text never goes to whatever has the focus.
+  For the same reason, a `type` into a ref that is not a text field is refused `refused` with nothing sent, and a
+  driver that focuses a field before typing (a tap) checks the field took the focus, else refuses `refused` with
+  nothing typed.
 - `state` is the window after the act settled, `changed` whether it differs from before the steps, and `expect` is
   `met` or `unmet` (absent without an expect, or when a step was refused).
 
