@@ -47,7 +47,9 @@ Which versions lie in between is decided by comparing version numbers, never by 
 changelog: fixes to an older line are published after newer versions. For the same reason the list of versions is
 checked before it is trusted: a newer line whose first version was not seen, a skipped major number, or a next
 line that exists when asked for directly and was not on the pages read, means versions are missing from the list,
-and the verdict is `incomplete`. A version in use is called "not a tag" only when its own page does not exist.
+and the verdict is `incomplete`. A version in use is called "not a tag" only when its own page does not exist. Asking
+for the next line assumes a line starts at `.0` (`v2.4.0`, `v3.0.0`): a project whose lines start elsewhere can
+still hide one, and that is a limit of this check.
 
 A verdict answers for the items it checked, and the report lists them. Every run reads the notes again and reports
 every finding still in range: a break the owner was told about last week is still a break until they upgrade past
