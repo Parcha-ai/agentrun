@@ -19,13 +19,13 @@ import { type Conversation, type ConversationId, type ConversationRetryPolicy, t
 import { answeredUnpriced, type AdapterSession, type AgentAdapter, type BeforeRequest, type HostTool, modelPortFor, type Refusal, RUNNER_RECORDS, type SessionRecord, type SessionSpec, sessionSpendOf } from "@parcha/agentrun-kernel";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, withdrawnAnswers } from "./journal-kinds.js";
-import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, RUN_RESUMED } from "../timeline/index.js";
+import { endedOnTurnEndingTool, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
  *  takeover's note, its computer's hold, the learning seed it laid): read past when a claim asks whether the run's root ends
  *  on its end (a fresh reopen). */
-const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold"]);
+const CLAIM_BOOKKEEPING: ReadonlySet<string> = new Set([KINDS.sessionKey, HOST_PHASE, RUN_RESUMED, KINDS.learningLaid, "computer.hold", REQUEST_STARTED, REQUEST_ENDED]);
 
 /** A raised run's follow-up is the server's message (the kernel cap's followUpOf), never the person's. */
 const CAP_RAISED_ORIGIN: MessageOrigin = { kind: "server", reason: "cap_raised" };
@@ -52,6 +52,10 @@ import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 import { budgetOf, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
 
+/** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
+ *  and the harness's next call runs it. */
+export const OWN_TOOL_RELEASED = "Allowed after it waited; the agent's own tool runs it on its next call.";
+
 /** A pause or resume row on an agentic run, refused in main's words (runs.ts pause): only a workflow run pauses. */
 export const AGENTIC_PAUSE_REFUSED = "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.";
 
@@ -76,6 +80,9 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
   /** The revision's tool-call budget (definition.max_tool_calls, tool-budget.ts): the calls each conversation may make. A
    *  call past it is refused before anything else is asked; one the adapter counts no calls for (a CLI's) is not held. */
   readonly toolCalls?: number;
+  /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
+   *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
+  readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
 };
 
 /** What one claimed run's adapter loop runs. */
@@ -1333,7 +1340,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           label: spec.session.label,
           beforeRequest,
           onEvent: async (event) => {
-            if (event.type === "request_start") await deps.flush();
+            if (event.type === "request_start") {
+              // A pi run's answers are its own entries, so a request that leaves is marked on the root before it does: one
+              // with no answer by the time the run settles (a stop or cancel cut it mid-answer) was cut, and a cut request's
+              // cost is unknown, never the $0 an unmarked one reads (timeline REQUEST_STARTED). The other harnesses' requests
+              // are read from the booking (spec.record "loop"), and a host's own side request (event.host: a learned node's, a
+              // web search's) is marked and costed by its own path, never as one of the run's answers.
+              if (spec.record !== "loop" && event.host === undefined && event.label === spec.session.label && harness && gate && !gate.sealed) {
+                const on = harness;
+                const conversation = root ?? (await on.root(context));
+                await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_STARTED, data: {} as unknown as JsonValue }), context);
+              }
+              await deps.flush();
+            }
+            // Its end, when the request did not answer at a price: the stream ended with no answer or none priced (a stop cut
+            // it), which reads cut and unknown once the run's answer entries are counted; or it never left (a stop landed as it was marked), which withdraws the mark (`unsent`), at no cost.
+            if (event.type === "request_end" && event.ended && (event.ended.end !== "answered" || event.ended.usd === null) && spec.record !== "loop" && event.host === undefined && event.label === spec.session.label && harness && gate && !gate.sealed) {
+              const on = harness;
+              const conversation = root ?? (await on.root(context));
+              const unsent = event.ended.end === "nothing" && event.ended.label === "never_left";
+              // Not written when the journal sealed under it (the run's end landed first): a settled run reads its unanswered
+              // mark cut all the same.
+              await on.commit((tx) => tx.appendEntry(conversation.id, { kind: REQUEST_ENDED, data: (unsent ? { unsent: true } : {}) as unknown as JsonValue }), context).catch(() => undefined);
+            }
           },
         });
         // A paid request an earlier claim admitted and never saw answered (its runner lost while the request was out): the
@@ -1504,10 +1533,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           ? async (call, hookContext) => {
               const answer = await askingGate(call, hookContext);
               if (answer !== "allow" && "deny" in answer) await record.refused(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool), answer.deny);
+              // A harness's own tool (Claude Code's WebSearch, which its provider runs) the gate held and a person now lets
+              // run: the host runs nothing of this call, so the start it parked ends here; the harness's next call runs it.
+              else if (answer === "allow" && approvedCalls.has(call.callId) && !tools.some((one) => one.name === call.tool)) await record.end(call.callId, "done", OWN_TOOL_RELEASED);
               return answer;
             }
           : gateOf;
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: bridgeGate, hostTool: hosted, bookedCost };
+        // A tool no call of which reaches the gate before it runs (Codex's live search, inside its model requests): its
+        // setting now, read again at each request, so a deny or ask set mid-run reaches the next one.
+        const permission = spec.gate?.permission;
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? (event) => record.onEvent(event) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, bookedCost };
         // The MCP tools: pi's own (host tools, through the gate above); for a harness with its own MCP client, the session's
         // MCP its adapter mounts on its proxy, each call asking the gate first (an ask parks the run, nothing sent).
         const mcpNames = new Set(mcp?.tools.map((tool) => tool.name));

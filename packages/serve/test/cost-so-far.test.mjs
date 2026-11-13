@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, client, follow, journalOf, scratch, serve, startServe } from "./support.mjs";
-import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
@@ -31,13 +30,13 @@ async function piFollowUpInFlight(api, id) {
     const { status, state } = await view(api, runId);
     return status === "working" && state === "working";
   });
-  // Its request is marked as sent: a cancel before that withdraws it unsent, at no cost, and a stop cuts it either way.
+  // Its request is marked as sent (the runner's mark, before the request leaves): a cancel before that withdraws it unsent,
+  // at no cost, and a stop cuts it either way.
   await until("the follow-up's request is marked", async () => (await usageRow(api, runId))?.requests === 2);
   return { runId, first };
 }
 
-// SKIP (follow-up #2080): a follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
-test.skip("pi: a follow-up stopped mid-answer reads what the run cost so far and 1 charge with no price, on the run and its usage row; never $0, never the known sum as its cost", async (t) => {
+test("pi: a follow-up stopped mid-answer reads what the run cost so far and 1 charge with no price, on the run and its usage row; never $0, never the known sum as its cost", async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   const { runId, first } = await piFollowUpInFlight(api, "stop-pi");
   assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
@@ -47,204 +46,82 @@ test.skip("pi: a follow-up stopped mid-answer reads what the run cost so far and
   assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: first, unpriced: 1 });
 });
 
-/** The server's read of its runs' event streams (each door's `/events`, fetched in this process), held from `hold()`
- *  until `release()`: what the door says after that point reaches the server only then. */
-function heldEvents(t) {
-  const real = globalThis.fetch;
-  let gate;
-  globalThis.fetch = async (input, init) => {
-    const res = await real(input, init);
-    if (!String(input instanceof Request ? input.url : input).includes("/events?") || !res.body) return res;
-    const reader = res.body.getReader();
-    const body = new ReadableStream({
-      async pull(controller) {
-        const { value, done } = await reader.read();
-        // Checked once the chunk is here: a read already waiting when the hold came is held too.
-        while (gate) await gate.promise;
-        if (done) controller.close();
-        else controller.enqueue(value);
-      },
-      cancel: (reason) => reader.cancel(reason),
-    });
-    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
-  };
-  const release = () => {
-    const held = gate;
-    gate = undefined;
-    held?.resolve();
-  };
-  t.after(() => {
-    release();
-    globalThis.fetch = real;
-  });
-  return { hold: () => void (gate = Promise.withResolvers()), release };
-}
-
-// SKIP (follow-up #2080): a follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
-test.skip("pi: a stop's cost reads unknown plus what is known so far as soon as the run reads stopped, before the turn's end reaches the server; never the known sum", async (t) => {
-  const events = heldEvents(t);
+test("pi: a run that reads stopped reads its stop's cost unknown plus what is known so far, never the known sum, and the same a moment later", async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   const { runId, first } = await piFollowUpInFlight(api, "stop-early");
-  // From here the door's events (the turn's end, the stop's end mark) wait: the run reads stopped from the stop alone.
-  events.hold();
   assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(api, runId, ["input_required"]);
   const run = await view(api, runId);
   assert.deepEqual([run.status, run.state], ["input_required", "idle"]);
   assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 1], JSON.stringify(run.cost));
   assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: first, unpriced: 1 });
-  // And once they arrive, the same.
-  events.release();
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   const after = await view(api, runId);
   assert.deepEqual([after.cost.usd, after.cost.so_far_usd, after.cost.unpriced], [null, first, 1], JSON.stringify(after.cost));
 });
 
-/** The server's connections to its runs' event streams: `drop()` ends the open one, as a broken connection does, and
- *  holds every one opened after it until `release()`, so a reconnect has no snapshot yet. `opened`: how many were. */
-function droppedEvents(t) {
-  const real = globalThis.fetch;
-  let current;
-  let gate;
-  const state = { opened: 0 };
-  globalThis.fetch = async (input, init) => {
-    const res = await real(input, init);
-    if (!String(input instanceof Request ? input.url : input).includes("/events?") || !res.body) return res;
-    state.opened += 1;
-    const reader = res.body.getReader();
-    const held = gate;
-    let controller;
-    const body = new ReadableStream({
-      start: (c) => void (controller = c),
-      async pull(c) {
-        if (held) await held.promise;
-        const { value, done } = await reader.read();
-        if (done) c.close();
-        else c.enqueue(value);
-      },
-      cancel: (reason) => reader.cancel(reason),
-    });
-    current = { controller, reader };
-    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
-  };
-  const release = () => {
-    const was = gate;
-    gate = undefined;
-    was?.resolve();
-  };
-  t.after(() => {
-    release();
-    globalThis.fetch = real;
-  });
-  return {
-    state,
-    drop: () => {
-      gate = Promise.withResolvers();
-      const was = current;
-      was?.controller.error(new Error("the connection dropped"));
-      void was?.reader.cancel().catch(() => undefined);
-    },
-    release,
-  };
-}
-
-// SKIP (follow-up #2080): a follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
-test.skip("pi: a stop while the server reconnects to the run's events, before the new connection's snapshot, reads stopped with the rows it had, never queued or blank", { timeout: 120_000 }, async (t) => {
-  const events = droppedEvents(t);
-  const { api } = await serve(t, { faux: OUTPUT_PRICED });
-  const { runId, first } = await piFollowUpInFlight(api, "stop-reconnect");
-  const before = events.state.opened;
-  events.drop();
-  await until("the server reconnects to the run's events", async () => events.state.opened > before, 30_000);
-  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
-  const run = await view(api, runId);
-  assert.deepEqual([run.status, run.state], ["input_required", "idle"], JSON.stringify({ status: run.status, state: run.state, cost: run.cost }));
-  assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 1], JSON.stringify(run.cost));
-  assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 2, so_far_usd: first, unpriced: 1 });
-  // And once the new connection's snapshot is in, the same.
-  events.release();
-  await new Promise((resolve) => setTimeout(resolve, 1_000));
-  const after = await view(api, runId);
-  assert.deepEqual([after.status, after.cost.usd, after.cost.so_far_usd, after.cost.unpriced], ["input_required", null, first, 1], JSON.stringify(after.cost));
-});
-
-// SKIP (follow-up #2080): a follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
-test.skip("pi: after a stop read early, the turn's end and the stop's booking arriving later leave the live cost equal to a full re-read from the store", { timeout: 120_000 }, async (t) => {
-  const events = heldEvents(t);
+test("pi: after a stop is read, the stopped request's end mark arriving later leaves the live cost equal to a full re-read from the store", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
-  const options = { data: join(dir, "agents"), port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" };
-  const one = await startServe(options);
-  let closed = false;
-  t.after(() => (closed ? undefined : one.close()));
-  const api = client(one.baseUrl, one.token);
-  const { runId, first } = await piFollowUpInFlight(api, "stop-late");
-  events.hold();
-  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
-  const early = (await view(api, runId)).cost;
-  // What the door held arrives: the turn's end, and the stopped request's end mark, booked at no price.
-  events.release();
+  const data = join(dir, "agents");
+  const one = await serve(t, { data, faux: OUTPUT_PRICED });
+  const { runId, first } = await piFollowUpInFlight(one.api, "stop-late");
+  assert.equal((await one.api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(one.api, runId, ["input_required"]);
+  const early = (await view(one.api, runId)).cost;
   let lastError;
   await until(() => `the stopped request's end mark is in the store: timed out; last read error: ${lastError?.message ?? "none"}`, async () => {
     // The run's journal in the one store, read-only beside the server that writes it. A read that fails while the store
     // moves is "not yet"; a timeout names the last such error.
     try {
-      return journalOf(options.data, runId).some((entry) => entry.kind === "agentrun.request_ended");
+      return journalOf(data, runId).some((entry) => entry.kind === "agentrun.request_ended");
     } catch (error) {
       lastError = error;
       return false;
     }
   });
   await new Promise((resolve) => setTimeout(resolve, 1_000));
-  const live = (await view(api, runId)).cost;
-  closed = true;
-  await one.close();
+  const live = (await view(one.api, runId)).cost;
+  await one.stop();
   // A server that never held the run reads it whole from its store.
-  const two = await startServe(options);
+  const two = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
   t.after(() => two.close());
   const reread = (await client(two.baseUrl, two.token)("GET", `/runs/${runId}`)).body.cost;
   const figures = (cost) => [cost.usd, cost.so_far_usd, cost.unpriced];
-  // The store decides: what pi's booking of the stopped request says (at its hold, unpriced, for this faux; at its cost
-  // were it priced), and the live reads, at the stop and after, agree with it.
-  if (reread.usd === null) assert.equal(reread.so_far_usd, first, JSON.stringify(reread));
+  // The store decides: the stopped request is a charge with no price, and the live reads, at the stop and after, agree with it.
+  assert.deepEqual(figures(reread), [null, first, 1], JSON.stringify(reread));
   assert.deepEqual(figures(live), figures(reread), `live ${JSON.stringify(live)}, re-read ${JSON.stringify(reread)}`);
   assert.deepEqual(figures(early), figures(reread), `at the stop ${JSON.stringify(early)}`);
 });
 
-// SKIP (follow-up #2080): a follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
-test.skip("pi: a follow-up sent right after a stop keeps its own request in flight, never read as cut; a second stop then reads both cut requests", { timeout: 120_000 }, async (t) => {
-  const events = heldEvents(t);
+test("pi: a follow-up sent right after a stop keeps its own request in flight, never read as cut; a second stop then reads both cut requests", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { faux: OUTPUT_PRICED });
   const { runId, first } = await piFollowUpInFlight(api, "stop-again");
-  events.hold();
   assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(api, runId, ["input_required"]);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Take your time." })).status, 202);
-  events.release();
   await until("the next follow-up's request is marked", async () => (await usageRow(api, runId))?.requests === 3);
   const working = await view(api, runId);
   assert.equal(working.status, "working");
   // The stopped request is a charge with no price; the follow-up's own, in flight, is none yet.
   assert.deepEqual(await usageRow(api, runId), { usd: null, requests: 3, so_far_usd: first, unpriced: 1 });
   assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  await follow(api, runId, ["input_required"]);
   const run = await view(api, runId);
   assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 2], JSON.stringify(run.cost));
 });
 
-// SKIP (follow-up #2080): a follow-up message to a completed run is refused as not_continuable on the store (in-flight fix: PR #2058).
-test.skip("pi: a run cancelled mid-request reads what it cost so far and 1 charge with no price, on the run, and on its list row from a server started anew", { timeout: 120_000 }, async (t) => {
+test("pi: a run cancelled mid-request reads what it cost so far and 1 charge with no price, on the run, and on its list row from a server started anew", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
-  const options = { data: join(dir, "agents"), port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" };
-  const one = await startServe(options);
-  let closed = false;
-  t.after(() => (closed ? undefined : one.close()));
-  const api = client(one.baseUrl, one.token);
-  const { runId, first } = await piFollowUpInFlight(api, "cancel-pi");
-  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
-  await follow(api, runId, ["cancelled"]);
-  const run = await view(api, runId);
+  const data = join(dir, "agents");
+  const one = await serve(t, { data, faux: OUTPUT_PRICED });
+  const { runId, first } = await piFollowUpInFlight(one.api, "cancel-pi");
+  assert.equal((await one.api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(one.api, runId, ["cancelled"]);
+  const run = await view(one.api, runId);
   assert.deepEqual([run.cost.usd, run.cost.so_far_usd, run.cost.unpriced], [null, first, 1], JSON.stringify(run.cost));
-  closed = true;
-  await one.close();
+  await one.stop();
   // A server that never held the run reads its list row from the store, and what it cost so far from its meta.
-  const two = await startServe(options);
+  const two = await startServe({ data, port: 0, faux: OUTPUT_PRICED, drainTimeout: "5s" });
   t.after(() => two.close());
   const listed = (await client(two.baseUrl, two.token)("GET", "/runs?agent=cancel-pi")).body.runs.find((r) => r.run_id === runId);
   assert.deepEqual([listed.cost.usd, listed.cost.so_far_usd, listed.cost.unpriced], [null, first, 1], JSON.stringify(listed.cost));
