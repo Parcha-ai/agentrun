@@ -1012,7 +1012,7 @@ const PROMOTION = closedWith({
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
   at: DATE_TIME,
-  decided: { enum: ["promote", "hold", "replaying"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. `replaying`: its replay runs are at work; the champion serves meanwhile, else the agent." },
+  decided: { enum: ["promote", "hold", "replaying", "superseded"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. `replaying`: its replay runs are at work; the champion serves meanwhile, else the agent. `superseded`: a newer revision (`superseded_by`) came while it replayed; one revision replays at a time, so its replay runs were cancelled (what they spent stays on them) and it never serves." },
   source: { enum: ["replay", "dry_run", "refit", "graded"], description: `\`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits. \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
@@ -1021,6 +1021,7 @@ const PROMOTION = closedWith({
   refit: { ...closed({ from: { type: "string", description: "The digest it was refit from." }, guards: { type: "array", items: closedWith({ node: { type: "string" }, was: { type: "number" }, threshold: { type: "number" } }, { fit: { type: "object" } }) } }), description: "The guards a refit moved: each step's threshold before and after, and its new fit (`both` guards)." },
   checked: { ...COUNT, description: `How many graded runs of it the last refit check read; it is checked again ${REFIT_EVERY} graded runs later.` },
   commit: { type: "string", description: "The learning commit whose workflow.json is this revision's text: what it serves from as the champion while a newer revision replays." },
+  superseded_by: { type: "string", description: "A superseded revision's newer one: the digest whose replay replaced its own." },
 });
 const SERVING = closed({
   workflow: { type: "string" },
