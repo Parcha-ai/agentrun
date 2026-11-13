@@ -906,7 +906,7 @@ model with no price set that the catalog does not list in any form; null while `
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
   price their tier's model, and default to it. With no price set, a model id pi-ai's catalog knows (`gpt-6-luna`, say)
   takes the catalog's list price; one it lists only with its version's separators written the other way (a gateway's
-  `gpt-5-4-mini` for the catalog's `gpt-5.4-mini`, `claude-haiku-4.5` for `claude-haiku-4-5`) takes that entry's price,
+  `gpt-6-1-terra` for the catalog's `gpt-6.1-terra`, `claude-haiku-5.5` for `claude-haiku-5-5`) takes that entry's price,
   only when every entry of that form lists one price (else none), and the id sent to the gateway stays as named; any
   other has no price: its answers' cost is unknown, so the run's `cost.usd` is
   `null`, never $0. A model the catalog lists at $0, or one `AGENT_MODEL_PRICE=0,0` prices, is a known $0. A revision's `provider/model-id` takes that provider's

@@ -249,8 +249,10 @@ export type AlsoRow =
   /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
    *  once: the same id staged again (an end replayed after a crash) adds nothing. */
   /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own.
-   *  `round`: the round it grades (absent: 1), named in its launch. */
-  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number } };
+   *  `round`: the round it grades (absent: 1), named in its launch. `capUsd`: what the run's cap leaves once everything it
+   *  spent is counted (learning-end.ts gradeCapOf), the learning run's own cap (its launch's max_cost_usd), so its grade
+   *  never takes the run past its cap; absent for an uncapped run, whose grade is capped by nothing. */
+  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number; capUsd?: number } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
