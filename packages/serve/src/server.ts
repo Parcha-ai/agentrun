@@ -124,7 +124,8 @@ import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
@@ -3241,9 +3242,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
+        const before = settings.get();
         await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
+        // A run parked on a call whose tool reads allow now, on its pinned revision: woken, so its next claim's gate answers
+        // the ask by the setting (settings-wake.ts), before this answer. The settings as the runner's gate reads them.
+        const woken = await wakeAnsweredBySetting(store, await loadToolSettings(store), before);
+        if (woken.length) log?.(logLine("tool_settings", { condition: "runs_woken", runs: woken.join(",") }));
         return send(res, 200, withDefaults(settings.get()));
       }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
