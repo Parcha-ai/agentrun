@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI: starts Computerd.app the way its LaunchAgent does (launchd, in the runner's Aqua session), headless, checks that
 # its socket refuses a client not signed as Computerd, then runs the protocol's conformance cases (ui-conformance.mjs)
-# against it through the app's own computerd command, when packages/computer is built.
+# against it through the app's own computerd command, (a missing build fails the run).
 #
 #   scripts/smoke.sh PATH/TO/Computerd.app
 set -euo pipefail
@@ -59,12 +59,13 @@ peer=0
 reply="$(printf '{"jsonrpc":"2.0","id":1,"method":"ping"}\n' | nc -U -w 5 "$home/computerd.sock" 2>&1 || true)"
 if [[ "$reply" == *"refused this client"* ]]; then echo "PASS the socket refuses a client not signed as Computerd"; else echo "FAIL the socket answered an unsigned client: $reply"; peer=1; fi
 
-# The protocol's conformance cases, on the same running app, when packages/computer is built.
+# The protocol's conformance cases, on the same running app, (a missing build fails the run).
 conformance=0
 if [[ -f "$here/../../dist/conformance/cli.js" ]]; then
 	node "$here/ui-conformance.mjs" "$app/Contents/Helpers/computerd" "$home" || conformance=$?
 else
-	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the conformance cases do not run"
+	echo "packages/computer is not built (npm run build -w @parcha/agentrun-computer): the conformance cases cannot run"
+	conformance=1
 fi
 
 # The Mac mini's demo tasks (mini-demos.py), recorded (each frame cut to the task's window): reported, and not yet a
