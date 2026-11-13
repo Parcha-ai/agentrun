@@ -1009,7 +1009,7 @@ const PROMOTION = closedWith({
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
   at: DATE_TIME,
-  decided: { enum: ["promote", "hold", "replaying"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the agent takes them until a new revision. `replaying`: its replay runs are at work; the agent takes the runs meanwhile." },
+  decided: { enum: ["promote", "hold", "replaying"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. `replaying`: its replay runs are at work; the champion serves meanwhile, else the agent." },
   source: { enum: ["replay", "dry_run", "refit", "graded"], description: `\`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits. \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
@@ -1017,6 +1017,12 @@ const PROMOTION = closedWith({
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
   refit: { ...closed({ from: { type: "string", description: "The digest it was refit from." }, guards: { type: "array", items: closedWith({ node: { type: "string" }, was: { type: "number" }, threshold: { type: "number" } }, { fit: { type: "object" } }) } }), description: "The guards a refit moved: each step's threshold before and after, and its new fit (`both` guards)." },
   checked: { ...COUNT, description: `How many graded runs of it the last refit check read; it is checked again ${REFIT_EVERY} graded runs later.` },
+  commit: { type: "string", description: "The learning commit whose workflow.json is this revision's text: what it serves from as the champion while a newer revision replays." },
+});
+const SERVING = closed({
+  workflow: { type: "string" },
+  digest: { ...NULL_STRING, description: "The revision that serves first (the champion: the one promoted last, while its newest record still says promote); null when none does and the agent takes the runs." },
+  replaying: { ...NULL_STRING, description: "A newer revision whose replay is at work, when there is one: it serves only once its replay promotes it; the champion serves meanwhile." },
 });
 
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
@@ -1033,9 +1039,9 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/promotions": {
     get: {
       operationId: "listLearningPromotions", tags: ["agents"], summary: "Each learned workflow revision's promotion: its replay's numbers and whether it serves",
-      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's replay on the agent's graded inputs (replaying, then promoted or held, with its numbers), one promoted on its dry run, a threshold refit's new revision, a serving revision held on its graded runs. Aggregates only: no input or answer. What the console's Learning tab marks on its cost chart.",
+      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's replay on the agent's graded inputs (replaying, then promoted or held, with its numbers), one promoted on its dry run, a threshold refit's new revision, a serving revision held on its graded runs. A revision serves only once its replay promotes it; the champion (the revision promoted last) keeps serving while a newer one replays or after it is held, and `serving` says which digest serves and which replays. Aggregates only: no input or answer. What the console's Learning tab marks on its cost chart.",
       parameters: [AGENT_ID],
-      responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION } }), "The agent's promotion records."), ...errors(401, 403, 404, 429, 500) },
+      responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves and the one replaying." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
   },

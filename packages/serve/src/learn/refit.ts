@@ -104,6 +104,14 @@ function scoreAt(rows: readonly RefitRow[], pOf: (row: GuardRow) => number | nul
   return { wf_acc: wf / n, agent_acc: agent / n, handed_back: handed };
 }
 
+/** How good one raise is, compared first to last: any accuracy gained before none; then accuracy per input handed back
+ *  (a gain that hands back nothing first); then the fewest handed back. A raise that gains nothing ranks by its loss. */
+const raiseRank = (gain: number, added: number): number[] => (gain > 1e-12 ? [1, added > 0 ? gain / added : Number.POSITIVE_INFINITY, -added] : [0, gain, -added]);
+const rankAbove = (a: readonly number[], b: readonly number[]): boolean => {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
+  return false;
+};
+
 /** The workflow `text`'s guards refit over `rows` (`now`: the fit's fitted_at). A guard whose step no row reached keeps
  *  what it has. Nothing changes (no `text`) when every guard keeps its threshold and fit. */
 export function refitGuards(text: string, rows: readonly RefitRow[], now: string): Refit {
@@ -136,15 +144,35 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   const thresholds = new Map(was);
   const agentAcc = scoreAt(rows, pOf, thresholds).agent_acc;
   const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, pOf, at).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
-  // Each step in turn, twice over: the lowest threshold (the fewest hand-backs) that keeps the bar, the others held. Its
-  // candidates are THRESHOLD_MIN (hands back nothing but a p under it), each p its rows read within the DSL's range, and
-  // THRESHOLD_MAX; a step no row reached keeps its own.
+  // Each guard's candidates: THRESHOLD_MIN (hands back nothing but a p under it), each p its rows read within the DSL's
+  // range, and THRESHOLD_MAX; a step no row reached keeps its own.
+  const candidatesOf = new Map<string, number[]>();
+  for (const label of was.keys()) {
+    const seen = rows.flatMap((row) => row.guards.filter((g) => g.node === label).map(pOf)).filter((p): p is number => p !== null);
+    if (seen.length) candidatesOf.set(label, [...new Set([THRESHOLD_MIN, ...seen.map((p) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)))), THRESHOLD_MAX])].sort((a, b) => a - b));
+  }
+  // Up from the bottom: while the bar is not met, the one raise (a guard to a higher candidate) that buys the most accuracy
+  // per input it hands back. Taking the steps in order instead traps the refit: the first step alone meets the bar only by
+  // handing back every input, and the step whose guard tells right from wrong is then never raised.
+  for (const [label, candidates] of candidatesOf) thresholds.set(label, candidates[0]!);
+  for (let now = scoreAt(rows, pOf, thresholds); !meets(thresholds); ) {
+    let best: { label: string; at: number; rank: number[]; next: ReturnType<typeof scoreAt> } | undefined;
+    for (const [label, candidates] of candidatesOf) {
+      for (const at of candidates.filter((c) => c > thresholds.get(label)!)) {
+        const next = scoreAt(rows, pOf, new Map([...thresholds, [label, at]]));
+        const rank = raiseRank(next.wf_acc - now.wf_acc, next.handed_back - now.handed_back);
+        if (!best || rankAbove(rank, best.rank)) best = { label, at, rank, next };
+      }
+    }
+    if (!best) break;
+    thresholds.set(best.label, best.at);
+    now = best.next;
+  }
+  if (!meets(thresholds)) for (const [label, at] of was) thresholds.set(label, at);
+  // Then down: each step in turn, twice over, the lowest threshold (the fewest hand-backs) that keeps the bar, the others held.
   for (let pass = 0; pass < 2; pass++) {
-    for (const label of was.keys()) {
-      const seen = rows.flatMap((row) => row.guards.filter((g) => g.node === label).map(pOf)).filter((p): p is number => p !== null);
-      if (!seen.length) continue;
-      const candidates = [...new Set([THRESHOLD_MIN, ...seen.map((p) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)))), THRESHOLD_MAX])].sort((a, b) => a - b);
-      const found = candidates.find((candidate) => meets(new Map([...thresholds, [label, candidate]])));
+    for (const [label, candidates] of candidatesOf) {
+      const found = candidates.find((candidate) => candidate <= thresholds.get(label)! && meets(new Map([...thresholds, [label, candidate]])));
       if (found !== undefined) thresholds.set(label, found);
     }
   }
