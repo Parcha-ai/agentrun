@@ -1,4 +1,4 @@
-"""The Mac mini's five demo tasks (MINI.md), on Notes, Safari, Finder, TextEdit and Calendar. Each is driven through
+"""The Mac mini's five demo tasks, on Notes, Safari, Finder, TextEdit and Calendar. Each is driven through
 the running Computerd's own computerd command by ui.observe and ui.act with batched steps. Each call's latency is
 logged. With --movie, each is recorded from screen.watch to a movie of its own window, with the step on screen.
 
