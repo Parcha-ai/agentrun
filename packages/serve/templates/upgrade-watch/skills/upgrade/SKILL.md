@@ -96,8 +96,9 @@ slices, never whole pages, and count your fetches.
      prereleases when both ends are final releases, and say in the summary how many you left out: a final release's
      notes are taken to cover its prereleases.
    - Nothing in between (the version in use, found among the tags, is the newest): the verdict is `up_to_date`. No
-     notes are read, the version in use's own included: what it changed is not this run's question, and the summary
-     says nothing about it. Go to step 7.
+     notes are read, the version in use's own included, also when they were handed to you: what the version in use
+     or an older one changed is not this run's question, and neither the summary nor anything else you write names
+     it or tells the owner to act on it. Go to step 7.
    - Write the in-between versions down, newest first. Every one of them ends this run in `versions` (its notes
      read) or in `unread` (not read, with why). That count is the check: none is left out.
 
@@ -173,7 +174,8 @@ slices, never whole pages, and count your fetches.
    each finding's "Do".
 
 8. **Answer** with exactly one fenced `json` block matching `report.schema.json` (beside this SKILL.md: read it
-   before you answer), and nothing after it:
+   before you answer), and nothing after it. Every run ends with this block: one that stopped early (`up_to_date`,
+   or an `incomplete` from step 1 or 2) answers with it too, never with prose alone:
 
 ```json
 {
