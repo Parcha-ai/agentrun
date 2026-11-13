@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer
+kind: breaking
+---
+Daytona computers run on the shared machine-host adapter: a Daytona computer is named from its create's request id, its daemon starts detached, create probes its network none from inside and waits for the listing, and release waits for gone through the adapter. Breaking: a Daytona computer's network can no longer be changed after create (`network(ref, policy)` refuses any change with `refused`, where it narrowed one to none before and answered `invalid` for open or an allowlist); `DaytonaProvider.listLabelled` and `probe`, `daytonaCommands`, `DaytonaCreateOptions`, the `startMs`, `deleteMs`, `stopMs` and `listedStableMs` timeouts, `dist/conformance/daytona-sweep.js` and the `daytona:sweep` script are gone (sweep a live run with `dist/conformance/sweep.js --provider daytona`, whose output names `gone` where Daytona's said `notFound`); attach no longer reports `cpus` and `memoryMb`.
