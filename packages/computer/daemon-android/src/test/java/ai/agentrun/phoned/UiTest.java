@@ -348,6 +348,16 @@ final class UiTest {
 		eq("UI fixture", map(answered.get("window")).get("title"));
 	}
 
+	static void testAWindowWaitWhoseAppNeverShowsAWindowAnswersClosedWithNoState() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		// The fixture is in front; the wait is for an app that shows no window, and ends without one.
+		Map<String, Object> waited = phone.call("ui.act", "{\"target\":{\"app\":\"com.example.absent\"},\"steps\":[],\"expect\":{\"window\":{\"title\":\"Absent\"},\"timeoutMs\":300}}");
+		eq("unmet", waited.get("expect"));
+		eq("closed", waited.get("window"));
+		yes(!waited.containsKey("state"), "no state of the app in front: " + waited);
+	}
+
 	static void testASetThatTheAppTakesBackIsNotVerified() throws Exception {
 		Check.Phone phone = new Check.Phone();
 		phone.device.internet();

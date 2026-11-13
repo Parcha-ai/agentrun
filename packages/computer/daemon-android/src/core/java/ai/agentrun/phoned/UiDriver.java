@@ -521,6 +521,7 @@ public final class UiDriver {
 			}
 			// A met window expect answers the window that met it, the app's main window; every other act its own window.
 			Look last = waitsForWindow && "met".equals(met) && read.main != null ? read.main : read.own;
+			if (last == null) return Json.obj("steps", answers, "window", "closed", "changed", true, "expect", met == null ? Json.OMIT : met);
 			State now = record(last);
 			return Json.obj("steps", answers, "state", now.id, "changed", !first.equals(last.fingerprint()), "expect", met == null ? Json.OMIT : met);
 		}
@@ -540,25 +541,30 @@ public final class UiDriver {
 		return view(a11y, target, waitsForWindow);
 	}
 
-	/** The act's own window and, for a window expect, the app's main window, as they are now. */
+	/**
+	 * The act's own window and, for a window expect, the app's main window, as they are now. A window wait reads only its
+	 * app: once that app shows no window, the act has none of its own (it answers window "closed" and no state), never
+	 * the window of the app in front (ui-engine.ts, the same rule).
+	 */
 	private Final view(Device.Accessibility a11y, Target target, boolean waitsForWindow) {
-		Look own = new Look(after(a11y, target), false);
+		Device.AxWindow mine = after(a11y, target);
+		Look own = waitsForWindow && target.app != null && !target.app.equals(appOf(mine)) ? null : new Look(mine, false);
 		if (!waitsForWindow) return new Final(own, null);
 		Device.AxWindow main = mainOf(a11y, target);
-		return new Final(own, main == null ? null : main.id() == own.window.id() ? own : new Look(main, false));
+		return new Final(own, main == null ? null : own != null && main.id() == own.window.id() ? own : new Look(main, false));
 	}
 
-	/** One final view of the act: its own window, and the app's main window for a window expect. */
+	/** One final view of the act: its own window (null when its app shows none), and the app's main window for a window expect. */
 	private final class Final {
 		final Look own;
 		final Look main;
-		/** Every element of the own window, not only the compact view's: what text and ref expects read. */
+		/** Every element of the own window, not only the compact view's: what text and ref expects read; null with none. */
 		final Outline full;
 
 		Final(Look own, Look main) {
 			this.own = own;
 			this.main = main;
-			this.full = Outline.of(own.root, true);
+			this.full = own == null ? null : Outline.of(own.root, true);
 		}
 
 		/**
@@ -573,6 +579,7 @@ public final class UiDriver {
 				return seen != e.gone;
 			}
 			boolean seen = false;
+			if (full == null) return e.gone;
 			if (e.ref != null) {
 				AxNode node = nodeOfRef.get(e.ref);
 				Outline.Entry entry = node == null ? null : full.find(node.key());
@@ -591,7 +598,7 @@ public final class UiDriver {
 		/** A set's value still holds in this view: a switch's or checkbox's checked state, else the field's text. */
 		boolean setHolds(Step s) {
 			AxNode node = nodeOfRef.get(s.ref);
-			Outline.Entry entry = node == null ? null : full.find(node.key());
+			Outline.Entry entry = node == null || full == null ? null : full.find(node.key());
 			if (entry == null) return false;
 			if (entry.node.checkable()) return entry.flags.contains("checked") == (s.text.equals("on") || s.text.equals("true"));
 			return java.util.Objects.equals(entry.value, Outline.trim(s.text));
