@@ -8,9 +8,8 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
 import { sealKeyOf } from "../dist/tool-keys.js";
-import { agent, FAUX, follow, runDir, scratch, serve, storeRun } from "./support.mjs";
+import { agent, FAUX, follow, runDir, scratch, serve, startServe, storeRun } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

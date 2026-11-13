@@ -5,8 +5,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { startServe } from "../dist/index.js";
-import { agent, client, follow, journalOf, scratch, serve } from "./support.mjs";
+import { agent, client, follow, journalOf, scratch, serve, startServe } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
