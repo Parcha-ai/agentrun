@@ -195,6 +195,11 @@ def fixture(c):
     record("fixture", "the window is 320 by 320 points", size == [320, 320], json.dumps(seen["window"]))
     record("fixture", "Wi-Fi's desc", (by.get("wifi") or {}).get("desc") == "Networks nearby", json.dumps(by.get("wifi")))
     record("fixture", "the canvas's count starts at 0", (by.get("canvas") or {}).get("value") == "0", json.dumps(by.get("canvas")))
+    # The window's title-bar buttons, which AppKit gives no title or description, are named from their subrole.
+    bar = [n for n in seen["nodes"] if n.get("role") == "button" and n.get("id") not in ("open", "close", "save", "next")]
+    names = {n.get("name") for n in bar}
+    named = {"Close", "Minimize"} <= names and bool({"Zoom", "Full Screen"} & names)
+    record("fixture", "the title-bar buttons are named Close, Minimize and Zoom or Full Screen", named, json.dumps([{k: n.get(k) for k in ("name", "id")} for n in bar]))
     if shape != want:
         return
 

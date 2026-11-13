@@ -67,6 +67,8 @@ fi
 # The Mac mini's demo tasks (mini-demos.py), recorded (each frame cut to the task's window): reported, and not yet a
 # verdict here, since a runner's apps are fresh each time (first-run sheets, no account).
 python3 -I "$here/mini-demos.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos" --movie || echo "the demo tasks failed: see above"
+# TEMPORARY: Safari's blank page body in the frames, diagnosed. Removed before merge.
+python3 -I "$here/safari-diag.py" "$app/Contents/Helpers/computerd" "$home" "$home/demos/safari-diag" || echo "safari-diag failed"
 # The grants asked of TCC while the tests and demos ran, counted by service: a grant the sandbox's AppleScript needs
 # and seed-tcc.sh does not seed shows up here.
 echo "TCC requests in the last 15 minutes, by service:"
