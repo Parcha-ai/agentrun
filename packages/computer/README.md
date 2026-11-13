@@ -40,7 +40,7 @@ full VM, a machine. The protocol has two layers:
   inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
   and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
 
-The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.1
+The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.2
 (`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
 `src/protocol.ts` by `node scripts/generate-computer-spec.mjs`, and a test fails when they drift.
 
@@ -54,7 +54,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 
 ```text
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me"}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.1","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocol":"0.2","version":"0.1.0-beta.30","os":"linux","kind":"linux","arch":"arm64","groups":["exec","files","processes"]}}
 → {"jsonrpc":"2.0","id":2,"method":"exec.run","params":{"argv":["uname","-m"],"timeoutMs":5000}}
 ← {"jsonrpc":"2.0","id":2,"result":{"exitCode":0,"stdout":"YWFyY2g2NAo=","stderr":"","timedOut":false,"truncated":false}}
 ```
@@ -403,8 +403,8 @@ in the kernel's tool registry, keyed by these groups.
 | --- | --- | --- | --- |
 | `none` | | | (the run's folder only: no computer) |
 | `sandbox` | `linux` | `exec`, `files`, `processes` | |
-| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `stream` |
-| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `apps.ui_tree`, `stream` |
+| `desktop` | `desktop` | `screen`, `input.pointer`, `input.keys` | `exec`, `files`, `processes`, `apps`, `ui`, `stream` |
+| `phone` | `android`, `ios` | `screen`, `input.touch`, `apps` | `input.keys`, `apps.install`, `ui`, `stream` |
 | `browser` | `browser` | `cdp` | `stream`, `downloads` |
 
 - `serves(capabilities, kind)` is true when `capabilities().kind` is one of the kind's machine kinds and every required
@@ -486,7 +486,7 @@ itself, from our server (adb, a vendor API). Either way a connection's `client` 
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
 
 **Groups.** `capabilities().groups` is one flat list, repeated in hello's `groups`: `exec`, `files`, `processes`,
-`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `apps.ui_tree`, and the provider's
+`screen`, `input.pointer`, `input.keys`, `input.touch`, `apps`, `apps.install`, `ui`, and the provider's
 `cdp`, `stream`, `downloads`. Each is optional unless kind makes it Core. The drift check and Docker's `connect` refuse a hello whose kind or groups differ from what the
 provider declares, either way.
 
@@ -496,8 +496,8 @@ provider declares, either way.
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
-| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
-| `apps.ui_tree` | `apps.ui_tree`: `{ root: UiNode, nodes, truncated }`, at most 5000 nodes; a node has `role`, `id?`, `text?`, `label?`, `bounds` in screenshot pixels, `enabled`, the optional booleans and `children` |
+| `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch({ id, url?, background? })`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
+| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
 
 **The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
 `provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
@@ -2334,18 +2334,19 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
     - the back, home and app switch buttons;
     - `type`, by `input text`: ASCII and line breaks. A literal `%s` is split across two calls, so it is not read as
       a space;
-    - one key at a time (`input keyevent`), and `wait`.
+    - one key at a time (`input keyevent`, a repeat as one call of many key codes), and `wait`.
 
     A cancelled batch stops at the action it is on, a `wait` included, and answers failed, kind `aborted`, there;
   - `apps.list` (`pm list packages`, and the app in front from `dumpsys activity activities`), `apps.launch` (its
     launcher activity, `am start -W --activity-clear-task`, so the app named is in front and not what its task last
     held: on Android 15 Settings' task keeps search, another package, on top) and `apps.terminate` (`am force-stop`);
-  - `apps.ui_tree`: `uiautomator dump`.
+  - `ui`: `ui.observe` over `uiautomator dump`, and `ui.act` over adb's input (the foreground route only, each step
+    one batch checked whole before it runs).
 
   exec, files, processes and tar are refused in words: a phone has no shell in the computer protocol. So are pinch
   (adb's `input` has one finger), hold, a combo of keys, `apps.install` and `deadline.extend`.
 - **Capabilities.** Kind and os `android`, daemon `none`, lifetime `vendor`, network `open`, release `delete` only.
-  Groups `screen`, `input.touch`, `input.keys`, `apps` and `apps.ui_tree`. `maxLifetimeMs` is 30 min by default. No
+  Groups `screen`, `input.touch`, `input.keys`, `apps` and `ui`. `maxLifetimeMs` is 30 min by default. No
   mount, no extend.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
@@ -2399,17 +2400,17 @@ Conformance (`src/conformance/phone-harness.ts`) reads `COMPUTER_PHONE_HARNESS_A
 `maxLifetimeMs`.
 
 With no fixture app (it takes no files), the touch, keys and apps cases drive the stock Settings app and read back
-through `apps.ui_tree` (`src/conformance/cases/settings.ts`):
+through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `touch.tap`: a tap on a row opens its page: the row's title shows, as a text or a label (Android 15's page has it
   only as its toolbar's content-desc), and the next row is gone. Back comes back. When the page does not
   come, its words say what it saw: the screen in px and dp, what is in front, the tap point and the row's bounds,
   whether the title shows outside the list, and whether the next row is still shown;
 - `touch.swipe`: a swipe up moves the list up;
 - `input.type-text` and `input.key-table-refuses-unknown`: the text read back from the search field;
-- `apps.launch-terminate`, which needs the apps group alone: Settings is listed; once launched it is in front, and
-  shown, in `apps.ui_tree` when the phone has one, else in a screenshot other than the one before; once terminated it
-  is not in front;
-- `apps.ui-tree-shape`: the tree's shape, on Settings.
+- `apps.launch-terminate`, which needs the apps group alone: the ui fixture where it is installed, else Settings, is
+  listed; once launched it is in front, and shown, in `ui.observe` when the phone reads its elements, else in a
+  screenshot (or `ui.observe`'s image) other than the one before; once terminated it is not in front;
+- `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
 
@@ -2436,7 +2437,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps apps.ui_tree extend not declared
+core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2531,8 +2532,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   kind `invalid`, and runs nothing), `input.actions-stops-at-first-failure` (move, left button down, move off the screen,
   click: `done` 2, the press released where it was, no click, and a later click lands, so nothing was left held), `touch.tap` and `touch.swipe` (the
   fixture app logs the tap at its point, and the swipe's start and end), `apps.install-launch` (installed, listed, in
-  front when launched and not when terminated) and `apps.ui-tree-shape` (every node typed as the protocol says, inside
-  the screenshot, with the fixture's button found by its id and text).
+  front when launched and not when terminated) and `ui.observe-shape` (every node typed as the protocol says, inside
+  its window, with the fixture's button found by its id and text).
 - **Full** is each optional capability a provider declares: network `open` (`network:open`), a network allowlist
   (`network:allow`), each with a change of a computer's network to it and back to `none`, refused or applied
   truthfully, on a computer of the case's own (`provider.network-switch`, `provider.network-switch-allow`), the janitor for a provider whose lifetime is `"janitor"` and that stops computers and keeps them
@@ -2577,8 +2578,8 @@ installed with `apps.install` and launched, logging to its files directory, with
 `ai.agentrun.fixture:id/button` that reads `agentrun fixture`). Each event is one JSON line (`ready`, `down`/`up` with
 button and point, `wheel`, `key`, `text`, `touch` with finger and phase); `src/conformance/fixture.ts` is the
 contract. A case that needs it and was given none skips, so Core cannot pass on a desktop or phone without it. The
-fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `apps.ui_tree` skips the touch cases:
-`no way to observe the effect: declare files or apps.ui_tree`.
+fixture is stopped when its case ends, once launched, even when it never logged ready. A phone that declares neither files nor `ui` skips the touch cases:
+`no way to observe the effect: declare files or ui`.
 
 The suite makes every computer with the label `agentrun.conformance=<run id>`, image `--image`, a 30-minute lifetime
 and network `none` (`open` for a phone that declares no `none`, since its kind does not require it). It deletes each computer a case made when the case ends, and the shared one at the end; for a

@@ -1,6 +1,6 @@
 // The phone kind on the phone harness's cloud phones (phone-harness.com): a cloud Android rented by the minute through
 // its HTTPS API, and driven over adb. No computerd runs on a phone: connect() gives a client in this process that
-// answers the protocol's phone groups (screen, input.touch, input.keys, apps, apps.ui_tree) with adb commands, and
+// answers the protocol's phone groups (screen, input.touch, input.keys, apps, ui) with adb commands, and
 // refuses the rest in words. A cloud iPhone (driven by the API's control URL) is a later change: platform "ios" is
 // refused for now.
 //
@@ -28,12 +28,12 @@ import {
 	type InputAction,
 	type InputActionsResult,
 	MAX_CHUNK_BYTES,
-	MAX_UI_NODES,
 	PROTOCOL_VERSION,
 	type Rect,
 	type ScreenWatchResult,
-	type UiNode,
 } from "./protocol.js";
+import { type AdbUiInput, AdbUiSource } from "./phone-ui.js";
+import { UiEngine } from "./ui-engine.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -954,6 +954,14 @@ class AdbClient implements ComputerClient {
 
 	/** The disconnect close started, which the connection's close waits for. */
 	#gone: Promise<unknown> = Promise.resolve();
+	/** The ui group over uiautomator and adb's input; a dump waits for the phone to be idle, so every look is settled. */
+	readonly #ui = new UiEngine(
+		new AdbUiSource(
+			{ scale: () => this.#scale, dump: (signal) => this.#dump(signal), check: (actions) => this.#check(actions), hold: (step, signal) => this.#hold(step, signal) },
+			() => this.#size,
+		),
+		{ quietMs: 0 },
+	);
 
 	constructor(
 		/** The adb server's transport id of the phone: no secret, so it may be in an argv. */
@@ -984,7 +992,17 @@ class AdbClient implements ComputerClient {
 		const reported = abi.value.trim();
 		// An empty answer says no release: the hello then carries none.
 		const osVersion = release.value.trim();
-		this.#hello = { protocol: PROTOCOL_VERSION, version, os: "android", ...(osVersion ? { osVersion } : {}), kind: "android", arch: ARCH[reported] ?? reported, groups: [...PHONE_GROUPS] };
+		this.#hello = {
+			protocol: PROTOCOL_VERSION,
+			version,
+			os: "android",
+			...(osVersion ? { osVersion } : {}),
+			kind: "android",
+			arch: ARCH[reported] ?? reported,
+			groups: [...PHONE_GROUPS],
+			screen: { width: Math.round(this.#size[0] / this.#scale), height: Math.round(this.#size[1] / this.#scale), scale: this.#scale },
+			features: { "apps.background": { off: "an app a phone opens comes to the front" }, ...this.#ui.features() },
+		};
 		return ok(this.#hello);
 	}
 
@@ -1052,11 +1070,14 @@ class AdbClient implements ComputerClient {
 			case "apps.list":
 				return this.#appsList();
 			case "apps.launch":
-				return this.#launch(params.id);
+				if (params.background === true) return refuse("unsupported", "apps.launch: apps.background is off here: an app a phone opens comes to the front");
+				return this.#launch(params.id, params.url);
 			case "apps.terminate":
 				return this.#terminate(params.id);
-			case "apps.ui_tree":
-				return this.#tree();
+			case "ui.observe":
+				return this.#ui.observe(params, this.#either(signal));
+			case "ui.act":
+				return this.#ui.act(params, this.#either(signal));
 		}
 		const group = method.split(".")[0];
 		if (["exec", "files", "process", "tar"].includes(group)) return refuse("unsupported", `${method}: a phone has no shell in the computer protocol, so it offers no exec, files or processes`);
@@ -1224,8 +1245,11 @@ class AdbClient implements ComputerClient {
 			case "key": {
 				if (action.keys.length !== 1) return { kind: "unsupported", message: `key ${show(action.keys)}: a combo of keys is not something adb's input keyevent can press; send one key at a time` };
 				const key = action.keys[0];
-				const press = KEYCODES[key] ? `input keyevent KEYCODE_${KEYCODES[key]}` : /^[a-z0-9]$/.test(key) ? `input keyevent KEYCODE_${key.toUpperCase()}` : `input text ${quote(key)}`;
-				return { commands: Array.from({ length: action.repeat ?? 1 }, () => press) };
+				const code = KEYCODES[key] ? `KEYCODE_${KEYCODES[key]}` : /^[a-z0-9]$/.test(key) ? `KEYCODE_${key.toUpperCase()}` : undefined;
+				const times = action.repeat ?? 1;
+				// input keyevent takes many key codes in one call, so a repeat is one adb shell, not one a press.
+				if (code !== undefined) return { commands: [`input keyevent ${Array.from({ length: times }, () => code).join(" ")}`] };
+				return { commands: Array.from({ length: times }, () => `input text ${quote(key)}`) };
 			}
 			case "wait":
 				return { commands: [], waitMs: action.ms };
@@ -1263,13 +1287,21 @@ class AdbClient implements ComputerClient {
 	#inTurn(actions: unknown, signal: AbortSignal): Promise<Call> {
 		const waitedOut = (): Call =>
 			ok({ done: 0, failed: { index: 0, kind: "aborted", message: "action 0: the batch was aborted while it waited for the batch before it; none of it ran" } } satisfies InputActionsResult);
+		return this.#turn(() => this.#actions(actions, signal), waitedOut, signal);
+	}
+
+	/**
+	 * Work run in the phone's input turn, after every batch or ui step before it and whole before the next: an
+	 * input.actions batch, or a ui step's batches and the dumps between them. Cancelled while it waits, it runs nothing.
+	 */
+	#turn<T>(work: () => Promise<T>, waitedOut: () => T, signal: AbortSignal): Promise<T> {
 		let started = false;
-		const turn = this.#inputs.then((): Promise<Call> | Call => {
+		const turn = this.#inputs.then((): Promise<T> | T => {
 			started = true;
-			return signal.aborted ? waitedOut() : this.#actions(actions, signal);
+			return signal.aborted ? waitedOut() : work();
 		});
 		this.#inputs = turn.catch(() => undefined);
-		return new Promise<Call>((resolve, reject) => {
+		return new Promise<T>((resolve, reject) => {
 			const stop = () => {
 				if (!started) resolve(waitedOut());
 			};
@@ -1279,21 +1311,33 @@ class AdbClient implements ComputerClient {
 		});
 	}
 
-	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
+	/** Every action's commands, or the first one the phone cannot do: a batch is checked whole before any of it runs. */
+	#plan(actions: unknown): Plan[] | NonNullable<InputActionsResult["failed"]> {
 		const refused = checkActions(actions, PHONE_GROUPS);
-		if (refused !== undefined) return ok({ done: 0, failed: refused } satisfies InputActionsResult);
-		const list = actions as InputAction[];
+		if (refused !== undefined) return refused;
 		const plans: Plan[] = [];
-		for (const [index, action] of list.entries()) {
+		for (const [index, action] of (actions as InputAction[]).entries()) {
 			const plan = this.#commands(action);
-			if ("kind" in plan) return ok({ done: 0, failed: { index, kind: plan.kind, message: `action ${index}: ${plan.message}` } } satisfies InputActionsResult);
+			if ("kind" in plan) return { index, kind: plan.kind, message: `action ${index}: ${plan.message}` };
 			for (const at of pointsOf(action)) {
 				if (at[0] < 0 || at[1] < 0 || at[0] >= this.#size[0] || at[1] >= this.#size[1]) {
-					return ok({ done: 0, failed: { index, kind: "invalid", message: `action ${index}: ${show(at)} is off the ${this.#size[0]}x${this.#size[1]} screen` } } satisfies InputActionsResult);
+					return { index, kind: "invalid", message: `action ${index}: ${show(at)} is off the ${this.#size[0]}x${this.#size[1]} screen` };
 				}
 			}
 			plans.push(plan);
 		}
+		return plans;
+	}
+
+	/** Whether the phone would take this batch, run nothing. */
+	#check(actions: InputAction[]): Result<void> {
+		const plans = this.#plan(actions);
+		return Array.isArray(plans) ? ok(undefined) : fail(plans.kind, plans.message.replace(/^action \d+: /, ""));
+	}
+
+	async #actions(actions: unknown, signal?: AbortSignal): Promise<Call> {
+		const plans = this.#plan(actions);
+		if (!Array.isArray(plans)) return ok({ done: 0, failed: plans } satisfies InputActionsResult);
 		// A cancel stops the batch at the action it is on: before its wait, after it, and before each command.
 		const cancelled = (index: number): Call => ok({ done: index, failed: { index, kind: "aborted", message: `action ${index}: the batch was aborted; actions ${index} on did not run` } } satisfies InputActionsResult);
 		for (const [index, plan] of plans.entries()) {
@@ -1337,8 +1381,16 @@ class AdbClient implements ComputerClient {
 		return ok({ apps, foreground: foreground.value });
 	}
 
-	async #launch(id: unknown): Promise<Call> {
+	async #launch(id: unknown, url: unknown): Promise<Call> {
 		if (typeof id !== "string" || !APP_ID.test(id)) return refuse("invalid", `id ${show(id)} is not an Android package id`);
+		if (url !== undefined) {
+			if (typeof url !== "string" || !/^[a-z][a-z0-9+.-]*:\S+$/i.test(url)) return refuse("invalid", `url ${show(url)} is not a URL`);
+			// A deep link is one intent: the app opens at the page it names.
+			const viewed = await this.#shell(`am start -W -a android.intent.action.VIEW -d ${quote(url)} -p ${id}`);
+			if (!viewed.ok) return viewed;
+			if (/Error:|Exception/.test(viewed.value)) return refuse("not_found", `${id} does not open ${redactWords(url)}: ${redactWords(viewed.value.trim().split("\n").at(-1) ?? "")}`);
+			return ok({});
+		}
 		const resolved = await this.#shell(`cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${id}`);
 		if (!resolved.ok) return resolved;
 		const component = resolved.value
@@ -1361,13 +1413,35 @@ class AdbClient implements ComputerClient {
 		return stopped.ok ? ok({}) : stopped;
 	}
 
-	async #tree(): Promise<Call> {
-		const raw = await this.#execOut("uiautomator dump /dev/tty");
+	// --- ui ------------------------------------------------------------------------------------------------------
+
+	/** uiautomator's dump of the screen, its XML. */
+	async #dump(signal: AbortSignal): Promise<Result<string>> {
+		const raw = await this.#execOut("uiautomator dump /dev/tty", signal);
 		if (!raw.ok) return raw;
 		const text = raw.value.toString("utf8");
 		const start = text.indexOf("<?xml");
-		if (start < 0) return refuse("unsupported", `uiautomator gave no tree for this screen: ${redactWords(text.trim().split("\n")[0] || "nothing")}`);
-		return parseUiTree(text.slice(start, text.lastIndexOf(">") + 1), this.#size);
+		if (start < 0) return fail("unsupported", `uiautomator gave no tree for this screen: ${redactWords(text.trim().split("\n")[0] || "nothing")}`);
+		return ok(text.slice(start, text.lastIndexOf(">") + 1));
+	}
+
+	/**
+	 * A ui step's actions, as one batch in its turn with input.actions' batches (never interleaved with one): every
+	 * action is checked before the first runs.
+	 */
+	/** A ui step, in the input turn: its batches run there, never queued behind it (which would wait on itself). */
+	#hold<T>(step: (input: AdbUiInput) => Promise<Result<T>>, signal: AbortSignal): Promise<Result<T>> {
+		const either = this.#either(signal);
+		const waitedOut = (): Result<T> => fail("aborted", "the step was aborted while it waited for the batch before it; none of it ran");
+		return this.#turn(() => step((actions, inner) => this.#input(actions, inner)), waitedOut, either);
+	}
+
+	/** One batch of a ui step, which holds the turn already. */
+	async #input(actions: InputAction[], signal: AbortSignal): Promise<Result<void>> {
+		const ran = await this.#actions(actions, this.#either(signal));
+		if (!ran.ok) return ran;
+		const { failed } = ran.value as InputActionsResult;
+		return failed === undefined ? ok(undefined) : fail(failed.kind, failed.message.replace(/^action \d+: /, ""));
 	}
 }
 
@@ -1435,57 +1509,4 @@ export async function encodePng(rgba: Buffer, width: number, [x, y, w, h]: Rect)
 	ihdr.writeUInt32BE(h, 4);
 	ihdr.set([8, 6, 0, 0, 0], 8);
 	return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", await deflateAsync(rows)), chunk("IEND", Buffer.alloc(0))]);
-}
-
-const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-const unescape = (text: string) =>
-	text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, name: string) =>
-		name[0] === "#" ? String.fromCodePoint(name[1] === "x" || name[1] === "X" ? Number.parseInt(name.slice(2), 16) : Number(name.slice(1))) : ENTITIES[name.toLowerCase()],
-	);
-
-/** uiautomator's dump as the protocol's tree: one root (the window's, or one over several), at most MAX_UI_NODES nodes. */
-export function parseUiTree(xml: string, [width, height]: [number, number]): Result<{ root: UiNode; nodes: number; truncated: boolean }> {
-	const top: UiNode[] = [];
-	const stack: UiNode[] = [];
-	let nodes = 0;
-	let truncated = false;
-	let dropped = 0;
-	for (const tag of xml.matchAll(/<(\/?)node\b([^>]*?)(\/?)>/g)) {
-		const [, closing, body, selfClosing] = tag;
-		if (closing) {
-			if (dropped > 0) dropped--;
-			else stack.pop();
-			continue;
-		}
-		if (dropped > 0 || nodes >= MAX_UI_NODES) {
-			truncated = true;
-			if (!selfClosing) dropped++;
-			continue;
-		}
-		const attrs: Record<string, string> = {};
-		for (const [, key, value] of body.matchAll(/([\w:-]+)="([^"]*)"/g)) attrs[key] = unescape(value);
-		const box = /^\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]$/.exec(attrs.bounds ?? "");
-		const [x1, y1, x2, y2] = box ? box.slice(1).map(Number) : [0, 0, 0, 0];
-		const bool = (key: string) => attrs[key] === "true";
-		const node: UiNode = {
-			role: attrs.class || "node",
-			...(attrs["resource-id"] ? { id: attrs["resource-id"] } : {}),
-			...(attrs.text ? { text: attrs.text } : {}),
-			...(attrs["content-desc"] ? { label: attrs["content-desc"] } : {}),
-			bounds: [x1, y1, Math.max(0, x2 - x1), Math.max(0, y2 - y1)],
-			enabled: bool("enabled"),
-			clickable: bool("clickable"),
-			focused: bool("focused"),
-			selected: bool("selected"),
-			checked: bool("checked"),
-			scrollable: bool("scrollable"),
-			children: [],
-		};
-		nodes++;
-		(stack.at(-1)?.children ?? top).push(node);
-		if (!selfClosing) stack.push(node);
-	}
-	if (top.length === 0) return vendorFail("phone-harness","uiautomator's dump held no node");
-	if (top.length === 1) return ok({ root: top[0], nodes, truncated });
-	return ok({ root: { role: "hierarchy", bounds: [0, 0, width, height], enabled: true, children: top }, nodes: nodes + 1, truncated });
 }

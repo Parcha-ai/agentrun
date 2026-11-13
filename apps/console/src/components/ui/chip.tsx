@@ -15,7 +15,11 @@ const TONE: Record<ChipTone, string> = {
   muted: "border-border-strong/60 text-muted-foreground",
 };
 
-/** `title`: what the label means, on hover. */
-export function Chip({ tone = "plain", className, title, children }: { tone?: ChipTone; className?: string; title?: string; children: React.ReactNode }) {
-  return <span title={title} className={cn("caps inline-flex h-5 items-center gap-1 border px-1.5 text-micro leading-none", TONE[tone], className)}>{children}</span>;
+/** `title`: what the label means, on hover. A chip keeps its words on one line and its own width: in a narrow row (a
+ *  phone, a run's header beside a long title) the row's other text gives way, never the chip's words, which a fixed
+ *  height would otherwise cut ("INPUT REQUI"). `label`: for words of any length (a workflow's node name): the chip gives way
+ *  with the row and cuts its words with an ellipsis, whole on hover (pass `title`). */
+export function Chip({ tone = "plain", className, title, label, children }: { tone?: ChipTone; className?: string; title?: string; label?: boolean; children: React.ReactNode }) {
+  if (label) return <span title={title} className={cn("caps inline-flex h-5 min-w-0 items-center gap-1 border px-1.5 text-micro leading-none", TONE[tone], className)}><span className="min-w-0 truncate">{children}</span></span>;
+  return <span title={title} className={cn("caps inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap border px-1.5 text-micro leading-none", TONE[tone], className)}>{children}</span>;
 }
