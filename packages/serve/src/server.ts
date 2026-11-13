@@ -457,6 +457,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
   // A person's own computer paired with this server (computer-attach.ts): the owner's code, the driver's trade of it for
   // its token (no token of the server's: the code is the credential), the attach socket (a WebSocket: the server's
   // upgrade takes it; a plain GET is told so), and a computer's removal.
@@ -2987,7 +2988,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listComputers":
       case "saveComputerKeys":
-      case "testComputer": {
+      case "testComputer":
+      case "listComputerChoices": {
         // Settings → Computers (computers.ts): the rules are the handler's; this sends its answer.
         const provider = found.name === "listComputers" ? undefined : id;
         const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;

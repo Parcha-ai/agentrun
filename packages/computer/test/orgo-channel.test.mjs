@@ -9,13 +9,15 @@ import test from "node:test";
 import { API, fakeOrgoApi, fakeTerminal, KEY, VNC, WORKSPACE } from "./fake-orgo.mjs";
 
 const { MAX_UPLOAD_BYTES, orgoRest, orgoTerminalChannel } = await import("../dist/orgo-channel.js");
+/** The provider's workspace, as the channel reads it. */
+const OF_WORKSPACE = async () => ({ ok: true, value: WORKSPACE });
 
 function setup({ api: apiOptions = {}, onExec, frames, drops, echoMs } = {}) {
 	const api = fakeOrgoApi(apiOptions);
 	const computer = api.add({ name: "computer-0123456789ab" });
 	const terminal = fakeTerminal({ onExec, ...(frames ? { frames } : {}), ...(drops ? { drops } : {}) });
 	const rest = orgoRest({ apiKey: KEY, apiUrl: API, fetch: api.fetch });
-	const channel = orgoTerminalChannel({ rest, workspaceId: WORKSPACE, webSocket: terminal.factory, ...(echoMs ? { echoMs } : {}) });
+	const channel = orgoTerminalChannel({ rest, workspace: OF_WORKSPACE, webSocket: terminal.factory, ...(echoMs ? { echoMs } : {}) });
 	return { api, terminal, channel, id: computer.id };
 }
 const secretless = (value, what) => {
@@ -163,7 +165,7 @@ test("stdio: the program's exit ends the stream; a socket closed before the mark
 	const api = fakeOrgoApi();
 	const computer = api.add({ name: "computer-0123456789ab" });
 	const closing = () => ({ addEventListener: (type, fn) => type === "close" && queueMicrotask(() => fn({ code: 4001, reason: "unauthorized" })), send() {}, close() {} });
-	const gone = orgoTerminalChannel({ rest: orgoRest({ apiKey: KEY, apiUrl: API, fetch: api.fetch }), workspaceId: WORKSPACE, webSocket: closing });
+	const gone = orgoTerminalChannel({ rest: orgoRest({ apiKey: KEY, apiUrl: API, fetch: api.fetch }), workspace: OF_WORKSPACE, webSocket: closing });
 	const refused = await gone.stdio(computer.id, ["/opt/agentrun/computerd", "stdio"], { timeoutMs: 1000 });
 	assert.equal(refused.ok, false);
 	assert.match(refused.error.message, /4001/);
