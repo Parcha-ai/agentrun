@@ -35,7 +35,10 @@ export function formOf(env: NodeJS.ProcessEnv, vendor: string, id: string): stri
  *  the host's tier models stand for what it runs; with the faux model none is offered. */
 export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): string[] {
   if (env[FAUX_ENV]) return [];
-  if (env.AGENT_MODEL_BASE_URL) return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
+  // The gateway serves the harnesses whose wire goes through it (pi, and the OpenAI Responses wire: providerFor); the
+  // Anthropic Messages wire never does, so Claude is offered Anthropic's models on its own key.
+  const facts = ADAPTER_FACTS.find((f) => f.id === harness);
+  if (env.AGENT_MODEL_BASE_URL && facts?.wire !== "anthropic-messages") return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
   const vendors = vendorsOf(harness);
   return PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)));
 }

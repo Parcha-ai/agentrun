@@ -80,9 +80,27 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         const entry = harnessOf(env, offer.id)!;
         const models: string[] = [];
         if (offer.available) {
+          // Each choice passes what a save and a run ask, by construction: the save's own shape check (MODEL_REF), the
+          // harness's own choice of it, and, on an adapter's wire, providerFor, the function a run starts with. A model
+          // the wire cannot take (a vendor it does not run, an endpoint a key may not go to) is not offered; one that
+          // lacks only a key is (a save warns of that, never refuses).
+          const { MODEL_REF } = await import("./validate.js");
+          const { providerFor, HarnessUnavailable } = await import("./provider.js");
+          const { ADAPTER_FACTS } = await import("./adapter-facts.js");
+          const { FAUX_ENV } = await import("./model.js");
+          const facts = ADAPTER_FACTS.find((f) => f.id === offer.id);
           for (const id of pickerCandidates(env, offer.id)) {
+            if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);
-            if (chosen && ("model" in chosen || chosen.needs === "key")) models.push(id);
+            if (!chosen || !("model" in chosen || chosen.needs === "key")) continue;
+            if (facts && "model" in chosen && !env[FAUX_ENV]) {
+              try {
+                providerFor(facts.wire, env, chosen.model, offer.id);
+              } catch (error) {
+                if (!(error instanceof HarnessUnavailable && error.keys?.length)) continue;
+              }
+            }
+            models.push(id);
           }
         }
         return { ...offer, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, run_memory_mib: entry.runMib };

@@ -47,3 +47,25 @@ test("capabilities serve each harness's pickable models in the form it takes", a
   for (const h of harnesses) assert.ok(Array.isArray(h.models), h.id);
   for (const h of harnesses.filter((h) => !h.available)) assert.deepEqual(h.models, [], h.id);
 });
+
+const GATEWAY = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/v1", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}` };
+
+test("behind a gateway whose model name has no provider, no choice is listed that a save would refuse", async (t) => {
+  const { api } = await withKey(t, { ...GATEWAY, AGENT_MODEL: "gpt-test" });
+  const harnesses = (await api("GET", "/capabilities")).body.harnesses;
+  for (const h of harnesses) {
+    for (const model of h.models) {
+      const saved = await api("POST", "/agents", agent(`gw-${h.id}-${model.replace(/\W/g, "-")}`, { model, harness: h.id }));
+      assert.notEqual(saved.status, 422, `${h.id} lists ${model}: ${JSON.stringify(saved.body)}`);
+    }
+  }
+  assert.ok(!harnesses.find((h) => h.id === "pi").models.includes("gpt-test"));
+});
+
+test("behind a gateway, Claude is offered no OpenAI model, pi is offered the gateway's provider/model name", async (t) => {
+  const { api } = await withKey(t, { ...GATEWAY, AGENT_MODEL: "openai/gpt-6.1-sol", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` });
+  const harnesses = (await api("GET", "/capabilities")).body.harnesses;
+  const claude = harnesses.find((h) => h.id === "claude-agent");
+  for (const model of claude.models) assert.match(model, /^anthropic\//, `claude-agent lists ${model}`);
+  assert.ok(harnesses.find((h) => h.id === "pi").models.includes("openai/gpt-6.1-sol"));
+});
