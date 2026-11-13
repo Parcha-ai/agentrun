@@ -143,10 +143,10 @@ export type State = "working" | "waiting" | "idle";
  *  process acted on the answer. */
 export type Approval = { id: string; tool: string; call_id: string; args_json: string; requested_at: string; price?: number | "not metered"; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
-/** `by`: "message", a deny a person's message gave while the call waited (Runs.message). */
+/** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow the tool's setting gave an ask that waited (the person flipped the tool to allow). */
 /** `superseded`: the answer a stop or a cancel overrode before the run's process acted on it, kept as it was given. */
 /** `ended`: a withdrawal by a run that ended (completed or failed) with the call waiting, which nobody stopped. */
-export type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" }; ended?: true };
+export type ApprovalAnswer = { decision: "allow" | "deny" | "canceled" | "withdrawn"; note?: string; answered_at: string; args_shown?: string; by?: "message" | "setting"; superseded?: { decision: string; answered_at: string; note?: string; by?: "message" | "setting" }; ended?: true };
 /** A call withdrawn with its run (a cancel, or a stop while it waited): never run, and an answer after is 409. */
 export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decision === "canceled" || answer?.decision === "withdrawn";
 
@@ -161,7 +161,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: number | "not metered" | null };
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
  *  cancelled while the call waited. */
-type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message"; superseded?: { decision: string; answeredAt?: string } };
+type AnswerEntry = { callId: string; approved?: boolean; decision?: "allow" | "deny" | "withdrawn" | "canceled"; answeredAt?: string; note?: string; by?: "message" | "setting"; superseded?: { decision: string; answeredAt?: string } };
 /** The least a journal entry a reader here reads is: its kind and its data. */
 type JournalEntry = { id?: unknown; kind?: string; data?: unknown };
 const dataOf = <T>(entry: JournalEntry): T => entry.data as T;
@@ -214,7 +214,7 @@ export function answersOf(entries: readonly JournalEntry[], { final }: { final?:
     if (given && !((decision === "withdrawn" || decision === "canceled") && d.superseded)) continue;
     const superseded = given ? { superseded: { decision: given.decision, answered_at: given.answered_at, ...(given.note !== undefined ? { note: given.note } : {}), ...(given.by ? { by: given.by } : {}) } } : {};
     // A deny a person's message gave keeps that it was (`by`): its row reads "Declined by your message".
-    out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...(decision === "deny" && d.by === "message" ? { by: "message" as const } : {}), ...superseded };
+    out[d.callId] = { decision, ...(d.note !== undefined ? { note: d.note } : {}), answered_at: d.answeredAt ?? "", ...(decision === "deny" && d.by === "message" ? { by: "message" as const } : decision === "allow" && d.by === "setting" ? { by: "setting" as const } : {}), ...superseded };
   }
   // How the run ended after each entry: the state of the first agentrun.end at or after it, else the final row's.
   let endedAs: string | undefined = final;
@@ -724,13 +724,14 @@ export function outcomeSays(tool: string, answer: { decision: string; by?: strin
     const note = noteShown(answer.note, redact);
     return note ? `AgentRun: You declined ${tool}: ${note}` : `AgentRun: You declined ${tool}.`;
   }
-  return `AgentRun: ${tool} ran once you allowed it${failed ? ", and failed" : "; its result went to the agent"}`;
+  const ran = answer.by === "setting" ? "ran, as its setting allows it" : "ran once you allowed it";
+  return `AgentRun: ${tool} ${ran}${failed ? ", and failed" : "; its result went to the agent"}`;
 }
 /** What a person reads when they open the outcome row: the outcome, then the call's result (`rest`), or the refusal's words.
  *  An empty result says so: "Its result: (no output)", never "Its result:" and nothing. */
 export function outcomeShows(tool: string, answer: { decision: string; by?: string }, rest: string, failed: boolean): string {
   if (answer.decision === "deny") return `${answer.by === "message" ? `Your message declined ${tool}.` : `You declined ${tool}.`}${rest.trim() ? `\n${rest.trim()}` : ""}`;
-  const head = `${tool} ran once you allowed it${failed ? ", and failed" : ""}.`;
+  const head = `${tool} ${answer.by === "setting" ? "ran, as its setting allows it" : "ran once you allowed it"}${failed ? ", and failed" : ""}.`;
   return rest.trim() ? `${head} Its result:\n${rest}` : `${head} Its result: (no output)`;
 }
 
@@ -777,7 +778,7 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     // writes none), so the approval and outcome rows take a new id once it is there: served anew below the result, the
     // call's own rows, then its approval, then what came of it, as a person reads it.
     const at = result ? `${approvalRowId(approval.call_id)}:after` : approvalRowId(approval.call_id);
-    const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : "Asked your approval";
+    const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? "Allowed by the tool's setting" : "Asked your approval";
     const asked: TimelineEvent = { ...row, id: at, kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     if (!outcome) return [own, asked];
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";

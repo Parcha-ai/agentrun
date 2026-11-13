@@ -92,10 +92,11 @@ test("pi: two calls set to ask in one run, the first allowed, the second denied 
 // once it is allowed, on the second. The QA walk that found it put web_fetch's setting back to its default (allow) while
 // the second waited: the next claim's gate read allow and ran the call without taking the person's allow, and the call
 // that ran read "Not run: the run ended while it waited" and "Withdrawn when the run ended". An ask a person was shown
-// stands until they answer it: the call runs on their allow, whatever the setting says since (a deny still refuses it).
+// stands until it is answered, and flipping the tool to allow answers it: the call runs, the ask closes reading "Allowed
+// by the tool's setting", and the person is never asked again (a deny set since still refuses it).
 for (const harness of ["pi", "claude-agent", "codex"]) {
   for (const putBack of [false, true]) {
-    test(`${harness}: two calls set to ask in ONE answer, each allowed in turn${putBack ? ", web_fetch's setting put back to allow while the second waits" : ""}: at the run's end each reads held, then its approval (asked, never withdrawn), then that it ran on the allow, its result the fetch's own`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, putBack));
+    test(`${harness}: two calls set to ask in ONE answer, each allowed in turn${putBack ? ", web_fetch's setting put back to allow while the second waits" : ""}: at the run's end each reads held, then its approval (asked, or allowed by the setting once it was put back, never withdrawn), then that it ran, its result the fetch's own`, { timeout: 150_000 }, (t) => bothAllowed(t, harness, putBack));
   }
 }
 
@@ -130,11 +131,16 @@ async function bothAllowed(t, harness, putBack) {
   const shown = JSON.stringify(done.map((r) => `${r.kind}: ${r.summary}`));
   for (const [call, host] of [[first.call_id, "a.example"], [second.call_id, "b.example"]]) {
     const asked = done.filter((r) => r.kind === "tool_approval_requested" && r.tool_use_id === call);
-    assert.deepEqual(asked.map((r) => r.summary), [`Asked your approval: web_fetch {"url":"http://${host}/"}`], `${host}: its approval row reads asked, never withdrawn: ${shown}`);
-    readsInOrder(done, call, new RegExp(`^AgentRun: web_fetch ran once you allowed it, and failed$`), `${host}, at the run's end`);
+    // The second call waited when the setting went back to allow: the setting answered its ask.
+    const bySetting = putBack && call === second.call_id;
+    const head = bySetting ? "Allowed by the tool's setting" : "Asked your approval";
+    assert.deepEqual(asked.map((r) => r.summary), [`${head}: web_fetch {"url":"http://${host}/"}`], `${host}: its approval row reads ${head}, never withdrawn: ${shown}`);
+    readsInOrder(done, call, bySetting ? /^AgentRun: web_fetch ran, as its setting allows it, and failed$/ : /^AgentRun: web_fetch ran once you allowed it, and failed$/, `${host}, at the run's end`);
     const result = done.find((r) => r.kind === "tool_result" && r.tool_use_id === call);
     assert.match(result?.tool_result_preview ?? "", new RegExp(`ENOTFOUND ${host.replace(".", "\\.")}`), `${host}: its result row is the fetch's own: ${shown}`);
   }
-  assert.equal(done.filter((r) => r.kind === "phase" && r.summary === "AgentRun: web_fetch ran once you allowed it, and failed").length, 2, `one outcome row for each call: ${shown}`);
+  assert.equal(done.filter((r) => r.kind === "phase" && /^AgentRun: web_fetch ran(?: once you allowed it|, as its setting allows it)/.test(r.summary ?? "")).length, 2, `one outcome row for each call: ${shown}`);
+  // Asked once each: no second card for a call the setting answered.
+  assert.equal(done.filter((r) => r.kind === "tool_approval_requested").length, 2, `one approval row for each call: ${shown}`);
   assert.ok(!done.some((r) => /^(Not run|Withdrawn)/.test(r.summary ?? "")), `no row says a call that ran was not run or withdrawn: ${shown}`);
 }
