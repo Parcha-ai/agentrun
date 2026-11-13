@@ -3,7 +3,7 @@
 // Exits 0 when Core passes, 1 when it fails, 2 on a usage error, and 3 when --only left Core cases out and every case
 // that ran passed: a partial run is never a Core pass, so no script reads its exit code as one. With --kind it exits on
 // the kind's verdict alone: 0 when the provider passes the kind, 1 when it does not.
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isCommand } from "../entry.js";
@@ -199,6 +199,31 @@ async function moduleFor(name: string, cwd: string): Promise<{ label: string; mo
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
 
 /**
+ * A fresh planted value for each secret name, and the text to hunt for in answers. A `*_SSH_KEY` name takes a throwaway
+ * ed25519 private key (a provider refuses a non-PEM key at build) and its base64 body line is the secret: the armor is
+ * public text that the provider's own errors quote. Every other name takes a random string that is its own secret.
+ */
+export function plantSecrets(names: readonly string[]): { values: string[]; secrets: string[] } {
+	const values: string[] = [];
+	const secrets: string[] = [];
+	for (const name of names) {
+		if (name.endsWith("_SSH_KEY")) {
+			const { privateKey } = generateKeyPairSync("ed25519", {
+				privateKeyEncoding: { type: "pkcs8", format: "pem" },
+				publicKeyEncoding: { type: "spki", format: "pem" },
+			});
+			values.push(privateKey);
+			secrets.push(privateKey.split("\n").filter((line) => line !== "" && !line.startsWith("-----")).join(""));
+		} else {
+			const value = `agentrun-planted-${randomBytes(12).toString("hex")}`;
+			values.push(value);
+			secrets.push(value);
+		}
+	}
+	return { values, secrets };
+}
+
+/**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
  * it says of its run: conformanceImage(), the image when --image names none, and conformanceNotes, strings for the report.
  */
@@ -218,9 +243,9 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 	const secretNames = Object.values(module.ENV ?? {}).filter((name) => typeof name === "string" && SECRET_NAME.test(name));
 	if (secretNames.length > 0) {
 		target.planted = async () => {
-			const secrets = secretNames.map(() => `agentrun-planted-${randomBytes(12).toString("hex")}`);
+			const { values, secrets } = plantSecrets(secretNames);
 			const given = (options as { env?: ProviderEnv }).env ?? process.env;
-			const env: ProviderEnv = { ...given, ...Object.fromEntries(secretNames.map((name, i) => [name, secrets[i] as string])) };
+			const env: ProviderEnv = { ...given, ...Object.fromEntries(secretNames.map((name, i) => [name, values[i] as string])) };
 			return { provider: (await createProvider({ ...options, env })) as ComputerProvider, secrets };
 		};
 	}

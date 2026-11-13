@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
-import { main } from "../dist/conformance/cli.js";
+import { main, plantSecrets } from "../dist/conformance/cli.js";
 import { fakeComputers } from "./fake-computer.mjs";
 
 const IMAGE = "debian:bookworm-slim";
@@ -1033,4 +1033,13 @@ test("refusal-side provider cases pass only on the refusal they test: check's wo
 	// The good fake still passes all three.
 	const good = await runConformance(fakeComputers().provider, { image: IMAGE, cases: byId("provider.check-refuses", "provider.create-release", "provider.attach") });
 	assert.deepEqual(statuses(good), { "provider.check-refuses": "pass", "provider.create-release": "pass", "provider.attach": "pass" }, JSON.stringify(reasons(good)));
+});
+
+test("planted secrets: a *_SSH_KEY name gets a PEM and its body line is the secret, any other secret name gets the planted string", () => {
+	const { values, secrets } = plantSecrets(["COMPUTER_AGENT37_SSH_KEY", "COMPUTER_VENDOR_API_KEY"]);
+	assert.match(values[0], /^-----BEGIN PRIVATE KEY-----\n[A-Za-z0-9+/=]{64}\n-----END PRIVATE KEY-----\n?$/);
+	assert.equal(secrets[0], values[0].split("\n")[1]);
+	assert.match(values[1], /^agentrun-planted-[0-9a-f]{24}$/);
+	assert.equal(secrets[1], values[1]);
+	assert.notEqual(plantSecrets(["X_SSH_KEY"]).secrets[0], secrets[0]);
 });
