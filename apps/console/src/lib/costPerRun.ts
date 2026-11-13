@@ -82,3 +82,24 @@ export function level(value: number): string {
   if (value < 0.0001) return "<$0.0001";
   return value >= 1 ? `$${value.toFixed(2)}` : `$${value.toPrecision(3)}`;
 }
+
+/** A block of consecutive runs in the execution mix: its first and last run numbers and how many took each path. */
+export type Block = { from: number; to: number; runs: number; counts: Record<RunPath, number> };
+
+/** The mix's block size: at least 5 runs, and about 20 blocks at most however many runs there are. */
+export const blockSizeOf = (count: number) => Math.max(5, Math.ceil(count / 20));
+
+/** The runs in blocks of `size`, in order (the last may be shorter): every run counts, its cost known or not. */
+export function blocksOf(runs: readonly CostRun[], size: number): Block[] {
+  const blocks: Block[] = [];
+  for (let i = 0; i < runs.length; i += size) {
+    const slice = runs.slice(i, i + size);
+    const counts = { agent: 0, handed_back: 0, workflow: 0 } as Record<RunPath, number>;
+    for (const r of slice) counts[r.path]++;
+    blocks.push({ from: slice[0]!.n, to: slice.at(-1)!.n, runs: slice.length, counts });
+  }
+  return blocks;
+}
+
+/** A share as a person reads it: a whole percent. */
+export const pct = (part: number, whole: number) => `${whole ? Math.round((part / whole) * 100) : 0}%`;

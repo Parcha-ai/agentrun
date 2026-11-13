@@ -2,7 +2,8 @@
 // on, its GET /v2/agents/{id}/learning/cost answered with the console's invented sample (src/components/CostPerRun.sample.json:
 // 80 runs of an invoice-sorter agent whose learned workflow takes over at run 21). The chart lays out inside its card at
 // each width (no label past the plot's right edge), names the takeover and how many times cheaper, and a hover shows a
-// run's readout. E2E_SHOTS=<dir> also saves each width and theme, before and during the hover.
+// run's readout. Under it, the execution mix fits the card and a hover on a block names its runs and counts. E2E_SHOTS=<dir>
+// also saves each width and theme, before and during the hover.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { check } from "../harness.mjs";
@@ -53,15 +54,26 @@ export default {
         for (const t of m.past) wrong.push(`${theme} ${width}px: "${t}" runs past the plot`);
         // A hover two thirds of the way along: a run after the takeover, by the learned workflow.
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}.png`) });
-        const plot = card.locator("svg[aria-hidden]").last();
+        const plot = card.locator('[tabindex="0"] > svg');
         await plot.scrollIntoViewIfNeeded();
         const box = await plot.boundingBox();
         await page.mouse.move(box.x + box.width * 0.66, box.y + box.height * 0.5);
-        const tip = card.locator(".shadow-float");
+        const tip = card.locator('[tabindex="0"] > .shadow-float');
         await tip.waitFor({ timeout: 5000 }).catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "failed.png"), fullPage: true }); throw e; });
         const said = await tip.textContent();
         check(/^Run \d+\$[\d.]+ all-in/.test(said ?? "") && /Learned revision [0-9a-f]{7}/.test(said ?? ""), `${theme} ${width}px: the hover says ${said}`);
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}-hover.png`) });
+        await page.mouse.move(0, 0);
+        // The execution mix: inside the card, and a block's hover names its runs and what each path took.
+        const mix = card.getByTestId("execution-mix");
+        const strip = mix.locator("svg");
+        const [mixBox, cardBox] = [await strip.boundingBox(), await card.boundingBox()];
+        if (mixBox.x + mixBox.width > cardBox.x + cardBox.width + 0.5) wrong.push(`${theme} ${width}px: the mix is past the card`);
+        await page.mouse.move(mixBox.x + mixBox.width * 0.3, mixBox.y + mixBox.height * 0.5);
+        const block = mix.locator(".shadow-float");
+        await block.waitFor({ timeout: 5000 });
+        const blockSaid = await block.textContent();
+        check(/^Runs \d+ to \d+(By the agent|Handed back|Learned workflow) \d+ \(\d+%\)/.test(blockSaid ?? ""), `${theme} ${width}px: the mix's hover says ${blockSaid}`);
         await page.mouse.move(0, 0);
       }
     }
