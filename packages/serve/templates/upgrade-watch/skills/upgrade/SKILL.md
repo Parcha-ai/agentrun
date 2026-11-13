@@ -169,6 +169,9 @@ slices, never whole pages, and count your fetches.
 6. **The verdict,** as `UPGRADE.md` defines each:
    - `incomplete` when `unread` is not empty or a version is `partial`: whatever else you found, you did not read
      everything, so you cannot say safe. Findings you did find are still reported.
+     About a version you did not read you say one thing: that it was not read, and why. Never what it may hold, how
+     likely it is to break something, or which of the owner's items it might touch: that is a guess, and a guess in
+     a report reads as a finding.
    - else `changes_needed` when there is at least one finding that is not a deprecation alone.
    - else `safe`: every version in between was read in full and nothing in its notes touches an item. Deprecations
      that touch an item are reported as findings and the verdict stays `safe`: nothing breaks yet.
