@@ -9,7 +9,8 @@ import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type NoteUsed, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
-import { learningStartOf, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
+import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
@@ -161,7 +162,8 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     const final = FINAL_STATES.includes(run.state);
     const started = await learningStartOfRun(store, run.id);
-    const end = await runLearningEnd(store, run.id);
+    // A run that only uses what its agent learned keeps no proposal: its end is its start's (usedOnly), as its run reads give it.
+    const end = (await runLearningEnd(store, run.id)) ?? (started?.use ? usedOnly(started, final, timeOf(run.endedAt ?? run.startedAt)) : null);
     const { read, laid } = await journalReadsOf(store, run, started);
     if (started || end) files.push(notesOf({ given: started?.given ?? [], read }));
     // The row learningImpact reads (the file path's RunRow): an ended run is a completed one.
@@ -172,7 +174,7 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
     } as unknown as RunRow);
     // What its claims laid of the skills and workflows it was offered (every learningLaid entry, laidOf): the run started
     // from those alone.
-    learnings.set(run.id, end ? impactLearningOf(end, started, laid) : null);
+    learnings.set(run.id, end ? impactLearningOf(end, started, laid, await roundsSpendOf(store, run.id)) : null);
   }
   return { counts, impact: learningImpact(rows, (row) => learnings.get(row.id) ?? null), notes: noteRuns(files) };
 }
@@ -274,16 +276,43 @@ export function laidOf(entries: readonly EntryLike[]): Laid {
   return { skills: [...skills], workflows: [...workflows] };
 }
 
+/** What every round of a run that a follow-up opened again spent (undefined for a run with one round): when its first
+ *  round's job answered and what the job cost to then, the look-backs of every round added up, and every round's grade. A
+ *  figure that is unknown in any round is unknown (null). */
+type RoundsSpend = { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null; grade_usd: number | null };
+export async function roundsSpendOf(store: Store, runId: string): Promise<RoundsSpend | undefined> {
+  const newest = await store.learning.proposal(runId);
+  if (!newest || newest.round < 2) return undefined;
+  let first: ReturnType<typeof answeredOf> | undefined;
+  let look: number | null = 0;
+  let grade: number | null = 0;
+  for (let round = 1; round <= newest.round; round++) {
+    const kept = round === newest.round ? newest : await store.learning.proposal(runId, round);
+    if (!kept) continue;
+    const answered = answeredOf((kept.proposal ?? {}) as KeptRow);
+    if (!first && answered.answered_at !== undefined) first = answered;
+    // A round that never looked back (no figures kept) added none.
+    look = look === null || answered.look_back_usd === null ? null : look + (answered.look_back_usd ?? 0);
+    const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
+    const spent = learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0;
+    grade = grade === null || spent === null ? null : grade + spent;
+  }
+  if (!first || typeof first.answered_at !== "string") return undefined;
+  return { answered_at: first.answered_at, job_cost_usd: first.job_cost_usd ?? null, look_back_usd: look, grade_usd: grade };
+}
+
 /** What a run's learning end tells its impact, as ofAgent's learningOf read a held run: how it ended and when, the notes
  *  it started from; when its job answered and its costs once it looked back (a look-back of 0 for an ended one that did
  *  not); its grade's cost once it ended (0 when nothing was graded). */
-function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined): ImpactLearning {
+function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined, rounds?: RoundsSpend): ImpactLearning {
   const over = end.state === "merged" || end.state === "dropped";
-  const looked = end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
+  // A run a follow-up opened again: its job answered at its first round's end, and every round's look-back and grade are
+  // its learning (the newest round's `job_cost_usd` also holds the earlier rounds' look-backs, never the job's own).
+  const looked = rounds ? { answered_at: rounds.answered_at, job_cost_usd: rounds.job_cost_usd, look_back_usd: rounds.look_back_usd } : end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   return {
     state: end.state, reason: end.reason, at: end.at, ...(started?.seedNotes !== undefined ? { seed_notes: started.seedNotes } : {}),
     ...(laid?.skills.length ? { seed_skills: laid.skills.length } : {}), ...(laid?.workflows.length ? { seed_workflows: laid.workflows.length } : {}), ...looked,
-    ...(over ? { grade_usd: end.cost_usd ? end.cost_usd.grade : 0 } : {}),
+    ...(over ? { grade_usd: rounds ? rounds.grade_usd : end.cost_usd ? end.cost_usd.grade : 0 } : {}),
   };
 }
 
@@ -431,17 +460,31 @@ async function learningStartOfRun(store: Store, runId: string): Promise<RunLaunc
   return launch ? learningStartOf(launch) : undefined;
 }
 
+/** The learning of a run that only uses what its agent learned (`learning: "use"`): seeded while it runs, as a run that
+ *  learns is; dropped `use` once it ended, since it is never asked what to keep. */
+export function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: boolean, at: string): RunLearningEnd {
+  // A start that could not be made (a folder unreadable or not copied) handed the run nothing: said so from its start, as
+  // the end hook says it for a run that learns, never "seeded" and then `use`. No proposal is written for it.
+  if (seedFailed(started)) {
+    const why = started.seedFailed === "unreadable" ? STOPPED.unreadable : started.seedFailed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
+    return { state: "dropped", reason: "seed_failed", detail: said.stopped(why), at };
+  }
+  return terminal ? { state: "dropped", reason: "use", detail: said.use, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0), at };
+}
+
 /** GET /runs/{id}/learning from the one store, in the shape the route gives (learning-routes.ts runLearningBody): the
  *  run's learning end (runLearningEnd), the notes it was given and the seed it started from as its launch records them,
  *  what it held for its owner's OK as it stands on its agent's folder's main (`statuses`, learning-routes.ts statusesOf,
  *  read only when it held something; none: as the merge wrote it), settled once the run is final. Null when the run kept
  *  no learning. */
 export async function runLearningOverStore(store: Store, runId: string, shown: Shown, secrets: readonly string[], statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>) {
-  const end = await runLearningEnd(store, runId);
-  if (!end) return null;
   const started = await learningStartOfRun(store, runId);
   const row = await store.runs.get(runId);
   const settled = row !== undefined && FINAL_STATES.includes(row.state);
+  // A run that only uses what its agent learned keeps no proposal: its learning is its start (seeded, then dropped `use`
+  // once it ended), the same words its run view gives.
+  const end = (await runLearningEnd(store, runId)) ?? (started?.use && row ? usedOnly(started, settled, timeOf(row.endedAt ?? row.startedAt)) : null);
+  if (!end) return null;
   const used = started?.given.length || started?.skills?.length || started?.workflows?.length;
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
   const read = started?.given.length ? notesReadOf(started.given, reflect, rows) : [];
