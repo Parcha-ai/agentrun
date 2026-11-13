@@ -58,6 +58,10 @@ export type GeneralScores = { readonly scores: Readonly<Record<string, number>>;
 /** What a learning run's end says when the check could not run (its provider's error stays in the run's journal and the
  *  runner's log, never here). */
 export const GENERAL_UNCHECKED = "The generality check could not run, so the grader read every note.";
+/** Why a check was skipped when its learning run's cap had no room for its worst case (learning-loop.ts GeneralOverCap):
+ *  kept as its `unchecked`, and what a run's learning end says for it. */
+export const GENERAL_NO_BUDGET = "no_budget";
+export const GENERAL_NO_ROOM = "The generality check had no room under the cap, so the grader read every note.";
 
 /** Asks `jev` the question of each note, one request a note, all at once. Throws when any request fails or answers out of
  *  shape, whatever the others answered: the caller grades every note as it would without the check, never drops one on an

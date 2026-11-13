@@ -34,7 +34,7 @@ test("a cloud Android with phoned passes the phone kind, the ui fixture's Full c
 	assert.ok(report.coreNotRun.every((id) => /^(exec|files|process)\./.test(id) || ["provider.deadline", "drift.arch", "isolation.vendor-agent", "input.click-lands", "input.actions-stops-at-first-failure", "apps.install-launch"].includes(id)), report.coreNotRun.join(" "));
 	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
 	const got = statuses(report);
-	const ui = ["ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused"];
+	const ui = ["ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused", "ui.set-holds"];
 	for (const id of ["health.hello", "health.kind-consistent", "provider.create-release", "provider.list", "drift.version", "screen.screenshot-size", "touch.tap", "touch.swipe", "input.type-text", "input.key-table-refuses-unknown", "apps.launch-terminate", "ui.observe-shape", "ui.hello", ...ui]) {
 		assert.equal(got[id], "pass", `${id}: ${reasonOf(report, id)}\n${formatReport(report)}`);
 	}

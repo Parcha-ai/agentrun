@@ -260,7 +260,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			if let frame, !frame.overlaps(bounds) { flags.insert(.offscreen) }
 			let title = AX.string(v[2])
 			let description = AX.string(v[3])
-			var name = title ?? description
+			var name = Roles.name(title: title, description: description, subrole: subrole)
 			if role == "text", name == nil {
 				name = value
 				value = nil

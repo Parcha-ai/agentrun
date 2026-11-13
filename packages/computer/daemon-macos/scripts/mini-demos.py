@@ -33,10 +33,18 @@ grants they need are Computerd's (--ask-grants). Teardown runs whatever happens 
 Ctrl-C, SIGTERM): it closes the windows and tabs on the task's files, deletes what the task made, then the sandbox.
 A failed teardown fails the task.
 
+An app that was not running before the run is the run's: it is started for the grants and the sweep and quit after
+them, and its task starts it again and quits it at the end of its teardown, after the snapshot, so its window never
+sits in front of a later task's. Its windows are not compared, since they go with it, and an app that did not quit
+counts as left. An app that was running before the run, a
+person's, is left as it is. Calendar and Notes are asked about (snapshot, teardown) only while they run, since asking
+would start them.
+
 Before each task the harness takes a snapshot of what it can see: every calendar with its count of today's events,
 every Notes folder with its count of notes, the onscreen windows of the five apps by id, and the sandbox root. Only
-names, counts and ids: never an event's, note's or file's contents. After the teardown it takes it again, and any
-difference is the task's "left". The run's last line is "N/5 pass, K left behind"; the exit code is 1 unless every
+names, counts and ids: never an event's, note's or file's contents; the calendars and folders only while Calendar and
+Notes run. After the teardown it takes it again, and any difference is the task's "left", Calendar or Notes started or
+quit during the task among them. The run's last line is "N/5 pass, K left behind"; the exit code is 1 unless every
 task passed and left nothing. A run starts by sweeping the sandboxes an earlier run left (one killed mid-task).
 
 Observations are written with every name and value redacted to its length, unless it holds the run id or is one the
@@ -347,8 +355,11 @@ end run"""
 FOLDER_NAMES = """tell application "Notes" to return name of every folder"""
 
 # The calendars, every event in them with them; then any event anywhere titled exactly as a task titles its event (one
-# made in the default calendar and not yet moved into the sandbox when the task failed or was killed).
+# made in the default calendar and not yet moved into the sandbox when the task failed or was killed). Only while
+# Calendar runs: a tell would start it, and its window would sit in front of the next task's. The sweep runs while it
+# does, so a sandbox a quit Calendar still holds goes then.
 REMOVE_CALENDARS = """on run argv
+  if application "Calendar" is not running then return ""
   set prefix to item 1 of argv
   set titles to rest of argv
   tell application "Calendar"
@@ -379,8 +390,10 @@ MAKE_FOLDER = """on run argv
 end run"""
 
 # Every note in the sandbox folders, then the folders, then those notes again from Recently Deleted, where a deleted
-# note waits 30 days: only notes whose title starts with the prefix, which only a task writes.
+# note waits 30 days: only notes whose title starts with the prefix, which only a task writes. Only while Notes runs, as
+# with Calendar.
 REMOVE_FOLDERS = """on run argv
+  if application "Notes" is not running then return ""
   set prefix to item 1 of argv
   tell application "Notes"
     set n to 0
@@ -476,13 +489,18 @@ end run"""
 
 
 def snapshot(c):
-    """What the harness can see: names, counts and ids."""
+    """What the harness can see: names, counts and ids. Calendar's calendars and Notes' folders only while the app runs
+    (None when it does not): asking would start it."""
     shot = {"calendars": {}, "folders": {}, "windows": {}, "root": []}
-    for group, script, app in (("calendars", SNAPSHOT_CALENDARS, "Calendar"), ("folders", SNAPSHOT_FOLDERS, "Notes")):
+    up = running()
+    for group, script, app in (("calendars", SNAPSHOT_CALENDARS, "com.apple.iCal"), ("folders", SNAPSHOT_FOLDERS, "com.apple.Notes")):
+        if app not in up:
+            shot[group] = None
+            continue
         try:
             lines = osa(c, script).splitlines()
         except Failed as e:
-            raise Failed(f"the snapshot of {app}: {e}")
+            raise Failed(f"the snapshot of {APPS[app]}: {e}")
         for line in lines:
             name, count = (line.split("\t") + [""])[:2]
             fill(shot[group], name, count)
@@ -499,10 +517,18 @@ def fill(group, name, count):
     group[key] = int(count or 0)
 
 
-def differences(before, after):
-    """Every way after is not before, in words."""
+def differences(before, after, quitting=None):
+    """Every way after is not before, in words. quitting: an app the run started, quit right after this: its windows go
+    with it (and one that does not quit counts on its own), so none of them is left. What an app opens on launch is
+    not the same each time (TextEdit's Open panel on CI, or nothing)."""
     left = []
-    for group, what, unit in (("calendars", "calendar", "events today"), ("folders", "Notes folder", "notes")):
+    for group, what, unit, app in (("calendars", "calendar", "events today", "Calendar"), ("folders", "Notes folder", "notes", "Notes")):
+        if before[group] is None or after[group] is None:
+            if before[group] is not None:
+                left.append(f"{app} quit during the task")
+            elif after[group] is not None:
+                left.append(f"{app} was started during the task")
+            continue
         for name in sorted(set(before[group]) | set(after[group])):
             was, now = before[group].get(name), after[group].get(name)
             if was is None:
@@ -511,20 +537,20 @@ def differences(before, after):
                 left.append(f"{what} {name!r} is gone")
             elif now != was:
                 left.append(f"{what} {name!r}: {now} {unit}, was {was}")
-    for app in sorted(set(before["windows"]) | set(after["windows"])):
-        new = sorted(set(after["windows"].get(app, [])) - set(before["windows"].get(app, [])))
+    for app in sorted((set(before["windows"]) | set(after["windows"])) - {quitting}):
+        new =sorted(set(after["windows"].get(app, [])) - set(before["windows"].get(app, [])))
         gone = sorted(set(before["windows"].get(app, [])) - set(after["windows"].get(app, [])))
         left += [f"{APPS[app]} window {w}" for w in new] + [f"{APPS[app]} window {w} is gone" for w in gone]
     left += [f"{ROOT}/{name}" for name in after["root"] if name not in before["root"]]
     return left
 
 
-def settle(c, before, seconds=15):
+def settle(c, before, quitting=None, seconds=15):
     """The snapshot again, asked until it matches the one before or the time is up: a store takes a moment to save."""
     deadline = time.monotonic() + seconds
     while True:
         after = snapshot(c)
-        left = differences(before, after)
+        left = differences(before, after, quitting)
         if not left or time.monotonic() > deadline:
             return left
         time.sleep(1)
@@ -533,18 +559,19 @@ def settle(c, before, seconds=15):
 def sweep(c):
     """The sandboxes an earlier run left (killed mid-task, or a teardown that failed): removed before anything else."""
     shot = snapshot(c)
-    earlier = [n for n in shot["calendars"] if n.startswith(PREFIX)] + [n for n in shot["folders"] if n.startswith(PREFIX)] + [f"{ROOT}/{n}" for n in shot["root"]]
+    calendars, folders = shot["calendars"] or {}, shot["folders"] or {}
+    earlier = [n for n in calendars if n.startswith(PREFIX)] + [n for n in folders if n.startswith(PREFIX)] + [f"{ROOT}/{n}" for n in shot["root"]]
     for name in earlier:
         print(f"  sweep: {name}", flush=True)
     # A killed calendar task's event may still be in the default calendar: its title is known from the run id in the
     # name of the calendar the task made first.
-    runs = sorted({n[len(PREFIX):len(PREFIX) + 6] for n in shot["calendars"] if n.startswith(PREFIX)})
+    runs = sorted({n[len(PREFIX):len(PREFIX) + 6] for n in calendars if n.startswith(PREFIX)})
     osa(c, CLOSE_WINDOWS, ROOT, PREFIX)
     osa(c, REMOVE_CALENDARS, PREFIX, *[event_title(r) for r in runs])
     osa(c, REMOVE_FOLDERS, PREFIX)
     shutil.rmtree(ROOT, ignore_errors=True)
     shot = snapshot(c)
-    still = [n for n in shot["calendars"] if n.startswith(PREFIX)] + [n for n in shot["folders"] if n.startswith(PREFIX)] + shot["root"]
+    still = [n for n in shot["calendars"] or {} if n.startswith(PREFIX)] + [n for n in shot["folders"] or {} if n.startswith(PREFIX)] + shot["root"]
     if still:
         raise Failed(f"the sweep left an earlier run's sandbox: {still}")
     print(f"earlier runs' sandboxes: {len(earlier)} swept, none left", flush=True)
@@ -1149,6 +1176,30 @@ def teardown(t):
     return failed
 
 
+def quit_apps(apps, seconds=15):
+    """Apps the run started, quit by the driver (an Apple event to quit would itself need the grant), on a connection of
+    their own, and waited for: the ones still running after that, by name."""
+    if not apps:
+        return []
+    c = Client()
+    try:
+        for app in apps:
+            try:
+                refused = c.call("apps.terminate", {"id": app}).get("error")
+            except Exception as e:
+                refused = e
+            if refused:
+                print(f"  (could not quit {APPS[app]}, which the run started: {refused})", flush=True)
+    finally:
+        c.close()
+    deadline = time.monotonic() + seconds
+    while True:
+        still = [app for app in apps if app in running()]
+        if not still or time.monotonic() > deadline:
+            return [APPS[app] for app in still]
+        time.sleep(0.5)
+
+
 def encode(timeline, path):
     """The movie, by frames-to-movie.swift (AVFoundation, so nothing to install beyond Xcode)."""
     try:
@@ -1217,7 +1268,9 @@ def main():
     hello = c.call("hello", {"client": "mini-demos"}).get("result") or {}
     print(f"Computerd on {hello.get('device', {}).get('model')}, macOS {hello.get('osVersion')}, features {json.dumps(hello.get('features'))}", flush=True)
     print(f"run {RUN}: sandboxes named {NAME!r}", flush=True)
-    # Each app is asked about only while it runs: one the run starts, it quits again at the end.
+    # The apps not running before the run are the run's own: started for the grants and the sweep, quit after it, started
+    # again by their own task and quit at the end of its teardown, so no window of theirs sits in front of a later task.
+    # An app that was running before the run (a person's) is left as it is.
     started = [app for app in APPS if app not in running()]
     report = []
     interrupted = None
@@ -1242,6 +1295,9 @@ def main():
             shutil.rmtree(out)
         os.makedirs(out)
         sweep(c)
+        still = quit_apps(started)
+        if still:
+            raise Failed(f"{', '.join(still)}, which the run started, did not quit after the sweep")
         if movie:
             cropper = Cropper()
         for tid, app, prepare, drive in TASKS:
@@ -1281,15 +1337,27 @@ def main():
                         if failed:
                             error = "; ".join(([error] if error else []) + [f"teardown: {f}" for f in failed])
                         try:
-                            left = settle(c, before)
+                            left = settle(c, before, app if app in started else None)
                         except Exception as e:
                             left = [f"no snapshot after the task: {e}"]
+                        # After the snapshot, which was taken with the app as it was in the one before.
+                        if app in started:
+                            t.say(f"teardown: quit {APPS[app]}, which the run started")
+                            try:
+                                left += [f"{name}, which the run started, did not quit" for name in quit_apps([app])]
+                            except Exception as e:
+                                left.append(f"could not quit {APPS[app]}: {e}")
                     finally:
                         shield["on"] = False
                     if shield["asked"]:
                         interrupted = KeyboardInterrupt(shield["asked"])
                         error = error or f"stopped by {shield['asked']}"
-            took = round((time.monotonic() - t.t0) * 1000)
+            elif app in started:  # the setup failed, so there is no snapshot to compare, but the app still quits
+                try:
+                    left += [f"{name}, which the run started, did not quit" for name in quit_apps([app])]
+                except Exception as e:
+                    left.append(f"could not quit {APPS[app]}: {e}")
+            took =round((time.monotonic() - t.t0) * 1000)
             if t.rec:
                 t.say("passed" if error is None else "failed")
                 time.sleep(1)
@@ -1319,14 +1387,13 @@ def main():
             if interrupted:
                 break
     finally:
-        # The apps the run started quit again, by the driver (an Apple event to quit would itself need the grant).
-        for app in started:
-            try:
-                refused = c.call("apps.terminate", {"id": app}).get("error")
-            except Exception as e:
-                refused = e
-            if refused:
-                print(f"  (could not quit {APPS[app]}, which the run started: {refused})")
+        # Any app the run started that still runs (a run stopped before its task's teardown) quits too.
+        try:
+            still = quit_apps([app for app in started if app in running()])
+            if still:
+                print(f"  ({', '.join(still)}, which the run started, did not quit)", flush=True)
+        except Exception as e:
+            print(f"  (could not quit the apps the run started: {e})", flush=True)
         if cropper:
             cropper.close()
         c.close()

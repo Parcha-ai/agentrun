@@ -48,7 +48,7 @@ import { answerPage, byOwnerSession, ConsoleSessions, heldSessions, isJson, over
 import { hostFix, hostName, loopbackNames } from "./host-check.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
-import { type ComputerOf, computerView } from "./computer-view.js";
+import { type ComputerOf, computerView, type JournalEntry, sessionIn } from "./computer-view.js";
 import { liveReachOf } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
@@ -124,7 +124,8 @@ import { permissionFrom } from "./tool-gate.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { applyBodyOf, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, type Package, packageModel, packageTiers, packageView, pickComputer, readPackages, type ShellHere, type TemplatesDeps } from "./templates.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
@@ -2920,8 +2921,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const run = await needRun(id);
         const family: LiveFamily = found.name === "getRunBrowser" ? "browser" : "computer";
         // The run's open viewer, from the store's sealed viewer rows the runner publishes its hand-over into (browser-live.ts
-        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store.
-        const hold = await computerHoldOf(store, run.id);
+        // liveViewerLink/computerViewerLink, under the seal key); who drives, from the cut's computerHoldOf over the store,
+        // and where a computer with no viewer is (sessionIn), both over one read of the run's journal.
+        const entries = (await runEntries(store, run.id, ctx)) as unknown as readonly JournalEntry[];
+        const hold = await computerHoldOf(store, run.id, { entries: async () => entries });
         const kept = await keptBrowserOf(store, run.id);
         // A desktop or a phone (the run's revision's computer) whose screen is not open now is still the run's computer:
         // none with its kind, never off as if the agent had none (#2170).
@@ -2935,6 +2938,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             return computerViewerLink(store, sealKey, run.id, answers);
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family)),
+          session: (kind) => sessionIn(kind, entries),
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.
@@ -3242,9 +3246,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const issues = settingsIssues(body);
         if (issues.length) throw invalid(issues);
+        const before = settings.get();
         await settings.put(body as ToolSettingsMap);
         // A setting changes what the web tools resolve to, never env or what a harness offers: capabilities again.
         recompose();
+        // A run parked on a call whose tool reads allow now, on its pinned revision: woken, so its next claim's gate answers
+        // the ask by the setting (settings-wake.ts), before this answer. The settings as the runner's gate reads them.
+        const woken = await wakeAnsweredBySetting(store, await loadToolSettings(store), before);
+        if (woken.length) log?.(logLine("tool_settings", { condition: "runs_woken", runs: woken.join(",") }));
         return send(res, 200, withDefaults(settings.get()));
       }
       // A person's view and control of what an agent learned (learning-routes.ts). Every text cut of the host's secrets as
