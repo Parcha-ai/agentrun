@@ -213,6 +213,21 @@ test("an omitted end tag ends the hidden element where a browser does: a p or li
   for (const gone of ["Gone unused", "Gone item", "Gone trailing", "Gone inner", "Gone outer item", "Gone before block"]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
 });
 
+test("a semicolon inside a quoted string, a url(...) or a comment does not end a declaration: a fake display:none in a value hides nothing, a real one still does", async () => {
+  const text = await textOf(page(`
+    <p style='content:"a;display:none;"'>Seen double quoted.</p>
+    <p style="content:'a;display:none;'">Seen single quoted.</p>
+    <p style='content:"a\\";display:none;"'>Seen escaped quote.</p>
+    <p style="background:url(x;display:none;)">Seen url.</p>
+    <p style="color:red /* ; display:none; */">Seen comment.</p>
+    <p class="fake">Seen class.</p>
+    <p style='content:"a;b"; display:none'>Gone after quoted.</p>
+    <p style="/* x */ display:none">Gone after comment.</p>
+    <p class="real">Gone class.</p>`, `<style>.fake { content: "a;display:none;" } .real { content: "x;y"; display: none }</style>`));
+  for (const seen of ["Seen double quoted.", "Seen single quoted.", "Seen escaped quote.", "Seen url.", "Seen comment.", "Seen class."]) assert.ok(text.includes(seen), `${seen} in: ${text}`);
+  for (const gone of ["Gone after quoted.", "Gone after comment.", "Gone class."]) assert.ok(!text.includes(gone), `${gone} in: ${text}`);
+});
+
 test("20,000 visibility-hidden elements of different names closed oldest first are dropped in one linear pass, well under a second, in a child so a stalled loop cannot stall this runner", async () => {
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     const { dropHidden } = await import(${JSON.stringify(new URL("../dist/core/page-scan.js", import.meta.url).href)});

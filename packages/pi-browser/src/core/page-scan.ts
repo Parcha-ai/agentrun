@@ -219,11 +219,47 @@ function after(prior: Declared | undefined, next: Declared): Declared {
   return next;
 }
 
+/** `text` split at the semicolons that end a declaration: one inside a quoted string (either quote, backslash escapes), a
+ *  parenthesis (url(...)) or a comment does not end it, and a comment's text is dropped. */
+function splitDeclarations(text: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && i + 1 < text.length) current += text[++i];
+      else if (ch === quote) quote = null;
+    } else if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? text.length : end + 1;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === "\\" && i + 1 < text.length) {
+      current += ch + text[++i];
+    } else if (ch === "(") {
+      depth++;
+      current += ch;
+    } else if (ch === ")") {
+      if (depth > 0) depth--;
+      current += ch;
+    } else if (ch === ";" && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
 /** What a declaration list (a style attribute's value, a rule's block) declares of display and visibility, each
  *  property's declarations taken in order (after). One pass over `text`. */
 function declarationsOf(text: string): Declarations {
   const declared: Declarations = {};
-  for (const part of text.split(";")) {
+  for (const part of splitDeclarations(text)) {
     const colon = part.indexOf(":");
     if (colon < 0) continue;
     const property = part.slice(0, colon).trim().toLowerCase();
