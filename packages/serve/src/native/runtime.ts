@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { NATIVE_RUNTIME_FACTS } from "./runtimes.js";
 import { nativeExecutable, nativeMetadata } from "./discovery.js";
 import type { NativeBinding, NativeEvent, NativeResult, NativeSendOptions, NativeSession, NativeTarget, NativeUsage } from "./types.js";
@@ -84,6 +85,7 @@ export async function openNativeSession(options: {
       const input = !claude && options.context && !sessionId ? `<agentrun_context>\n${options.context}\n</agentrun_context>\n\n${prompt}` : prompt;
         return await new Promise<NativeResult>((resolveResult,reject) => {
           let buffer = "", bytes = 0, answer = "", usage = unknownUsage(), model: string | undefined, completed = false, stopped = false, terminalReceived = false, protocolError: Error | undefined;
+          const decoder = new StringDecoder("utf8");
           const denials: string[] = [], toolNames = new Map<string,string>();
           const seenEvents = new Set<string>();
           let eventQueue = Promise.resolve();
@@ -146,7 +148,7 @@ export async function openNativeSession(options: {
           };
           child.stdout.on("data",(chunk: Buffer)=>{
             if(stopped)return;bytes+=chunk.length;if(bytes>16_777_216){stop(new NativeRuntimeError("Native output exceeded the transport limit; inspect the native session.","protocol",sessionId));return;}
-            buffer+=chunk.toString();let index;while((index=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,index);buffer=buffer.slice(index+1);try{onLine(line);}catch(error){stop(error instanceof Error?error:new Error("Native event failed."));return;}}
+            buffer+=decoder.write(chunk);let index;while((index=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,index);buffer=buffer.slice(index+1);try{onLine(line);}catch(error){stop(error instanceof Error?error:new Error("Native event failed."));return;}}
           });
           // Drain diagnostic output without storing credentials or unbounded stderr in the run record.
           child.stderr.on("data",()=>{});
@@ -154,6 +156,7 @@ export async function openNativeSession(options: {
           child.once("error",()=>stop(new NativeRuntimeError("The native CLI could not start. Verify its executable and original project directory.","unavailable",sessionId)));
           child.once("close",(code)=>{
             if(stopped)return;
+            buffer+=decoder.end();
             if(buffer.trim()){try{onLine(buffer);}catch(error){stop(error instanceof Error?error:new Error("Native event failed."));return;}}
             eventQueue.then(()=>{
               if(stopped)return;
