@@ -2457,7 +2457,7 @@ them from the environment.
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither | the org's default |
 | `kind` | `linux` or `desktop` | `linux` |
-| `namePrefix` | what every machine's name starts with, before 12 hex digits | `computer-` |
+| `namePrefix` | what every machine's name starts with, before the 12 hex digits of its request | `computer-` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
 | `deleteTimer` | a backstop: boxd deletes every machine 5 minutes past create's time plus `maxLifetimeMs`, whatever the host does, written in the same call that makes it | `false` |
 | `onCleanupFailed` | a function, for a host that builds the provider in code: called with `{ name, id?, message }` when a machine that landed after create gave up on it could not be deleted | none |
@@ -2469,7 +2469,8 @@ them from the environment.
 boxd's own agent runs every command in a machine, as the image's user (`boxd`, uid 1000, with passwordless sudo), so
 computerd is a `child`, as on Daytona and E2B:
 
-1. `machines.create` with the name `<namePrefix><12 hex digits>`, `isolated: true` (the machine joins none of the
+1. `machines.create` with the name `<namePrefix><the first 12 hex digits of the request id's sha256>` (with the
+   default prefix, `computerNameFor`'s name), `isolated: true` (the machine joins none of the
    org's networks, no other machine reaches it, and it holds no in-machine credential), the run's labels with the
    provider's own beside them (`agentrun.computer=1`, its name, the deadline, the image and the most extend may reach),
    `config.autoSuspendTimeout: 0` and, with `vcpu`, the size. `image: "default"` is boxd's own image; any other image
@@ -2526,6 +2527,16 @@ on neither loopback.
   when the provider names a size), a lifetime past the cap, a network that is not none, a label in the provider's
   namespace or a name boxd does not take (1 to 63 of `a-z0-9._/-`, not `boxd/`), `cpus`, `memoryMb` or `pids` (the size is
   the provider's), `user`, `workdir`, `mount` and any other field.
+- `create(spec, { requestId })` makes one computer per request
+  ([`spec/computer/provider.md`](../../spec/computer/provider.md#idempotent-create)), through `CreateRequests` as every
+  provider does. The request names the machine, and boxd keeps a name to one machine, so the name is what a retry
+  finds. create lists the name first: a machine that runs is returned once its labels are the spec's and its daemon
+  reads back as `attach` reads it, and one the first create is still making is read again within `createMs`; one with
+  other labels, one that sleeps or failed, and one past its deadline are refused as `exists`. A create boxd refuses
+  because the name was taken since the listing (another provider's create of the same request) answers the machine
+  that holds it, and deletes nothing. A second create of a request still in flight in the same provider shares the
+  first's answer. A request whose computer this provider released, gave up on or deleted is refused as `exists` from
+  memory (the last 4096); past the process, what boxd lists under the name is what holds.
 - `create` holds the machine `machines.get` reads back to what it asked for: every label, the name, the snapshot it was
   restored from, no other `agentrun.*` label (a restore merges its snapshot's labels), the egress allowlist `["none"]`,
   `isolated`, no standby, no hibernation, no auto-destroy, the delete timer (none, or with `deleteTimer` the backstop),

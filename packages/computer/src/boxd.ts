@@ -11,6 +11,7 @@ import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { childCommands, type DaemonExpected, daemonDrift, shellCommand } from "./hosted/scripts.js";
 import { DaemonClient } from "./client.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
 import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "./desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, WORK } from "./drift.js";
@@ -31,6 +32,7 @@ import {
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
+	computerNameFor,
 	type NetworkPolicy,
 	type NetworkSpec,
 	type Refusal,
@@ -238,9 +240,11 @@ export async function create(options: BoxdOptions): Promise<BoxdProvider> {
 export const conformance = () => import("./conformance/boxd.js");
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-/** A machine's name: the provider's prefix, then 12 hex digits. */
+/** A machine's name: the provider's prefix, then the 12 hex digits of its request's name (computerNameFor). */
 const NAME_PREFIX = /^[a-z][a-z0-9-]{0,40}-$/;
 const DEFAULT_NAME_PREFIX = "computer-";
+/** What computerNameFor puts before a request's 12 hex digits. */
+const REQUEST_NAME_PREFIX = "computer-";
 const namePattern = (prefix: string) => new RegExp(`^${prefix}[0-9a-f]{12}$`);
 const MACHINE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 /** "default", boxd's own image, or a snapshot's name. */
@@ -508,6 +512,8 @@ export class BoxdProvider implements ComputerProvider {
 	readonly #gid: string;
 	readonly #timeouts: BoxdTimeouts;
 	readonly #probeTargets: string[];
+	/** Idempotent create's in-process half: the creates in flight and the requests whose computers this provider ended. */
+	readonly #requests = new CreateRequests();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
 
@@ -637,10 +643,50 @@ export class BoxdProvider implements ComputerProvider {
 		return refusals;
 	}
 
+	/**
+	 * Makes a computer, once per request: context.requestId names the machine (the provider's prefix, then the 12 hex
+	 * digits of computerNameFor), and boxd keeps a name to one machine. A create of a request whose machine boxd already
+	 * holds answers that computer instead of making another (#again): one still starting is waited for, one up is
+	 * returned once its labels and daemon read back as attach reads them, and one that ended, or that this provider gave
+	 * up on or deleted, is refused as exists, in words. A second create of a request still in flight here waits for the
+	 * first and answers what it does (CreateRequests).
+	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const signal = context?.signal;
-		const launched = await this.#launch(spec, signal);
-		if (!launched.ok) return launched;
+		const refusals = this.check(spec);
+		// CreateRequests speaks of the request's name under the default prefix: its words name the machine as it is.
+		const requested = typeof context?.requestId === "string" ? computerNameFor(context.requestId) : undefined;
+		const named = (message: string) => (requested === undefined ? message : message.replaceAll(requested, this.#machineName(requested)));
+		return this.#requests.create(spec, context, {
+			refuse: (code, message) => fail(code, named(message)),
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			make: (name) => this.#createOnce(spec, this.#machineName(name), context.signal),
+		});
+	}
+
+	/** The machine's name for a request's name: the provider's prefix in place of computerNameFor's. */
+	#machineName(requested: string): string {
+		return `${this.#prefix}${requested.slice(REQUEST_NAME_PREFIX.length)}`;
+	}
+
+	/** A request's computer given up on or deleted, by its machine's name: its request is refused from now on. */
+	#end(name: string): void {
+		this.#requests.end(`${REQUEST_NAME_PREFIX}${name.slice(this.#prefix.length)}`);
+	}
+
+	/** The create of one request, alone in this provider: the machine boxd holds under its name answered, or one made. */
+	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
+		const held = await this.#named(name, signal);
+		if (!held.ok) return held;
+		if (held.value !== undefined) return this.#again(spec, name, held.value, signal);
+		const launched = await this.#launch(spec, name, signal);
+		if (!launched.ok) {
+			if (!launched.taken) return launched;
+			// boxd holds the name: another create of this request made the machine since the listing. Answer that one.
+			const taken = await this.#named(name, signal, this.#timeouts.listedMs);
+			if (!taken.ok) return taken;
+			if (taken.value === undefined) return fail("exists", `boxd holds the name ${name} for a machine this provider does not list as this request's computer (${launched.error.message}): create with a new request id`);
+			return this.#again(spec, name, taken.value, signal);
+		}
 		const { ref, made } = launched.value;
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		const prepared = await this.#prepare(spec, ref, made, signal);
@@ -649,10 +695,71 @@ export class BoxdProvider implements ComputerProvider {
 		return this.#abandon(ref, prepared.error, signal);
 	}
 
-	/** Everything create does up to boxd's answer: the spec checked, the daemon read, the machine made, by its options. */
-	async #launch(spec: ComputerSpec, signal?: AbortSignal): Promise<Result<{ ref: ComputerRef; made: Made }>> {
-		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+	/**
+	 * The one machine of this provider that boxd lists under a request's name, or undefined when none is. With waitMs
+	 * the listing is read again until one shows or waitMs passes. More than one is refused as exists.
+	 */
+	async #named(name: string, signal?: AbortSignal, waitMs = 0): Promise<Result<BoxdMachine | undefined>> {
+		const until = Date.now() + waitMs;
+		for (;;) {
+			const listed = await this.#list({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name }, signal);
+			if (!listed.ok) return listed;
+			const found = listed.value.filter((machine) => ours(this.#name, machine, name) && !GOING.has(machine.status));
+			if (found.length > 1) return fail("exists", `${found.length} machines carry the name ${name} (${found.map((machine) => machine.id).join(", ")}): create with a new request id`);
+			if (found.length === 1 || Date.now() >= until) return ok(found[0]);
+			await pause(Math.min(this.#timeouts.pollMs * 2, RELEASE_POLL_MAX_MS), signal);
+			if (signal?.aborted) return fail("aborted", "create was aborted");
+		}
+	}
+
+	/**
+	 * A create of a request whose machine boxd already holds: the same create, the computer as it is. One that is not
+	 * running, or past its deadline, has ended: exists. One whose labels are not the spec's is another spec's: exists.
+	 * One running is attached, and answered once its daemon reads back as attach holds it; until then the create that
+	 * made it may still be making it, so it is read again within createMs. A refusal that holds past that is exists.
+	 */
+	async #again(spec: ComputerSpec, name: string, first: BoxdMachine, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
+		const { createMs, pollMs } = this.#timeouts;
+		const until = Date.now() + createMs;
+		const poll = Math.min(pollMs * 2, RELEASE_POLL_MAX_MS);
+		let machine = first;
+		let last: { code: ComputerErrorCode; message: string } | undefined;
+		for (;;) {
+			if (!RUNNING.has(machine.status)) return fail("exists", endedWords(name));
+			const deadline = isoOf(machine.labels[DEADLINE_LABEL]);
+			if (deadline !== undefined && deadline.getTime() <= Date.now()) return fail("exists", endedWords(name));
+			const own = Object.entries(machine.labels).filter(([key]) => key === IMAGE_LABEL || (key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`)));
+			const differ = labelsDiffer({ ...spec.labels, [IMAGE_LABEL]: spec.image }, Object.fromEntries(own), "read back");
+			if (differ.length > 0) return fail("exists", otherSpecWords(name, "was made", differ));
+			if (machine.status !== "pending" && machine.status !== "starting") {
+				const attached = await this.#attached(machine, signal);
+				if (attached.ok) {
+					if (attached.value.spec.network !== spec.network) {
+						return fail("exists", otherSpecWords(name, "was made", [`network: asked ${show(spec.network)}, read back ${show(attached.value.spec.network)}`]));
+					}
+					return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
+				}
+				if (attached.error.code === "aborted") return attached;
+				last = attached.error;
+			}
+			if (Date.now() + poll >= until) {
+				if (last?.code === "refused") return fail("exists", `${name} was made for this request, and after ${seconds(createMs)} still ${last.message}`);
+				return fail("timeout", `${name}, made for this request, was not up within ${seconds(createMs)}${last ? `: ${last.message}` : ""}`);
+			}
+			await pause(poll, signal);
+			if (signal?.aborted) return fail("aborted", `create was aborted while ${name}, made for this request, came up`);
+			const read = await this.#get(first.id, signal);
+			if (!read.ok && read.error.code !== "not_found") return read;
+			if (!read.ok || !ours(this.#name, read.value, name) || !this.#inOrg(read.value)) return fail("exists", endedWords(name));
+			machine = read.value;
+		}
+	}
+
+	/**
+	 * Everything create does up to boxd's answer: the daemon read, the machine made, by its request's name and the
+	 * provider's options. taken marks a create boxd refused because a machine holds the name.
+	 */
+	async #launch(spec: ComputerSpec, name: string, signal?: AbortSignal): Promise<Result<{ ref: ComputerRef; made: Made }> & { taken?: true }> {
 		let daemon: Buffer;
 		try {
 			daemon = readFileSync(this.#daemonPath);
@@ -661,7 +768,6 @@ export class BoxdProvider implements ComputerProvider {
 		}
 		const sha256 = createHash("sha256").update(daemon).digest("hex");
 		if (signal?.aborted) return fail("aborted", "create was aborted before boxd was called");
-		const name = `${this.#prefix}${randomBytes(6).toString("hex")}`;
 		const now = Date.now();
 		const deadline = new Date(now + runLifetimeMs(spec)).toISOString();
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
@@ -694,24 +800,33 @@ export class BoxdProvider implements ComputerProvider {
 			return fail(codeOf(error), `machines.create failed: ${words(error)}`);
 		}
 		let answered = false;
+		let taken = false;
 		creating.then(
 			() => (answered = true),
-			() => (answered = true),
+			(error: unknown) => {
+				answered = true;
+				taken = (error as { name?: unknown } | null)?.name === "ConflictError";
+			},
 		);
 		const created = await race(creating, "machines.create", createMs + CALL_SLACK_MS, signal);
 		// Let a rejection that settled the race mark itself answered first.
 		await Promise.resolve();
 		if (!created.ok) {
 			if (!answered && (created.error.code === "aborted" || created.error.code === "timeout")) {
+				this.#end(name);
 				void this.#cleanLate(creating, name);
 				return fail(created.error.code, `${created.error.message}; a machine it makes after this is deleted as it lands, and one that cannot be is the janitor's by its deadline label`);
 			}
-			// A create boxd refused made nothing. One that failed otherwise (a deadline the SDK gave up at, a connection lost)
-			// may have, or may still: create looks for its name until one shows or listedMs passes, and deletes it.
-			if (["invalid", "denied", "limit", "not_found"].includes(created.error.code)) return created;
+			// A create boxd refused made nothing, and one refused for its name leaves the machine that holds the name as it
+			// is. One that failed otherwise (a deadline the SDK gave up at, a connection lost) may have made one, or may
+			// still: create looks for its name until one shows or listedMs passes, and deletes it.
+			if (taken) return { ...fail("refused", `boxd did not create the machine: ${created.error.message}`), taken: true };
+			if (["invalid", "denied", "limit", "not_found", "refused"].includes(created.error.code)) return created;
+			this.#end(name);
 			const swept = await this.#deleteNamed(name, this.#timeouts.listedMs);
 			return fail(created.error.code, `boxd did not create the machine: ${created.error.message}${swept}`);
 		}
+		this.#requests.made(`${REQUEST_NAME_PREFIX}${name.slice(this.#prefix.length)}`);
 		return ok({ ref: { id: created.value.id, name }, made: { deadline, maxDeadline, labels, daemon, sha256 } });
 	}
 
@@ -753,6 +868,7 @@ export class BoxdProvider implements ComputerProvider {
 
 	/** Deletes a machine create gives up on, then waits, under the caller's signal, until boxd reads it gone. */
 	async #abandon(ref: ComputerRef, error: { code: ComputerErrorCode; message: string }, signal?: AbortSignal): Promise<Result<never>> {
+		this.#end(ref.name);
 		const deleted = await this.#delete(ref.id);
 		const gone = deleted.ok ? await this.#settle(ref, signal) : deleted;
 		const after = gone.ok
@@ -1299,6 +1415,7 @@ export class BoxdProvider implements ComputerProvider {
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
 		if (!ours(this.#name, found.value, ref.name) || !this.#inOrg(found.value)) return fail("not_found", `no boxd computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
+		this.#end(ref.name);
 		const deleted = await this.#delete(ref.id);
 		return deleted.ok ? this.#settle(ref, signal) : deleted;
 	}
