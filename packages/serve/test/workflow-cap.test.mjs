@@ -15,8 +15,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { startServe } from "../dist/index.js";
-import { client, flowAgent, follow, letGo, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { client, flowAgent, follow, letGo, runDir, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
 
 /** The faux model at $100 a million output tokens, each answer 400 of them: a request costs $0.04, and is admitted only
  *  while its least, $0.1024, fits what is left of the cap. */
