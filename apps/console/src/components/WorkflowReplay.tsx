@@ -12,7 +12,7 @@ import { recordOf, refitOf, replayLine, standingOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
 import { replaySteps } from "@/lib/workflowReplay";
-import type { LearningLoop, Promotion, WorkflowRevisions } from "@/lib/v2";
+import type { LearningLoop, Promotion, Serving, WorkflowRevisions } from "@/lib/v2";
 
 // A learned workflow replayed across its revisions (GET /agents/{id}/learning/workflows/{name}/revisions): the workflow
 // the agent runs now, drawn as the console's workflow graph, with a step for each revision that changed it. A step shows
@@ -30,17 +30,17 @@ export const STEP_MS = 1800;
 
 /** The learned workflows in use (`workflows`: the tab's list), one replay at a time, the first by default. Nothing when
  *  none is active. `v2` is read when it shows, and again on Try again. */
-export function WorkflowReplay({ v2, agentId, workflows, promotions = [], loop = null }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; loop?: LearningLoop | null }) {
+export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], loop = null }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; loop?: LearningLoop | null }) {
   const active = workflows.filter((w) => w.status === "active").map((w) => w.name);
   const [picked, setPicked] = useState<string | null>(null);
   const name = picked !== null && active.includes(picked) ? picked : (active[0] ?? null);
   if (name === null) return null;
-  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} loop={loop} />;
+  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} loop={loop} />;
 }
 
 const TITLE = "Learned workflow";
 
-function Replay({ v2, agentId, name, choices, onPick, promotions, loop }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; loop: LearningLoop | null }) {
+function Replay({ v2, agentId, name, choices, onPick, promotions, serving, loop }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null }) {
   const [data, setData] = useState<WorkflowRevisions | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -61,11 +61,11 @@ function Replay({ v2, agentId, name, choices, onPick, promotions, loop }: { v2: 
     <section className="border" aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
   );
   if (!data) return <section className="border" aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
-  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} loop={loop} /></section>;
+  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} loop={loop} /></section>;
 }
 
 /** The replay of a read: the controls, the step's line and date, its graph. */
-export function Steps({ data, stepMs = STEP_MS, promotions = [], loop = null }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; loop?: LearningLoop | null }) {
+export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null, loop = null }: { data: WorkflowRevisions; stepMs?: number; promotions?: readonly Promotion[]; serving?: string | null; loop?: LearningLoop | null }) {
   const { steps, unreadable } = useMemo(() => replaySteps(data.revisions), [data.revisions]);
   const [at, setAt] = useState(Math.max(0, steps.length - 1));
   const [playing, setPlaying] = useState(false);
@@ -87,7 +87,8 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], loop = null }: 
   const shown = `Revision ${Math.min(at, n - 1) + 1} of ${n}, ${when(step.at)}`;
   const record = recordOf(promotions, data.name, step.digest);
   const replacedBy = refitOf(promotions, data.name, step.digest);
-  const standing = standingOf(record, { newest: at >= n - 1, refit: replacedBy });
+  // Serving is the champion's (the server's `serving`): a newer revision replaying or held never takes it from it.
+  const standing = standingOf(record, { serving, refit: replacedBy });
   // Each guarded step's guard on its card, as its verdict: what it reads and the line it hands back under.
   const marks = step.guards.length ? { ...step.marks, verdict: Object.fromEntries(step.guards.flatMap((g) => (step.guardPaths[g.label] ? [[step.guardPaths[g.label]!, guardVerdict(g)]] : []))) } : step.marks;
   const refit = record?.source === "refit" && record.refit ? record.refit : null;

@@ -104,6 +104,8 @@ export type WorkflowRevision = WorkflowRevisions["revisions"][number];
 /** GET /v2/agents/{id}/learning/promotions: each learned workflow revision's promotion records, oldest first. */
 export type Promotions = Answer<"listLearningPromotions">;
 export type Promotion = Promotions["promotions"][number];
+/** What a learned workflow serves: its champion's digest (null: none, the agent takes its runs) and a newer revision replaying. */
+export type Serving = Promotions["serving"][number];
 /** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first) and its learned workflows' guarded steps. */
 export type LearningLoop = Answer<"getLearningLoop">;
 export type LoopCompile = LearningLoop["compiles"][number];

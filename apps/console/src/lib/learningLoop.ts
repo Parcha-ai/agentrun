@@ -2,7 +2,7 @@
 // workflow took over (promoted by replay on graded inputs), and runs got cheaper, with where it is unsure (each guarded
 // step's hand-backs and p). The arithmetic here reads the server's records only (GET .../learning/cost, .../promotions,
 // .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
-import type { CostRun, LearningCost, LearningLoop, LoopGuard, Promotion } from "./v2";
+import type { CostRun, LearningCost, LearningLoop, LoopGuard, Promotion, Serving } from "./v2";
 
 /** When a job compiles into a workflow (serve learn/compile.ts COMPILE_AFTER_NOTES, COMPILE_AFTER_RUNS): at this many
  *  active notes, or this many completed runs, with no workflow yet. */
@@ -56,13 +56,14 @@ export function handBacks(runs: readonly CostRun[], takeover: number | null): { 
 export const recordOf = (records: readonly Promotion[], workflow: string, digest: string | null): Promotion | undefined =>
   digest === null ? undefined : [...records].reverse().find((r) => r.workflow === workflow && r.digest === digest);
 
-/** A revision's standing in words a person reads: Serving, Held, Replaying, or not decided yet; for a revision that is not
- *  the newest, Served once it was promoted, and Refit when a threshold refit of it serves in its place (`refit`). */
+/** A revision's standing in words a person reads: Serving (it is the champion: `serving`, the digest the server says
+ *  serves), Served (promoted once, a newer one serves now), Held, Replaying, or not decided yet; Refit when a threshold
+ *  refit of it serves in its place (`refit`). A held or replaying revision never stops its champion serving. */
 export type Standing = { word: "Serving" | "Served" | "Refit" | "Held" | "Replaying" | "Not decided"; tone: "success" | "warning" | "active" | "muted" };
-export function standingOf(record: Promotion | undefined, { newest = true, refit }: { newest?: boolean; refit?: Promotion } = {}): Standing {
+export function standingOf(record: Promotion | undefined, { serving = null, refit }: { serving?: string | null; refit?: Promotion } = {}): Standing {
   if (refit) return { word: "Refit", tone: "muted" };
   if (!record) return { word: "Not decided", tone: "muted" };
-  if (record.decided === "promote") return newest ? { word: "Serving", tone: "success" } : { word: "Served", tone: "muted" };
+  if (record.decided === "promote") return record.digest === serving ? { word: "Serving", tone: "success" } : { word: "Served", tone: "muted" };
   if (record.decided === "hold") return { word: "Held", tone: "warning" };
   return { word: "Replaying", tone: "active" };
 }
@@ -141,9 +142,9 @@ export function compiledInto(text: string): string | null {
 export type Stage = { key: "notes" | "compiled" | "took_over" | "cheaper" | "unsure"; title: string; value: string; detail: string; state: "done" | "now" | "later" | "warn" | "watch" };
 export function storyOf(input: {
   notes: number; compiledNotes: number; runs: number; workflows: { name: string; status: string }[];
-  cost: LearningCost | null; promotions: readonly Promotion[]; loop: LearningLoop | null;
+  cost: LearningCost | null; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null;
 }): Stage[] {
-  const { notes, compiledNotes, runs, workflows, cost, promotions, loop } = input;
+  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop } = input;
   const active = workflows.filter((w) => w.status === "active");
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
   // The newest compile that wrote a workflow the checks passed (a later refused draft says so in the feed).
@@ -151,6 +152,11 @@ export function storyOf(input: {
   const s = cost?.summary;
   const back = cost && s?.takeover ? handBacks(cost.runs, s.takeover.n) : null;
   const newest = promotions.at(-1);
+  // What the newest record's workflow serves: its champion keeps serving while a newer revision replays or after it is held.
+  const now = newest ? serving.find((one) => one.workflow === newest.workflow) : undefined;
+  const champion = now?.digest ?? null;
+  const challenger = now?.replaying ? `revision ${now.replaying.slice(0, 7)} replays on graded inputs before it serves` : newest?.decided === "hold" && newest.digest !== champion ? `revision ${newest.digest.slice(0, 7)} was held: ${replayLine(newest)}` : null;
+  const servingLine = champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
   const stages: Stage[] = [];
   stages.push({
     key: "notes", title: "Learned", value: notes === 1 ? "1 note" : `${notes} notes`,
@@ -166,10 +172,13 @@ export function storyOf(input: {
     stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
   }
   if (s?.takeover) {
-    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone", state: newest?.decided === "hold" ? "warn" : "done" });
+    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.replay?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: newest?.decided === "hold" && !champion ? "warn" : "done" });
   } else if (newest) {
-    const st = standingOf(newest);
-    stages.push({ key: "took_over", title: "Take over", value: st.word, detail: newest.decided === "replaying" ? "replaying on graded inputs before it serves; the agent takes the runs meanwhile" : replayLine(newest), state: newest.decided === "hold" ? "warn" : "now" });
+    if (servingLine) stages.push({ key: "took_over", title: "Take over", value: "Serving", detail: servingLine, state: "done" });
+    else {
+      const st = standingOf(newest, { serving: champion });
+      stages.push({ key: "took_over", title: "Take over", value: st.word, detail: newest.decided === "replaying" ? "replaying on graded inputs before it serves; the agent takes the runs meanwhile" : replayLine(newest), state: newest.decided === "hold" ? "warn" : "now" });
+    }
   } else {
     stages.push({ key: "took_over", title: "Take over", value: "Not yet", detail: "a compiled workflow replays on graded runs, then serves first when it does as well as the agent", state: "later" });
   }

@@ -26,7 +26,7 @@ import { keeper } from "@/lib/idempotency";
 import type { Places } from "@/lib/place";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
-import type { LearningCost, LearningLoop, Promotion, Run } from "@/lib/v2";
+import type { LearningCost, LearningLoop, Promotion, Run, Serving } from "@/lib/v2";
 
 /** `server`: the server's own learning switch (capabilities `features.learning`); "off" means no run learns there.
  *  `places`: the server's places (capabilities `places`), for where an agent that names no place runs.
@@ -55,6 +55,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   // The loop's own reads, shared by the story, the cost chart, the workflow card and the feed: a read that fails leaves
   // its part out (no marker, no standing, no feed), never the tab.
   const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [serving, setServing] = useState<Serving[]>([]);
   const [loop, setLoop] = useState<LearningLoop | null>(null);
   const [cost, setCost] = useState<LearningCost | null>(null);
   const [later, setLater] = useState<{ items: LearningNote[]; cursor: string | null; error?: unknown; pages: number }>({ items: [], cursor: null, pages: 0 });
@@ -77,7 +78,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
     // The agent's latest runs: what each read and kept, the titles a note's source is named by, and the drops.
     v2.listAgentRuns(agent.agent_id, 50, null, !!agent.archived_at).then((r) => { if (n === asked.current) { setRuns(r.runs); } }, () => {});
     // A client without the read (a fake in a test) is a failed read, never a thrown render.
-    Promise.resolve().then(() => v2.learningPromotions(agent.agent_id)).then((r) => { if (n === asked.current) setPromotions(r.promotions); }, () => {});
+    Promise.resolve().then(() => v2.learningPromotions(agent.agent_id)).then((r) => { if (n === asked.current) { setPromotions(r.promotions); setServing(r.serving); } }, () => {});
     Promise.resolve().then(() => v2.learningLoop(agent.agent_id)).then((r) => { if (n === asked.current) setLoop(r); }, () => {});
     return learning;
   };
@@ -155,7 +156,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
   // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next.
   const story = storyOf({
     notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
-    runs: cost?.total_runs ?? runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, loop,
+    runs: cost?.total_runs ?? runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
   });
 
   if (error && !view) return <ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />;
@@ -200,7 +201,7 @@ export function LearningTab({ agent, v2, focus = [], server, onAgent, places, on
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} loop={loop} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">
