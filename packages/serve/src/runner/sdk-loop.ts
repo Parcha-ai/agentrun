@@ -13,6 +13,7 @@ import { bookedAsk, type GraderRoute } from "./learning-ask.js";
 import { reflectRequestId } from "./end-of-run.js";
 import { journalEntries } from "./journal-reader.js";
 import { KINDS } from "./journal-kinds.js";
+import { bookedSpend } from "./metrics.js";
 import { stopEnd, type AlsoRow, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { storeSecrets } from "./store-secrets.js";
 
@@ -316,9 +317,27 @@ export function createSdkLoop(
                   })
                 )?.also;
               }
+              // The SDK aggregate and every reflection attempt are already booked in this journal. Read it after
+              // reflection (including a reclaimed claim's durable answer), so its end and stats keep the same spend
+              // as the run view, without adding an answer's charge again. A missing token dimension stays unknown;
+              // bookedSpend's known sums alone cannot distinguish an unreported count from zero.
+              const entries = await journalEntries(journal, ctx);
+              const spend = bookedSpend(entries.map(({ kind, conversationId, data }) => ({ kind, conversationId, data })), "model");
+              const turns = entries.filter((entry) => entry.kind === "runner.turn").map((entry) => entry.data as {
+                givenBack?: boolean;
+                unsent?: boolean;
+                usage?: Partial<Record<keyof typeof spend.tokens, number>>;
+              }).filter((turn) => !turn.givenBack && !turn.unsent);
+              const tokens = (key: keyof typeof spend.tokens) =>
+                spend.unmetered || turns.some((turn) => typeof turn.usage?.[key] !== "number") ? null : spend.tokens[key];
               await append(
                 [{ kind: KINDS.end, data: { state: "ended", answer: result.answer } }],
-                { state: "ended", outcome: "completed", costUsd: usage?.cost_usd ?? null, metrics },
+                {
+                  state: "ended",
+                  outcome: "completed",
+                  costUsd: spend.usd,
+                  metrics: { ...metrics, input: tokens("input"), output: tokens("output"), cacheRead: tokens("cacheRead"), cacheWrite: tokens("cacheWrite") },
+                },
                 also,
               );
               return { state: "ended" as const };
