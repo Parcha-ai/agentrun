@@ -3,7 +3,7 @@
 // no answer". Here the CLI is a scripted stand-in whose one turn ends failed with an error.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -54,7 +54,11 @@ async function runOnce(t, status, error, { opened: given, redact } = {}) {
     hooks: quiet,
   }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...TIMING, ...(redact ? { redact } : {}) });
-  t.after(() => runner.close());
+  // Each case's stores close with it, after its runner: a file of these on Postgres holds no case's connections past it.
+  t.after(async () => {
+    await runner.close();
+    await release(opened);
+  });
   return until(async () => {
     const now = await opened.server.runs.get("run-1");
     return ["ended", "failed"].includes(now.state) && now.runner === null && now;
@@ -135,7 +139,10 @@ test("a cancel the runner has not handed on when a CLI turn fails ends the run c
   };
   const createLoop = createAdapterLoop(() => ({ adapter: cli, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Answer.", record: "loop", hooks: quiet }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...{ ...TIMING, commandPollMs: 400, pollMs: 400 } });
-  t.after(() => runner.close());
+  t.after(async () => {
+    await runner.close();
+    await release(opened);
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
@@ -161,7 +168,10 @@ test("a cancel accepted as a CLI turn ends interrupted on its own, before the ru
   };
   const createLoop = createAdapterLoop(() => ({ adapter: cli, session: { key: "root", label: "root", system: [], tools: [], context: "fresh" }, input: "Answer.", record: "loop", hooks: quiet }));
   const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...{ ...TIMING, commandPollMs: 400, pollMs: 400 } });
-  t.after(() => runner.close());
+  t.after(async () => {
+    await runner.close();
+    await release(opened);
+  });
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
