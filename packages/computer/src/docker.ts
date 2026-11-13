@@ -527,6 +527,12 @@ export class DockerProvider implements ComputerProvider {
 						const differ = await this.#differs(spec, report, signal);
 						if (!differ.ok) return differ;
 						if (differ.value.length > 0) return fail("exists", otherSpecWords(name, "was made", differ.value));
+						// Still the one read, running and within its deadline after those reads: attach checks a stopped
+						// container by inspect alone, so one that stopped or ended since would pass it.
+						const again = await this.#inspect([name], signal);
+						if (!again.ok) return again;
+						const now = again.value.find((one) => nameOf(one) === name);
+						if (now === undefined || now.Id !== report.Id || now.State?.Running !== true || Date.parse(now.Config?.Labels?.[DEADLINE_LABEL] ?? "") <= Date.now()) return fail("exists", endedWords(name));
 						return ok({ id: attached.value.id, name });
 					}
 					if (attached.error.code === "aborted") return attached;

@@ -309,6 +309,35 @@ test("two providers on one ledger: a create of the request with another spec whi
 	assert.equal(fake.requests().some((r) => r.method === "DELETE"), false, "and nothing ended it");
 });
 
+test("a create that recovers its request's phone by the key never writes over the entry another create recorded, nor its release", async () => {
+	const fake = fakePhoneHarness();
+	const base = memoryLedger();
+	const make = (ledger) => create({ apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const spec = { ...SPEC, labels: { run: "a" } };
+	const requestId = "phone-recovered-released";
+	const made = await (await make(base)).create(spec, { requestId });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	// As if that create's answer was lost: the ledger holds only the request's pending key.
+	const key = createHash("sha256").update(requestId).digest("hex");
+	const entry = await base.get(made.value.id);
+	await base.remove(made.value.id);
+	await base.put({ ...entry, id: `pending-${key}`, request: key });
+	// While this create asks the service by the key, another create records the phone, and its caller releases it.
+	const released = { ...entry, released: new Date(fake.clock.now()).toISOString() };
+	const ledger = {
+		...base,
+		claim: async (one) => {
+			if (one.id === made.value.id) await base.put(released);
+			return base.claim(one);
+		},
+	};
+	const again = await (await make(ledger)).create(spec, { requestId });
+	assert.equal(again.error?.code, "exists", JSON.stringify(again));
+	assert.match(again.error.message, /was made for this request and has ended/);
+	assert.deepEqual(await base.get(made.value.id), released, "the release stands");
+	assert.equal(await base.get(`pending-${key}`), undefined, "and the key is let go");
+});
+
 test("a pending claim of the request's spec that no create here made, and no phone answers, is waited for; once stale, this create sends the key", async () => {
 	const { provider, fake, ledger } = await setup();
 	const spec = { ...SPEC, labels: { run: "a" } };

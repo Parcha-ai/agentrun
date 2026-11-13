@@ -664,9 +664,12 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (!recovered.ok) return recovered.error.code === "not_found" ? undefined : recovered;
 			const session = sessionOf(recovered.value.json, `GET /sessions/requests/${requestKey}`);
 			if (!session.ok) return session;
-			entry = { id: session.value.id, name, labels: { ...pending.labels }, image: pending.image, deadline: this.#deadlineOf(session.value, Date.parse(pending.deadline)) };
-			await this.#ledger.put(entry);
+			// Claimed, never put over an entry another create recorded while the service answered: that one, and its release
+			// marker, stand. One already forgotten was released and is gone.
+			const found: PhoneLedgerEntry = { id: session.value.id, name, labels: { ...pending.labels }, image: pending.image, deadline: this.#deadlineOf(session.value, Date.parse(pending.deadline)) };
+			entry = (await this.#ledger.claim(found)) ? found : await this.#ledger.get(found.id);
 			await this.#ledger.remove(pending.id);
+			if (entry === undefined) return fail("exists", endedWords(name));
 		}
 		if (entry === undefined) return undefined;
 		if (entry.released !== undefined || this.#now() >= Date.parse(entry.deadline)) return fail("exists", endedWords(name));
@@ -816,8 +819,16 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (!ready.ok) return ended(ready.error.code === "gone" ? "vendor" : ready.error.code, ready.error.message);
 		const session = ready.value;
 		const deadline = this.#deadlineOf(session, from + runLifetimeMs(spec));
-		const kept = await record(() => this.#ledger.put({ id, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline }));
+		// The entry as kept now: a create of the same request on another provider may have answered this phone while it
+		// started (#held), and its caller released it. That release stands: never written over, and the phone not answered.
+		let released = false;
+		const kept = await record(async () => {
+			const now = await this.#ledger.get(id);
+			released = now === undefined || now.released !== undefined;
+			if (!released) await this.#ledger.put({ ...now, id, name, labels: { ...(spec.labels ?? {}) }, image: spec.image, deadline });
+		});
 		if (!kept.ok) return kept;
+		if (released) return fail("exists", endedWords(name));
 		const took = this.#now() - from;
 		if (this.#now() >= Date.parse(deadline)) {
 			return ended("timeout", `the phone ${id}'s lifetime of ${runLifetimeMs(spec) / 1000} s ended before it was ready (it took ${Math.round(took / 100) / 10} s)`);

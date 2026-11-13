@@ -671,6 +671,20 @@ test("create is once per request: a retry at once, once it is up, and from anoth
 	assert.deepEqual(sameButLifetime[1], sameButLifetime[0], "a retry's own lifetime is not another spec");
 });
 
+test("a retry whose computer stops while the retry reads it is exists: never answered once it is no longer running", async () => {
+	const requestId = "docker-stops-mid-retry";
+	const name = computerNameFor(requestId);
+	const { provider, calls, alter, proceed } = fakeDocker({ containers: [container({ name })], hold: ["hello"] });
+	const pending = provider.create(SPEC, { requestId });
+	// The retry's run found the name taken, and its attach says hello to the running computer: it stops now.
+	await until(() => calls().some((args) => args[0] === "exec"), "docker exec of hello");
+	alter(name, (c) => Object.assign(c.State, { Running: false, Status: "exited" }));
+	proceed("hello");
+	const result = await pending;
+	assert.equal(result.error?.code, "exists", JSON.stringify(result));
+	assert.match(result.error.message, /^computer-[0-9a-f]{12} was made for this request and has ended: create with a new request id$/);
+});
+
 test("a request whose computer was deleted, stopped or ended is spent: the same request id again is exists, in words, and makes nothing", async () => {
 	const fake = fakeDocker();
 	const ended = /^computer-[0-9a-f]{12} was made for this request and has ended: create with a new request id$/;
