@@ -530,6 +530,9 @@ export type NoteCandidates = {
   readonly indexBytes: number;
   readonly indexComplete: boolean;
   readonly budget: number;
+  /** Whether the run has the read tool, so the section past the budget names `.learning/` (READ_LINE) and its room is kept
+   *  for that line. Absent: kept, as for a run that has it. */
+  readonly read?: boolean;
 };
 /** A selector's choice: the notes the run reads whole, in the order it reads them (a subset of the candidates), and
  *  whether it reads the index first. Without the index, the notes are all it is given; or, with `lines`, the notes it
@@ -549,10 +552,11 @@ const allFit = ({ notes, indexComplete, budget }: NoteCandidates) => indexComple
  *  INDEX_BYTES), the section's own lines counted. Whole notes come first: lines never take the room a whole note fits in, so past ~50 notes a run still
  *  reads the ones that bear on it whole (Run B, 11-12: past 8 KB of lines every run got lines alone). The rest are left
  *  out, and learnedParts names them. */
-const withinBudget = (ranked: NoteCandidates["notes"], budget: number, bearing = ranked.length): NoteSelection => {
+const withinBudget = (ranked: NoteCandidates["notes"], budget: number, read = true, bearing = ranked.length): NoteSelection => {
   const whole: LearnedNote[] = [];
-  // The section's own lines (its intro, the read-tool line, the blank lines around the rule lines) come first.
-  let room = budget - FRAME_BYTES();
+  // The section's own lines (its intro, the read-tool line when the run has the read tool, the blank lines around the
+  // rule lines) come first.
+  let room = budget - FRAME_BYTES(read);
   for (const { note, bytes } of ranked.slice(0, bearing)) if (bytes <= room) (room -= bytes), whole.push(note);
   if (whole.length === ranked.length) return { whole, index: false };
   const taken = new Set(whole);
@@ -574,7 +578,7 @@ const withinBudget = (ranked: NoteCandidates["notes"], budget: number, bearing =
 export const byRecency: NoteSelector = (candidates) => {
   const { notes, indexBytes, budget } = candidates;
   if (allFit(candidates)) return { whole: notes.map(({ note }) => note), index: false };
-  if (notes.reduce((sum, { bytes }) => sum + bytes, 0) > budget) return withinBudget(notes, budget);
+  if (notes.reduce((sum, { bytes }) => sum + bytes, 0) > budget) return withinBudget(notes, budget, candidates.read);
   let left = budget - indexBytes;
   return { whole: notes.filter(({ bytes }) => bytes <= left && ((left -= bytes), true)).map(({ note }) => note), index: true };
 };
@@ -594,7 +598,7 @@ export const byRelevance: NoteSelector = (candidates, run) => {
   // Best first; a tie keeps recency (the candidates' order).
   const ranked = notes.map((candidate, i) => ({ ...candidate, score: scores[i]!, at: i })).sort((a, b) => b.score - a.score || a.at - b.at);
   // Only a note that bears on the run is read whole; one that shares no word with it is a line at most.
-  return withinBudget(ranked, budget, ranked.filter(({ score }) => score > 0).length);
+  return withinBudget(ranked, budget, candidates.read, ranked.filter(({ score }) => score > 0).length);
 };
 /** The lines before what a run learned, under `# Learned` after LEARNS, and the one that names `.learning/` to an agent
  *  that can read it. */
@@ -607,9 +611,13 @@ const BEST_INTRO = `What you learned in earlier runs: the notes that bear most o
 const LINES_ONLY_INTRO = `What you learned in earlier runs: one line each for the notes that bear most on this run. ${KEPT}`;
 const READ_LINE = `The notes not given whole here are files in \`${LEARNED_DIR}/\` in your working directory: open one with the read tool when it applies.`;
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
-/** The most a section past the budget takes beside its notes and lines: its longest intro, the read-tool line, and the
- *  blank lines between its parts (withinBudget). */
-const FRAME_BYTES = () => Math.max(...[LINES_INTRO, BEST_INTRO, LINES_ONLY_INTRO].map((intro) => Buffer.byteLength(intro))) + Buffer.byteLength(READ_LINE) + 6;
+/** What a run whose notes are all past a budget that holds none of them reads in place of them: that they are there, and,
+ *  with the read tool, where. Never "Nothing learned yet." while it has notes. */
+const NONE_FIT = "You learned notes in earlier runs, but none fit this run's learning budget, so none is given here.";
+const NONE_FIT_READ = `You learned notes in earlier runs, but none fit this run's learning budget. They are files in \`${LEARNED_DIR}/\` in your working directory: open one with the read tool when it applies.`;
+/** The most a section past the budget takes beside its notes and lines: its longest intro, the read-tool line when the run
+ *  has the read tool (`read`), and the blank lines between its parts (withinBudget). */
+const FRAME_BYTES = (read: boolean) => Math.max(...[LINES_INTRO, BEST_INTRO, LINES_ONLY_INTRO].map((intro) => Buffer.byteLength(intro))) + (read ? Buffer.byteLength(READ_LINE) + 2 : 0) + 4;
 
 /** A note as one rule line: its name and file, then its description, cut of the host's secrets. */
 const ruleLine = (note: LearnedNote, shown: Shown): string => `- ${shown.text(oneLine(note.name))} (${shown.name(note.file)}): ${shown.text(oneLine(note.description))}`;
@@ -623,6 +631,7 @@ const wholeNote = (note: LearnedNote, shown: Shown): string => [`## ${shown.text
  *  the index, nor counted toward the budget (readSeed reads active notes alone, and servedIndex drops their lines). Its
  *  active notes, newest first (`seed.recent`, else by name), each whole while all fit `budget`; past it, the selector's
  *  choice (byRelevance by default). An agent with the read tool is told the rest are in `.learning/`, one without is not.
+ *  Notes past a budget that holds none of them (0 among them) are said to be there (NONE_FIT), never "Nothing learned yet.".
  *  Every text is cut of the host's secrets. A run "was given" `given`; of them, it "read" those whose file it opened
  *  (store-reads/learning.ts notesReadOf). Whether it applied one given whole is not measured. `left`: the active notes
  *  the section names in no way, over the budget, which the run's log names (runner/learning-seed.ts). */
@@ -644,6 +653,7 @@ export function learnedParts(seed: Seed, options: LearnedOptions): { section: st
     indexBytes: shownIndex ? size(shownIndex) : 0,
     indexComplete: lines.every((entry) => active.has(linkedFiles(entry)[0] ?? "")),
     budget,
+    read,
   }, run);
   const chosen = new Set(choice.whole);
   const whole = choice.whole.filter((note) => blocks.has(note)).map((note) => blocks.get(note)!);
@@ -668,7 +678,8 @@ export function learnedParts(seed: Seed, options: LearnedOptions): { section: st
       section = render();
     }
     const served = new Set([...wholeNotes, ...lined]);
-    if (!served.size) return { section: undefined, given: [], left: notes };
+    // Notes, none of which fit the budget (0 among them): the run is told they are there, never that it learned nothing.
+    if (!served.size) return { section: notes.length ? (read ? NONE_FIT_READ : NONE_FIT) : undefined, given: [], left: notes };
     return { section, given: notes.filter((note) => served.has(note)), left: notes.filter((note) => !served.has(note)) };
   }
   if (!choice.index) return { section: [WHOLE_INTRO, ...whole].join("\n\n"), given: notes.filter((note) => chosen.has(note)), left: notes.filter((note) => !chosen.has(note)) };

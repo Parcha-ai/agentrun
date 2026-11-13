@@ -120,7 +120,8 @@ export interface LearningLoopDeps {
   now?(): number;
   /** The generality pre-check (learn/general.ts): each proposed note's Jev probability that it holds for inputs other
    *  than the one it came from, by file, and what it cost. Undefined, or one that answers undefined (no Jev key on this
-   *  host), skips it: every note goes to the grader. One that throws (Jev down) skips it too, said in the log. */
+   *  host), skips it: every note goes to the grader. One that throws (Jev down) skips it too: what it spent is unknown, and
+   *  the skip is kept on the grade's entry (`unchecked`) and said in the log. */
   general?(notes: readonly NoteText[], source: GeneralSource, signal: AbortSignal, run: string): Promise<GeneralScores | undefined>;
   /** The bar a note's score must reach to go on to the grader (default GENERAL_THRESHOLD). */
   generalThreshold?: number;
@@ -132,9 +133,10 @@ const ROOT = ROOT_CONVERSATION_ID;
 
 /** The journal's learning entries' data (journal-kinds.ts learningGraded, learningDropped, learningMerged), as the reader
  *  of a run's learning end reads them (store-reads/learning.ts). What a grade spent: its dollars and tokens, each null when
- *  any ask's are unknown. */
-export type GradedData = { readonly source: string; readonly verdict: Verdict; readonly usd: number | null; readonly tokens?: Tokens | null; readonly graded: Readonly<Record<string, string>> };
-export type DroppedData = { readonly source: string; readonly reason: string; readonly detail: string; readonly problems?: readonly Problem[]; readonly usd?: number | null; readonly tokens?: Tokens | null };
+ *  any ask's are unknown. `unchecked`: why the generality pre-check could not run (its provider's error), so the grader read
+ *  every note; the run's learning end says the check was skipped. */
+export type GradedData = { readonly source: string; readonly verdict: Verdict; readonly usd: number | null; readonly tokens?: Tokens | null; readonly graded: Readonly<Record<string, string>>; readonly unchecked?: string };
+export type DroppedData = { readonly source: string; readonly reason: string; readonly detail: string; readonly problems?: readonly Problem[]; readonly usd?: number | null; readonly tokens?: Tokens | null; readonly unchecked?: string };
 /** `verdict`: each item's final decision once the merge settled it (takenOnMain's and the commit's left-out notes dropped,
  *  with their words), which the run's learning end reads in place of the grade's (store-reads/learning.ts). */
 export type MergedData = { readonly source: string; readonly main: string; readonly commit: string; readonly files: readonly string[]; readonly detail: string; readonly verdict: Verdict };
@@ -435,6 +437,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             // The generality pre-check: a note Jev scores under the bar rests on its one input, and is dropped before the
             // grader reads it, its why said with the grader's items. Jev down or not set up here: every note is graded.
             let screened = false;
+            // Why the check could not run, kept on the grade's (or the drop's) entry: never a silent skip.
+            let unchecked: string | undefined;
             if (grading.length && learning.general) {
               const threshold = learning.generalThreshold ?? GENERAL_THRESHOLD;
               const input = proposal.asked?.[0] ?? proposal.triggered?.[0]?.text;
@@ -442,7 +446,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               try {
                 checked = await learning.general(grading, { ...(source.instructions ? { job: source.instructions } : {}), ...(input !== undefined ? { input } : {}) }, AbortSignal.any([deps.signal, stopAsk.signal]), source.runId);
               } catch (error) {
-                learning.log?.(`learning run ${claim.runId}: the generality check could not run, so the grader reads every note: ${(error as Error)?.message ?? String(error)}`);
+                // Its requests were sent and one failed: what they spent is unknown, never 0 (as an ask that fails is).
+                // Its error is kept and logged cut of the runner's secrets (LoopDeps.redact).
+                usd = null;
+                const message = (error as Error)?.message ?? String(error);
+                unchecked = deps.redact ? deps.redact(message) : message;
+                learning.log?.(`learning run ${claim.runId}: the generality check could not run, so the grader reads every note: ${unchecked}`);
               }
               if (checked) {
                 screened = true;
@@ -504,12 +513,12 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               spend = usd;
               const end = await halted();
               if (end) return end;
-              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
+              await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens, ...(unchecked !== undefined ? { unchecked } : {}) } satisfies DroppedData, "ended");
               void error;
               return { state: "ended" };
             }
             if (settledItems.length) verdict = { ...verdict, items: [...verdict.items, ...settledItems] };
-            graded = { source: source.runId, verdict, usd, tokens, graded: main.graded };
+            graded = { source: source.runId, verdict, usd, tokens, graded: main.graded, ...(unchecked !== undefined ? { unchecked } : {}) };
             spend = usd;
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.

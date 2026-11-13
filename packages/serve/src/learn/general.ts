@@ -55,8 +55,14 @@ export function generalRequest(note: NoteText, source: GeneralSource): { label: 
  *  unknown). */
 export type GeneralScores = { readonly scores: Readonly<Record<string, number>>; readonly usd: number | null };
 
+/** What a learning run's end says when the check could not run (its provider's error stays in the run's journal and the
+ *  runner's log, never here). */
+export const GENERAL_UNCHECKED = "The generality check could not run, so the grader read every note.";
+
 /** Asks `jev` the question of each note, one request a note, all at once. Throws when any request fails or answers out of
- *  shape: the caller grades every note as it would without the check, never drops one on an error. */
+ *  shape, whatever the others answered: the caller grades every note as it would without the check, never drops one on an
+ *  error, and books what the check spent as unknown (null), never 0, since a request that failed may still have been
+ *  charged and the others were. */
 export async function generalScores(jev: DecisionProvider, notes: readonly NoteText[], source: GeneralSource, signal: AbortSignal, run: string): Promise<GeneralScores> {
   const bound = AbortSignal.any([signal, AbortSignal.timeout(GENERAL_DEADLINE_MS)]);
   const answers = await Promise.all(notes.map(async (note) => {

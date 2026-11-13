@@ -101,6 +101,17 @@ test("generalScores asks one request a note, all at once, and adds their cost; a
   await assert.rejects(general.generalScores(fakeJev({ [METHOD.file]: 1.7 }).provider, [METHOD], {}, new AbortController().signal, "run-1"), /no probability/);
 });
 
+test("a check with one request answered and paid and another down throws, whatever the paid one answered: its caller books the cost unknown (below)", async () => {
+  let n = 0;
+  const provider = { ...fakeJev({}).provider, async decide(request) {
+    n += 1;
+    if (request.label.endsWith(ONE_MERCHANT.file)) throw new Error("timed out");
+    return { answers: { general: { type: "noul", noul: 0.9 } }, evidence: [], model: "jev-test", usage: { input_tokens: 100, output_tokens: 0 }, cost_usd: 0.00001, cost_basis: "estimate", provider_request_id: null };
+  } };
+  await assert.rejects(general.generalScores(provider, [METHOD, ONE_MERCHANT], {}, new AbortController().signal, "run-1"), /timed out/);
+  assert.equal(n, 2, "both requests were sent");
+});
+
 test("the bar: 0.5 by default, another from the environment, and anything but a number from 0 to 1 refused", () => {
   assert.equal(general.generalThresholdOf({}), 0.5);
   assert.equal(general.generalThresholdOf({ [general.GENERAL_THRESHOLD_ENV]: "0.7" }), 0.7);
@@ -189,6 +200,51 @@ test("Jev down: every note goes to the grader, said in the log, and nothing is d
   assert.ok(calls.ask[0].prompt.includes(ONE_MERCHANT.file), "the grader reads both");
   assert.ok(calls.log.some((line) => /the generality check could not run, so the grader reads every note: Jev is down/.test(line)), calls.log.join("\n"));
   assert.deepEqual(calls.commit[0].files.map(({ path }) => path), [METHOD.file], "the grader's hard General gate still drops the one-case note");
+  // #2650 review: a check that sent requests and failed spent what nobody knows, so the grade's cost is unknown (null),
+  // never the grader's alone; and the skip is kept in the learning run's journal and said in its learning end.
+  const graded = (await entriesOf(store, claim)).find((entry) => entry.kind === KINDS.learningGraded).data;
+  assert.equal(graded.usd, null, "the check's cost is unknown, so the grade's is");
+  assert.equal(graded.unchecked, "Jev is down", "the journal keeps why the check did not run");
+  const { runLearningEnd } = await import("../dist/store-reads/learning.js");
+  const end = await runLearningEnd(store, "run-1");
+  assert.equal(end.state, "merged");
+  assert.equal(end.cost_usd.grade, null);
+  assert.ok(end.detail.endsWith(general.GENERAL_UNCHECKED), end.detail);
+  assert.ok(!end.detail.includes("Jev is down"), "the provider's error stays in the journal and the log");
+});
+
+test("Jev down, then the grade fails: the drop keeps the check's skip, and its cost is unknown", async (t) => {
+  const { store, clock, claim } = await setUp(t, { seed: "s1", notes: [METHOD], asked: ["x"] });
+  // The grader fails too.
+  const factory = createLearningLoop({
+    sourceOf: async () => ({ runId: "run-1", agentId: "agent-1" }),
+    proposal: (runId) => store.learning.proposal(runId),
+    folder: (agentId) => ({ workspace: { agentId }, end: async () => {} }),
+    readMain: async () => MAIN,
+    ask: async () => { throw new Error("grader down"); },
+    commit: async () => MERGED,
+    mainTexts: async () => ({}),
+    merged: async () => undefined,
+    now: () => clock.now,
+    general: async () => { throw new Error("Jev is down"); },
+  });
+  const failing = factory({ journal: (c) => store.journal(c), flush: async () => store.flush(), signal: new AbortController().signal });
+  assert.deepEqual(await failing.start(claim), { state: "ended" });
+  const dropped = (await entriesOf(store, claim)).find((entry) => entry.kind === KINDS.learningDropped).data;
+  assert.equal(dropped.reason, "grade_failed");
+  assert.equal(dropped.usd, null);
+  assert.equal(dropped.unchecked, "Jev is down");
+  const { runLearningEnd } = await import("../dist/store-reads/learning.js");
+  assert.ok((await runLearningEnd(store, "run-1")).detail.endsWith(general.GENERAL_UNCHECKED));
+});
+
+test("the shipped runners give the learning loop a log: a Jev fallback is never silent", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const main = await readFile(new URL("../src/runner/main.ts", import.meta.url), "utf8");
+  const beside = await readFile(new URL("../src/runner/beside.ts", import.meta.url), "utf8");
+  const runnerLoopBody = main.slice(main.indexOf("export function runnerLoop("), main.indexOf("export type RunnerParts"));
+  assert.match(runnerLoopBody, /\blog: /, "runnerLoop's dispatch deps name a log");
+  assert.match(beside.slice(beside.indexOf("const createLoop = dispatchRunner("), beside.indexOf("const { runnerMemory }")), /\blog: /, "runnerBeside's dispatch deps name a log");
 });
 
 test("no Jev on this host (the check answers undefined): graded as before", async (t) => {

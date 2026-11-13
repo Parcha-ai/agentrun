@@ -292,12 +292,14 @@ test("past the learning budget, an input that shares no word with any note: the 
   assert.equal(learnedIn((await ran(api, "few-read")).prompt), WHOLE);
 });
 
-test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUDGET, else 8000 bytes; 0 serves no note (the section always fits its budget), and a value that is no whole number of bytes refuses the start", { timeout: 120_000 }, async (t) => {
+test("the learning budget is --learning-budget, else AGENTRUN_SERVE_LEARNING_BUDGET, else 8000 bytes; 0 serves no note, saying the notes are there and none fit (never 'Nothing learned yet.'), and a value that is no whole number of bytes refuses the start", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   withEnv(t, { AGENTRUN_SERVE_LEARNING_BUDGET: "0" });
   const { api, data } = await serve(t, { faux: SYSTEM, data: join(dir, "zero") });
   await learned(api, data, "indexed", { instructions: "Answer the question.", tools: ["read"] });
-  assert.equal(learnedIn((await ran(api, "indexed")).prompt), undefined, "the environment's budget, when no option names one: 0 bytes, no note");
+  const zero = learnedIn((await ran(api, "indexed")).prompt);
+  assert.equal(wholeIn(zero).length, 0, "the environment's budget, when no option names one: 0 bytes, no note");
+  assert.match(zero, /^You learned notes in earlier runs, but none fit this run's learning budget\. They are files in `\.learning\/` in your working directory: open one with the read tool when it applies\.$/, zero);
   const given = await serve(t, { faux: SYSTEM, data: join(dir, "given"), learningBudget: 8000 });
   await learned(given.api, given.data, "whole", { instructions: "Answer the question." });
   assert.equal(learnedIn((await ran(given.api, "whole")).prompt), WHOLE, "the option wins");

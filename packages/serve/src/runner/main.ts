@@ -155,6 +155,9 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
+    // A run's log lines (a learning run's skipped generality check, a sweep that failed) on the runner's stderr, as its
+    // warnings are.
+    log: (line: string) => void process.stderr.write(`agentrun-serve runner: ${line}\n`),
   };
   return { createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) }), computers: computers.computerDeps, env: runs };
 }

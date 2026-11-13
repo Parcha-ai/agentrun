@@ -75,3 +75,30 @@ test("the launch keeps the left-out notes for the claim: written and read back",
   const read = readLaunchBody(JSON.parse(JSON.stringify(body)));
   assert.deepEqual(read.learning.notesLeftOut, ["a.md", "b.md"]);
 });
+
+// #2650 review: the read-tool line is reserved only for an agent that gets it, and notes that fit no budget are said so.
+test("an agent with no read tool gets the room the read-tool line would take: a 250-byte budget serves a short rule line", () => {
+  const big = { sha: "b".repeat(40), notes: { "tables.md": note("Tables", "Answer with tables", `${"Use a table. ".repeat(80)}\n`) }, files: ["tables.md", "MEMORY.md"], skipped: [], recent: ["tables.md"] };
+  const without = learnedParts(big, { budget: 250, read: false, shown, run: { input: { content: "x" } } });
+  assert.deepEqual(without.given.map(({ file }) => file), ["tables.md"], `served as a line: ${without.section}`);
+  assert.ok(Buffer.byteLength(without.section) <= 250, `${Buffer.byteLength(without.section)} bytes`);
+  assert.deepEqual(lineFiles(without.section), ["tables.md"]);
+  // With the read tool the line it is told does not fit beside the note's: nothing is served, and that is said.
+  const withRead = learnedParts(big, { budget: 250, read: true, shown, run: { input: { content: "x" } } });
+  assert.deepEqual(withRead.given, []);
+  assert.deepEqual(withRead.left.map(({ file }) => file), ["tables.md"]);
+});
+
+test("notes past a budget that holds none of them (0 among them) are said to be there, never 'Nothing learned yet.'; an agent with the read tool is told where they are", () => {
+  for (const budget of [0, 40]) for (const read of [true, false]) {
+    const { section, given, left } = learnedParts(mccSeed(5), { budget, read, shown, run: { input: MCC_INPUT } });
+    assert.deepEqual(given, [], `${budget}, read ${read}`);
+    assert.equal(left.length, 5);
+    assert.ok(section && !section.includes("Nothing learned yet"), `${budget}, read ${read}: ${section}`);
+    assert.match(section, /none fit this run's learning budget/);
+    assert.equal(section.includes("open one with the read tool"), read, section);
+    assert.equal(wholeFiles(section).length + lineFiles(section).length, 0, "no note in it");
+  }
+  // No note at all: no section, so the run is told nothing is learned yet.
+  assert.equal(learnedParts({ sha: "e".repeat(40), notes: {}, files: [], skipped: [] }, { budget: 0, read: true, shown }).section, undefined);
+});

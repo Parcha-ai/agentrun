@@ -2668,7 +2668,9 @@ many notes the folder holds. A note must hold beyond the one input it came from:
 per new note (the Jev model and keys decision nodes use) asks whether it states a method, a source, a fact or a
 preference that holds for this job's other inputs, and a note rated below 0.5
 (`AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`, from 0 to 1) is dropped there, its reason on the verdict; its cost is
-the grade's. When Jev cannot run, the run's log says so and the grader reads every note. The grader answers General
+the grade's. When Jev cannot run, the grader reads every note: the runner's log says why, the run's learning says the
+check could not run, and the grade's cost is unknown, never the grader's alone (a Jev request that failed may still
+have been charged). The grader answers General
 for every item, and one it says is not general is never kept, whatever else it decides. No injection screen runs
 before it: a page classifier cannot see where a note came
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the

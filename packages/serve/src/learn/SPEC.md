@@ -220,7 +220,8 @@ Over a cap is refused, never cut.
 Whether a note holds one case's data is not the checker's to judge. Before the grader, one Jev question per new note
 (`learn/general.ts`, on the Jev model and keys decision nodes use) asks whether it holds for the job's inputs other than
 the one it came from; a note rated below the bar (0.5, `AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`) is dropped there,
-its reason on the verdict and its cost the grade's. When Jev cannot run, the grader reads every note. The grader's
+its reason on the verdict and its cost the grade's. When Jev cannot run, the grader reads every note, the grade's
+entry keeps why (`unchecked`), the run's learning end says so, and the grade's cost is unknown (null). The grader's
 General question is then a gate: it answers `general` for every item, and one it says is not general is never kept.
 
 ## The grade
