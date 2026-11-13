@@ -198,10 +198,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
 
   const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ["files", `Files ${files.length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
+    // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
+    <div className="flex h-full min-h-0 flex-col short:h-auto">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
       <Tabs tabs={tabs.map(([id, label]) => ({ id, label }))} value={tab} onChange={setTab} />
-      {tab === "graph" ? <div className="min-h-0 flex-1">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto">
+      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (

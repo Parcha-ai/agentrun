@@ -48,7 +48,16 @@ describe("Shell's sidebar on a short screen", () => {
   it("scrolls at every width it shows at", () => {
     mount();
     const aside = document.querySelector("aside")!;
-    expect(aside.className.split(" ")).toContain("md:overflow-y-auto");
+    expect(aside.className.split(" ")).toContain("roomy:overflow-y-auto");
+  });
+
+  // jsdom applies no media query: the sidebar's variant is `roomy:` (md wide AND over 500 px tall), never `md:` alone, so a phone
+  // on its side gets the top bar. The e2e flow phone-landscape measures it in a real browser.
+  it("shows at roomy sizes only, never at a plain md width", () => {
+    mount();
+    const all = [document.querySelector("aside")!, document.querySelector("header")!, document.querySelector("aside")!.parentElement!];
+    for (const el of all) expect(el.className.split(" ").some((c) => c.startsWith("md:"))).toBe(false);
+    expect(document.querySelector("header")!.className.split(" ")).toContain("roomy:hidden");
   });
 });
 
