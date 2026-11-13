@@ -16,7 +16,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { REQUEST_COST } from "../dist/timeline/index.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { decisionSpentIn } from "../dist/cap.js";
 import { startServe } from "../dist/index.js";
 import { client, flowAgent, follow, letGo, runDir, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
@@ -375,52 +374,5 @@ test.skip("a polled call held at its cap and resumed by a raise while its window
   }
 });
 
-// SKIP (follow-up #2080): a capped workflow's stop at its cap or its booking reads differently on the runner
-test.skip("a decision answered and billed whose booking a crash lost still counts on the next process: what the cap reads from the store is its receipt's cost, as live", async (t) => {
-  const calls = join(await scratch(t), "parallel-calls.jsonl");
-  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
-  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
-  assert.equal((await api("POST", "/agents", flowAgent("booked-judge", judgeFlow("coi", "parallel")))).status, 201);
-  const started = await api("POST", "/agents/booked-judge/runs", { input: { doc: "Certificate of Incorporation of Example Widgets, Inc." }, max_cost_usd: 1 });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  const runId = started.body.run_id;
-  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
-  assert.equal((await view(api, runId)).status, "completed");
-  await letGo(data, runId);
-  const store = join(runDir(data, runId), "store", "run.sqlite");
-  // Live: the cap booked the decision at Parallel's list price.
-  const live = decisionSpentIn(store);
-  assert.equal(live, 0.001);
-  // The booking lost (the process died after the answer's receipt, before its booking was committed).
-  const db = new DatabaseSync(store);
-  try {
-    assert.ok(db.prepare("DELETE FROM entries WHERE record LIKE '%\"agentrun.decision_cost\"%'").run().changes > 0, "the booking was there");
-  } finally {
-    db.close();
-  }
-  assert.equal(decisionSpentIn(store), live, "the next process counts the decision from its receipt");
-});
-
-// SKIP (follow-up #2080): a decision whose booking was lost is not counted at its receipt's charge on the next claim
-test.skip("a decision whose booking was lost and whose receipt names its charge counts at that charge on the next process, never at a larger hold", async (t) => {
-  const calls = join(await scratch(t), "parallel-calls.jsonl");
-  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls }, KEYS);
-  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
-  assert.equal((await api("POST", "/agents", flowAgent("charged-judge", judgeFlow("coi", "parallel")))).status, 201);
-  const started = await api("POST", "/agents/charged-judge/runs", { input: { doc: "Certificate of Incorporation of Example Widgets, Inc." }, max_cost_usd: 1 });
-  assert.equal(started.status, 202, JSON.stringify(started.body));
-  const runId = started.body.run_id;
-  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
-  assert.equal((await view(api, runId)).status, "completed");
-  await letGo(data, runId);
-  const store = join(runDir(data, runId), "store", "run.sqlite");
-  // The booking lost, and the hold the cap took ten times what was charged ($0.01 against the receipt's $0.001).
-  const db = new DatabaseSync(store);
-  try {
-    assert.ok(db.prepare("DELETE FROM entries WHERE record LIKE '%\"agentrun.decision_cost\"%'").run().changes > 0, "the booking was there");
-    assert.ok(db.prepare("UPDATE entries SET record = json_set(record, '$.data.usd', 0.01) WHERE record LIKE '%\"agentrun.decision_hold\"%'").run().changes > 0, "the hold was there");
-  } finally {
-    db.close();
-  }
-  assert.equal(decisionSpentIn(store), 0.001, "the receipt's charge, not the hold");
-});
+// A decision's booking lost by a crash while its receipt names its charge does not happen on the runner: its settle commits
+// before its receipt. workflow-decision-money.test.mjs crashes a runner at each of the two commits.

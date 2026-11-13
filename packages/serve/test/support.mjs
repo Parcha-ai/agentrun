@@ -16,7 +16,7 @@ import { startServe } from "../dist/index.js";
 import { dockerPathsForRuns } from "../dist/box-paths.js";
 import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
-import { readRunDbSync } from "../dist/run-db.js";
+import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
@@ -27,6 +27,7 @@ import { dispatchRunner } from "../dist/runner/harness-loops.js";
 import { computerDepsFrom } from "../dist/workspace/index.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
+import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
@@ -297,7 +298,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -310,9 +311,22 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       return (...args) => (dead ? new Promise((_, reject) => frozen.push(reject)) : value.apply(target, args));
     },
   });
+  // A store-write fault (`failRunsUpdate(claim, patch)`, a test's): a runs.update it answers true for throws, writing
+  // nothing, as a store that cannot be written does. The test's predicate counts its own hits to prove the fault fired.
+  const runsOf = (runs) => new Proxy(runs, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "update" || !failRunsUpdate) return typeof value === "function" ? value.bind(target) : value;
+      return async (claim, patch, ...rest) => {
+        if (failRunsUpdate(claim, patch)) throw new Error("the store can't be written (a test's fault)");
+        return value.call(target, claim, patch, ...rest);
+      };
+    },
+  });
   const store = new Proxy(opened, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
+      if (prop === "runs" && failRunsUpdate) return runsOf(value);
       if (prop === "journal") return (...args) => journalOf(value.apply(target, args));
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -328,7 +342,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   // A test's harness table reaches the runner with or without the faux model (fauxEnvOf hands it either way): a CLI
   // harness's run on a gateway or a vendor's fake runs on the table's harness, never on the real CLI.
-  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }) };
+  // `fauxVendorApi` (a test's): the module whose default export is the fetch the runner's own sign-in calls to a vendor
+  // (a context or profile made at a launch, tools.ts) go through; the check fakes (fauxBrowserbase, fauxKernel) are the server's.
+  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }), ...(fauxVendorApi ? { [FAUX_VENDOR_API_ENV]: resolve(fauxVendorApi) } : {}) };
   let seal;
   try {
     seal = await bootSealKey(store, data, { role: "runner" });
@@ -353,6 +369,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
       memory: runnerMemory(store),
       onBeat: () => void beats++,
+      // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
+      ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its
       // GitHub site (githubWeb, the runner's alone): where a run's pull request is checked out from (pr-checkout.ts). The
@@ -639,10 +657,9 @@ export function paidCallsOf(data, runId) {
   return out;
 }
 
-/** Run `runId` as its claim and its process say it: the record the process keeps in its store (its status, `detail` and
- *  the epoch it ran under as `generation`), and its holder from the run's row — the runner that claimed it, whose name the
- *  runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it; `{}` when there is
- *  neither yet. */
+/** Run `runId` as its claim says it: the epoch it runs under and its holder from the run's row — the runner that claimed
+ *  it, whose name the runner mints as `<hostname>:<pid>:<uuid>` (runner.ts), so its `pid` is the process now running it;
+ *  `{}` when there is neither yet. */
 export function runRecordOf(data, runId) {
   let claim;
   try {
@@ -660,20 +677,7 @@ export function runRecordOf(data, runId) {
     const pid = Number(/:(\d+):[^:]+$/.exec(claim.runner)?.[1]);
     if (Number.isInteger(pid)) holder = { pid, runner: claim.runner };
   }
-  let record = {};
-  const file = join(runDir(data, runId), "store", "run.sqlite");
-  if (existsSync(file)) {
-    try {
-      record = readRunDbSync(file, false, (db) => {
-        const row = db.prepare("SELECT record FROM pda_run_status WHERE id = 1").get();
-        return row ? JSON.parse(row.record) : {};
-      });
-    } catch {
-      record = {};
-    }
-  }
-  const { holder: _kept, ...rest } = record;
-  return { ...rest, ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
+  return { ...(holder ? { holder } : {}), ...(claim ? { epoch: Number(claim.epoch) } : {}) };
 }
 
 /** Create agent `id` and start one run of it with `content`. */
