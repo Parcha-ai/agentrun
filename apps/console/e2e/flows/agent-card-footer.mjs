@@ -6,7 +6,7 @@
 // learned item waiting), as an agent that has been used for a while reads. E2E_SHOTS=<dir> also saves each width's page.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { check } from "../harness.mjs";
+import { check, serverAnswer } from "../harness.mjs";
 
 export const WIDTHS = [1440, 1150, 820, 390];
 
@@ -63,7 +63,7 @@ export default {
     const byName = new Map(AGENTS.map((a) => [a.name, a]));
     await page.route(/\/v2\/agents(\?.*)?$/, async (route) => {
       if (route.request().method() !== "GET") return route.fallback();
-      const real = await route.fetch();
+      const real = await serverAnswer(route);
       const body = await real.json();
       for (const agent of body.agents ?? []) {
         const used = byName.get(agent.definition?.name);

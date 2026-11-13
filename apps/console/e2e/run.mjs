@@ -31,6 +31,11 @@ const within = (promise, ms, what) => {
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms); })]).finally(() => clearTimeout(timer));
 };
 
+// A rejection nothing handles while a flow runs (a route handler that threw: Playwright leaves it unhandled) fails that
+// flow, its server's output printed, instead of ending the whole run with no results; outside a flow it ends the run.
+let stray = null;
+process.on("unhandledRejection", (error) => { if (!stray) throw error; stray(error); });
+
 const browser = await launchBrowser();
 const results = [];
 for (const flow of chosen) {
@@ -48,11 +53,12 @@ for (const flow of chosen) {
     context = opened.context;
     const { page, errors } = await newPage(context);
     const origin = flow.origin?.(server) ?? server.origin;
-    await within((async () => {
+    const strayed = new Promise((_, reject) => { stray = reject; });
+    await within(Promise.race([strayed, (async () => {
       // A flow that starts signed in: the owner set (through the API when it has none), then this page signed in.
       if (flow.signedIn) { await owner(server); await signIn(page, origin); }
       await flow.run({ server, context, page, errors, blocked: opened.blocked, icons: opened.icons, browser, origin, base: origin, api: apiOf(server) });
-    })(), FLOW_MS, flow.name);
+    })()]), FLOW_MS, flow.name);
     if (opened.blocked.length && !flow.allowsBlocked) throw new Error(`requests left loopback: ${opened.blocked.join(", ")}`);
     if (errors.length && !flow.allowsErrors) throw new Error(`the page reported errors: ${errors.join(" | ")}`);
     results.push({ name: flow.name, state: "PASS", ms: Date.now() - started });
@@ -61,6 +67,7 @@ for (const flow of chosen) {
   } finally {
     await context?.close().catch(() => {});
     await server?.stop().catch(() => {});
+    stray = null;
   }
 }
 await browser.close();
