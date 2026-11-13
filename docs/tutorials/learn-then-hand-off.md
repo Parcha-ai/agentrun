@@ -60,7 +60,7 @@ it took (the agent by hand, a learned workflow that handed back, or the workflow
 the agent's cost before learning as a dashed line, a marker at the first run the workflow finished alone, and the
 level after it. Once 20 runs stand behind that level, it says how many times cheaper it is.
 
-![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7x cheaper](../assets/tutorials/cost-per-run.png)
+![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7x cheaper; under it, who finished each block of 5 runs, the learned workflow's share growing from run 21](../assets/tutorials/cost-per-run.png)
 
 The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
 CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
