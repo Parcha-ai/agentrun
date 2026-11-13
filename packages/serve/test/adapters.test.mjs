@@ -62,6 +62,10 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" };
   assert.equal((await chooseModel(gateway, "openai/gpt-6.1-sol")).model.modelId, "openai/gpt-6.1-sol", "through a gateway: its name, whole");
   assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-6.1-sol")).model.modelId, "gpt-6.1-sol", "unless the gateway takes bare ids");
+  const bare = { ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare", AGENT_MODEL: "team/model", AGENT_MODEL_FAST: "team/fast" };
+  assert.equal((await chooseModel(bare, "team/model")).model.modelId, "team/model", "a configured id the picker lists goes as configured, not cut");
+  assert.equal((await chooseModel(bare, "team/fast")).model.modelId, "team/fast", "so does a configured tier id");
+  assert.equal((await chooseModel(bare, "openai/gpt-6.1-sol")).model.modelId, "gpt-6.1-sol", "any other ref is still cut");
 });
 
 test("the model id claude-agent sends and prices is Anthropic's own: dots as dashes, as a gateway such as OpenRouter names its models with dots", () => {

@@ -11,6 +11,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
 import { gatewayBase } from "./provider.js";
+import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
@@ -181,18 +182,21 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
-    const id = ref ?? ([env[TIER_ENV[tier]], env.AGENT_MODEL].includes(named) ? undefined : named);
+    // A name equal to one of the host's configured ids (the picker lists them: model-form.ts pickerCandidates) is that
+    // host id whoever names it, so a revision that picks it is sent what the host configured, never a cut of it.
+    const configured = [env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].includes(named);
+    const id = ref ?? (configured ? undefined : named);
     const slash = id?.indexOf("/") ?? -1;
-    const sent = id && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
+    const sent = id && !configured && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
   if (!named) return { why: `${none}: ${ADD_A_KEY}`, host: true, needs: "key" };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true, needs: "model" };
+  if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const models = await providerModels(env);
   const model = models.getModel(provider, modelId);
-  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined, needs: "model" };
+  if (!model) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
   const refused = provider === "anthropic" ? anthropicRefusal(models) : undefined;
   if (refused) return { why: refused, host: true, needs: "key" };
