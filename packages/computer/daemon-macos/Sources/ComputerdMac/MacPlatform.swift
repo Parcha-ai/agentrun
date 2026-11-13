@@ -65,10 +65,10 @@ public enum MacPlatform {
 		}
 	}
 
-	/// A driver for one connection.
-	public static func driver() -> Driver {
+	/// A driver for one connection, the socket's (.local) or the paired server's (.attached).
+	public static func driver(_ caller: Caller) -> Driver {
 		// One line per ui.act in Computerd.log: where its time went.
-		Driver(platform: make(), policy: policy(), machine: machine, timing: Timing(trace: { log($0) }))
+		Driver(platform: make(), policy: policy(), caller: caller, machine: machine, timing: Timing(trace: { log($0) }))
 	}
 }
 #endif

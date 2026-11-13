@@ -18,14 +18,15 @@ public struct MachineInfo: Sendable {
 }
 
 /// One connection's methods: hello and ping, exec, files and tar, screen, input, apps, and the ui group, over one
-/// Platform and one claim's Policy. A driver makes one per connection, so states, refs, images and tar streams are the
-/// connection's.
+/// Platform, one claim's Policy and who the connection serves. A driver makes one per connection, so states, refs, images
+/// and tar streams are the connection's.
 public final class Driver: Sendable {
 	/// In protocol.json's order. screen, input.pointer and input.keys make it a desktop (kinds.md).
 	public static let groups: [Group] = [.exec, .files, .screen, .inputPointer, .inputKeys, .apps, .ui]
 
 	let platform: Platform
 	let policy: Policy
+	let caller: Caller
 	let machine: MachineInfo
 	let shots = ShotStore()
 	let tar = TarSessions()
@@ -34,9 +35,10 @@ public final class Driver: Sendable {
 	let held = InputHeld()
 	public let ui: UIEngine
 
-	public init(platform: Platform, policy: Policy, machine: MachineInfo, timing: Timing = Timing()) {
+	public init(platform: Platform, policy: Policy, caller: Caller, machine: MachineInfo, timing: Timing = Timing()) {
 		self.platform = platform
 		self.policy = policy
+		self.caller = caller
 		self.machine = machine
 		ui = UIEngine(platform: platform, policy: policy, timing: timing)
 	}

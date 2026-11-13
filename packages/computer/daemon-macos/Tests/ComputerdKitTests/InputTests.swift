@@ -164,7 +164,7 @@ final class InputTests: XCTestCase {
 	}
 
 	func testClosingTheDriverReleasesWhatABatchLeftDown() async throws {
-		let driver = Driver(platform: os.platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let driver = Driver(platform: os.platform(), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		_ = try await driver.router().handler("input.actions")!(json(#"{"actions":[{"type":"move","at":[10,10]},{"type":"down"}]}"#))
 		await driver.close()
 		XCTAssertEqual(raw.last, "raw.up left 5,5 1")
@@ -237,7 +237,7 @@ final class InputTests: XCTestCase {
 	}
 
 	func testTheDriverServesInputActions() async throws {
-		let driver = Driver(platform: os.platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let driver = Driver(platform: os.platform(), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		let reply = try await driver.router().handler("input.actions")!(json(#"{"actions":[{"type":"wait","ms":1}]}"#))
 		XCTAssertEqual(reply, .object(["done": .int(1)]))
 		let refused = try await driver.router().handler("input.actions")!(json(#"{"actions":[{"type":"tap","at":[1,1]}]}"#))

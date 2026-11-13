@@ -60,6 +60,8 @@ public enum FeatureName {
 	public static let page = "ui.page"
 	/// The nav step: back, home and app_switch.
 	public static let nav = "ui.nav"
+	/// screen.shot and screen.watch capture the whole screen.
+	public static let screenCapture = "screen.capture"
 
 	public static let all = [appsBackground, tree, image, background, foreground, page, nav]
 }
