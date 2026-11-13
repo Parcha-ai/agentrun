@@ -1,13 +1,13 @@
 # The AgentRun computer protocol
 
-Draft. Protocol version **0.1**, the wire as `packages/computer` speaks it today.
+Draft. Protocol version **0.2**, the wire as `packages/computer` speaks it today.
 
 A computer is anything an agent can run commands on or look at: a container, a microVM, a VM, a desktop, a phone, a
 browser. The protocol lets any vendor's computers, and a machine of your own, be given to an agent the same way. It has
 two layers:
 
 - **The computer's methods.** JSON-RPC 2.0, one JSON object per line. `exec.run`, `files.*`, `process.*`, `screen.*`,
-  `input.actions`, `apps.*` and a few more answer for the computer. Inside most computers a small daemon, `computerd`,
+  `input.actions`, `apps.*`, `ui.observe`, `ui.act` and a few more answer for the computer. Inside most computers a small daemon, `computerd`,
   answers them over its stdin and stdout. A phone or a browser has no daemon: its provider answers the same methods
   itself.
 - **The provider.** One per vendor. It makes, finds and ends computers, reads their network back, and opens the
@@ -18,8 +18,9 @@ two layers:
 
 | File | What it holds |
 | --- | --- |
-| [`wire.md`](wire.md) | The methods, `hello` and the protocol version, errors, cancellation, and the limits. |
+| [`wire.md`](wire.md) | The methods, `hello` and the protocol version, errors, cancellation, the limits, and the `ui` group's rules. |
 | [`stdio.md`](stdio.md) | The stdio binding: how the methods travel to and from `computerd`. |
+| [`attach.md`](attach.md) | The attach binding: a driver dials the server over a WebSocket, with a token it got by pairing. Draft. |
 | [`kinds.md`](kinds.md) | Kinds, operating systems and daemon modes; groups; the Core and Full levels. |
 | [`provider.md`](provider.md) | The provider contract: what a vendor implements, and the descriptor it declares itself by. |
 | [`schema/methods.schema.json`](schema/methods.schema.json) | Each method's params and result, as JSON Schema. Generated. |
@@ -41,6 +42,10 @@ disagree, the generated file is right, and the document is a bug.
   another version.
 
 Until 1.0, a minor step may still change something a draft got wrong. Each such change is named in the step's notes.
+
+**0.2** adds the `ui` group (`ui.observe`, `ui.act`), `hello.screen` and `hello.features`, the error kind `stale`,
+`apps.launch`'s `url` and `background`, and the limits the new methods need. Its one break: the `apps.ui_tree` group and
+method are gone, replaced by `ui`.
 
 ## Proving it: conformance
 
@@ -67,5 +72,7 @@ The suite holds the wire to what this spec says. Among its contract cases:
   module's `CAPABILITIES` and the kind registry's entry.
 - Persistence (`capabilities().persistence`, `spec.owner`) and the zero-dependency protocol package are named and
   marked **draft**: their shapes may change before they land.
-- An outbound binding, where `computerd` dials the server so a machine needs no inbound port, is planned and is not
-  part of 0.1.
+- The `ui` group runs on the Android phone over adb (through `UiEngine`) and on the fake ui driver. Computerd on macOS
+  and phoned on Android, its native drivers, are being built against it.
+- The attach binding ([`attach.md`](attach.md)), where a driver dials the server so a machine needs no inbound port, is
+  **draft**: the provider's side is written and tested, and serve's routes are not built yet.

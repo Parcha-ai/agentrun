@@ -1,17 +1,21 @@
-// A phone with no fixture: the stock Settings app, read back through apps.ui_tree. A cloud phone may take no files, so
+// A phone with no fixture: the stock Settings app, read back through ui.observe. A cloud phone may take no files, so
 // no fixture app can be installed on it; the touch, keys and apps cases then drive Settings instead and check what
-// they did in its tree, with no model. Settings shows a list of rows, each a clickable row holding its title. A tap on
+// they did in its nodes, with no model. Settings shows a list of rows, each a clickable row holding its title. A tap on
 // one opens a page that shows its title, and its search field shows the text typed into it.
-import type { ComputerKind, Point, Rect, UiNode, UiTreeResult } from "../../protocol.js";
+//
+// ui's bounds are window points; input.actions aims in screenshot pixels. A case that taps a node through input.actions
+// turns its point into pixels with the screen's scale (pixelsOf).
+import type { ComputerKind, Point, Rect, UiNode, UiObserveResult, UiRole } from "../../protocol.js";
+import { windowRectToPixels } from "../../ui-engine.js";
 import type { CaseContext } from "../types.js";
 
 /** The stock Settings app of each phone kind this suite knows. */
 export const PHONE_SETTINGS: Readonly<Partial<Record<ComputerKind, string>>> = { android: "com.android.settings" };
 
-/** Whether the case checks what it did through Settings: a phone with apps and a UI tree that takes no fixture file. */
+/** Whether the case checks what it did through Settings: a phone with apps and the ui group that takes no fixture file. */
 export function throughSettings(t: CaseContext): boolean {
 	const { kind, groups } = t.provider.capabilities();
-	return PHONE_SETTINGS[kind] !== undefined && !groups.includes("files") && groups.includes("apps") && groups.includes("apps.ui_tree");
+	return PHONE_SETTINGS[kind] !== undefined && !groups.includes("files") && groups.includes("apps") && groups.includes("ui");
 }
 
 /** The kind's Settings app, or the case skips in words. */
@@ -21,6 +25,9 @@ export function settingsApp(t: CaseContext): string {
 }
 
 const foreground = async (t: CaseContext) => (await t.call("apps.list", {})).foreground;
+
+/** The app in front's window, as ui.observe sees it. */
+export const observe = (t: CaseContext): Promise<UiObserveResult> => t.call("ui.observe", {});
 
 /** Settings, fresh and in front: ended, launched, and waited for until it is the app in front. */
 export async function openSettings(t: CaseContext): Promise<string> {
@@ -37,13 +44,26 @@ export async function openSettings(t: CaseContext): Promise<string> {
 	return app;
 }
 
+/** Screenshot pixels per point: hello's screen.scale, else a screenshot's. */
+async function scaleOf(t: CaseContext): Promise<number> {
+	const scale = t.hello.screen?.scale ?? (await t.call("screen.shot", {})).scale;
+	t.assert(typeof scale === "number" && Number.isFinite(scale) && scale > 0, `the screen's scale, to aim input.actions at a ui node: ${JSON.stringify(scale)} is not a positive number`);
+	return scale;
+}
+
+/** A point of a ui observation (window points) as input.actions aims it: screenshot pixels. */
+export async function pixelsOf(t: CaseContext, seen: UiObserveResult, [x, y]: Point): Promise<Point> {
+	const [px, py] = windowRectToPixels(seen.window.bounds, await scaleOf(t), [x, y, 0, 0]);
+	return [px, py];
+}
+
 /**
  * What a tap on a row met, in words for a failure: the screen in px and in dp (px over the shot's scale; Settings shows
- * two panes from 600 dp wide), what is in front, the tap point and the row's bounds, whether the row's title shows
- * outside the list (a page opened beside it), and whether the next row is still shown. A part that cannot be read
- * says so; none of it throws.
+ * two panes from 600 dp wide), what is in front, the tap point (px) and the row's bounds (points), whether the row's
+ * title shows outside the list (a page opened beside it), and whether the next row is still shown. A part that cannot
+ * be read says so; none of it throws.
  */
-export async function tapScene(t: CaseContext, { at, row, next, tree }: { at: Point; row: Row; next: Row; tree: UiTreeResult | undefined }): Promise<string> {
+export async function tapScene(t: CaseContext, { at, row, next, seen }: { at: Point; row: Row; next: Row; seen: UiObserveResult | undefined }): Promise<string> {
 	const unread = (error: unknown) => `unread (${error instanceof Error ? error.message : String(error)})`;
 	let screen: string;
 	try {
@@ -58,108 +78,112 @@ export async function tapScene(t: CaseContext, { at, row, next, tree }: { at: Po
 	} catch (error) {
 		front = unread(error);
 	}
-	const tap = `the tap at ${at} on the row's bounds ${JSON.stringify(row.bounds)}`;
-	if (tree === undefined) return `${screen}; in front: ${front}; ${tap}; no tree was read`;
-	const list = listOf(tree);
-	const inList = new Set(list === undefined ? [] : nodesOf(list));
-	const outside = nodesOf(tree.root).find((node) => names(node, row.text) && !inList.has(node));
-	const title = `its title outside the list: ${outside === undefined ? "no" : `yes, at ${JSON.stringify(outside.bounds)}`}`;
-	const shown = `the row ${JSON.stringify(next.text)}: ${textsOf(tree).includes(next.text) ? "still shown" : "gone"}`;
+	const tap = `the tap at ${at} px on the row's bounds ${JSON.stringify(row.bounds)} pt`;
+	if (seen === undefined) return `${screen}; in front: ${front}; ${tap}; no ui.observe was read`;
+	const list = listOf(seen);
+	const inList = new Set(list === undefined ? [] : under(seen, list));
+	const outside = seen.nodes.find((node) => node.name === row.text && !inList.has(node));
+	const title = `its title outside the list: ${outside === undefined ? "no" : `yes, at ${JSON.stringify(outside.bounds)} pt`}`;
+	const shown = `the row ${JSON.stringify(next.text)}: ${showsName(seen, next.text) ? "still shown" : "gone"}`;
 	return `${screen}; in front: ${front}; ${tap}; ${title}; ${shown}`;
 }
 
-/** Every node of a tree, depth first. */
-export function nodesOf(root: UiNode): UiNode[] {
-	const out: UiNode[] = [];
-	const walk = (node: UiNode) => {
+/** A node and every node below it, in the observation's order: a node comes after its parent. */
+export function under(seen: UiObserveResult, top: UiNode): UiNode[] {
+	const refs = new Set([top.ref]);
+	const out = [top];
+	for (const node of seen.nodes.slice(seen.nodes.indexOf(top) + 1)) {
+		if (node.parent === undefined || !refs.has(node.parent)) continue;
+		refs.add(node.ref);
 		out.push(node);
-		for (const child of node.children ?? []) walk(child);
-	};
-	walk(root);
+	}
 	return out;
 }
 
-/** Whether a node shows a name: as its text, or as its label (content-desc). */
-const names = (node: UiNode, name: string) => node.text === name || node.label === name;
-
 /**
- * Whether a tree shows a name anywhere, as a text or a label. A live Android 15 Settings page shows its title only as
- * its collapsing toolbar's content-desc (phone probe 3), with no text node holding it.
+ * Whether an observation shows a name anywhere. A live Android 15 Settings page shows its title only as its collapsing
+ * toolbar's content-desc (phone probe 3), with no text node holding it; a driver gives either as the node's name.
  */
-export const showsName = (tree: UiTreeResult, name: string) => nodesOf(tree.root).some((node) => names(node, name));
+export const showsName = (seen: UiObserveResult, name: string) => seen.nodes.some((node) => node.name === name);
 
-/** The texts a tree shows. */
-export const textsOf = (tree: UiTreeResult) => nodesOf(tree.root).flatMap((node) => (node.text ? [node.text] : []));
+/** The names and values an observation shows, in order. */
+export const namesOf = (seen: UiObserveResult) => seen.nodes.flatMap((node) => [node.name, node.value].filter((one): one is string => one !== undefined));
 
 export interface Row {
 	text: string;
+	/** In window points. */
 	bounds: Rect;
 }
 
-/** The middle of a rect, in whole pixels. */
+/** The middle of a rect, in whole units. */
 export const middle = ([x, y, w, h]: Rect): [number, number] => [Math.floor(x + w / 2), Math.floor(y + h / 2)];
 
-/** The scrollable list a tree shows, the first one. */
-export function listOf(tree: UiTreeResult): UiNode | undefined {
-	return nodesOf(tree.root).find((node) => node.scrollable === true);
+const SCROLLS = ["ACTION_SCROLL_FORWARD", "ACTION_SCROLL_BACKWARD"];
+/** The roles a person taps. */
+const TAPPED: ReadonlySet<UiRole> = new Set<UiRole>(["button", "link", "listitem", "menuitem", "tab"]);
+const clickable = (node: UiNode) => TAPPED.has(node.role) || (node.actions?.includes("ACTION_CLICK") ?? false);
+
+/** The scrollable list an observation shows, the first one: a scrollarea, or a node that scrolls. */
+export function listOf(seen: UiObserveResult): UiNode | undefined {
+	return seen.nodes.find((node) => node.role === "scrollarea" || (node.actions?.some((action) => SCROLLS.includes(action)) ?? false));
 }
 
-/** Whether a node, or one under it, says search: its text, its label or its id. */
-const saysSearch = (node: UiNode) => nodesOf(node).some((one) => /search/i.test(`${one.text ?? ""} ${one.label ?? ""} ${one.id ?? ""}`));
+/** Whether a node, or one under it, says search: its name, its value or its id. */
+const saysSearch = (seen: UiObserveResult, node: UiNode) => under(seen, node).some((one) => /search/i.test(`${one.name ?? ""} ${one.value ?? ""} ${one.id ?? ""}`));
 
 /**
- * The rows of a tree's list: each clickable node in it, whole inside it, with the first text it holds. Settings' search
- * entry is not a row, though a live Settings shows it as the list's first item.
+ * The rows of an observation's list: each clickable node in it, whole inside it, with the first text it holds (its own
+ * when it is a text, else a text node's under it). Settings' search entry is not a row, though a live Settings shows it
+ * as the list's first item.
  */
-export function rowsOf(tree: UiTreeResult): Row[] {
-	const list = listOf(tree);
+export function rowsOf(seen: UiObserveResult): Row[] {
+	const list = listOf(seen);
 	if (list === undefined) return [];
 	const [lx, ly, lw, lh] = list.bounds;
 	const rows: Row[] = [];
-	for (const node of nodesOf(list).slice(1)) {
-		if (node.clickable !== true || saysSearch(node)) continue;
+	for (const node of under(seen, list).slice(1)) {
+		if (!clickable(node) || saysSearch(seen, node)) continue;
 		const [x, y, w, h] = node.bounds;
 		if (x < lx || y < ly || x + w > lx + lw || y + h > ly + lh || w === 0 || h === 0) continue;
-		const text = nodesOf(node).find((one) => one.text)?.text;
+		const text = under(seen, node).find((one) => one.role === "text" && one.name)?.name;
 		if (text !== undefined) rows.push({ text, bounds: node.bounds });
 	}
 	return rows;
 }
 
 /** Settings' top list, with at least `count` rows of different titles on screen, or the case fails in words. */
-export async function settingsRows(t: CaseContext, count: number): Promise<{ tree: UiTreeResult; rows: Row[] }> {
+export async function settingsRows(t: CaseContext, count: number): Promise<{ seen: UiObserveResult; rows: Row[] }> {
 	return t.until(async () => {
-		const tree = await t.call("apps.ui_tree", {});
-		const rows = rowsOf(tree);
-		return new Set(rows.map((row) => row.text)).size >= count ? { tree, rows } : undefined;
-	}, `Settings' list with ${count} rows in apps.ui_tree`);
+		const seen = await observe(t);
+		const rows = rowsOf(seen);
+		return new Set(rows.map((row) => row.text)).size >= count ? { seen, rows } : undefined;
+	}, `Settings' list with ${count} rows in ui.observe`);
 }
 
 /**
- * A node text is typed into: any editable field, by its class, an EditText or a subclass the platform names apart
- * (AutoCompleteTextView, MultiAutoCompleteTextView, ExtractEditText). A live Android 15's Settings search field is an
- * AutoCompleteTextView (phone probe 2).
+ * A node text is typed into: a textbox or a searchbox. A live Android 15's Settings search field is an
+ * AutoCompleteTextView inside a SearchView (phone probe 2), which the adb phone gives as a searchbox.
  */
-const isField = (node: UiNode) => /(EditText|AutoCompleteTextView)$/.test(node.role);
+const isField = (node: UiNode) => node.role === "textbox" || node.role === "searchbox";
 
 /**
  * Settings' search field, opened from its list: the case taps the search entry (the first clickable node that says
- * search, by its own text, label or id or a child's; a live Settings shows it inside the list, its text on a child) and
- * waits for the field. An empty field may show its hint as its text, so only the field is waited for.
+ * search, by its own name, value or id or a node's under it; a live Settings shows it inside the list, its text on a
+ * child) and waits for the field. An empty field may show its hint as its text, so only the field is waited for.
  */
 export async function openSearch(t: CaseContext): Promise<void> {
-	const { tree } = await settingsRows(t, 1);
+	const { seen } = await settingsRows(t, 1);
 	const entry = t.present(
-		nodesOf(tree.root).find((node) => node.clickable === true && saysSearch(node)),
-		"Settings' search entry (a clickable node saying search) in apps.ui_tree",
+		seen.nodes.find((node) => clickable(node) && saysSearch(seen, node)),
+		"Settings' search entry (a clickable node saying search) in ui.observe",
 	);
-	const at = middle(entry.bounds);
+	const at = await pixelsOf(t, seen, middle(entry.bounds));
 	t.deepEqual(await t.call("input.actions", { actions: [{ type: "tap", at }] }), { done: 1 }, `input.actions of a tap on Settings' search entry at ${at}`);
-	await t.until(async () => (await searchText(t)) !== undefined, "Settings' search field in apps.ui_tree");
+	await t.until(async () => (await searchText(t)) !== undefined, "Settings' search field in ui.observe");
 }
 
 /** The text in Settings' search field now, or undefined when no field is shown. */
 export async function searchText(t: CaseContext): Promise<string | undefined> {
-	const field = nodesOf((await t.call("apps.ui_tree", {})).root).find(isField);
-	return field === undefined ? undefined : (field.text ?? "");
+	const field = (await observe(t)).nodes.find(isField);
+	return field === undefined ? undefined : (field.value ?? "");
 }
