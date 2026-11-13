@@ -3,7 +3,7 @@
 // its own database file ("SELECT record FROM entries ORDER BY id") and fed the same pure renderer; these read the one store instead.
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
 import { CALL_REFUSED, CAPS, costLabel, timelineOf, TOOL_COST } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";

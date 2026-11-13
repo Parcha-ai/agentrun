@@ -18,7 +18,7 @@
 // each writer writes, then re-reads the run's journal (a hand-back the runner already applied, or an end the run's own
 // hold wrote: the viewer's hand-back, idle, away, released), then the rows (the lowest-id row is the one the runner
 // applies), so each caller is told the truth.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { settingOfDefinition } from "./computer-setting.js";

@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineTask, type ConversationDocToken, type ConversationId, type Cursor, type DocumentReader, type Harness, type TaskId, type TaskRuntime, type Tx } from "@earendil-works/pi-durable";
 import { backoffMs, HANDOFF_POLL_MS, moveRecord, notices } from "../core/custody.js";
 import type { BrowserConfig, BrowserProvider, HandoffOutcome, HandoffPort, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "../core/host.js";

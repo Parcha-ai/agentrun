@@ -13,7 +13,7 @@
 // merge's call merges once.
 
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
 import { GENERAL_THRESHOLD, ONE_CASE, type GeneralScores, type GeneralSource } from "../learn/general.js";

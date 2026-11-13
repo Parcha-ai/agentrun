@@ -2,7 +2,7 @@
 // suite owns the store, the runners, the tools, the crash and the checks; a harness brings loops whose model plays the
 // suite's script through the kernel, and the kernel's two hook points. Its journal is read with the kernel's one reader
 // (runner/journal-reader.ts), the same for every harness.
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { CallRecord } from "../journal-reader.js";
 import type { Journal, LoopFactory } from "../loop-contract.js";
 

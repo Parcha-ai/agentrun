@@ -2,7 +2,7 @@
 // did, its tool calls and its messages, read the same way for every harness, so no harness grades itself. Two sources,
 // one output: a pi run's own records (its pi.tool tasks and its pi.user / pi.assistant entries), and a CLI run's
 // agentrun.* entries (runner/journal-kinds.ts). A run's stop reason is on its run row (its end commit's summary).
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { type MessageOrigin, originOf } from "../timeline/index.js";
 import type { ConversationId, ConversationRecord, EntryRecord, SubmissionRecord, TaskRecord } from "@earendil-works/pi-durable";
 import { inReflect, reflectRanges } from "./end-of-run.js";

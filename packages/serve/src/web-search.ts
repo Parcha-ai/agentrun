@@ -16,7 +16,7 @@
 // or 403 to either web tool stops both for the rest of the run. No request is retried. Each is a paid request, held by
 // the run's cap and booked as the call's cost at Parallel's price (paid-calls.ts): one the cap refuses answers its words.
 import type { TSchema } from "typebox";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { clip, TITLE_CAP } from "./web-fetch-direct.js";
 import { forModel } from "./result.js";
