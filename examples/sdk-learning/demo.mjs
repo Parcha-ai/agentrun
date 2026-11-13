@@ -18,7 +18,8 @@ export async function demonstrate({ runtime, createBackend, baseUrl = process.en
       const receipt = await response.clone().json();
       receipts.push({ runId: receipt.run_id, agentId: receipt.agent_id, consoleUrl: receipt.console_url,
         enabled: receipt.learning.enabled, revision: receipt.learning.revision,
-        contextPresent: Boolean(receipt.learning.context) });
+        contextPresent: receipt.learning.enabled && (Boolean(receipt.learning.context?.trim()) ||
+          receipt.learning.skills?.some(skill => Object.values(skill.files ?? {}).some(body => typeof body === 'string' && body.trim().length > 0))) });
     }
     return response;
   };
@@ -31,7 +32,9 @@ export async function demonstrate({ runtime, createBackend, baseUrl = process.en
   await on.flushLearning();
   const learned = await client.learning.get(agentId);
   const notes = learned.notes.items.filter(note => note.status === 'active' && note.origin === 'run');
-  assert.ok(notes.length > 0, 'No checked note was accepted. Inspect Learning Dojo before re-running; this demo never force-approves a note.');
+  const skills = learned.skills.filter(skill => skill.status === 'active' && typeof skill.run === 'string' && skill.run.length > 0);
+  const acceptedLessonFiles = [...notes.map(note => note.file), ...skills.map(skill => skill.file)];
+  assert.ok(acceptedLessonFiles.length > 0, 'No checked note or skill was accepted. Inspect Learning Dojo before re-running; this demo never force-approves a lesson.');
   const reused = await on.report(TASK); // Fresh native session; no formatting preference in this user input.
   await on.flushLearning();
   const control = await off.report(TASK);
@@ -47,7 +50,7 @@ export async function demonstrate({ runtime, createBackend, baseUrl = process.en
       assert.ok(result.answer.toLowerCase().includes(fact), `The answer did not report the observed release fact: ${fact}`);
     }
   }
-  return { agentId, controlId, acceptedRevision: learned.main, acceptedNoteFiles: notes.map(note => note.file),
+  return { agentId, controlId, acceptedRevision: learned.main, acceptedLessonFiles,
     taught, reused, control, runs: receipts };
 }
 

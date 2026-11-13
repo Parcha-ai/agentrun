@@ -152,7 +152,7 @@ the run and supplies accepted learning to the next fresh task. Use the matching 
 | Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
 | Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
 
-The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note, fresh-run reuse,
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
 and a learning-Off control. Reflection and independent grading run on the server and add model usage.
 
 ## Take the tour

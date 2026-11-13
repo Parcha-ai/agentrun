@@ -94,6 +94,11 @@ test('Codex uses the original client and thread, preserves result identity and o
   assert.equal(start.body.instructions, config.instructions);
   assert.equal(start.body.model, 'native-model');
   assert.doesNotMatch(JSON.stringify(requests), /private chain of thought|private command|private output/);
+  const toolEvents = requests.filter(r => r.path.endsWith('/events')).flatMap(r => r.body.events).filter(event => event.type === 'tool');
+  assert.deepEqual(toolEvents, [
+    { type: 'tool', id: 'tool-1', name: 'command_execution', status: 'started' },
+    { type: 'tool', id: 'tool-1', name: 'command_execution', status: 'completed' },
+  ], 'buffered results need a paired tool identity before their completion can render correctly');
   const complete = requests.find(r => r.path.endsWith('/complete')).body;
   assert.equal(complete.session_id, 'native-thread');
   assert.equal(complete.answer, response.finalResponse);
@@ -156,6 +161,27 @@ test('streaming defers all work until consumption and preserves event identity a
   assert.equal(calls.length, 1);
   assert.doesNotMatch(JSON.stringify(requests), /private chain of thought/);
   assert.equal(requests.find(r => r.path.endsWith('/complete')).body.status, 'completed');
+});
+
+test('streamed tool evidence pairs native starts and completions once, retaining the tool identity', async () => {
+  const command = response.items[1];
+  const events = [
+    { type: 'item.started', item: { ...command, status: 'in_progress' } },
+    { type: 'item.updated', item: { ...command, status: 'in_progress' } },
+    { type: 'item.started', item: { ...command, status: 'in_progress' } },
+    { type: 'item.completed', item: command },
+    { type: 'turn.completed', usage: response.usage },
+  ];
+  const { config, requests } = service(), { codex } = native({ events });
+  const wrapped = withCodexAgentLearning(codex, config);
+  const observed = [];
+  for await (const event of (await wrapped.startThread().runStreamed('Report status.')).events) observed.push(event);
+  await wrapped.flushLearning();
+  observed.forEach((event, index) => assert.equal(event, events[index]));
+  assert.deepEqual(requests.filter(r => r.path.endsWith('/events')).flatMap(r => r.body.events), [
+    { type: 'tool', id: 'tool-1', name: 'command_execution', status: 'started' },
+    { type: 'tool', id: 'tool-1', name: 'command_execution', status: 'completed' },
+  ]);
 });
 
 test('breaking the consumer stream closes its native iterator and records cancellation', async () => {

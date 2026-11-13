@@ -66,6 +66,16 @@ function evidenceOf(itemValue: unknown): SdkLearningEvent | undefined {
   return undefined;
 }
 
+function pairedEvidence(event: SdkLearningEvent, started: Set<string>): SdkLearningEvent[] {
+  if (event.type !== 'tool') return [event];
+  const known = started.has(event.id);
+  started.add(event.id);
+  if (event.status === 'started') return known ? [] : [event];
+  // Buffered SDK results only arrive when the native turn has ended. Record the observed call identity before
+  // its outcome so the timeline can pair them; no original start time or live execution time is fabricated.
+  return known ? [event] : [{ ...event, status: 'started' }, event];
+}
+
 /** Add AgentRun learning to fresh Codex SDK threads without replacing their tools, credentials or execution.
  * Each wrapped thread admits one task; use startThread() again for the next task and its current learning revision.
  * Reflection and grading run on the AgentRun server, never as a hidden turn in the caller's Codex conversation. */
@@ -111,7 +121,9 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
           try {
             const result = await target.run(withContext(input, renderLearningContext(session)), turnOptions);
             const value = object(result);
-            const evidence = Array.isArray(value.items) ? value.items.map(evidenceOf).filter((entry): entry is SdkLearningEvent => Boolean(entry)) : [];
+            const started = new Set<string>();
+            const evidence = Array.isArray(value.items) ? value.items.map(evidenceOf)
+              .filter((entry): entry is SdkLearningEvent => Boolean(entry)).flatMap(entry => pairedEvidence(entry, started)) : [];
             if (target.id) evidence.unshift({ type: 'session', session_id: target.id });
             finish(session, { status: 'completed', answer: text(value.finalResponse) ?? '', ...(target.id ? { session_id: target.id } : {}),
               ...(model ? { model } : {}), ...(usageOf(value.usage) ? { usage: usageOf(value.usage) } : {}) }, evidence);
@@ -124,6 +136,7 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
           const events = (async function* () {
             const session = await begin(input);
             let completed = false, failed = false, answer = '', usage: SdkLearningUsage | undefined;
+            const started = new Set<string>();
             try {
               const streamed = await target.runStreamed(withContext(input, renderLearningContext(session)), turnOptions);
               for await (const event of streamed.events) {
@@ -131,10 +144,14 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
                 if (value.type === 'thread.started' && typeof value.thread_id === 'string') {
                   await record(session, { type: 'session', session_id: value.thread_id });
                 }
-                if (value.type === 'item.completed') {
+                if (value.type === 'item.started' || value.type === 'item.completed') {
                   const item = object(value.item);
-                  if (item.type === 'agent_message') answer = text(item.text) ?? answer;
-                  const entry = evidenceOf(item); if (entry) await record(session, entry);
+                  if (value.type === 'item.completed' && item.type === 'agent_message') answer = text(item.text) ?? answer;
+                  const entry = evidenceOf(item);
+                  if (entry && (value.type === 'item.completed' || entry.type === 'tool')) {
+                    const observed = value.type === 'item.started' && entry.type === 'tool' ? { ...entry, status: 'started' as const } : entry;
+                    for (const event of pairedEvidence(observed, started)) await record(session, event);
+                  }
                 }
                 if (value.type === 'turn.completed') { completed = true; usage = usageOf(value.usage); }
                 if (value.type === 'turn.failed' || value.type === 'error') failed = true;

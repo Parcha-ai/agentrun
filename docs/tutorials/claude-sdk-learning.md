@@ -29,7 +29,7 @@ async function answerRequest(prompt: string, existingOptions: Parameters<typeof 
 }
 ```
 
-`deliverOriginalEvent` represents your existing stream handler. The wrapper preserves the original event objects, native control methods, tools and options. It adds approved notes as lower-priority task context; it does not replace your system prompt. Programmatic system instructions and the selected named agent's prompt are captured for independent grading. Supply `instructions` for relevant policy in project files that the SDK does not expose.
+`deliverOriginalEvent` represents your existing stream handler. The wrapper preserves the original event objects, native control methods, tools and options. It adds approved notes and skill text as lower-priority task context; it does not replace your system prompt. Programmatic system instructions and the selected named agent's prompt are captured for independent grading. Supply `instructions` for relevant policy in project files that the SDK does not expose.
 
 `learning: true` opts in only when this stable id is first registered. Existing agents keep their current self-improving setting; change that setting in the console. Backend agents run when your application calls the SDK, not when the AgentRun runner schedules another model job. Continue to use your original cancellation controller or query controls.
 
@@ -47,6 +47,6 @@ SDK run evidence must finish within one hour of registration. A backend task tha
 
 ## Prove reuse with a real custom tool
 
-Run the [live release-reporter example](../../examples/sdk-learning/README.md). It retains a real `createSdkMcpServer` tool, teaches a formatting preference, waits for an accepted note, and checks that a fresh run uses the accepted revision. A separate learning-Off agent receives the same test request for comparison. The example does not inject a prewritten note or approve its own proposal.
+Run the [live release-reporter example](../../examples/sdk-learning/README.md). It retains a real `createSdkMcpServer` tool, teaches a formatting preference, waits for an accepted note or skill, and checks that a fresh run uses the accepted revision. A separate learning-Off agent receives the same test request for comparison. The example does not inject a prewritten note or approve its own proposal.
 
 SDK behavior reference: [Anthropic's Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/overview).

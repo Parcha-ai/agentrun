@@ -59,7 +59,9 @@ Only one task per wrapped thread is supported initially. A second `run`/`runStre
 
 ## Verify a real tool and fresh-run reuse
 
-Run the [live release-reporter example](../../examples/sdk-learning/README.md). Codex reads a fictional status file with its normal shell in a read-only workspace. The example teaches a preference, checks the accepted note and seed revision, and compares a fresh reuse run with a learning-Off control. It leaves the recorded agents/runs in your console for inspection.
+Run the [live release-reporter example](../../examples/sdk-learning/README.md). Codex reads a fictional status file with its normal shell in a read-only workspace. The example teaches a preference, checks the accepted note or skill and seed revision, and compares a fresh reuse run with a learning-Off control. It leaves the recorded agents/runs in your console for inspection.
+
+The native Linux shell sandbox requires namespace support. For a restricted container that cannot create those namespaces, run the example with `--live --mcp`. This uses a real read-only `release_status` MCP service configured on the existing Codex client and keeps the read-only sandbox. Both modes check successful tool completion and the actual release facts, not just whether a tool was attempted. The wrapper itself does not alter native tools or sandbox permissions.
 
 Native SDK reference: [OpenAI's Codex TypeScript SDK](https://github.com/openai/codex/blob/main/sdk/typescript/README.md).
 
