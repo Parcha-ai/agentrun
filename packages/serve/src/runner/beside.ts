@@ -30,9 +30,10 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  adapter loop, a learning run on the learning loop. `env`: the runs' environment (runEnv of this process's, unless a
  *  caller hands its own: the template eval's in-process server, its faux's). `loops` and `drainMs`: the runner's
  *  (RunnerOptions), the CLI start's from the server's flags (besideRunnerOptions). `janitor`: run the computer janitor
- *  too (workspace/computer-janitor.ts), as the CLI's start asks. Returns the runner and a close() that stops both and
- *  closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, mcpLoopback, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; mcpLoopback?: boolean; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+ *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
+ *  holds each paired computer's socket in this process, so a run here takes one. Returns the runner and a close() that
+ *  stops both and closes its store. */
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -61,7 +62,7 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
   const { hostCommandRefusals } = await import("../computers.js");
-  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
+  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; any other runner's runs never do.
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });
@@ -93,7 +94,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const { besideRunEnv } = await import("./main.js");
   const { loops, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), mcpLoopback: serve.localInstall, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, mcpLoopback: serve.localInstall, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });
