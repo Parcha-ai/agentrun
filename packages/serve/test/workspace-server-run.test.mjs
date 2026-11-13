@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { saveArchilSettings } from "../dist/archil-settings.js";
+import { saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { ARCHIL_API_KEY_ROW, runFolder, runKey, serverRunWorkspace } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
@@ -64,13 +64,16 @@ test("Mode 1: the run's local folder, read-only; a link is not followed; null fo
   assert.equal(await serverRunWorkspace(store, "run-2", options), null, "a run whose folder is not there yet");
 });
 
-const SETTINGS = { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
+const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
+/** The disk agent-1's runs keep their folders on: its own, made by an earlier run. */
+const DISK = "dsk-0000000000000fa0";
 
 async function mode2(t, { saveKey = true } = {}) {
   const { store, dir } = await storeOn(t);
   await queued(store, "run-1");
   await queued(store, "run-2");
   await saveArchilSettings(store, SETTINGS);
+  await storeAgentDisk(store, "agent-1", { diskId: DISK });
   const sealKey = randomBytes(32);
   if (saveKey) await putSealedKey(store, sealKey, ARCHIL_API_KEY_ROW, "fake-archil-account-key");
   const disk = new FakeArchilDisk();
@@ -85,11 +88,11 @@ async function mode2(t, { saveKey = true } = {}) {
   return { store, disk, made, options };
 }
 
-test("Mode 2: the run's folder on the server's Archil disk, its key opened from the sealed keys, read-only; a link is not followed", async (t) => {
+test("Mode 2: the run's folder on its agent's Archil disk, its key opened from the sealed keys, read-only; a link is not followed", async (t) => {
   const { store, disk, made, options } = await mode2(t);
   const workspace = await serverRunWorkspace(store, "run-1", options);
   await reads(workspace);
-  assert.deepEqual(made.map((one) => [one.disk, one.region, one.s3BaseUrl, one.key()]), [[SETTINGS.diskId, SETTINGS.region, SETTINGS.s3Url, "fake-archil-account-key"]], "the disk from the settings, with the sealed key");
+  assert.deepEqual(made.map((one) => [one.disk, one.region, one.s3BaseUrl, one.key()]), [[DISK, SETTINGS.region, SETTINGS.s3Url, "fake-archil-account-key"]], "the agent's disk, with the sealed key");
   // Archil's file API can't tell a link from a file (archil.ts's named limit): it lists as a file, and its read fails.
   assert.equal((await workspace.stat("out")).kind, "file");
   await assert.rejects(workspace.read("out"), (error) => error.code === "UNAVAILABLE" && !error.message.includes("not the run's"), "a link is not followed");

@@ -9,8 +9,8 @@ import { type Entry, type Workspace, workspaceAt } from "./workspace/index.js";
 /** The most files the line names; the rest are counted. */
 export const MANIFEST_ENTRIES = 20;
 
-/** The most the first message may take, as the JSON string the run's door is sent: pi-durable-disk's door takes a body of
- *  at most 1 MiB (serve.ts), and this leaves room for the request's other fields. */
+/** The most the first message may take, as the JSON string the run's door is sent: a door takes a body of
+ *  at most 1 MiB, and this leaves room for the request's other fields. */
 export const FIRST_MESSAGE_BYTES = (1 << 20) - 4096;
 
 /** `bytes` as a person reads a size: `32 B`, `1.5 KB`, `2.0 MB`. */

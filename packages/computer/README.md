@@ -431,7 +431,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET` (optional) | archil | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | archil | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -874,6 +874,14 @@ const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 60
   `{ other: "<words>" }` for a mount at `/workspace` the provider never makes. An Archil mount's `epoch` is the
   computer's `agentrun.epoch` label (Archil's hold on a folder carries none); an Archil mount with no epoch reads back
   as `{ other }`, in words. The token is never in a label, a read-back or an error.
+- **An Archil egress gateway (Daytona, `archilEgress` / `DAYTONA_ARCHIL_EGRESS`).** For a target whose runners reach
+  Archil only through a gateway, `<IPv4 gateway>:<mount lane>:<data lane>` (such as `10.60.0.40:18100:42050`, parcha-proxy's
+  archil-egress). The helper's mount then starts `computerd archil-relay` on the computer's loopback (127.0.0.1:3129) and
+  an nftables table of its own (`inet agentrun_archil`) that redirects root's TCP to 8100 (the mount endpoint) and 32050
+  (the file servers, at the raw addresses the mount endpoint returns) to the relay and resets every other TCP to those
+  ports. The relay sends each connection to the gateway's lane for its port with a PROXY v2 header naming the original
+  destination; the gateway admits only a destination that proves, by certificate, the Archil name the client asked for.
+  A relay that cannot reach the gateway closes the connection, so the client reaches nothing. Unset, nothing changes.
 - **Docker takes a bind.** `create` adds `--mount type=bind,src=<path>,dst=/workspace` after the daemon's mount:
   read-write, propagation `rprivate`. A path Docker's `--mount` cannot hold (a comma, a double quote, a line break) is
   refused by `check`.
@@ -1493,7 +1501,10 @@ stopped one.
 Daytona runs its own toolbox daemon as the sandbox's first process, and a snapshot we do not build has no `computerd`.
 So the provider pushes it in at create and starts it as a long-lived command, and reaches it the same way:
 
-1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`.
+1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`:
+   `/files/upload-v2`, or `/files/upload` when the toolbox answers 404 for it. An older toolbox, as a self-hosted
+   Daytona's runners may run, serves only `/files/upload`, which takes the same form; any other refusal is not retried
+   on the older route.
 2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
    `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
    through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
@@ -1743,6 +1754,7 @@ repository's main; the docs were read on 2026-11-05.
 | `GET /sandbox/{sandboxId}/toolbox-proxy-url`; the toolbox at `toolboxProxyUrl` + `/` + id | `daytona/clients@8006f63e:openapi-specs/api.json:5235`; `daytona/clients@8006f63e:sdk-typescript/src/Sandbox.ts:1566-1573` |
 | `Authorization: Bearer <key>` | `daytona/clients@8006f63e:sdk-typescript/src/Daytona.ts:444` |
 | `POST /files/upload-v2?path=`, multipart field `file` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:2031` |
+| `POST /files/upload?path=`, multipart field `file`, on a toolbox with no `/files/upload-v2` | `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/server.go:191`, `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/fs/upload_file.go:22-35` |
 | `POST /process/execute` `{command, timeout}` to `{exitCode, result}`; the command piped to the shell | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3234`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4679`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4703`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/toolbox/process/execute.go:55-57` |
 | `POST /process/session` `{sessionId}`; a session's shell runs as the toolbox's own user | `daytona/clients@8006f63e:openapi-specs/toolbox.json:3636`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:4525`; `daytonaio/daytona@b5a5d9e7:apps/daemon/pkg/session/create.go:20-24` |
 | `POST /process/session/{sessionId}/exec` `{command, runAsync, suppressInputEcho}` to `{cmdId}` | `daytona/clients@8006f63e:openapi-specs/toolbox.json:4017`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5922`, `daytona/clients@8006f63e:openapi-specs/toolbox.json:5935` |
@@ -2081,6 +2093,54 @@ built for.
   - The live run needs Orgo's Scale plan or a Windows computer bought on the plan; the macOS run needs Orgo's Mac
     access.
 
+### An agent's own computer on Orgo (persistence)
+
+The Linux desktop declares `capabilities().persistence` (`{ keepsState: true, resume: true }`) and takes
+`spec.owner: { agent }` with no `lifetimeMs`: a computer that belongs to the agent and outlives the run (see
+"Persistent computers: an agent's own"). The Windows desktop's code declares it too, without resume; a Mac declares
+none.
+
+- **Its name** is `computer-<hex>-o<the owner's hash>`, with no run, epoch or deadline, and it has no Orgo end.
+- **Its labels live in a ledger.** Orgo holds no labels, and a detached computer is never woken to read its labels
+  file, so the provider keeps an agent's computer's labels (the owner's, the claim's run and epoch) and when it was
+  detached in a ledger: the `ledger` option, which Orgo's descriptor declares, so serve passes its computer ledger and
+  they outlive a restart. Without one it is kept in memory. `list` reads them with nothing run inside, and gives
+  `owned`, `owner`, `detachedAt`, and `deadline` undefined. A ledger has `put`, `get`, `list`, `remove` and `swap`:
+  `swap(was, entry)` writes entry only while the kept entry is still `was` as read (a compare-and-set; serve's is one
+  SQL statement), and says whether it did.
+- **No entry, no labels.** An agent's computer with no ledger entry is listed `owned` with no labels and no owner, to
+  an unfiltered list alone. The janitor can't read its owner, so it keeps it. Attach and detach refuse it in words,
+  and nothing reads its labels file instead: release it with delete.
+- **`release(ref, "detach")`** is for an agent's computer alone; a run's computer refuses it and runs on:
+  - Linux: Orgo's suspend saves memory and disk, and computerd init with them. `persistence.resume` is true.
+  - Windows: Orgo's stop archives its disk (files, apps and settings, not memory), and it reads `frozen`. `resume` is
+    false.
+  - macOS declares no persistence: Orgo stops no Mac, so `check()` refuses an owner.
+- **`attach({ id }, { claim })`** from a later run starts or resumes it first: attaching an agent's computer is asking
+  for it. A run's computer that isn't running is still never woken, and is never taken under a claim. Under a claim
+  the computer carries the claim's run and epoch, in the ledger and its labels file. A claim of the same run below
+  the epoch it carries is refused as fenced, and nothing changes. An attach that started or resumed the computer and
+  then fails a check stops or suspends it again, as it was found. One rule keeps attaches, detaches and deletes apart:
+  each takes the ledger entry with a busy marker (`swap`) before anything is done to the computer, and every other is
+  refused (busy) until it is settled. The holder renews the marker with `swap` right before each step that wakes,
+  stops, suspends or replaces what runs in the computer (a put-back, a daemon's replacement, its labels file written
+  after a wake), and only the holder settles the entry, each write a `swap` from the entry it last wrote. A holder
+  whose `swap` finds the entry changed (its marker went stale past 15 minutes and another took it, or it was removed)
+  does nothing more to the computer, and its attach or detach answers an error, never ok. So of two attaches of one
+  run racing, the lower epoch is refused however they interleave, and an older attach never ends the programs or
+  sleep of a newer one. One provider's attaches and detaches of a computer take turns. Its read-back spec carries
+  `owner`.
+- **`release(ref, "delete", { claim })`** deletes an agent's computer only while its ledger entry carries exactly that
+  claim's run and epoch and nobody holds it busy; otherwise it is refused in words (fenced, or busy) and runs on. A
+  claim that made a computer and then lost the agent's hold deletes it this way, so a later claim that found and took
+  it keeps it. A run's computer refuses a delete under a claim.
+- **Init on Linux.** An owned computer's init ends its programs at its deadline, `maxLifetimeMs` out, and has no
+  most in practice: each attach moves the deadline `maxLifetimeMs` out again (`deadline.extend`). A desktop left
+  detached past that, or whose daemon is another version (the package was upgraded meanwhile), gets its daemon
+  installed again at its next attach: the old init is stopped by its process, then every step create takes, the disk
+  kept, and the attach notes say the daemon was replaced and why. A run's computer is refused instead. `extend`
+  refuses an owned computer: it has no janitor's deadline to move.
+
 ## Browsers: Browserbase and Kernel
 
 A browser is a computer of kind `browser`: a vendor's browser session that answers CDP. No computerd runs (daemon
@@ -2103,19 +2163,40 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
 
 Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
-(neither vendor moves a running session's timeout). Neither declares `downloads` yet: Browserbase keeps a session's
-downloads, but the protocol has no method that reads them, so the group waits for one. Both call the vendor endpoints
-pi-browser's Browserbase and Kernel providers call today. `check()` refuses an image other than `chromium`, a lifetime past
-the cap, a network other than open, and any size, user, workdir or mount, before a vendor call. `list` and attach by
+(neither vendor moves a running session's timeout). Neither declares the `downloads` group yet: the kind registry's
+entry does not, so Browserbase's downloads are read through its `downloads` member (below). `check()` refuses an image
+other than `chromium`, a lifetime past the cap, a network other than open, any size, user, workdir or mount, and a
+browser option the provider does not declare (below), before a vendor call. `list` and attach by
 labels take at least one label (a vendor account holds sessions no provider made), ask the vendor by status and by the
 first label a query carries as it is, and match every label themselves. They show every browser that has not ended:
 Browserbase's `RUNNING` and `PENDING`, Kernel's `status=all` with the deleted dropped (Kernel's filter takes one value,
 and `active` may leave out a browser still starting). A release is idempotent: one already ended or
 unknown to the vendor is released.
 
+A browser session's own options ride the spec, `spec.browser`: `viewport`, `profile: { pointer, save }` (a saved
+profile the session opens, and whether it writes back to it), `stealth` and `headless`. `capabilities().browser`
+declares what a provider's sessions offer: `timeout` (`"wall-clock"` or `"inactivity"`), `profiles: { settleMs }` (how
+long after a saving session ends the vendor may still write the profile back), `stealth`, `headless`, and
+`downloads: { path }` (the folder a driver points `Browser.setDownloadBehavior` at). An option asks for a declared
+feature or is refused in words; a flag set `false` asks for nothing; a viewport needs no feature. No browser loads an
+extension: the driver is raw CDP, with nothing loaded into Chrome. `isBrowserProvider(p)` is true for a provider of
+kind browser that declares them.
+
+| | Browserbase | Kernel | Local Chrome |
+| --- | --- | --- | --- |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
+| `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
+| `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
+| `profiles { create, remove }` | `POST /v1/contexts`, `DELETE /v1/contexts/{id}` | `POST /profiles` under a random name (the pointer), `DELETE /profiles/{name}` | none |
+| `downloads { list, read }` | `GET /v1/downloads?sessionId=` (paged), `GET /v1/downloads/{id}`, cut at `maxBytes` | none | none |
+
+A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
+
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
-call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor (pi-browser's SDK
-client) passes its own transport: `BrowserbaseApi` or `KernelRequest`. Its thrown error rides the failure as a hidden
+call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor passes its own
+transport: `BrowserbaseApi` (its optional calls back the features of the same name: one without them declares none of
+those) or `KernelRequest`. Its thrown error rides the failure as a hidden
 cause (`causeOf(result)`), not enumerable, so it is in no JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
@@ -2186,8 +2267,9 @@ The fence and the sandbox are PR #1718's:
   (`--webrtc-ip-handling-policy=disable_non_proxied_udp`). The proxy and its relay live in the supervisor, so the fence
   holds for a browser driven from another process, and a browser whose supervisor is gone reaches nothing.
 
-Capabilities: `network: ["open"]` (public addresses), `isolation: "host"`, `daemon: "none"`, groups `cdp` only (no
-live view: run it headed to watch), `release: ["delete"]`, no mount.
+Capabilities: `network: ["open", "allow"]` (public addresses, or a list's hosts among them), `isolation: "host"`,
+`daemon: "none"`, groups `cdp` only (no live view: run it headed to watch), `release: ["delete"]`, no mount, and
+`browser: { timeout: "wall-clock" }`: `spec.browser.viewport` sizes its window, and it takes no other session option.
 
 Known limits, so it is for local and development use:
 
@@ -2200,9 +2282,9 @@ Known limits, so it is for local and development use:
   processes. Through it they reach public addresses, which they can reach anyway.
 - No proxy of your own, no extensions, no saved profiles: each browser starts from an empty profile that goes with it.
 
-Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser with the same
-`snapshot` and `run` actions the vendor browsers take, with no Stagehand and nothing loaded into Chrome. `run` code is
-refused there; navigation is a `goto` action. Its snapshot does not read a frame another site runs in its own
+Driving it: pi-browser's raw-CDP driver (`@parcha/pi-browser/driver/cdp`) drives this browser, as it drives the vendor
+browsers, with the `snapshot` and `run` actions and nothing loaded into Chrome. `run` code is refused; navigation is a
+`goto` action. Its snapshot does not read a frame another site runs in its own
 process (a cross-origin iframe). The snapshot names each frame it left out, so an agent knows the page has more.
 
 The conformance module starts a real Chrome, so it waits for its switch:
@@ -2585,7 +2667,9 @@ it is declared (`descriptorProblems`), in words. Its fields: `id`, `label`, `key
 fills, and whether it is required), `settings` (a setting that is no key but fills an option, with its default),
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
-`prepareImage` (a provider that builds or pulls its image before a run), `local` (a computer on this host), and
+`prepareImage` (a provider that builds or pulls its image before a run), `imageEnv` (the server's environment variable
+that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
+(a computer on this host), and
 `ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
 `ProviderModule` is:

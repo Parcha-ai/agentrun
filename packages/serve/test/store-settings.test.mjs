@@ -27,6 +27,22 @@ test("settings: a value saved as null reads back as null, not undefined (told ap
   assert.equal(await store.settings.get("absent"), undefined, "no row is undefined");
 });
 
+test("settings: replaceIf and removeIf write only while the row still holds the value read, and a row read back compares equal", async (t) => {
+  const { store } = await storeOn(t);
+  const held = { v: 1, run: "run-1", at: "2026-11-12T00:00:00.000Z" };
+  assert.equal(await store.settings.replaceIf("hold", held, { v: 1, run: "run-2" }), false, "no row: nothing replaced");
+  assert.equal(await store.settings.get("hold"), undefined);
+  await store.settings.put("hold", held);
+  const read = await store.settings.get("hold");
+  assert.equal(await store.settings.replaceIf("hold", { ...read, run: "run-0" }, { v: 1, run: "run-2" }), false, "another value: nothing replaced");
+  assert.equal(await store.settings.replaceIf("hold", read, { v: 1, run: "run-2" }), true, "the row as read: replaced");
+  assert.equal(await store.settings.replaceIf("hold", read, { v: 1, run: "run-3" }), false, "the same read again: the row changed since");
+  assert.deepEqual(await store.settings.get("hold"), { v: 1, run: "run-2" });
+  assert.equal(await store.settings.removeIf("hold", read), false, "a stale value removes nothing");
+  assert.equal(await store.settings.removeIf("hold", await store.settings.get("hold")), true);
+  assert.equal(await store.settings.get("hold"), undefined);
+});
+
 const SEALED = Uint8Array.from([7, 0, 255, 128, 1]);
 
 test("sealed keys: the bytes in are the bytes out, replaced in place, removed; the store never needs to open them", async (t) => {

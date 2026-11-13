@@ -178,11 +178,11 @@ test("a request admitted and cut by a crash is booked once, unknown: on resume t
   assert.deepEqual(turns.map((entry) => [entry.data.cut === true, entry.data.usd ?? null]), [[false, 0.002], [true, null], [false, 0.004]], `each booked once, the cut one unknown: ${JSON.stringify(turns.map((entry) => entry.data))}`);
 });
 
-// SKIP (follow-up #2080): the first paid request's tool row never shows when a run resumes after a crash or a stop
-test.skip("a run cancelled while its harness's request is out, and never opened again, carries back a cost that is not a plain number", { timeout: 90_000 }, async (t) => {
+test("a run cancelled while its harness's request is out, and never opened again, carries back a cost that is not a plain number", { timeout: 90_000 }, async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const go = join(await scratch(t), "go");
-  const runId = await started(api, "cut-cancel", `Cut until ${go}.`, "codex");
+  // The agent has `read`: its first request's call is a host tool's, recorded as it runs (a tool it lacks never runs).
+  const runId = await started(api, "cut-cancel", `Cut until ${go}.`, "codex", ["read"]);
   // The first request is answered at its tool's end; the second is then admitted and cut, and the cancel lands.
   for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
     assert.ok(i < 300, "the first request's row");
@@ -406,8 +406,7 @@ async function completesOnlyAfter(api, runId, answer) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  // SKIP (follow-up #2432): on the runner a claude-agent run completes before a follow-up sent while its turn works is answered
-  test.skip(`${harness}: a follow-up sent while a turn works waits its turn; the run does not end when the first turn does, only once the follow-up is answered`, { timeout: 90_000 }, async (t) => {
+  test(`${harness}: a follow-up sent while a turn works waits its turn; the run does not end when the first turn does, only once the follow-up is answered`, { timeout: 90_000 }, async (t) => {
     const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxWeb: FAUX_WEB_HOLD });
     const go = join(await scratch(t), "go");
     const runId = await started(api, `held-${harness}`, `Hold the answer until ${go}.`, harness, ["web_fetch"]);

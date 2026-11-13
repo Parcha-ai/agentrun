@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, call, clientOwnerSession, follow, serve as serveOf, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, retried, serve as serveOf, withEnv } from "./support.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { LEARNED_ASK_CARD_BYTES, learnedAskFits, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
@@ -52,7 +52,7 @@ async function owner(server) {
 /** Agent `id`, learning, granted `tools`, with `flows` learned in its folder; one run of it asking `content`. */
 async function learnedRun(server, id, tools, flows, content, run = {}) {
   const { api, data } = server;
-  assert.equal((await api("POST", "/agents", agent(id, { learning: true, tools }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent(id, { learning: true, tools }))).status, 201);
   await seedOf(data, id);
   const repo = join(agentFolderOf(data, id), "learning");
   const files = Object.fromEntries(flows.flatMap((flow) => [[`workflows/${flow.name}/workflow.json`, JSON.stringify(flow)], [`workflows/${flow.name}/README.md`, `---\nname: ${flow.name}\ndescription: Runs ${flow.name}\n---\n`]]));
@@ -63,7 +63,7 @@ async function learnedRun(server, id, tools, flows, content, run = {}) {
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, id);
-  const started = await api("POST", `/agents/${id}/runs`, { input: { content }, ...run });
+  const started = await retried(api)("POST", `/agents/${id}/runs`,{ input: { content }, ...run });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   return started.body.run_id;
 }

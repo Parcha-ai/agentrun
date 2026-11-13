@@ -43,12 +43,13 @@ export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingK
 
 /**
  * The capabilities serves() and kindOf() read: one configuration a provider offers, with the GPUs it offers (Settings'
- * GPU choice). In a descriptor, `image` is the name an agent's setting selects it by (Orgo's `windows`), the image its
- * computer starts from, and `options` are what create() takes to build it ({ os: "windows" }), beside the keys. A
+ * GPU choice), and whether it keeps a computer for an agent (`persistence`, as its built provider declares it: Settings'
+ * persistent choice). In a descriptor, `image` is the name an agent's setting selects it by (Orgo's `windows`), the image
+ * its computer starts from, and `options` are what create() takes to build it ({ os: "windows" }), beside the keys. A
  * configuration with no image is the one a setting that names none gets, as is the one whose image is the kind's
  * defaultImage.
  */
-export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu"> & {
+export type KindCapabilities = Pick<ComputerCapabilities, "kind" | "groups" | "gpu" | "persistence"> & {
 	readonly image?: string;
 	readonly options?: Readonly<Record<string, unknown>>;
 };
@@ -120,6 +121,8 @@ export interface ProviderEntry {
 	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
 	/** Its built providers make or pull their image before the first create (prepareImage()). */
 	readonly prepareImage?: boolean;
+	/** The server's environment variable whose value, when set, is the image of every computer of it (descriptor.ts). */
+	readonly imageEnv?: string;
 	/** Its computers run on this machine's container engine. */
 	readonly local?: boolean;
 	/** create() takes a ledger the server keeps for it, as this option. */
