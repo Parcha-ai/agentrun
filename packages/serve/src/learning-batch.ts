@@ -309,9 +309,9 @@ export class LearningBatches {
    *  run capped under a cent cannot take a step: cap.ts), so a row's run is never started to pause at its cap. */
   private room(h: Header): true | BatchStop {
     if (h.unknown_cost_rows) return "cost_unknown";
-    const left = h.max_cost_usd - h.spent_usd;
+    const left = usd(h.max_cost_usd - h.spent_usd);
     const done = h.finished - h.unknown_cost_rows;
-    const typical = done > 0 ? h.spent_usd / done : 0;
+    const typical = done > 0 ? usd(h.spent_usd / done) : 0;
     return left >= Math.max(typical, RUN_CAP_MIN_USD) ? true : "cap";
   }
 

@@ -213,7 +213,7 @@ function fakeHost({ costs, cancelled = [] }) {
     learning: async () => ({ learns: true }),
     start: async (agentId, b) => {
       const id = `run-${++n}`;
-      runs.set(id, { b, cost: costs[n - 1] ?? 0.4, messages: [] });
+      runs.set(id, { b, cost: n - 1 in costs ? costs[n - 1] : 0.4, messages: [] });
       return id;
     },
     view: async (id) => {
