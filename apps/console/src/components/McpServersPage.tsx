@@ -1,3 +1,4 @@
+import { pasteFromClipboard } from "@/lib/paste";
 import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
@@ -30,6 +31,7 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
   const [loadError, setLoadError] = useState<Problem | null>(null);
   const [form, setForm] = useState<{ saved?: McpServer } | null>(null);
   const asked = useRef(0);
+  const page = useRef<HTMLDivElement>(null);
   const load = () => {
     const n = ++asked.current;
     v2.listMcpServers().then((r) => { if (n === asked.current) { setServers(r.servers); setLoadError(null); } }, (e) => { if (n === asked.current) setLoadError(mcpProblem(e)); });
@@ -39,7 +41,7 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
   useEffect(() => { if (signIn && location.hash.includes("sign_in=")) history.replaceState(null, "", "#/settings/mcp"); }, [signIn]);
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
   return (
-    <div className="h-full overflow-auto">
+    <div ref={page} className="h-full overflow-auto">
       <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -63,7 +65,8 @@ export function McpServersPage({ v2, signIn, writable, whyNot = "sign_in", open 
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
         {form && <ServerForm key={form.saved?.name ?? "new"} v2={v2} saved={form.saved} writable={writable} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {servers && (servers.length
-          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })} onChanged={load} />)}</ul>
+          ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} writable={writable && !form} signIn={startSignIn} onChange={() => setForm({ saved: s })}
+            onPaste={() => void pasteFromClipboard(() => setForm({ saved: s }), () => page.current?.querySelector<HTMLInputElement>('input[name="mcp-token"], input[name="mcp-header-value-0"]') ?? null)} onChanged={load} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
         <PrivateHosts v2={v2} />
       </div>
@@ -75,7 +78,7 @@ const Said = ({ problem }: { problem: Problem }) => (
   <div role="alert"><p className="font-mono text-body text-destructive-text">{problem.text}</p>{problem.detail && <p className="mt-1 text-small text-muted-foreground">{problem.detail}</p>}</div>
 );
 
-function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onChanged: () => void }) {
+function ServerRow({ v2, server: s, writable, signIn, onChange, onPaste, onChanged }: { v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: () => void; onPaste: () => void; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [note, setNote] = useState<McpRefresh | null>(null);
@@ -98,7 +101,7 @@ function ServerRow({ v2, server: s, writable, signIn, onChange, onChanged }: { v
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
-          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onChange} /></ul>}
+          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onPaste} /></ul>}
           {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
         {!confirm && (
