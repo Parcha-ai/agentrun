@@ -101,8 +101,11 @@ An error reply is JSON-RPC's, with the protocol's kind in `data`:
 
 - `message` is words a person can act on. It never holds a key, a token or a secret.
 - `data.kind` is one of `not_found`, `invalid`, `timeout`, `aborted`, `denied`, `limit`, `unsupported`, `exists`,
-  `not_dir`, `is_dir`, `stale` (`errorKinds` in [`protocol.json`](protocol.json)). A caller acts on the kind, never on
-  the message. `stale` is the `ui` group's: a ref whose element is gone, or a point whose window changed under it.
+  `not_dir`, `is_dir`, `stale`, `refused` (`errorKinds` in [`protocol.json`](protocol.json)). A caller acts on the
+  kind, never on the message. `stale` is the `ui` group's: a ref whose element is gone, or a point whose window
+  changed under it. `invalid` is a request malformed whatever the computer; `unsupported` a method or feature this
+  computer does not have; `refused` a call it has, on a value or state it does not serve (a step on a disabled
+  control).
 - `code` follows from the kind:
 
   | Kind | Code |
@@ -207,7 +210,8 @@ The result:
   that takes real input only, and the driver cannot always tell: such a step answers `verified: false`. A step the
   driver knows needs the foreground route, in a call without `foreground: true`, is refused `denied`.
 - A step that may not run answers `{"error": {"kind", "message"}}`, and it is the last result: the steps after it do
-  not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`.
+  not run. Its kinds: `stale`, `invalid`, `denied`, `unsupported`, `not_found`, `timeout`, `limit`, `refused`. A
+  step on a disabled control by its ref is refused `refused`: a field's text never goes to whatever has the focus.
 - `state` is the window after the act settled, `changed` whether it differs from before the steps, and `expect` is
   `met` or `unmet` (absent without an expect, or when a step was refused).
 
@@ -224,7 +228,9 @@ The result:
 - **The driver waits, never the model.** Every act settles before it answers: the window looks the same twice, a short
   quiet apart, or `maxSettleMs` passed. An expect is polled on the computer, and an act's `state` is the window once it
   settles after the expect, never a frame of a transition.
-- **An act follows the app a step leaves for.** A `state` or `target` aims the act at its app's window. After a `nav`
+- **An act follows the app a step leaves for.** A `state` or `target` aims the act at its app's window; an act with
+  neither is aimed at the app in front when it begins, so a step that opens another app never lets a later step reach
+  it. After a `nav`
   step, the act follows the window in front: the steps after it, the settle, the expect and the answered `state` are
   that window's. When any other step (a key, a tap that opens another app) takes the aimed window away, the step after
   it is refused `stale` and runs nothing, and the act settles on the window in front. Either way the steps that ran

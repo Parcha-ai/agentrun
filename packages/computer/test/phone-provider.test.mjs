@@ -1010,6 +1010,34 @@ test("an empty field's hint is not its value: an expect never meets it; a field 
 	]);
 });
 
+test("a labeled control keeps the other text it shows as its desc; a step on a disabled one is refused with nothing sent", async () => {
+	const xml = `<hierarchy><node index="0" class="android.widget.Button" package="com.example" text="Pay $5" content-desc="Pay" clickable="true" bounds="[0,0][100,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="old" enabled="false" bounds="[0,60][100,110]" /></hierarchy>`;
+	const [button, field] = parseUiElements(xml, 1, [100, 120]).value.elements;
+	assert.equal(button.name, "Pay");
+	assert.equal(button.desc, "Pay $5");
+	assert.deepEqual(field.flags, ["disabled"]);
+	const ran = [];
+	const source = new AdbUiSource({ scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) }, () => [100, 120]);
+	const view = { app: { id: "com.example", name: "Example" }, window: { id: "com.example", bounds: [0, 0, 100, 120] }, elements: [button, field] };
+	for (const step of [{ set: "@e2", value: "new" }, { type: "new", into: "@e2" }]) {
+		const refused = await source.run(step, { element: field, view, foreground: true }, new AbortController().signal);
+		assert.equal(refused.error?.code, "refused", JSON.stringify(refused));
+		assert.match(refused.error.message, /is disabled on this phone: a step on it would act on whatever has the focus instead, so nothing was sent/);
+	}
+	assert.deepEqual(ran, [], "no input reached the phone");
+});
+
+test("a field in a recycled list row is keyed by what its row shows: the row's next item makes its old ref another element; typing keeps it", () => {
+	const row = (name, typed) =>
+		`<hierarchy><node index="0" class="androidx.recyclerview.widget.RecyclerView" package="com.example" scrollable="true" bounds="[0,0][400,800]"><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.TextView" package="com.example" text="${name}" bounds="[0,0][200,50]" /><node index="1" class="android.widget.EditText" package="com.example" text="${typed}" content-desc="Quantity" bounds="[200,0][400,50]" /></node></node></hierarchy>`;
+	const fieldOf = (xml) => parseUiElements(xml, 1, [400, 800]).value.elements.find((element) => element.role === "textbox");
+	const apples = fieldOf(row("Apples", "1"));
+	assert.equal(fieldOf(row("Apples", "12")).key, apples.key, "typing in the field keeps its key");
+	assert.notEqual(fieldOf(row("Pears", "1")).key, apples.key, "the recycled row's field is another element");
+	const plain = `<hierarchy><node index="0" class="android.widget.LinearLayout" package="com.example" bounds="[0,0][400,100]"><node index="0" class="android.widget.EditText" package="com.example" text="a" content-desc="Name" bounds="[0,0][400,50]" /></node></hierarchy>`;
+	assert.equal(fieldOf(plain).key, fieldOf(plain.replace('text="a"', 'text="ab"')).key, "a field outside a list keeps its key as before");
+});
+
 test("a phone's set: a toggle takes on or off only, a field too long to clear in one step is refused before any input", async () => {
 	const ran = [];
 	const phone = { scale: () => 1, dump: async () => ({ ok: false, error: { code: "unsupported", message: "unused" } }), input: async (actions) => (ran.push(...actions), { ok: true, value: undefined }) };
