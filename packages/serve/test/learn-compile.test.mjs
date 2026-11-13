@@ -407,3 +407,26 @@ test("the compile prompt keeps every note whole, past what a cut would have kept
   assert.equal(over.record.attempts.length, 1);
   assert.match(over.draftErrors[0], new RegExp(`notes hold \\d+ characters, more than the ${compile.NOTES_MAX} the compile turn reads whole`));
 });
+
+// #2641 review (class D): a trace's feedback is what the person said after the run's first message, never the server's
+// words (an approval's resume, which can carry a tool's result, a raised cap's follow-up, a hand-back) or a trigger's.
+test("a compile trace's feedback is the person's messages alone: the server's and a trigger's after the first are not theirs", () => {
+  const rows = [
+    { id: "e1", kind: "user_message", text: "What is six times seven?" },
+    { id: "e2", kind: "tool_use", tool_use_id: "t1", tool_name: "web_fetch", tool_input_preview: "{\"url\":\"https://x.example\"}" },
+    { id: "e3", kind: "phase", origin: "server", text: "Approved. The call returned: {\"rows\": 42}" },
+    { id: "e4", kind: "phase", origin: "server", text: "The spend cap was raised to $5." },
+    { id: "e5", kind: "phase", origin: "server", text: "The server's resume beside a declined call", },
+    { id: "e5b", kind: "user_message", text: "No, don't call that." },
+    { id: "e6", kind: "phase", origin: "trigger", text: "Slack t-1: ping", trigger: { id: "t-1", source: "slack", owner: false } },
+    { id: "e7", kind: "user_message", text: "Shorter next time." },
+    { id: "e8", kind: "final_answer", text: "42" },
+  ];
+  const trace = learningEnd.traceFrom(rows, []);
+  assert.equal(trace.input, "What is six times seven?");
+  assert.deepEqual(trace.feedback, ["No, don't call that.", "Shorter next time."]);
+  assert.deepEqual(trace.calls, [{ tool: "web_fetch", input: "{\"url\":\"https://x.example\"}" }]);
+  assert.equal(trace.answer, "42");
+  // A trigger's first message is the run's input: what it was asked.
+  assert.equal(learningEnd.traceFrom([{ id: "e1", kind: "phase", origin: "trigger", text: "Webhook w-1: refund order 1043" }, { id: "e2", kind: "final_answer", text: "done" }], []).input, "Webhook w-1: refund order 1043");
+});
