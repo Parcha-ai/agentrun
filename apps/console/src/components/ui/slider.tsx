@@ -7,9 +7,9 @@ import { cn } from "@/lib/utils";
 const QUIET = [
   "appearance-none bg-transparent",
   "[&::-webkit-slider-runnable-track]:h-0.5 [&::-webkit-slider-runnable-track]:bg-border-strong",
-  "[&::-webkit-slider-thumb]:-mt-[5px] [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground",
+  "[&::-webkit-slider-thumb]:-mt-[5px] [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-foreground",
   "[&::-moz-range-track]:h-0.5 [&::-moz-range-track]:bg-border-strong",
-  "[&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-foreground",
+  "[&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-foreground",
 ].join(" ");
 
 export function Slider({ value, onChange, min, max, label, valueText, className, disabled = false }: {
