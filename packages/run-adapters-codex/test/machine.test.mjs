@@ -144,8 +144,8 @@ test("a child that forks a grandchild leaves none alive after close()", async (t
 
 // Two runs on one host, each with its session machine. A client of run A that reads run B's address (a config or a
 // port that is not its own) still holds A's key: B's proxy refuses it by name before anything is booked or forwarded.
-const RECORDED_REQUEST = JSON.parse(readFileSync(new URL('./fixtures/responses-request-gpt-5.4-mini.json', import.meta.url), 'utf8'));
-const RECORDED_STREAM = readFileSync(new URL('./fixtures/responses-stream-gpt-5.4-mini.sse', import.meta.url), 'utf8');
+const RECORDED_REQUEST = JSON.parse(readFileSync(new URL('./fixtures/responses-request-recorded.json', import.meta.url), 'utf8'));
+const RECORDED_STREAM = readFileSync(new URL('./fixtures/responses-stream-recorded.sse', import.meta.url), 'utf8');
 
 /** The user-agent of this test's own requests: another local client's keyless knock on a new loopback listener (a
  *  shared machine's service does) is refused too, and is shown, never judged here. */
