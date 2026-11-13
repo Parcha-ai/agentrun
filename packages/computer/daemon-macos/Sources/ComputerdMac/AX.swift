@@ -257,7 +257,7 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 				if value == "on" { flags.insert(.checked) }
 				value = nil
 			}
-			if let frame, !frame.overlaps(bounds) { flags.insert(.offscreen) }
+			if let frame, !frame.intersects(bounds) { flags.insert(.offscreen) }
 			let title = AX.string(v[2])
 			let description = AX.string(v[3])
 			var name = Roles.name(title: title, description: description, subrole: subrole)
@@ -340,12 +340,12 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 			guard let parent = AX.element(AX.copy(chain[chain.count - 1], kAXParentAttribute)) else { break }
 			chain.append(parent)
 		}
-		for e in chain where Self.settable(e, kAXSelectedAttribute) {
+		for e in chain where AX.settable(e, kAXSelectedAttribute) {
 			try AX.check(AXUIElementSetAttributeValue(e, kAXSelectedAttribute as CFString, kCFBooleanTrue), "select")
 			return ElementHandle(ax: e)
 		}
 		for e in chain {
-			guard let parent = AX.element(AX.copy(e, kAXParentAttribute)), Self.settable(parent, kAXSelectedChildrenAttribute) else { continue }
+			guard let parent = AX.element(AX.copy(e, kAXParentAttribute)), AX.settable(parent, kAXSelectedChildrenAttribute) else { continue }
 			try AX.check(AXUIElementSetAttributeValue(parent, kAXSelectedChildrenAttribute as CFString, [e] as CFArray), "select")
 			return ElementHandle(ax: e)
 		}
@@ -356,11 +356,6 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		if AX.bool(AX.copy(element.ax, kAXSelectedAttribute)) == true { return true }
 		guard let parent = AX.element(AX.copy(element.ax, kAXParentAttribute)) else { return false }
 		return AX.elements(AX.copy(parent, kAXSelectedChildrenAttribute)).contains { CFEqual($0, element.ax) }
-	}
-
-	static func settable(_ e: AXUIElement, _ attribute: String) -> Bool {
-		var settable: DarwinBoolean = false
-		return AXUIElementIsAttributeSettable(e, attribute as CFString, &settable) == .success && settable.boolValue
 	}
 
 	func scrollToVisible(_ element: ElementHandle) throws {
@@ -417,12 +412,6 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		}
 		log("menu item for \(chord.text) in \(target.app.id): none of \(seen) elements matched; items on \(key): \(near.isEmpty ? "none" : near.joined(separator: "; "))")
 		return nil
-	}
-}
-
-extension Rect {
-	func overlaps(_ other: Rect) -> Bool {
-		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
 	}
 }
 #endif

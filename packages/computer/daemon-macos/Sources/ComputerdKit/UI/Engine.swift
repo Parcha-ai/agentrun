@@ -510,8 +510,7 @@ public actor UIEngine {
 	func run(_ step: Step, view: View, state: String?, held: View?, foreground: Bool) async throws -> (Route, Bool, View?) {
 		let target = view.target
 		if case .nav(let nav) = step {
-			if case .off(let reason) = platform.navFeature { throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(reason)") }
-			throw RPCError.unsupported("nav \(nav.rawValue): no route takes it here")
+			throw RPCError.unsupported("nav \(nav.rawValue): ui.nav is off here: \(FeatureName.navOff)")
 		}
 		let (node, element) = try self.element(step.ref, in: view)
 		// A step on a disabled control is refused, so its text never goes to whatever has the focus.
@@ -908,7 +907,7 @@ extension ResolvedTarget {
 }
 
 extension Rect {
-	func intersects(_ other: Rect) -> Bool {
+	public func intersects(_ other: Rect) -> Bool {
 		x < other.x + other.w && other.x < x + w && y < other.y + other.h && other.y < y + h
 	}
 }
