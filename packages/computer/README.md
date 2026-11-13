@@ -497,7 +497,7 @@ provider declares, either way.
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
 | `apps`, `apps.install` | `apps.list` (`{ apps, foreground }`), `apps.launch({ id, url?, background? })`, `apps.terminate`; `apps.install({ path })` of a file already in the computer |
-| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
+| `ui` | `ui.observe({ target?, full?, image?, since? })`: `{ state, app, window, nodes, diff?, image?, truncated }`, at most 5000 flat nodes, each `{ ref, role, name?, value?, id?, bounds, parent?, flags?, actions? }` with an ARIA role and bounds in window points. `ui.act({ target?, state?, steps, expect?, foreground? })`: `{ steps, state?, window?, changed, expect? }`, each step's `route` and `verified`, or its refusal (`stale`, `denied`, ...) as the last; `window: "closed"` in place of `state` when the app has no window left. `expect` is `{ text?, ref?, gone?, timeoutMs? }`, or `{ window: { title?, role? } }` to wait for a window. The rules are in [`wire.md`](../../spec/computer/wire.md#the-ui-group); `UiEngine` (`src/ui-engine.ts`) keeps them over a `UiSource`, `UiSession` (`src/client.ts`) is the typed caller, and `@parcha/agentrun-computer/fake-ui-driver` answers them from scripted apps for tests |
 
 **The live view's seam** (`src/screen-watch.ts`). The runner's viewer reads a computer through
 `provider.watch?(ref, handlers, { signal?, maxWidth?, quality? })`:
@@ -663,7 +663,7 @@ fixtures of every evasion it catches.
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
 if (connected.ok) {
@@ -672,6 +672,12 @@ if (connected.ok) {
 }
 await docker.release(made.value, "delete");
 ```
+
+Every `create` takes a request id (`CreateContext.requestId`, required): the request, not the computer, so a retry of
+the same request passes the same id. The contract makes one computer per id, named `computer-<12 hex of sha256(id)>`
+(`computerNameFor`), answers it again while it starts or runs, and refuses `exists` once it has ended
+([`spec/computer/provider.md`](../../spec/computer/provider.md#idempotent-create)). The fake ui provider and the
+attached provider keep it; the vendor providers get it with the hosted adapter.
 
 - `capabilities()` declares kind `linux`, daemon `pid1`, groups `exec`, `files` and `processes`, `maxLifetimeMs`
   of 30 days, and `mount: ["bind"]` (below); there is no `extend()` or `stream()`, and init gets no `--max-deadline`.
@@ -724,7 +730,7 @@ await docker.release(made.value, "delete");
   PID 1 included. What lasts is the run's folder, bound at `/workspace` when the spec asks (below).
 - `create` ends with the drift check (below): a computer that is not what was declared is deleted, and `create`
   refuses with every mismatch in words.
-- `create(spec, { signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
+- `create(spec, { requestId, signal })` passes the signal to every step: `docker info` before `docker run` (an abort there makes
   nothing), `docker run`, and after it inspect and hello (hello also has its own 30 s limit). An abort at any step after `docker run` deletes the computer and returns
   `aborted`; `create` never returns ok once its signal has aborted.
 - `connect` runs `docker exec -i <name> /opt/agentrun/computerd stdio`, the bridge to init's socket, and says hello.
@@ -767,7 +773,7 @@ daemon, or run past its deadline.
 ### An allowlist: the egress proxy
 
 ```ts
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } }, { requestId: "r1.1" });
 // In the computer, HTTP_PROXY and HTTPS_PROXY name port 3128 on its own loopback for every program computerd starts.
 ```
 
@@ -852,7 +858,7 @@ import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
-const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } });
+const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1.1" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
 ```
 
@@ -920,7 +926,7 @@ const docker = new DockerProvider({
 	daemonCache: "/data/computer-cache", // at or below volume.root
 	volume: { name: "agentrun_agentrun-data", root: "/data" },
 });
-await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } });
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/disk/agents/a1/runs/r1/work" } }, { requestId: "r1.1" });
 ```
 
 - `volume: { name, root }`: `name` is the named volume, as `docker volume ls` names it; `root` is where this process
@@ -972,7 +978,7 @@ import { DockerProvider } from "@parcha/agentrun-computer/docker";
 const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
-const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" });
+const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
 ```
 
 - `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
@@ -1154,7 +1160,7 @@ const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
-await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) });
+await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", labels: runLabels("r1", 3) }, { requestId: "r1.3" });
 ```
 
 ### Waiting for a vendor: `waitUntil`
@@ -1180,7 +1186,7 @@ const modal = new ModalProvider({
 	app: "computers",
 	// daemonPath: the daemon to upload; default this package's dist/computerd-linux-amd64 (npm run build:daemon)
 });
-const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" });
+const made = await modal.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
 ```
 
 `ModalProvider` makes Modal sandboxes on the VM runtime, or on gVisor for a GPU computer (below), through the slice of Modal's JS SDK named by `ModalSdk`
@@ -1467,11 +1473,11 @@ named by any call.
 import { DaytonaProvider } from "@parcha/agentrun-computer/daytona";
 
 const daytona = new DaytonaProvider({ apiKey, daemonPath: "dist/computerd-linux-amd64" });
-const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" });
+const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
 ```
 
-A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`, as pi-transport's Daytona box does:
-no SDK, and no package beyond this one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
+A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`: no SDK, and no package beyond this
+one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
 The key is the caller's to pass: the provider never reads the environment, never sends the key over a redirect or to a
 toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
 snapshot gives the sandbox its class and its size. `image: "default"` sends no snapshot field at all, and Daytona makes
@@ -1625,8 +1631,8 @@ the TTL.
   /sandbox/{id}/network-settings` and reads it back whatever the answer: as asked, it is returned; unchanged, the
   change is refused in Daytona's words; anything else is put back, or, if that fails, the network is blocked, and the
   change is refused. A network is never left wider than asked.
-- `release(ref, "delete")` deletes as pi-transport does: retried on a 5xx, checked against the sandbox, with a forced
-  stop before the last attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
+- `release(ref, "delete")` deletes: retried on a 5xx, checked against the sandbox, with a forced stop before the last
+  attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
   not this provider's.
 - Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed` and a stop by
   setting it to `stopped`, and the sandbox gets there later, through `destroying` or `stopping`. Its listing trails
@@ -1641,7 +1647,7 @@ the TTL.
   the sandbox it made (a failure, a mismatch, an abort) waits the same way before it returns.
 - `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
 - Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
-  backoff), as in pi-transport; creates, session commands, input and network changes are not.
+  backoff); creates, session commands, input and network changes are not.
 
 ### The drift check
 
@@ -1796,7 +1802,7 @@ import { providerFor } from "@parcha/agentrun-computer";
 
 // The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
 const e2b = await providerFor("e2b", { apiKey });
-const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" });
+const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1.1" });
 ```
 
 An E2B computer is a sandbox made from an E2B template, by default `desktop`, E2B Desktop's (Ubuntu 22.04 with Xvfb,
@@ -2159,7 +2165,7 @@ and are never in a ref, a list, an error's words or a report. `client` stays a `
 | groups (`CAPABILITIES`) | `cdp`, `stream` | `cdp`, `stream` |
 | test connection | one `GET /v1/sessions?status=RUNNING` | one `GET /browsers?status=active` page |
 | release | `REQUEST_RELEASE`, then read back until it is no longer `RUNNING` or `PENDING` | `DELETE`, then read back until 404 or `deleted_at` |
-| options | `apiKey` (or `api`, a host's own calls), `projectId`, `apiUrl` | `apiKey` (or `request`, a host's own), `apiUrl` |
+| options | `apiKey`, `projectId`, `apiUrl`, `fetch` | `apiKey`, `apiUrl`, `fetch` |
 | conformance reads | `COMPUTER_BROWSERBASE_API_KEY`, `COMPUTER_BROWSERBASE_PROJECT_ID`, `COMPUTER_BROWSERBASE_API_URL` | `COMPUTER_KERNEL_API_KEY`, `COMPUTER_KERNEL_API_URL` |
 
 Both declare `lifetime: "vendor"`, `network: ["open"]`, `isolation: "vm"`, `release: ["delete"]`, and no `extend`
@@ -2194,10 +2200,9 @@ kind browser that declares them.
 A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
 
 A vendor call is one request, never retried where a retry could open a second paid browser, and a failure names the
-call and the HTTP status alone, never the vendor's words. A host that already talks to the vendor passes its own
-transport: `BrowserbaseApi` (its optional calls back the features of the same name: one without them declares none of
-those) or `KernelRequest`. Its thrown error rides the failure as a hidden
-cause (`causeOf(result)`), not enumerable, so it is in no JSON.
+call and the HTTP status alone, never the vendor's words. The calls are the provider's own, over `fetch` (a test passes
+its own `fetch`). A thrown error rides the failure as a hidden cause (`causeOf(result)`), not enumerable, so it is in no
+JSON.
 
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
 create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
@@ -2226,7 +2231,7 @@ on the machine AgentRun runs on. No vendor, no key, nothing billed.
 import { LocalBrowserProvider } from "@parcha/agentrun-computer/local-chrome";
 
 const local = new LocalBrowserProvider({ env: { PATH: process.env.PATH } }); // or { executablePath: "/usr/bin/chromium" }
-const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" });
+const made = await local.create({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open" }, { requestId: "r1.1" });
 const connected = await local.connect(made.value); // connected.value.cdp.url: ws://127.0.0.1:<port>/devtools/browser/<id>
 await local.release(made.value, "delete");
 ```
@@ -2300,7 +2305,7 @@ AGENTRUN_COMPUTER_LIVE_LOCAL_CHROME=1 [COMPUTER_LOCAL_CHROME_PATH=/usr/bin/chrom
 import { providerFor } from "@parcha/agentrun-computer";
 
 const phones = await providerFor("phone-harness", { apiKey }); // serve passes PHONE_HARNESS_API_KEY
-const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } });
+const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, network: "open", labels: { run } }, { requestId: `${run}.1` });
 ```
 
 `src/phone-harness.ts`, provider id `phone-harness`, rents a temporary cloud Android emulator from the phone harness
@@ -2410,6 +2415,8 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `apps.launch-terminate`, which needs the apps group alone: the ui fixture where it is installed, else Settings, is
   listed; once launched it is in front, and shown, in `ui.observe` when the phone reads its elements, else in a
   screenshot (or `ui.observe`'s image) other than the one before; once terminated it is not in front;
+- `apps.launch-window`: once `apps.launch` answers, a `ui.observe` sent at once finds the app's window (launch waits
+  for it, at most 10 s), on the ui fixture where it is installed, else on Settings;
 - `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
@@ -2428,7 +2435,8 @@ npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js 
 
 ```text
 computer conformance · docker · linux, daemon pid1 · computerd 0.1.0-beta.30 linux/amd64
-core health    hello ping unknown-method kind-consistent    ✓ 4
+core health    hello ping unknown-method kind-consistent    ✓ 5
+               kind-served
 core exec      argv streams exit-code cwd env timeout abort ✓ 11
                truncation setsid-escapee unprivileged user
 ...
@@ -2437,7 +2445,7 @@ full lifetime  extend                                       - 1
 optional screen screenshot-size                              - 1
   - screen.screenshot-size: the provider does not declare screen
 ...
-core PASS 54/54 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
+core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · mount:archil screen input.pointer input.keys input.touch apps.install apps ui extend not declared
 ```
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
@@ -2522,7 +2530,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
   on a phone. `health.kind-consistent` checks the kind, os and daemon pair, that hello's kind and groups are the
-  provider's, and that kind's Core groups are declared; `provider.check-refuses` also asks `check` for
+  provider's, and that kind's Core groups are declared; `health.kind-served` that hello declares every group its
+  setting kind needs to be given to an agent (`kindServed`); `provider.check-refuses` also asks `check` for
   `maxLifetimeMs + 1`. Where the kind makes them Core: `screen.screenshot-size` (every pixel of the PNG decodes, its
   IHDR size is `width` x `height`, `scale` is above 0, a region shot decodes and has the region's size, and on a
   desktop the fixture's four colors are where it paints them; the suite reads 8-bit, non-interlaced PNGs of at most
@@ -2591,8 +2600,8 @@ its case ended is deleted or closed as it arrives and named in `cleanup.late`; t
 create a case started, a refused one included, so a late computer is deleted before the report returns. A call still
 pending when that bound (a minute) runs out is named in `cleanup.errors`, since what it makes may be left, and Core
 fails, as it does for a computer left behind. A case calls
-`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?)` for create's result as it is (a refusal it
-expects, or the drifted provider's computer). With `--provider docker` and no
+`t.create(extra)` for a computer it needs, or `t.attempt(spec, by?, requestId?)` for create's result as it is (a refusal it
+expects, or the drifted provider's computer; each attempt is a new request unless `requestId` retries one). With `--provider docker` and no
 `COMPUTER_DOCKER_DAEMON`, a `docker version` that does not answer within 30 s is killed and the run fails, naming the call. The CLI exits once the report
 is out. Cases do not assume root: the suite assumes only that the
 computer's `HOME`, which the provider sets, is a directory its user can write, and works under
