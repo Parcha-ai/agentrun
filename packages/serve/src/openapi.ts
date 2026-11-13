@@ -31,7 +31,7 @@ import { DEFINITION_FIELDS, EXTERNAL_NAME, MAX_TOOL_CALLS, MODEL_REF, NOT_KEPT }
 import { COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS, PARAMETER_TYPES } from "./templates.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { BROWSER_VENDOR_IDS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
+import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS, TABLE_TOOLS } from "./tool-plane.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
@@ -310,8 +310,9 @@ const PERMISSION = {
   enum: [...PERMISSIONS],
   description: "What the tool gate does with each call a model makes: allow runs it; ask parks the run until the owner answers (POST /runs/{run_id}/approvals/{approval_id}); deny refuses it at once, and the model reads why. The owner's defaults: allow for this server's tools, ask for a catalog tool (monid.<tool>, mcp:<server>/<tool>). ask is offered for the tools whose approved call the kernel runs itself (read, write, edit, bash, web_fetch, web_search, learned_workflow) and for catalog tools; any other is allow or deny.",
 };
-/** The table's tools a setting may name, and a computer kind's keys (desktop, phone), each holding its kind's tools. */
-const SETTINGS_TOOLS = [...TABLE_TOOLS, ...KIND_KEYS];
+/** The table's tools a setting may name, a computer kind's keys (desktop, phone), each holding its kind's tools, and a
+ *  decision provider's key (jev, parallel, openrouter: what a learned workflow's decision nodes may ask; allow or deny). */
+const SETTINGS_TOOLS = [...TABLE_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS];
 /** A catalog tool's settings key, or an MCP server's wildcard, which sets each of its tools. */
 const CATALOG_KEY = { type: "string", pattern: "^(monid\\.[^/]+|mcp:[^/]+/.+)$" };
 /** A pinned scalar. */
@@ -2130,6 +2131,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       const: true,
       description: "On the row of the spend cap's refusal for room that an agentic run paused at: the server's `phase` row (`origin` server, its id ending `:note`, so no message), \"Paused at the run's cap\", never an `error` row. The request was not sent and the run paused at its cap for a raise (`pending.kind` budget), whose sentence is `pending.said`'s, shown once. Kept once the cap is raised, as the run's history. A refusal that fails the run (one no cap fixes, a workflow's) stays an `error` row, without it. Absent on every other row.",
       "x-agentrun-serve": "cappause/1",
+    },
+    refused: {
+      const: true,
+      description: "On the `tool_result` row of a call refused before it ran: a tool set to deny, a pin, a person's deny, or a call held for an approval the run stopped or ended without. Its `summary` reads \"Refused: …\" and its `tool_status` stays `failed` (it did not do its work), but it never ran, so it never failed: a client shows it apart from a call that ran and failed (the console: a neutral Refused chip, never the red Error one). Absent on every other row.",
+      "x-agentrun-serve": "refused/1",
     },
     origin: {
       enum: ["server", "trigger"],
