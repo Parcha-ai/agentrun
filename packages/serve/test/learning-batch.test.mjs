@@ -193,7 +193,7 @@ test("cancel ends the loop, cancels the run in flight and keeps the rows done; a
   assert.equal((await api("POST", `/agents/${id}/learning/batches/${created.body.id}/cancel`, {})).body.status, "cancelled", "a second cancel answers it as it is");
 });
 
-test("the cap holds the runs: a row starts only when what is left covers a run's smallest cap and the mean of the rows done, and the batch stops `cap`, its rows done kept", { timeout: 240_000 }, async (t) => {
+test("the cap holds the runs: a row starts only while what is left covers a run's smallest cap and the mean of the rows done, no run passes what is left (strict), and the batch stops `cap`, its rows done kept", { timeout: 240_000 }, async (t) => {
   const { api } = await serve(t, { learning: "on", faux: LEARN, batchPollMs: 50 });
   const id = "csv-cap";
   await made(api, learner(id));
@@ -203,18 +203,22 @@ test("the cap holds the runs: a row starts only when what is left covers a run's
   assert.equal(one.status, "completed");
   const row = one.rows[0].total_usd;
   assert.ok(row > 0 && row < 0.02, `a faux row's cost: ${row}`);
-  // Room for a second row (a cent and a half a row left after the first), and not for a third.
+  // Room for a row or two (a cent and a half a row), never six. Each run is capped strict at what is left, so a run whose
+  // next request could pass it parks (its row failed, booked) instead: how many rows end depends on the faux prices, the
+  // rule does not (the exact room rule: "the cap's rule on its own" below).
   const cap = money(RUN_CAP_MIN_USD + row * 1.5);
   const created = await api("POST", `/agents/${id}/learning/batches`, body(Array(6).fill("Job answer."), { max_cost_usd: cap }));
   assert.equal(created.status, 202, JSON.stringify(created.body));
   const end = await until(api, id, created.body.id, finished);
-  assert.equal(end.status, "stopped", JSON.stringify(end));
-  assert.equal(end.stopped, "cap");
-  assert.equal(end.finished, 2, `finished ${end.finished}`);
-  assert.ok(end.spent_usd <= cap, `spent ${end.spent_usd} of ${cap}`);
-  assert.deepEqual(end.rows.map((r) => r.state), ["done", "done", "pending", "pending", "pending", "pending"], "the rows left never started");
+  const seen = JSON.stringify({ row, cap, spent: end.spent_usd, rows: end.rows.map((r) => [r.state, r.total_usd, r.error]) });
+  assert.deepEqual([end.status, end.stopped], ["stopped", "cap"], seen);
+  assert.ok(end.spent_usd <= cap, `no run passes what is left: ${seen}`);
+  const started = end.rows.filter((r) => r.state !== "pending").length;
+  assert.ok(started >= 1 && started < 6 && end.finished === started, seen);
+  assert.deepEqual(end.rows.slice(started).map((r) => r.state), Array(6 - started).fill("pending"), `the rows left never started: ${seen}`);
+  assert.ok(money(cap - end.spent_usd) < Math.max(money(end.spent_usd / end.finished), RUN_CAP_MIN_USD), `it stops only once what is left covers no row: ${seen}`);
   assert.equal(end.remaining_usd, money(cap - end.spent_usd));
-  assert.equal(end.rows[0].reviewed, true);
+  assert.deepEqual([end.rows[0].state, end.rows[0].reviewed], ["done", true], seen);
 });
 
 /** A batch host with no server: settings in memory, each run answering at once with a cost the test names. A run is
