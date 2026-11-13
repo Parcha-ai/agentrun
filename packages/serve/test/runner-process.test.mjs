@@ -3,12 +3,13 @@
 // claims anything. Beside a server's store it claims a queued run, runs it to its end, and closes releasing its runs.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { runnerArgs, startRunnerProcess } from "../dist/runner/main.js";
 import { openSqliteStore } from "../dist/store/index.js";
+import { scratchFolder } from "../dist/workspace/paths.js";
 import { fauxLoops, until } from "./runner-support.mjs";
 
 function dataDir(t) {
@@ -49,6 +50,29 @@ test("beside the server's store, a runner process claims a queued run, runs it t
   closed = true;
   assert.deepEqual(process.runner.held(), [], "closed, it holds nothing");
   assert.equal((await server.runs.get("run-1")).state, "ended");
+});
+
+test("a runner process's start sweeps the scratch folder of a run that ended after its runner died, and says so", async (t) => {
+  const dir = dataDir(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(() => server.close());
+  await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const env = { ...globalThis.process.env, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
+  const first = await startRunnerProcess({ dataDir: dir, loops: 4, name: "runner-a", createLoop: fauxLoops({ turns: 1, turnMs: 10 }).createLoop, env });
+  await until(async () => (await server.runs.get("run-1")).state === "ended", "the run ends");
+  await until(async () => (await server.runs.get("run-1")).runner === null, "its release");
+  await first.close();
+  // What its dead runner left: a CLI's home in the ended run's scratch folder, with no later claim to sweep it.
+  const { epoch } = await server.runs.get("run-1");
+  const left = join(scratchFolder(dir, "agent-1", "run-1"), "harness", String(epoch), "home");
+  mkdirSync(left, { recursive: true });
+  writeFileSync(join(left, "session.json"), "{}");
+  const said = [];
+  const second = await startRunnerProcess({ dataDir: dir, loops: 4, name: "runner-b", createLoop: fauxLoops().createLoop, env, warn: (line) => said.push(line) });
+  t.after(() => second.close());
+  assert.equal(existsSync(scratchFolder(dir, "agent-1", "run-1")), false, "the ended run's scratch folder is gone at the next runner's start");
+  assert.ok(said.some((line) => /scratch sweep: 1 ended run's? folders swept|scratch sweep: 1 ended runs' folders swept/.test(line)), `said: ${said.join(" | ")}`);
 });
 
 test("a runner's arguments: --data D [--loops N], and nothing else", () => {

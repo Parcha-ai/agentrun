@@ -15,7 +15,13 @@ const { saveMcpServer } = await import("../dist/mcp-store.js");
 const { sealMcpCredential } = await import("../dist/store/index.js");
 
 const KEY = Buffer.from(randomBytes(32));
-const reg = (store) => mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
+/** The registry as a local install's server attaches it (listening on loopback alone), so its fake MCP server on
+ *  loopback is one it may reach. */
+const reg = (store) => {
+  const registry = mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
+  registry.attach("http://127.0.0.1:9", "http://127.0.0.1:9", true); // key-gate: loopback-rule a local install's own address in a test, never an endpoint
+  return registry;
+};
 const TOKEN = `not-a-secret-${"first-token"}`;
 const NEXT = `not-a-secret-${"next-token"}`;
 const iso = (ms) => new Date(ms).toISOString();

@@ -9,7 +9,7 @@ import { answerWith, note } from "./fixtures/faux-learn.mjs";
 import { ended, learner, made, reflectRows, sleep, started } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
 /** The end-of-run turn's message (reflectPrompt). */
 const ASKED = /Answer with one block per note to keep\./;

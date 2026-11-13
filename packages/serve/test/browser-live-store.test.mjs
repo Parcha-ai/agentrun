@@ -212,6 +212,8 @@ test("the readers take any computer kind's row of the run: a desktop row put at 
   assert.equal(await store.liveViewers.put(claim, { kind: "desktop", tag: desktop.tag, port: desktop.port, id: desktop.id, sealed: sealColumn(KEY, sealedAt.liveViewer(RUN, "desktop", desktop.tag), desktop.token) }), true);
   assert.deepEqual(await readLiveViewers(store, KEY, RUN), [read(desktop, 2_000, "desktop"), read(browser, 1_000)]);
   assert.deepEqual(await computerViewerLink(store, KEY, RUN, async () => true), { kind: "desktop", viewer: `/v2/runs/${RUN}/computer/live/v/${desktop.id}#t=${desktop.token}` });
+  // GET /browser's link is under the browser's own address, which reaches a browser's viewer alone: the newer desktop row is passed over.
+  assert.deepEqual(await liveViewerLink(store, KEY, RUN, async () => true), { viewer: `/v2/runs/${RUN}/browser/live/v/${browser.id}#t=${browser.token}` }, "a desktop's viewer is never GET /browser's link");
   assert.deepEqual(await liveViewerById(store, KEY, RUN, desktop.id), read(desktop, 2_000, "desktop"));
   assert.equal((await liveViewerFor(store, KEY, RUN, `/v/${desktop.id}`))?.kind, "desktop");
   assert.equal((await liveViewerFor(store, KEY, RUN, "/viewer.js"))?.id, desktop.id, "the newest, whatever its kind");

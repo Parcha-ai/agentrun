@@ -64,4 +64,8 @@ for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (b
 // A preview keeps nothing, so it is never a secret write; its body's fields are marked secret in the document, so it is
 // registered all the same.
 registerSecretWrite("previewMcpServer", () => false);
+// The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
+// whatever the body (the listing sends the key too, and only the session may type one).
+registerSecretWrite("listComposioTools", () => true);
+registerSecretWrite("saveComposioServer", () => true);
 registerNotSecretWrite("refreshMcpServer", "A refresh lists the saved server's tools again with its sealed credential, and writes no credential.");

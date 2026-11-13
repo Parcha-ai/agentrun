@@ -17,7 +17,7 @@ import { CAP_TOLERANCE, money } from "./cap.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
@@ -464,13 +464,16 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
  *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
- *  seedNotes when its seed cannot be read (a learning fault never refuses a run). */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed } | undefined> {
-  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && learnsOf(rbody.learning);
+ *  seedNotes when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
+ *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. */
+async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown, use: boolean): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined> {
+  // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps nothing
+  // (no grade model: nothing is graded); the server's learning off still gives it nothing.
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
   const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
-  const grade = deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
+  const grade = use ? { use: true as const } : deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
@@ -637,7 +640,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (learnedParts,
   // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
   // nothing (given empty, seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, input);
+  const learning = await learningStartFor(deps, entry, revision, rbody, input, body.learning === RUN_LEARNING_USE);
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;

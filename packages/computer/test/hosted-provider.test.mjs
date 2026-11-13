@@ -9,10 +9,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime } from "../dist/index.js";
+import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, fakeHost, LINUX_GROUPS, VERSION } from "./fake-host.mjs";
 
-const { hostedProvider, nameOf } = await import("../dist/hosted/provider.js");
+const { hostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands } = await import("../dist/hosted/scripts.js");
 
 const COMPUTER = "agentrun.computer";
@@ -291,6 +291,18 @@ test("a retry of a request whose computer ended, stopped or was deleted is refus
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
+test("a retry is held to the size its computer reads back where the vendor takes one in a spec: another is refused as exists", async () => {
+	const { provider, fake } = setup({}, { facts: { specFields: ["cpus", "memoryMb"] }, size: { cpus: 2, memoryMb: 4096 } });
+	const spec = { ...SPEC, cpus: 2, memoryMb: 4096 };
+	const ref = made(await provider.create(spec, { requestId: "sized" }));
+	const bigger = await provider.create({ ...spec, cpus: 4 }, { requestId: "sized" });
+	assert.equal(bigger.error?.code, "exists");
+	assert.match(bigger.error.message, new RegExp(`${ref.name} was made for this request with another spec, so it is not returned: cpus: asked 4, read back 2`));
+	assert.equal(made(await provider.create(spec, { requestId: "sized" })).id, ref.id, "the same spec gets the same computer");
+	assert.equal(made(await provider.create(SPEC, { requestId: "sized" })).id, ref.id, "a size the spec leaves out is the vendor's default");
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
 test("a retry that finds a desktop running whose display is not up yet waits for it within createMs; one that never comes up as declared is exists after createMs", async () => {
 	const labels = (request) => ({ [COMPUTER]: "1", [NAME]: nameOf(request), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" });
 	const up = (m) => {
@@ -425,8 +437,13 @@ test("a lifetime past the cap is refused before any host call; extend moves the 
 	assert.ok(longer.deadline.getTime() > before);
 	assert.equal(m.init.deadline, longer.deadline.toISOString(), "init took the end the vendor read back");
 	assert.equal(m.endsAt.toISOString(), longer.deadline.toISOString());
-	const shorter = made(await provider.extend(ref, 60_000));
-	assert.equal(shorter.deadline.toISOString(), longer.deadline.toISOString(), "an extend never shortens a computer's life");
+	const timers = () => fake.calls.filter(([name]) => name === "setTimer").length;
+	const timersBefore = timers();
+	const shorter = await provider.extend(ref, 60_000);
+	assert.equal(shorter.error?.code, "refused", "an extend to an earlier deadline is refused");
+	assert.match(shorter.error.message, /earlier/);
+	assert.equal(timers(), timersBefore, "the vendor's timer was never called");
+	assert.equal(m.init.deadline, longer.deadline.toISOString(), "the deadline did not move");
 	const past = await provider.extend(ref, 2 * HOUR);
 	assert.equal(past.error?.code, "limit");
 	assert.match(past.error.message, /the most this computer may live/);
@@ -441,7 +458,8 @@ test("two extends of one computer run one after the other; a timer the vendor re
 	const order = [];
 	const [a, b] = await Promise.all([provider.extend(ref, 30 * 60_000).then((r) => (order.push("a"), r)), provider.extend(ref, 20 * 60_000).then((r) => (order.push("b"), r))]);
 	assert.deepEqual(order, ["a", "b"]);
-	assert.equal(made(b).deadline.toISOString(), made(a).deadline.toISOString(), "the shorter, after the longer, keeps the longer");
+	assert.equal(b.error?.code, "refused", "the shorter, after the longer, is refused");
+	assert.ok(made(a).deadline.getTime() > Date.now() + 25 * 60_000, "the longer moved the deadline");
 	const refusing = setup({}, { timer: "limit" });
 	const ref2 = made(await create(refusing.provider));
 	const m = only(refusing.fake);
@@ -865,7 +883,7 @@ test("a host that takes a spec's user: attach reads the user back from inside, n
 	assert.equal(made(again).id, ref.id, "the same request finds the same computer");
 	const other = await provider.create({ ...SPEC, user: "2000:2000" }, { requestId });
 	assert.equal(other.error?.code, "exists");
-	assert.match(other.error.message, /user: asked 2000:2000, read back 1000:1000/);
+	assert.match(other.error.message, /user: asked "2000:2000", read back "1000:1000"/);
 	const m = only(fake);
 	m.box.uid = 0;
 	const root = await provider.attach({ id: ref.id });

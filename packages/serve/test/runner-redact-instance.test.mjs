@@ -19,7 +19,7 @@ const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, poll
 /** A value only the runner's redactor knows (a team token a provider echoes), and what that redactor puts in its place. */
 const MARK = `team-token-${"m".repeat(12)}-0123456789`;
 const CUT_BY_RUNNER = "[cut-by-the-runner]";
-const LAUNCH = { input: { content: "Answer." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-4-5" } };
+const LAUNCH = { input: { content: "Answer." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } };
 
 /** Every file under `dir`, its bytes as text. */
 function filesUnder(dir) {
@@ -56,7 +56,7 @@ test("the runner's one redactor is the instance a pi run's route and model proxy
   };
   const routeOf = async (model, env, tier, wires, given, redactor) => {
     routed.push(redactor);
-    return { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"r".repeat(8)}` }, fetch: upstream, price: () => 0 };
+    return { model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"r".repeat(8)}` }, fetch: upstream, price: () => 0 };
   };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf, computerForClaim: async () => ({ release: async () => {} }) };
   const dispatch = createDispatchLoop({ launchOf: async () => ({ body: LAUNCH }), resolve: resolveRunnerLoop(deps) });

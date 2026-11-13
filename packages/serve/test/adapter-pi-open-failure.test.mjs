@@ -18,7 +18,7 @@ test("a pi session whose open fails after its proxy started leaves no proxy list
   };
   const adapter = piAdapter({
     run,
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5-5",
     provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` },
     fetch: async () => new Response("{}", { status: 500 }),
     price: () => 0,

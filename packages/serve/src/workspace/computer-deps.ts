@@ -16,14 +16,14 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 // The local container engine's provider, for its check() of the operator's size settings at the start (dockerLimitsOf).
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import type { DockerPaths } from "../box-paths.js";
 import { dockerDaemonCheck } from "../docker-daemon.js";
 import { type HostRead, unionOf } from "../docker-host-addresses.js";
-import type { ProviderFactories } from "../computer-keys.js";
+import { KEY_TABLE, type ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
@@ -134,8 +134,12 @@ export interface ComputerDepsOptions {
   /** The server's environment: a provider key named here wins over its saved one; AGENTRUN_DOCKER_IMAGE names Docker's
    *  image. Passed in, never read here. */
   readonly env: KeyEnv;
-  /** The store: its sealed keys (a provider's saved keys) and its computer ledger (the phone provider's). */
-  readonly store: Pick<Store, "sealedKeys" | "computerLedger">;
+  /** The store: its sealed keys (a provider's saved keys), its computer ledger (the phone provider's) and its paired
+   *  computers (a test's stand-in may have none). */
+  readonly store: Pick<Store, "sealedKeys" | "computerLedger"> & { readonly pairedComputers?: Pick<Store["pairedComputers"], "list"> };
+  /** The server's AttachHub, where this runner shares the server's process (runner/beside.ts): a paired computer's
+   *  socket is there. Absent: a runner of its own process, which refuses a paired computer in words. */
+  readonly hub?: AttachHub;
   /** The server's seal key: absent, no saved key is opened (a key from the environment still is). */
   readonly sealKey: Buffer | undefined;
   /** The kind registry: the computer package's unless given (a test's fixture). */
@@ -152,15 +156,15 @@ export interface ComputerDepsOptions {
   /** Whether a provider that binds a folder of this machine answers here now (Docker), for the Mode 1 default. */
   readonly answers?: ComputerForClaimDeps["answers"];
   /** This machine's Docker daemon, asked when a Docker launch fails (docker-daemon.ts dockerDaemonCheck over `env`
-   *  unless given; none under --faux, whose launch is its own). */
+   *  unless given). */
   readonly daemon?: ComputerForClaimDeps["daemon"];
   /** Why this machine cannot run a provider's computers, by its id (computers.ts hostCommandRefusals over this process's
    *  PATH): the claim refuses such a computer before it rents anything. Absent: not asked. */
   readonly hostWhy?: Readonly<Record<string, string>>;
   /** The live view's registration for a desktop or a phone (proxy-only): absent, no view is opened. */
   readonly openComputerView?: OpenComputerView;
-  /** --faux's computers (faux-computers.ts), in place of the computer package's: their kind registry, key table, launch
-   *  and factories. */
+  /** --faux's computers (faux-computers.ts), beside the computer package's: their providers in the kind registry, their
+   *  keys and factories with the package's, and their launch for their own providers. */
   readonly faux?: FauxComputers;
 }
 
@@ -254,12 +258,16 @@ export const claimComputer = async (
   return computerForClaim(boxAllow === undefined ? launch : { ...launch, boxAllow, ...(body?.boxAllowSet ? { boxAllowSet: true as const } : {}) }, store, deps);
 };
 
-/** The kind registry a claim composed with `options` resolves a setting against: --faux's when it is given faux, else a
- *  test's own, else the computer package's. The one choice: computerDepsFrom makes it, and the server's start check
+/** The kind registry a claim composed with `options` resolves a setting against: a test's own, else the computer
+ *  package's; given faux, with --faux's providers beside them (so a --faux run takes the faux desktop, and a run on a
+ *  provider a test loads still gets it). The one choice: computerDepsFrom makes it, and the server's start check
  *  (server.ts computerReady) asks it with what the runner composes with, so a run's start and its claim answer alike. */
 export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">): KindRegistry {
+  const base = options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  if (!options.faux) return base;
   // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
-  return (options.faux?.kinds as unknown as KindRegistry | undefined) ?? options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const faux = options.faux.kinds as unknown as KindRegistry;
+  return { ...base, PROVIDERS: [...base.PROVIDERS, ...faux.PROVIDERS] } as KindRegistry;
 }
 
 /** This machine's Docker daemon as the claim asks it once a Docker launch fails: one check per process (its answer
@@ -323,13 +331,19 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     spec: computerSpecOf(env),
     check: { readBackOf },
     keyOf: keyReader(store, sealKey, env),
-    // Under --faux, its launch makes the computer, with its key table: no provider of the package is built.
-    ...(faux ? { keyTable: faux.keyTable, launch: (entry, spec) => faux.launch(entry as never, spec) } : {}),
+    // Under --faux, its launch makes a faux provider's computer, its keys beside the package's: any other provider's is
+    // made as without it.
+    ...(faux ? {
+      keyTable: { keys: { ...KEY_TABLE.keys, ...faux.keyTable.keys }, labels: { ...KEY_TABLE.labels, ...faux.keyTable.labels } },
+      launch: (entry, spec) => faux.launch(entry as never, spec),
+      launches: (provider) => faux.owns(provider),
+    } satisfies Pick<ComputerDeps, "keyTable" | "launch" | "launches"> : {}),
     ...(options.answers ? { answers: options.answers } : {}),
     ...(options.hostWhy ? { hostWhy: (provider: string): string | undefined => (Object.hasOwn(options.hostWhy!, provider) ? options.hostWhy![provider] : undefined) } : {}),
-    ...(options.daemon ? { daemon: options.daemon } : faux ? {} : { daemon: dockerDaemonOf(env) }),
+    ...(options.daemon ? { daemon: options.daemon } : { daemon: dockerDaemonOf(env) }),
     ...(options.openComputerView ? { openComputerView: options.openComputerView } : {}),
+    ...(store.pairedComputers ? { attached: { rows: () => store.pairedComputers!.list(), ...(options.hub ? { hub: options.hub } : {}) } } : {}),
   };
-  const factories = faux?.factories ?? computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id));
+  const factories = { ...computerProviderFactories(providers, (id) => storeLedger(store.computerLedger, id)), ...faux?.factories };
   return { computerForClaim: claimComputer, computerDeps, factories };
 }

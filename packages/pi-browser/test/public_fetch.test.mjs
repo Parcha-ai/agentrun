@@ -148,6 +148,9 @@ test("the special-purpose ranges are private: each refused by isPrivateAddress a
     assert.equal(isPrivateAddress(ip), false, ip);
   }
   assert.equal(isPrivateAddress("fe80::1%eth0"), true, "a scoped address is refused");
+  // 6to4 (2002::/16) is judged by the IPv4 address it carries: metadata, loopback and private ones are private; a public one is not.
+  for (const ip of ["2002:a9fe:a9fe::", "2002:a9fe:a9fe::1", "2002:7f00:1::", "2002:a00:1::", "2002:c0a8:101::"]) assert.equal(isPrivateAddress(ip), true, `6to4 ${ip}`); // key-gate: denylist refused 6to4 targets
+  assert.equal(isPrivateAddress("2002:808:808::"), false, "6to4 of a public address");
 });
 
 test("readPage gives the title, the text and each absolute http(s) link once", async () => {
