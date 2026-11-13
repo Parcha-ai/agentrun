@@ -14,7 +14,7 @@ import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
 import { costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
 import { runPathOf, workflowNameOf } from "../runner/learning-end.js";
-import { servedOf, workflowCostsOf } from "../runner/workflow-first.js";
+import { PAST_RUNS, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
 import { type Reflect, reflects } from "../reflect-range.js";
 import type { NoteRuns } from "../learning.js";
 import { type NoteFiles, notesOf } from "../usage.js";
@@ -228,7 +228,10 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   }
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), the
   // one the run's launch reads: a workflow over the line shows `needs_revision` with its two numbers.
-  const workflows = workflowCostsOf(ended.filter((run) => kinds.get(run.revisionId) !== "workflow"));
+  // The runner's own history (workflow-first.ts pastOf: the agent's newest PAST_RUNS runs), so the page and the launch's
+  // decision agree.
+  const recent = new Set((await store.runs.list({ agentId, limit: PAST_RUNS })).map((run) => run.id));
+  const workflows = workflowCostsOf(ended.filter((run) => recent.has(run.id) && kinds.get(run.revisionId) !== "workflow"));
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
 }
 

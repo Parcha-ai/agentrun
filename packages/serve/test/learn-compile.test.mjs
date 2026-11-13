@@ -22,7 +22,7 @@ const { compiledInto, parseNoteFile } = await import("../dist/learn/notes.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { seedOf } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
-const { reflectRequestId } = await import("../dist/runner/end-of-run.js");
+const { reflectRequestId, reflectRanges } = await import("../dist/runner/end-of-run.js");
 const { decisionProvidersIn } = await import("../dist/decisions.js");
 const reflect = await import("../dist/learn/reflect.js");
 const learningEnd = await import("../dist/runner/learning-end.js");
@@ -139,7 +139,7 @@ test("compileTurn: a draft the checks refuse goes back with their errors, each a
     ask: async (prompt, attempt) => (asked.push({ prompt, attempt }), { answer: answers[attempt - 1] }),
     compile: ASK(),
     answer: "",
-    check: async (answer) => (answer.includes("GOOD") ? { state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/answer/workflow.json" }] } } : { state: "dropped", reason: "checker", problems: [{ rule: "workflow", path: "workflows/answer/workflow.json", detail: "its JSON does not parse" }] }),
+    check: async (answer) => (answer.includes("GOOD") ? { state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/answer/workflow.json", text: JSON.stringify(compile.compileExample(false)) }] } } : { state: "dropped", reason: "checker", problems: [{ rule: "workflow", path: "workflows/answer/workflow.json", detail: "its JSON does not parse" }] }),
   });
   assert.deepEqual(asked.map(({ attempt }) => attempt), [1, 2, 3]);
   assert.ok(asked[0].prompt.startsWith("One more turn: write this agent's job"));
@@ -165,9 +165,13 @@ test("compileTurn: one that never passes stops after 1 + 3 attempts with its err
   assert.deepEqual(silent.record.attempts, [{ ok: false, errors: ["the turn ended before it answered"] }]);
 });
 
-test("each compile attempt is its own request id: never answered from the look-back's submission, an earlier attempt or an earlier round's", () => {
+test("each compile attempt is its own request id: never answered from the look-back's submission or an earlier attempt", () => {
   const ids = [reflectRequestId("run-1"), reflectRequestId("run-1", true), reflectRequestId("run-1", false, 1, "compile-1"), reflectRequestId("run-1", true, 1, "compile-2"), reflectRequestId("run-1", false, 2, "compile-1")];
   assert.deepEqual(ids, ["learn-reflect-run-1", "learn-reflect-run-1:again", "learn-reflect-run-1:compile-1", "learn-reflect-run-1:compile-2", "learn-reflect-run-1:round-2:compile-1"]);
+  // A compile step is its round's: the rounds a run's journal holds are counted without it (reflectRanges).
+  const input = (requestId, entry) => ({ type: "input", requestId, entry });
+  const ranges = reflectRanges([input(ids[0], 10), input(ids[2], 14), input(ids[3], 18), input(reflectRequestId("run-1", false, 2), 40), input(ids[4], 44)], [{ kind: "agentrun.end", id: 30 }, { kind: "agentrun.end", id: 60 }]);
+  assert.deepEqual(ranges.map(({ from }) => from), [10, 40]);
 });
 
 test("the three-offers draft ask is gone: no DRAFT_AFTER_RUNS, no draftForOf, and the look-back's prompt keeps no workflow", () => {
@@ -344,4 +348,134 @@ test("GET /runs/{id}/learning: compiled.promoted is null until its promotion is 
   assert.deepEqual([body({}).promoted, body({}).digest], [null, "0123456789abcdef"]);
   assert.equal(body({ promoted: true }).promoted, true);
   assert.equal(body({ promoted: false }).promoted, false);
+});
+
+// #2641 review (class A): a draft the checks keep is held to the guards the ask asked for (learnedHost's rules) before
+// it is accepted; a missing or wrong guard goes back through the retry loop, never into a workflow that runs a judgment
+// with no hand-back.
+const strip = (doc, kinds) => JSON.parse(JSON.stringify(doc, (key, value) => (value && typeof value === "object" && kinds.includes(value.node) ? Object.fromEntries(Object.entries(value).filter(([k]) => k !== "guard")) : value)));
+test("guardProblems: every judgment step guarded, with Jev every extract and call step on Jev, without Jev no guard reads it", () => {
+  for (const judges of [false, true]) {
+    assert.deepEqual(compile.guardProblems(compile.compileExample(judges, true), { jev: true }), [], `judges ${judges}, Jev: the example passes`);
+    assert.deepEqual(compile.guardProblems(compile.compileExample(judges, false), { jev: false }), [], `judges ${judges}, no Jev: the example passes`);
+  }
+  const bare = compile.guardProblems(strip(compile.compileExample(true, true), ["decide", "judge"]), { jev: true });
+  assert.deepEqual(bare, [
+    `the judge step "policy" has no guard: give it {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`,
+    `the decide step "answer" has no guard: give it {"signal": "both", "threshold": ${compile.GUARD_THRESHOLD}}`,
+  ]);
+  // With Jev, an extract or call step reports no confidence: Jev alone checks it.
+  assert.deepEqual(compile.guardProblems(compile.compileExample(false, false), { jev: true }), [`the extract step "facts" has no guard: give it {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+  const selfOnExtract = compile.compileExample(false, true);
+  selfOnExtract.root.steps[0].guard = { signal: "self", threshold: 0.7 };
+  assert.deepEqual(compile.guardProblems(selfOnExtract, { jev: true }), [`the extract step "facts" reports no confidence of its own: its guard reads jev, {"signal": "jev", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+  // Without Jev, a guard that reads it would hand every case back.
+  assert.deepEqual(compile.guardProblems(compile.compileExample(false, true), { jev: false }), [
+    `the extract step "facts" has a guard that reads jev, and this run cannot call Jev: an extract or call step takes no guard`,
+    `the decide step "answer" has a guard that reads both, and this run cannot call Jev: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`,
+  ]);
+  // Nested steps are read too (a map's body, a route's branches).
+  const nested = { v: 2, name: "n", schemas: {}, root: { node: "map", label: "each", itemsPath: "items", body: { node: "agent", label: "inner" } } };
+  assert.deepEqual(compile.guardProblems(nested, { jev: false }), [`the agent step "inner" has no guard: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`]);
+});
+
+test("compileTurn: a draft the checks keep but missing a guard the ask asked for goes back with which step, and the guarded one is kept", async () => {
+  const unguarded = JSON.stringify(strip(compile.compileExample(false), ["decide"]));
+  const guarded = JSON.stringify(compile.compileExample(false));
+  const asked = [];
+  const result = await compile.compileTurn({
+    ask: async (prompt, attempt) => (asked.push(prompt), { answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${attempt === 1 ? unguarded : guarded}\n\`\`\`\`` }),
+    compile: ASK(), answer: "",
+    check: async (answer) => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text: answer.includes(unguarded) ? unguarded : guarded }] } }),
+  });
+  assert.equal(asked.length, 2, "asked again");
+  assert.match(asked[1], /guard: the decide step "answer" has no guard/);
+  assert.deepEqual(result.record.attempts, [{ ok: false, errors: [`guard: the decide step "answer" has no guard: give it {"signal": "self", "threshold": ${compile.GUARD_THRESHOLD}}`] }, { ok: true, errors: [] }]);
+  assert.match(result.kept.answer, /"guard"/);
+});
+
+// #2641 review (class B): the compile turn reads the agent's notes whole; notes past NOTES_MAX compile nothing and say
+// why, never a workflow from a cut set of rules.
+test("the compile prompt keeps every note whole, past what a cut would have kept; notes over NOTES_MAX ask nothing and record why", async () => {
+  const body = "Always do the thing this rule says, every time. ".repeat(80);
+  const notes = Array.from({ length: 7 }, (_, i) => ({ file: `rule-${i + 1}.md`, text: note({ name: `Rule ${i + 1}`, description: `Rule ${i + 1}` }) + body + `END-OF-RULE-${i + 1}` }));
+  assert.ok(notes.reduce((sum, one) => sum + one.text.length, 0) > 24_000, "past the old cut");
+  const prompt = compile.compilePrompt(ASK({ notes }));
+  for (let i = 1; i <= 7; i++) assert.ok(prompt.includes(`END-OF-RULE-${i}`), `rule ${i} whole`);
+  assert.ok(!/…\n----- end/.test(prompt), "nothing cut");
+  const many = Array.from({ length: Math.ceil(compile.NOTES_MAX / body.length) + 1 }, (_, i) => ({ file: `rule-${i + 1}.md`, text: body }));
+  let asks = 0;
+  const over = await compile.compileTurn({ ask: async () => (asks++, { answer: "" }), compile: ASK({ notes: many }), answer: "", check: async () => assert.fail("nothing to check") });
+  assert.equal(asks, 0, "no turn asked over a cut set of rules");
+  assert.equal(over.record.workflow, compile.UNNAMED);
+  assert.equal(over.record.attempts.length, 1);
+  assert.match(over.draftErrors[0], new RegExp(`notes hold \\d+ characters, more than the ${compile.NOTES_MAX} the compile turn reads whole`));
+});
+
+// #2641 review (class D): a trace's feedback is what the person said after the run's first message, never the server's
+// words (an approval's resume, which can carry a tool's result, a raised cap's follow-up, a hand-back) or a trigger's.
+test("a compile trace's feedback is the person's messages alone: the server's and a trigger's after the first are not theirs", () => {
+  const rows = [
+    { id: "e1", kind: "user_message", text: "What is six times seven?" },
+    { id: "e2", kind: "tool_use", tool_use_id: "t1", tool_name: "web_fetch", tool_input_preview: "{\"url\":\"https://x.example\"}" },
+    { id: "e3", kind: "phase", origin: "server", text: "Approved. The call returned: {\"rows\": 42}" },
+    { id: "e4", kind: "phase", origin: "server", text: "The spend cap was raised to $5." },
+    { id: "e5", kind: "phase", origin: "server", text: "The server's resume beside a declined call", },
+    { id: "e5b", kind: "user_message", text: "No, don't call that." },
+    { id: "e6", kind: "phase", origin: "trigger", text: "Slack t-1: ping", trigger: { id: "t-1", source: "slack", owner: false } },
+    { id: "e7", kind: "user_message", text: "Shorter next time." },
+    { id: "e8", kind: "final_answer", text: "42" },
+  ];
+  const trace = learningEnd.traceFrom(rows, []);
+  assert.equal(trace.input, "What is six times seven?");
+  assert.deepEqual(trace.feedback, ["No, don't call that.", "Shorter next time."]);
+  assert.deepEqual(trace.calls, [{ tool: "web_fetch", input: "{\"url\":\"https://x.example\"}" }]);
+  assert.equal(trace.answer, "42");
+  // A trigger's first message is the run's input: what it was asked.
+  assert.equal(learningEnd.traceFrom([{ id: "e1", kind: "phase", origin: "trigger", text: "Webhook w-1: refund order 1043" }, { id: "e2", kind: "final_answer", text: "done" }], []).input, "Webhook w-1: refund order 1043");
+});
+
+// #2641 review (class A, again): guardProblems reads the workflow's steps alone (skills.ts childNodes), never a literal
+// `state` or `args` value that happens to hold a `node` key.
+test("guardProblems walks steps alone: a call's args or a step's state holding a `node` key is data, never a step", () => {
+  const doc = { v: 2, name: "n", schemas: {}, root: { node: "chain", steps: [
+    { node: "call", label: "file", via: "tool", tool: "web_fetch", args: { node: "agent", nested: [{ node: "decide" }] }, out: "R", as: "r", deadline_s: 30 },
+    { node: "decide", label: "answer", state: { r: "{r}", shape: { node: "judge" } }, out: "A", as: "a", guard: { signal: "self", threshold: 0.7 } },
+  ] } };
+  assert.deepEqual(compile.guardProblems(doc, { jev: false }), []);
+  // The steps under a parallel, a loop and a route are steps.
+  const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a" } }, { node: "route", branches: { x: { body: { node: "decide", label: "d" } } } }] } };
+  assert.deepEqual(compile.guardProblems(deep, { jev: false }).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
+});
+
+// The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
+// answer-json.ts answerAsServed, the function a run serving the workflow shapes its answer with.
+const SHAPE = { type: "object", additionalProperties: false, required: ["mcc", "description", "confidence"], properties: { mcc: { type: "string" }, description: { type: "string" }, confidence: { type: "number" } } };
+const shapeDraft = (out) => JSON.stringify({
+  v: 2, name: "pick",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
+  input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the code.", out: "Out", as: "answer", tier: "fast" }] },
+});
+
+test("the compile prompt shows the agent's output schema next to the language, whole: the workflow's final output must be this object; with none, nothing", () => {
+  const prompt = compile.compilePrompt(ASK({ outputSchema: SHAPE }));
+  const language = prompt.indexOf("## The workflow language");
+  const example = prompt.indexOf("## A worked example");
+  const at = prompt.indexOf("The workflow's final output must be this object");
+  assert.ok(language < at && at < example, "beside the reference, before the example");
+  assert.ok(prompt.includes(`\`\`\`json\n${JSON.stringify(SHAPE, null, 2)}\n\`\`\``), "the schema, whole");
+  assert.doesNotMatch(compile.compilePrompt(ASK()), /final output must be this object/);
+});
+
+test("a draft's dry run holds its answer to the agent's output schema with answerAsServed: one field fails in the schema's words, the whole object passes, no schema holds it to none", async () => {
+  const one = shapeDraft({ type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"] });
+  const input = JSON.stringify({ content: "Acme Hardware" });
+  const failed = await draftDryRun(dsl, one, input, SHAPE);
+  assert.equal(failed.status, "failed", JSON.stringify(failed));
+  assert.match(failed.detail, /^its dry run failed: its answer does not meet the agent's output schema: /);
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, SHAPE), { status: "passed" });
+  assert.deepEqual(await draftDryRun(dsl, one, input), { status: "passed" });
+  // One field the schema takes alone: the bare value fills it, as a run serving it shapes it.
+  assert.deepEqual(await draftDryRun(dsl, one, input, { type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"], additionalProperties: false }), { status: "passed" });
 });

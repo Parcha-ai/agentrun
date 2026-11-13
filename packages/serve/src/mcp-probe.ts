@@ -120,6 +120,42 @@ export function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | unde
   return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);
 }
 
+/** Query parameter names that look like a credential, compared lowercase with every "-" and "_" gone: an MCP server's url
+ *  is kept and shown in plain text (its row's url, every read, the console), so a credential belongs in a header. Only
+ *  names that say they hold one: a bare `key`, `session` or `sessionid` names a server's own lookup or routing value as
+ *  often (?key=docs, ?session=eu-1), so those stay the server's. */
+export const CREDENTIAL_QUERY_NAMES: readonly string[] = [
+  "token", "accesstoken", "authtoken", "idtoken", "refreshtoken", "sessiontoken", "bearer", "jwt",
+  "apikey", "xapikey", "accesskey", "secretkey", "privatekey",
+  "secret", "clientsecret", "auth", "authorization", "credential", "credentials",
+  "password", "passwd", "pass", "pwd", "sig", "signature",
+];
+const credentialQueryName = (name: string) => CREDENTIAL_QUERY_NAMES.includes(name.toLowerCase().replace(/[-_]/g, ""));
+
+/** The first query parameter of `url` whose name looks like a credential, if any: a saved row's URL is held to it at each
+ *  use (the server's preview, refresh and sign-in, the runner's claim) as a new one is at its save. */
+export function credentialInQuery(url: string | URL): string | undefined {
+  const parsed = typeof url === "string" ? URL.parse(url) : url;
+  return parsed ? [...parsed.searchParams.keys()].find(credentialQueryName) : undefined;
+}
+
+/** An MCP server's URL as every read shows it: its origin, and "/…" for a path or query, which is held as a secret (a
+ *  provider may put a key in either: Zapier's /mcp/<key>/sse, a ?token= no list names). The whole URL is used only to call
+ *  the server. A body that sends this back unchanged for a saved server means its saved URL (savedOrGiven). */
+export function shownUrl(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return "(not a URL)";
+  return `${parsed.origin}/${parsed.pathname !== "/" || parsed.search ? "…" : ""}`;
+}
+
+/** A body's URL for saved server `saved`: its saved URL when the body sent back the shown one (shownUrl), else as given. */
+export function savedOrGiven(given: unknown, saved: string | undefined): unknown {
+  return saved !== undefined && typeof given === "string" && given === shownUrl(saved) ? saved : given;
+}
+
+/** What a URL with a credential in its query says, wherever it is refused. */
+export const credentialInQueryWords = (name: string) => `${name} in the URL's query looks like a credential; send it as a header instead (Headers).`;
+
 export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   if (typeof value !== "string" || value === "") return void issues.push({ field: "url", reason: value === undefined ? "missing" : "wrong_type", message: "url is the MCP server's Streamable HTTP endpoint, as text." });
   let url: URL;
@@ -130,6 +166,7 @@ export function urlOf(value: unknown, issues: InputIssue[]): URL | undefined {
   }
   if (value.length > MAX_URL) issues.push({ field: "url", reason: "too_long", message: `url is at most ${MAX_URL} characters.` });
   else if (url.username || url.password) issues.push({ field: "url", reason: "invalid", message: "url holds a user or password: send a credential as auth instead." });
+  else if (credentialInQuery(url)) issues.push({ field: "url", reason: "invalid", message: credentialInQueryWords(credentialInQuery(url)!) });
   else if (url.protocol === "http:" && !LOOPBACK(url.hostname)) issues.push({ field: "url", reason: "not_https", message: `url is http://${url.host}, which is not this machine's loopback: use https, or http only on loopback.` });
   else if (url.protocol !== "https:" && url.protocol !== "http:") issues.push({ field: "url", reason: "invalid", message: "url is https, or http on loopback." });
   url.hash = "";
@@ -225,15 +262,16 @@ type Seen = { status: number; headers: globalThis.Headers; rpc: Promise<boolean>
 
 /** Connect to `url`, agree a protocol revision, and list every tool (all pages), each request held to REQUEST_MS and
  *  MAX_RESPONSE_BYTES and the whole to PREVIEW_MS. A failure is an ApiError: 422 auth_required (with the auth the
- *  server asks for), 422 not_mcp, 422 input_invalid for a redirect, else 424 upstream_failed. */
-export async function listServer(url: URL, headers: HeaderMap, version: string, stop?: AbortSignal): Promise<Listed> {
+ *  server asks for), 422 not_mcp, 422 input_invalid for a redirect, else 424 upstream_failed. `send`: how each request
+ *  goes, the store-backed registry's dialled at the address its check let through (mcp-oauth.ts mcpServerAt, dialAt). */
+export async function listServer(url: URL, headers: HeaderMap, version: string, stop?: AbortSignal, send: typeof fetch = fetch): Promise<Listed> {
   const sdk = await import("@modelcontextprotocol/client");
   const deadline = AbortSignal.any([AbortSignal.timeout(PREVIEW_MS), ...(stop ? [stop] : [])]);
   const seen: Seen[] = [];
   let overflow = false;
   const watched = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const signal = AbortSignal.any([deadline, AbortSignal.timeout(REQUEST_MS), ...(init?.signal ? [init.signal] : [])]);
-    const res = await fetch(input, { ...init, redirect: "manual", signal });
+    const res = await send(input, { ...init, redirect: "manual", signal });
     const type = res.headers.get("content-type") ?? "";
     seen.push({ status: res.status, headers: res.headers, rpc: type.startsWith("text/event-stream") ? Promise.resolve(true) : type.includes("json") ? speaksJsonRpc(res.clone()) : Promise.resolve(false) });
     return capped(res, () => (overflow = true));
@@ -277,13 +315,13 @@ export async function listServer(url: URL, headers: HeaderMap, version: string, 
     };
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    throw await refusal(error, seen, overflow, url, headers, deadline, sdk);
+    throw await refusal(error, seen, overflow, url, headers, deadline, sdk, send);
   } finally {
     await client.close().catch(() => {});
   }
 }
 
-async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL, headers: HeaderMap, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client")): Promise<ApiError> {
+async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL, headers: HeaderMap, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client"), send: typeof fetch): Promise<ApiError> {
   const upstream = (message: string, status?: number) => new ApiError("upstream_failed", message, status ? { details: { status } } : {});
   if (overflow) return upstream(`The MCP server answered more than ${MAX_RESPONSE_BYTES / 2 ** 20} MiB in one response.`);
   const redirect = seen.find((one) => one.status >= 300 && one.status < 400);
@@ -297,7 +335,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
   }
   const denied = seen.find((one) => one.status === 401 || one.status === 403);
   if (denied) {
-    const auth = await authAsked(url, denied.headers, deadline, sdk);
+    const auth = await authAsked(url, denied.headers, deadline, sdk, send);
     const sent = Object.keys(headers).length > 0;
     const asks = auth === "oauth" ? `It signs in with OAuth: ${sent ? `${SIGN_IN_AGAIN}, or ` : ""}sign in with POST /v2/settings/mcp-servers/{name}/oauth/start and its url.` : "Send a bearer token or the headers it takes.";
     return new ApiError("auth_required", `The MCP server ${sent ? "refused the credential sent" : "asks for a credential"} (HTTP ${denied.status}). ${asks}`, { details: { auth, status: denied.status } });
@@ -308,7 +346,7 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
     if (deadline.aborted || timedOut(error)) return upstream(`The MCP server did not answer within ${REQUEST_MS / 1000} s.`);
     return upstream(`Could not reach the MCP server at ${url.origin}${causeCode(error) ? ` (${causeCode(error)})` : ""}.`);
   }
-  if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${url.href} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
+  if (!(await Promise.all(seen.map((one) => one.rpc))).some(Boolean)) return new ApiError("not_mcp", `${shownUrl(url.href)} does not speak MCP over Streamable HTTP: it answered HTTP ${seen.at(-1)!.status} with no JSON-RPC reply.`);
   // The listing's own limit when it was the one that ran out, else one request's.
   if (deadline.aborted || timedOut(error)) return upstream(deadline.aborted ? `The MCP server did not finish listing its tools within ${PREVIEW_MS / 1000} s.` : `The MCP server did not answer a request within ${REQUEST_MS / 1000} s.`);
   // Cut every credential value from the SDK's words: a server may echo what it was sent.
@@ -318,10 +356,10 @@ async function refusal(error: unknown, seen: Seen[], overflow: boolean, url: URL
 
 /** What a 401 or 403 asks for: `oauth` when the server names protected-resource metadata (its WWW-Authenticate, or a
  *  well-known document naming an authorization server), else `bearer`. The probe sends no credential. */
-async function authAsked(url: URL, headers: globalThis.Headers, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client")): Promise<"oauth" | "bearer"> {
+async function authAsked(url: URL, headers: globalThis.Headers, deadline: AbortSignal, sdk: typeof import("@modelcontextprotocol/client"), send: typeof fetch): Promise<"oauth" | "bearer"> {
   if (sdk.extractWWWAuthenticateParams(new Response(null, { headers })).resourceMetadataUrl) return "oauth";
   try {
-    const probe = async (input: string | URL | Request, init?: RequestInit) => capped(await fetch(input, { ...init, redirect: "manual", signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]) }), () => {});
+    const probe = async (input: string | URL | Request, init?: RequestInit) => capped(await send(input, { ...init, redirect: "manual", signal: AbortSignal.any([deadline, AbortSignal.timeout(5_000)]) }), () => {});
     const metadata = await sdk.discoverOAuthProtectedResourceMetadata(url, undefined, probe);
     return metadata.authorization_servers?.length ? "oauth" : "bearer";
   } catch {

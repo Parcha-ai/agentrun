@@ -20,6 +20,7 @@ import type { Approvals } from "../approvals.js";
 import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
+import { runnerLiveOf } from "../live-reach.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
 import { firstMessage } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
@@ -52,6 +53,7 @@ import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, ti
 import { type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
+import { computerCodemode } from "./adapters/pi-computer.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { wireName } from "../catalog.js";
@@ -59,7 +61,8 @@ import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, runEndCost, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { piShaped } from "../store-reads/journal.js";
-import { claimPromotion, promotionGate, replayLaid } from "./promotion.js";
+import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
+import type { ReplayCalls } from "../learn/replay-calls.js";
 import { laidFor, pastOf, pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -78,10 +81,12 @@ import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
 
-/** What a claim gives the shared computerForClaim: the run, its epoch, its revision, its place and any computer choice. */
+/** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
+ *  and names its runner), its revision, its place and any computer choice. */
 export interface ClaimLaunch {
   readonly runId: string;
   readonly epoch: number;
+  readonly claim?: unknown;
   readonly revisionId: string;
   readonly place?: unknown;
   readonly computer?: unknown;
@@ -173,6 +178,10 @@ export interface AdapterSpecDeps {
   /** A test runner's fake GitHub MCP origin, the one a github_app server may be at (mcp-claim.ts githubMcpOrigin):
    *  for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP (github.ts GITHUB_MCP_ORIGIN). Only a test's in-process runner sets it; the CLI's runner never does. */
   readonly githubMcpOrigin?: string;
+  /** Whether this runner's runs may reach an MCP server whose URL is on loopback: only a runner beside a local-install
+   *  server (runner/beside.ts, Serve.localInstall) is told so, by that server in its own process. Absent, never: a hosted
+   *  or standalone runner's loopback is its host's other services. */
+  readonly mcpLoopback?: boolean;
   /** For tests only: the adapter loop's model retry (adapter-loop.ts retry and stream), so a test whose provider fails a run
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
@@ -398,9 +407,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactor.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -408,7 +417,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
@@ -452,7 +461,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   //   (adapter-loop waitInClaim, the browser's personWait below). It stays out of the session's host tools and REPLAY, so a CLI harness still
   //   refuses it (runnable.ts). pi only.
   // - the browser's durable extension, when the run gets one (bindNonHandTools, below, before the session opens).
-  const native: Extension[] = granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : [];
+  // - pi's code mode, with a desktop or a phone (pi-computer.ts): the `codemode` tool beside the run's own, its scripts
+  //   with `computer` bound on the run's held port.
+  const native: Extension[] = [...(granted.includes(ASK_TOOL) ? [defineExtension({ name: "ask_person", tools: [askPerson] })] : []), ...(tools.computer ? [computerCodemode(tools.computer)] : [])];
   // pi-native tools in the session's own extension (PiAdapterOptions.tools): the subagent tool, pushed below.
   const piTools: ToolRegistration[] = [];
   // A run granted subagent (runner/subagent.ts): the model of each of its tiers, the revision's own (modelTiers) else the
@@ -504,6 +515,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted));
+  // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script and codemode.
+  tools.computer?.guard.install(async (tool, args) => {
+    await gate.permissions.refresh();
+    return gate.permissions.decide(tool, args);
+  });
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -577,8 +593,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
-    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown,
-  }))) : {};
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
+  })), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
+  // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
+  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
+  // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
+  // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
+  const replay = await replayCallsFor(deps.store, claim.runId, launch, context);
   const { serve: workflowFirst, revise: workflowRevise } = firstChoice;
   const workflows = laidFor(laidFlows, firstChoice);
   // A tier a learned workflow's node names and the host has a model of: none can't be reached is left as `why`, and its
@@ -620,7 +641,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
-  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model)).map((tool) => answersCut(tool, cut));
+  const nonHandTools = (await bindNonHandTools(host, revision.kind, granted, run, context, results, root, launch.plane, workflows, native, gate.permissions, tiers, mcp, () => route.model, replay)).map((tool) => answersCut(tool, cut));
   const sessionTools = [...handTools, ...nonHandTools];
 
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
@@ -848,6 +869,8 @@ export async function learnedWorkflowHostTool(opts: {
   /** The model a node on the session's own port runs on (a node of no tier, or of a tier not in `tiers`), as the run's
    *  route names it: what its trace says it ran on. A node of a tier in `tiers` names that tier's model. */
   readonly modelName?: (tier: string | undefined) => string | undefined;
+  /** A replay run's call nodes (runner/promotion.ts replayCallsFor): never a write run, reads cached. Absent: live. */
+  readonly replay?: ReplayCalls;
 }): Promise<HostTool | undefined> {
   if (!learnsWorkflows(opts.kind, opts.workflows)) return undefined;
   const flows = opts.workflows;
@@ -867,7 +890,7 @@ export async function learnedWorkflowHostTool(opts: {
   const providers = await decisionProvidersIn(opts.env);
   const decisions = providers ? { decisions: { providers, book: opts.run.ledger.decisions, pause: (refusal: Refusal) => opts.run.ledger.pause(refusal) } } : {};
   // A call node's native web_search goes through the session's port too, labelled web_search, as the run's own does.
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}) });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, decide: opts.permissions.decide, mcpTools, ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}), ...(opts.replay ? { replay: opts.replay } : {}) });
   return hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx) ?? undefined;
 }
 
@@ -875,7 +898,7 @@ export async function learnedWorkflowHostTool(opts: {
  *  hostToolOf): web_fetch, web_search and monid, each by its catalog name under the adapter loop's one gate (`spec.gate`;
  *  `gated` is undefined here, as for the hands). Their paid requests are booked by the adapter loop on the run's one ledger
  *  (bookedIn), as main books them, so they run. The browser (through host.liveViewers), MCP (the MCP claim step's
- *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, redactions, release }), the learned workflow and decisions are
+ *  mcpForClaim(claim, store, sealKey, pin) -> { sessionMcp, release }), the learned workflow and decisions are
  *  each a named todo, added as their seams land. */
 /** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. Its
  *  viewer token, minted in the run, is held by `cut`, the run's one redactor, as it is handed over, before it is written. */
@@ -926,6 +949,7 @@ export function buildToolHost(opts: {
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
 }): ToolHost {
+  const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
   return {
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
@@ -952,6 +976,8 @@ export function buildToolHost(opts: {
     // The run's one redactor: the browser's answers pass it inside their call, before pi stores them (tools.ts).
     redact: opts.redact,
     liveViewers: liveViewersOf(opts.store, opts.sealKey, claim, opts.redact),
+    // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its browser's viewer answers there.
+    ...(liveAt ? { liveAt } : {}),
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,
@@ -979,7 +1005,7 @@ export async function webHostTools(host: ToolHost, granted: readonly string[], c
   return tools;
 }
 
-async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp, modelName?: (tier: string | undefined) => string | undefined): Promise<AdapterRunSpec["session"]["tools"]> {
+async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp, modelName?: (tier: string | undefined) => string | undefined, replay?: ReplayCalls): Promise<AdapterRunSpec["session"]["tools"]> {
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. learned_workflow
   // binds below with no web tool, so a learned run with no web tool still lists it.
@@ -993,7 +1019,7 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // the session's tools the harness is told of: its model nodes run on the session's proxied models (run.ledger.models),
   // each a request on the run's one route labelled learned_workflow. The agent's scoped keys (host.env) are its call
   // nodes'.
-  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers, ...(mcp ? { mcp } : {}), ...(host.workspace ? { workspace: host.workspace } : {}), ...(modelName ? { modelName } : {}) });
+  const learned = await learnedWorkflowHostTool({ run, kind, granted, plane, env: host.env, work: root, workflows, permissions, ctx, tiers, ...(mcp ? { mcp } : {}), ...(host.workspace ? { workspace: host.workspace } : {}), ...(modelName ? { modelName } : {}), ...(replay ? { replay } : {}) });
   if (learned) tools.push(learned);
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal

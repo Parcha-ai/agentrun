@@ -23,7 +23,8 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { defaultPermissionOf, DESKTOP_TOOL_DEFS, PHONE_TOOL_DEFS } from "@parcha/agentrun-kernel/kernel";
+import { CODEMODE_TOOL_NAME } from "@earendil-works/pi-durable/codemode";
+import { computerToolDefs, defaultPermissionOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { LEARNED_DIR } from "./learning.js";
 import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
@@ -94,7 +95,10 @@ const BROWSER_REGISTRATIONS: readonly string[] = ["snapshot", "run", "screenshot
  *  registry's own definitions say it (their settingsKey), so a tool a kind gains is held to its key with no line here. */
 const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
   const keys = new Map<string, string[]>();
-  for (const def of [...DESKTOP_TOOL_DEFS, ...PHONE_TOOL_DEFS]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  for (const def of [...computerToolDefs("desktop", []), ...computerToolDefs("phone", [])]) keys.set(def.name, [...new Set([...(keys.get(def.name) ?? []), def.settingsKey])]);
+  // pi's code mode, offered only beside a desktop's or a phone's tools (runner/adapters/pi-computer.ts): its scripts
+  // reach the computer as computer_script's do, so it is held to the same keys. Its nested tool calls pass the gate each.
+  keys.set(CODEMODE_TOOL_NAME, keys.get("computer_script") ?? []);
   return keys;
 })();
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
@@ -359,6 +363,9 @@ export function resumeHead(request: Pick<ApprovalRequest, "tool" | "call_id">, s
   const args = shown.length > 300 ? `${shown.slice(0, 299)}…` : shown;
   return `${RESUME_PREFIX}This answers your ${request.tool} call ${request.call_id} (arguments ${args}), which waited for a person's approval; it is not a new message from them.`;
 }
+/** The last line of a CLI's resume message (one, after every call it answers): the message arrives as a new turn, and a
+ *  model that reads only results there answers about the approval, not the person's request (Claude Code, live). */
+export const RESUME_GO_ON = "Go on with the person's request from where you stopped, using these results; don't call these tools again for them.";
 export function resumeText(request: Pick<ApprovalRequest, "tool" | "call_id">, shown: string, decision: "allow" | "deny", result: ToolAnswer): string {
   const head = resumeHead(request, shown);
   return decision === "allow" ? `${head} They allowed it, and it ran${result.isError ? " and failed" : ""}. Its result:\n${result.text}` : `${head}\n${result.text}`;
@@ -426,7 +433,7 @@ export class RunGate {
    *  "unattended", an ask the agent's approvals allowed. */
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
-    // A tool the desktop and the phone both have (the hand-over): the gate knows not the run's kind, so it is held to the
+    // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
     // stricter of both keys' settings, never more permissive than the run's own kind's.
     const shared = KIND_TOOLS.get(tool.replace(/^mcp__hands__/, ""));
     if (shared && shared.length > 1) {

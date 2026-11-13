@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { checkUiAct, chordKeys, conformanceCases, findNodes, formatReport, refusedStep, runConformance, UiSession } from "../dist/index.js";
+import { checkUiAct, chordKeys, conformanceCases, findNodes, formatReport, refusedStep, runConformance, SET_HOLD_MS, UiSession } from "../dist/index.js";
 import { connectUi, FakeUiDriver, fakeUiConnection, fakeUiProvider, NEXT_ANIMATE_MS, NEXT_MS, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
-const UI_CASES = ["ui.hello", "ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused"];
+const UI_CASES = ["ui.hello", "ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused", "ui.settle-tree", "ui.set-holds", "ui.expect-window", "ui.window-closed", "ui.window-follow"];
 const statuses = (report) => Object.fromEntries(report.results.map((r) => [r.id, r.status]));
 const reasonOf = (report, id) => report.results.find((r) => r.id === id)?.reason ?? "";
 const run = (provider, ids = UI_CASES) => runConformance(provider, { image: "fake-ui", patience: 5000, cases: conformanceCases.filter((c) => ids.includes(c.id)) });
@@ -137,11 +137,21 @@ test("a press is verified only when its effect is there at once; a double click 
 });
 
 test("the Core apps and ui cases read the ui fixture on a computer with no exec or files, desktop and phone", { timeout: 60_000 }, async () => {
-	const core = ["apps.launch-terminate", "ui.observe-shape"];
+	const core = ["apps.launch-terminate", "apps.launch-window", "ui.observe-shape"];
 	for (const options of [{}, { os: "android", kind: "android" }]) {
 		const report = await run(fakeUiProvider(options), core);
 		for (const id of core) assert.equal(statuses(report)[id], "pass", `${options.kind ?? "desktop"} ${id}: ${reasonOf(report, id)}`);
 	}
+});
+
+test("health.kind-served fails a desktop or phone whose hello lacks a group its kind needs, naming the groups; one that declares them passes", async () => {
+	const lacking = await run(fakeUiProvider(), ["health.kind-served"]);
+	assert.equal(statuses(lacking)["health.kind-served"], "fail");
+	assert.match(reasonOf(lacking, "health.kind-served"), /a macos desktop must declare in hello to be given to an agent, which it lacks: expected \[\], got \["screen","input\.pointer","input\.keys"\]/);
+	const phone = await run(fakeUiProvider({ os: "android", kind: "android", groups: ["screen", "apps", "ui"] }), ["health.kind-served"]);
+	assert.match(reasonOf(phone, "health.kind-served"), /a android android .*got \["input\.touch"\]/);
+	const served = await run(fakeUiProvider({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }), ["health.kind-served"]);
+	assert.equal(statuses(served)["health.kind-served"], "pass", reasonOf(served, "health.kind-served"));
 });
 
 test("an expect never matches a secure field's value", async () => {
@@ -353,21 +363,24 @@ test("ui.observe-shape skips, in hello's words, a computer with both ui.tree and
 	assert.match(reasonOf(report, "ui.observe-shape"), /this driver reads no tree, and .*this driver takes no images/);
 });
 
-test("the fake ui provider keeps a computer's network (none or open, never an allowlist) and ends a computer at its deadline", async () => {
+test("the fake ui provider keeps a computer's network (none or open, never an allowlist, fixed at create) and ends a computer at its deadline", async () => {
 	const provider = fakeUiProvider();
 	const spec = { image: "fake-ui", user: "501", kind: "desktop", labels: { run: "r1" } };
-	const allow = await provider.create({ ...spec, network: { allow: ["example.com"] }, lifetimeMs: 60_000 });
+	const allow = await provider.create({ ...spec, network: { allow: ["example.com"] }, lifetimeMs: 60_000 }, { requestId: "allow" });
 	assert.equal(allow.error?.code, "refused");
 	assert.match(allow.error.message, /never an allowlist/);
-	const made = await provider.create({ ...spec, network: "open", lifetimeMs: 60_000 });
+	const made = await provider.create({ ...spec, network: "open", lifetimeMs: 60_000 }, { requestId: "made" });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.equal((await provider.network(made.value)).value, "open");
 	assert.equal((await provider.attach({ id: made.value.id })).value.spec.network, "open");
 	assert.equal((await provider.list({ run: "r1" })).value[0].network, "open");
-	assert.equal((await provider.network(made.value, "none")).value, "none");
+	assert.equal((await provider.network(made.value, "open")).value, "open", "asking for the network it has is ok");
+	const change = await provider.network(made.value, "none");
+	assert.equal(change.error?.code, "refused", "a remote computer's network is fixed at create");
+	assert.match(change.error.message, /network is open, fixed when it was made: create a computer with network none/);
 	assert.equal((await provider.network(made.value, { allow: ["example.com"] })).error?.code, "refused");
-	assert.equal((await provider.network(made.value)).value, "none", "a refused policy changes nothing");
-	const brief = await provider.create({ ...spec, labels: { run: "r2" }, network: "none", lifetimeMs: 30 });
+	assert.equal((await provider.network(made.value)).value, "open", "a refused policy changes nothing");
+	const brief = await provider.create({ ...spec, labels: { run: "r2" }, network: "none", lifetimeMs: 30 }, { requestId: "brief" });
 	assert.equal(brief.ok, true, JSON.stringify(brief));
 	await new Promise((resolve) => setTimeout(resolve, 60));
 	assert.deepEqual((await provider.list({ run: "r2" })).value, [], "past its deadline it is not listed");
@@ -375,6 +388,41 @@ test("the fake ui provider keeps a computer's network (none or open, never an al
 	assert.equal((await provider.attach({ id: brief.value.id })).error?.code, "not_found");
 	assert.equal(provider.drivers.has(brief.value.id), false, "it was ended");
 	await provider.release(made.value, "delete");
+});
+
+test("the fake ui provider holds a retry to the whole spec its computer was made with: another network, image, user or label is exists", async () => {
+	const provider = fakeUiProvider();
+	const spec = { image: "fake-ui", user: "501", kind: "desktop", labels: { run: "r1" }, network: "open", lifetimeMs: 60_000 };
+	const made = await provider.create(spec, { requestId: "whole" });
+	assert.equal(made.ok, true, JSON.stringify(made));
+	for (const [other, words] of [
+		[{ network: "none" }, /network: asked "none", read back "open"/],
+		[{ image: "fake-ui-2" }, /image: asked "fake-ui-2", read back "fake-ui"/],
+		[{ user: "0" }, /user: asked 0, read back 501/],
+		[{ labels: { run: "r2" } }, /label run: asked "r2", read back "r1"/],
+	]) {
+		const again = await provider.create({ ...spec, ...other }, { requestId: "whole" });
+		assert.equal(again.error?.code, "exists", JSON.stringify(other));
+		assert.match(again.error.message, words);
+	}
+	const same = await provider.create({ ...spec, lifetimeMs: 30_000 }, { requestId: "whole" });
+	assert.equal(same.value?.id, made.value.id, "another lifetime alone is the same request");
+	await provider.release(made.value, "delete");
+});
+
+test("idempotent create: the fake ui provider passes provider.create-retried and create-after-release; one that makes a computer per call fails both", { timeout: 60_000 }, async () => {
+	const ids = ["provider.create-retried", "provider.create-after-release"];
+	const good = await run(fakeUiProvider(), ids);
+	for (const id of ids) assert.equal(statuses(good)[id], "pass", `${id}: ${reasonOf(good, id)}`);
+	const fresh = fakeUiProvider();
+	let calls = 0;
+	const forgetful = { ...fresh, capabilities: fresh.capabilities, check: fresh.check, create: (spec, context) => fresh.create(spec, { ...context, requestId: `${context.requestId}#${calls++}` }) };
+	const bad = await run(forgetful, ids);
+	assert.equal(statuses(bad)["provider.create-retried"], "fail");
+	assert.match(reasonOf(bad, "provider.create-retried"), /the computer a create retried while it starts answers: expected/);
+	assert.equal(statuses(bad)["provider.create-after-release"], "fail");
+	assert.match(reasonOf(bad, "provider.create-after-release"), /the same request id after its computer was released: expected an error \(exists\), got ok/);
+	assert.deepEqual(bad.cleanup.left, [], "the second computers it made are released too");
 });
 
 test("a scripted switch's checked flag is where its state starts: it shows checked, turns off, and on again", async () => {
@@ -478,6 +526,175 @@ test("an act settles through a transition before it answers, and its state is th
 	assert.equal(pressed.value.changed, true);
 	const after = await c.client.call("ui.observe", { since: pressed.value.state });
 	assert.deepEqual(after.value.diff, { added: [], removed: [], changed: [] }, "nothing moved after the act's settled state");
+	await c.close();
+});
+
+test("a settle reads the tree: a blinking caret, which changes only the image, settles at once; a tree that never stills fails ui.settle-tree", { timeout: 60_000 }, async () => {
+	const c = await fakeUiConnection({ blink: true, quietMs: 50 });
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: seen.nodes.find((n) => n.id === "name").ref }] });
+	const began = Date.now();
+	const still = await c.client.call("ui.act", { steps: [], expect: { text: "UI fixture" } });
+	assert.ok(Date.now() - began < 500, `an act on a still tree with a blinking caret settled in ${Date.now() - began} ms`);
+	assert.equal(still.value.changed, false, "the caret is no change: the tree is the same");
+	await c.close();
+	// ui.settle-tree passes the blinking fake, and fails a driver whose window never settles.
+	const blinking = await run(fakeUiProvider({ blink: true }), ["ui.settle-tree"]);
+	assert.equal(statuses(blinking)["ui.settle-tree"], "pass", reasonOf(blinking, "ui.settle-tree"));
+	let ticks = 0;
+	class Restless extends FakeUiDriver {
+		async look(target, signal) {
+			const looked = await super.look(target, signal);
+			if (!looked.ok || looked.value.app.id !== APP) return looked;
+			return { ok: true, value: { ...looked.value, elements: [...looked.value.elements, { key: "clock", role: "text", name: `tick ${ticks++}`, bounds: [0, 300, 80, 16] }] } };
+		}
+	}
+	const restless = await run(fakeUiProvider({}, (options) => new Restless(options)), ["ui.settle-tree"]);
+	assert.equal(statuses(restless)["ui.settle-tree"], "fail");
+	assert.match(reasonOf(restless, "ui.settle-tree"), /act 1 of no steps on a window whose tree is still took \d+ ms, near the 3000 ms settle cap: settle on the window's nodes/);
+});
+
+test("a set the app takes back within SET_HOLD_MS answers verified false; one that holds stays verified", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => seen.nodes.find((n) => n.id === id).ref;
+	const began = Date.now();
+	const set = await c.client.call("ui.act", { steps: [{ set: ref("code"), value: "1234" }, { set: ref("name"), value: "Ada" }] });
+	assert.ok(Date.now() - began >= 500, `the act read the sets again ${SET_HOLD_MS} ms after its settle: it answered in ${Date.now() - began} ms`);
+	assert.deepEqual(set.value.steps, [{ route: "semantic", verified: false }, { route: "semantic", verified: true }]);
+	const after = (await c.client.call("ui.observe", {})).value;
+	assert.equal(after.nodes.find((n) => n.id === "code").value, "", "Code took its value back");
+	assert.equal(after.nodes.find((n) => n.id === "name").value, "Ada");
+	await c.close();
+	// ui.set-holds fails a driver that answers a set verified without reading it again.
+	class Trusting extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			const done = await super.handle(engine, method, params, signal);
+			if (method !== "ui.act" || !done.ok) return done;
+			return { ok: true, value: { ...done.value, steps: done.value.steps.map((step) => ("error" in step ? step : { ...step, verified: true })) } };
+		}
+	}
+	const report = await run(fakeUiProvider({}, (options) => new Trusting(options)), ["ui.set-holds"]);
+	assert.equal(statuses(report)["ui.set-holds"], "fail");
+	assert.match(reasonOf(report, "ui.set-holds"), /set Code, which takes its value back 150 ms later: a set is verified only when its value still holds 500 ms after the settle/);
+});
+
+test("expect window waits for a window of the act's app and answers its state; none in time is unmet, never not_found", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const opened = await c.client.call("ui.act", { steps: [{ press: seen.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Another", role: "window" } } });
+	assert.equal(opened.value.expect, "met");
+	const front = (await c.client.call("ui.observe", { since: opened.value.state })).value;
+	assert.equal(front.window.title, "Another window");
+	assert.deepEqual(front.diff, { added: [], removed: [], changed: [] }, "the act's state is the new window");
+	const dialog = await c.client.call("ui.act", { steps: [], expect: { window: { role: "dialog" }, timeoutMs: 100 } });
+	assert.equal(dialog.value.expect, "unmet", "no dialog opens");
+	for (const expect of [{ window: {} }, { window: { title: 3 } }, { window: { role: "spaceship" } }, { window: { title: "A" }, text: "B" }]) {
+		const wrong = await c.client.call("ui.act", { steps: [], expect });
+		assert.equal(wrong.ok, false, JSON.stringify(expect));
+		assert.equal(wrong.error.code, "invalid", JSON.stringify(expect));
+	}
+	await c.close();
+	// ui.expect-window fails a driver that looks once and does not poll for the window.
+	class Glance extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			if (method === "ui.act" && params?.expect?.window !== undefined) return super.handle(engine, method, { ...params, expect: { ...params.expect, timeoutMs: 0 } }, signal);
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const report = await run(fakeUiProvider({}, (options) => new Glance(options)), ["ui.expect-window"]);
+	assert.equal(statuses(report)["ui.expect-window"], "fail");
+	assert.match(reasonOf(report, "ui.expect-window"), /expect window "Another window": New window opens it 300 ms after its press, so only a polled expect sees it/);
+});
+
+test("a step that closes the act's window: with none left the act answers window closed and no state; with another it follows that one", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	let seen = (await c.client.call("ui.observe", {})).value;
+	const close = seen.nodes.find((n) => n.id === "close").ref;
+	const closed = await c.client.call("ui.act", { steps: [{ press: close }, { press: close }] });
+	assert.equal(closed.value.window, "closed");
+	assert.equal(closed.value.state, undefined);
+	assert.equal(closed.value.changed, true);
+	assert.deepEqual(closed.value.steps[0], { route: "semantic", verified: true }, "the step that closed it keeps its result");
+	assert.equal(closed.value.steps[1].error.kind, "stale");
+	assert.match(closed.value.steps[1].error.message, /^UI fixture has no window left: the step before closed its last one/);
+	const none = await c.client.call("ui.observe", { target: { app: APP } });
+	assert.equal(none.error.code, "not_found");
+	assert.match(none.error.message, /running with no window: its last one closed, and apps\.launch opens it again/);
+	assert.deepEqual(await c.client.call("apps.launch", { id: APP }), { ok: true, value: {} });
+	seen = (await c.client.call("ui.observe", {})).value;
+	assert.equal(seen.window.id, `${APP}#main-2`, "apps.launch opened a new main window, never the closed one's id");
+	// A ref from the closed window is stale: it never reaches the new window's element of the same key.
+	const old = await c.client.call("ui.act", { steps: [{ press: close }] });
+	assert.equal(old.value.steps[0].error?.kind, "stale", JSON.stringify(old));
+	await c.client.call("ui.act", { steps: [{ press: seen.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Another window" } } });
+	const another = (await c.client.call("ui.observe", {})).value;
+	const followed = await c.client.call("ui.act", { target: { app: APP, window: another.window.id }, steps: [{ press: another.nodes.find((n) => n.id === "close").ref }] });
+	assert.equal(followed.value.window, undefined);
+	const main = (await c.client.call("ui.observe", { since: followed.value.state })).value;
+	assert.equal(main.window.id, `${APP}#main-2`);
+	assert.deepEqual(main.diff, { added: [], removed: [], changed: [] }, "the act's state is the main window it followed");
+	await c.close();
+	// ui.window-closed fails a driver that answers not_found once its window closed; ui.window-follow one that answers
+	// closed though the app has another window.
+	class NotFound extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			const done = await super.handle(engine, method, params, signal);
+			return method === "ui.act" && done.ok && done.value.window === "closed" ? { ok: false, error: { code: "not_found", message: "the window is gone" } } : done;
+		}
+	}
+	const lost = await run(fakeUiProvider({}, (options) => new NotFound(options)), ["ui.window-closed"]);
+	assert.equal(statuses(lost)["ui.window-closed"], "fail");
+	assert.match(reasonOf(lost, "ui.window-closed"), /not_found: the window is gone/);
+	class Quitter extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			const done = await super.handle(engine, method, params, signal);
+			if (method !== "ui.act" || !done.ok || params?.target?.window === undefined) return done;
+			const { state: _state, ...rest } = done.value;
+			return { ok: true, value: { ...rest, window: "closed", changed: true } };
+		}
+	}
+	const quit = await run(fakeUiProvider({}, (options) => new Quitter(options)), ["ui.window-follow"]);
+	assert.equal(statuses(quit)["ui.window-follow"], "fail");
+	assert.match(reasonOf(quit, "ui.window-follow"), /ui\.act's window after a step closed one window of two/);
+});
+
+test("apps.launch answers once the app has a window: a slow window still passes apps.launch-window; a launch that answers before it fails", { timeout: 60_000 }, async () => {
+	const slow = await run(fakeUiProvider({ windowAfterMs: 400 }), ["apps.launch-window"]);
+	assert.equal(statuses(slow)["apps.launch-window"], "pass", reasonOf(slow, "apps.launch-window"));
+	class Early extends FakeUiDriver {
+		async windowOf() {
+			return { ok: true, value: {} };
+		}
+	}
+	const early = await run(fakeUiProvider({ windowAfterMs: 400 }, (options) => new Early(options)), ["apps.launch-window"]);
+	assert.equal(statuses(early)["apps.launch-window"], "fail");
+	assert.match(reasonOf(early, "apps.launch-window"), /has no window yet/);
+});
+
+test("a node's bounds are clamped to its window: one partly outside is cut at the edge, one wholly outside is empty at it", async () => {
+	const app = {
+		id: "test.wide",
+		name: "Wide",
+		start: "a",
+		size: [200, 100],
+		screens: {
+			a: {
+				elements: [
+					{ key: "wide", role: "text", name: "Wide", bounds: [150, -10, 100, 40] },
+					{ key: "far", role: "text", name: "Far", bounds: [300, 200, 10, 10] },
+				],
+			},
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	assert.deepEqual(seen.nodes.map((n) => [n.name, n.bounds]), [["Wide", [150, 0, 50, 30]], ["Far", [200, 100, 0, 0]]]);
 	await c.close();
 });
 
@@ -595,4 +812,253 @@ test("the CLI answers hello and ui.observe on stdin and stdout", async () => {
 	assert.equal(byId[1].result.protocol, "0.2");
 	assert.equal(byId[3].result.app.id, APP);
 	await new Promise((resolve) => child.on("exit", resolve));
+});
+
+test("a window wait that begins with no window keeps its app: it never falls back to the front app and never ends as closed", async () => {
+	const other = { id: "test.other", name: "Other", start: "a", size: [300, 200], screens: { a: { title: "Other", elements: [{ key: "t", role: "text", name: "Other", bounds: [10, 10, 80, 28] }] } } };
+	const c = await fakeUiConnection({ apps: [UI_FIXTURE, other] });
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: seen.nodes.find((n) => n.id === "close").ref }] });
+	await c.client.call("apps.launch", { id: other.id });
+	// Another app's window is in front and the app's own has none: a wait for a window of the app does not take the front one.
+	const began = Date.now();
+	const none = await c.client.call("ui.act", { target: { app: APP }, steps: [], expect: { window: { role: "window" }, timeoutMs: 400 } });
+	assert.equal(none.value.expect, "unmet", "unmet at its timeout, the usual unmet");
+	assert.ok(Date.now() - began >= 350, `it waited out its timeout: ${Date.now() - began} ms`);
+	const waiting = c.client.call("ui.act", { target: { app: APP }, steps: [], expect: { window: { title: "UI fixture" }, timeoutMs: 3000 } });
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	await c.client.call("apps.launch", { id: APP });
+	const met = await waiting;
+	assert.equal(met.value.expect, "met", "the window that came later meets it");
+	const front = (await c.client.call("ui.observe", { since: met.value.state })).value;
+	assert.equal(front.app.id, APP, "the state is the app's window, not the front app's");
+	await c.close();
+});
+
+test("a set followed by a step that closes the last window still holds its 500 ms and answers verified false", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => seen.nodes.find((n) => n.id === id).ref;
+	const began = Date.now();
+	const done = await c.client.call("ui.act", { steps: [{ set: ref("code"), value: "1234" }, { press: ref("close") }] });
+	assert.ok(Date.now() - began >= SET_HOLD_MS, `the hold was waited out: ${Date.now() - began} ms`);
+	assert.equal(done.value.window, "closed");
+	assert.equal(done.value.steps[0].verified, false, "its value cannot be read, so it is not verified");
+	await c.close();
+});
+
+test("a go in a window a press opened changes that window's screen, never the main one", async () => {
+	const app = {
+		id: "test.second",
+		name: "Second",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [{ key: "open", role: "button", name: "Open", id: "open", bounds: [10, 10, 80, 28], actions: ["AXPress"], press: { open: "child" } }] },
+			child: { title: "Child", elements: [{ key: "go", role: "button", name: "Go", id: "go", bounds: [10, 10, 80, 28], actions: ["AXPress"], press: { go: "grandchild" } }] },
+			grandchild: { title: "Grandchild", elements: [{ key: "t", role: "text", name: "Grandchild", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	const opened = await c.client.call("ui.act", { steps: [{ press: home.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Child" } } });
+	assert.equal(opened.value.expect, "met");
+	const child = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: child.nodes.find((n) => n.id === "go").ref }] });
+	assert.equal((await c.client.call("ui.observe", {})).value.window.title, "Grandchild", "the opened window moved on");
+	const main = (await c.client.call("ui.observe", { target: { app: app.id, window: `${app.id}#main` } })).value;
+	assert.equal(main.window.title, "Home", "the main window stayed where it was");
+	await c.close();
+});
+
+test("typing into a field of an opened window whose press changes its screen is refused, as in the main window", async () => {
+	const app = {
+		id: "test.field",
+		name: "Field",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [{ key: "open", role: "button", name: "Open", id: "open", bounds: [10, 10, 80, 28], actions: ["AXPress"], press: { open: "child" } }] },
+			child: { title: "Child", elements: [{ key: "pin", role: "textbox", name: "PIN", id: "pin", bounds: [10, 10, 80, 28], press: { go: "next" } }] },
+			next: { title: "Next", elements: [{ key: "t", role: "text", name: "Next", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: home.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Child" } } });
+	const child = (await c.client.call("ui.observe", {})).value;
+	const typed = await c.client.call("ui.act", { steps: [{ type: "1234", into: child.nodes.find((n) => n.id === "pin").ref }] });
+	assert.equal(typed.value.steps[0].error.kind, "refused", "nothing typed: the press left the field");
+	assert.match(typed.value.steps[0].error.message, /did not take focus/);
+	await c.close();
+});
+
+// The act's verdicts all read one final view, after its last settle: a set's hold, the expect, and the state it answers.
+
+test("a field that takes its value back while the expect waits answers verified false: the hold reads the act's final view", async () => {
+	const field = { key: "slow", role: "textbox", name: "Slow", id: "slow", value: "", bounds: [10, 10, 120, 28] };
+	const app = {
+		id: "test.hold",
+		name: "Hold",
+		start: "form",
+		size: [300, 200],
+		screens: {
+			// Slow takes a value back 800 ms after its set, past SET_HOLD_MS; Done shows "All done" 1200 ms after its press.
+			form: { title: "Form", elements: [{ ...field, takesBack: 800 }, { key: "done", role: "button", name: "Done", id: "done", bounds: [10, 50, 80, 28], actions: ["AXPress"], press: { go: "sent", after: 1200 } }] },
+			sent: { title: "Form", elements: [field, { key: "ok", role: "text", name: "All done", bounds: [10, 50, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const form = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => form.nodes.find((n) => n.id === id).ref;
+	const done = await c.client.call("ui.act", { steps: [{ set: ref("slow"), value: "x" }, { press: ref("done") }], expect: { text: "All done", timeoutMs: 3000 } });
+	assert.equal(done.value.expect, "met");
+	const answered = (await c.client.call("ui.observe", { since: done.value.state })).value;
+	assert.equal(answered.nodes.find((n) => n.id === "slow").value, "", "the state the act answered shows the value taken back");
+	assert.equal(done.value.steps[0].verified, false, "so its set is not verified: the hold read the same view the state is");
+	await c.close();
+});
+
+test("a window expect reads the app's main window, never the older window a target or a state aimed the act at", async () => {
+	const button = (id, name, press) => ({ key: id, role: "button", name, id, bounds: [10, 10, 80, 28], actions: ["AXPress"], press });
+	const app = {
+		id: "test.layers",
+		name: "Layers",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [button("open", "Open", { open: "child" })] },
+			child: { title: "Child", elements: [button("deeper", "Deeper", { open: "grand" })] },
+			grand: { title: "Grand", elements: [{ key: "t", role: "text", name: "Grand", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: home.nodes[0].ref }], expect: { window: { title: "Child" } } });
+	const child = (await c.client.call("ui.observe", {})).value;
+	assert.equal(child.window.title, "Child");
+	const grand = await c.client.call("ui.act", { steps: [{ press: child.nodes[0].ref }], expect: { window: { title: "Grand" } } });
+	assert.equal(grand.value.expect, "met");
+	// Grand is in front: Child, older and still open, matches the title, and must not answer met.
+	for (const aimed of [{ target: { app: app.id, window: child.window.id } }, { state: child.state }]) {
+		const began = Date.now();
+		const wait = await c.client.call("ui.act", { ...aimed, steps: [], expect: { window: { title: "Child" }, timeoutMs: 200 } });
+		assert.equal(wait.value.expect, "unmet", `${JSON.stringify(aimed)}: the app's main window is Grand`);
+		assert.ok(Date.now() - began >= 200, `${JSON.stringify(aimed)}: it polled out its timeout`);
+		const front = await c.client.call("ui.act", { ...aimed, steps: [], expect: { window: { title: "Grand" }, timeoutMs: 200 } });
+		assert.equal(front.value.expect, "met", JSON.stringify(aimed));
+		assert.equal((await c.client.call("ui.observe", { since: front.value.state })).value.window.title, "Grand", "a met window expect answers the window that met it");
+	}
+	// A target that names only a window reads that window's app's main window, never the app in front.
+	const other = { id: "test.other", name: "Other", start: "only", size: [300, 200], screens: { only: { title: "Elsewhere", elements: [button("x", "X", {})] } } };
+	const two = await fakeUiConnection({ apps: [app, other] });
+	await two.client.call("apps.launch", { id: app.id });
+	const layers = (await two.client.call("ui.observe", {})).value;
+	await two.client.call("apps.launch", { id: other.id });
+	assert.equal((await two.client.call("ui.observe", {})).value.window.title, "Elsewhere", "the other app is in front");
+	const elsewhere = await two.client.call("ui.act", { target: { window: layers.window.id }, steps: [], expect: { window: { title: "Elsewhere" }, timeoutMs: 200 } });
+	assert.equal(elsewhere.value.expect, "unmet", "the window's own app has no window called Elsewhere");
+	const own = await two.client.call("ui.act", { target: { window: layers.window.id }, steps: [], expect: { window: { title: "Home" }, timeoutMs: 200 } });
+	assert.equal(own.value.expect, "met", JSON.stringify(own));
+	await two.close();
+	await c.close();
+	// ui.expect-window fails a driver whose window wait reads the window the act was aimed at first.
+	class Aimed extends FakeUiDriver {
+		async handle(engine, method, params, signal) {
+			const wanted = params?.expect?.window?.title;
+			if (method === "ui.act" && wanted !== undefined && params?.target?.window !== undefined) {
+				const looked = await this.look(params.target);
+				if (looked.ok && looked.value.window.title?.includes(wanted)) return { ok: true, value: { steps: [], state: "s1", changed: false, expect: "met" } };
+			}
+			return super.handle(engine, method, params, signal);
+		}
+	}
+	const report = await run(fakeUiProvider({}, (options) => new Aimed(options)), ["ui.expect-window"]);
+	assert.equal(statuses(report)["ui.expect-window"], "fail");
+	assert.match(reasonOf(report, "ui.expect-window"), /aimed at the home window while Another window is in front/);
+});
+
+// The fake's windows are first-class: each owns its screen, values, switches, focus and pending effects.
+
+test("two windows on one screen share nothing: a field's value, a switch and the focus are each window's own", async () => {
+	const app = {
+		id: "test.twin",
+		name: "Twin",
+		start: "doc",
+		size: [300, 200],
+		screens: {
+			doc: {
+				title: "Doc",
+				elements: [
+					{ key: "f", role: "textbox", name: "Field", id: "f", bounds: [10, 10, 120, 28] },
+					{ key: "s", role: "switch", name: "Switch", id: "s", bounds: [10, 50, 60, 28] },
+					{ key: "dup", role: "button", name: "Duplicate", id: "dup", bounds: [10, 90, 80, 28], actions: ["AXPress"], press: { open: "doc" } },
+				],
+			},
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const main = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: main.nodes.find((n) => n.id === "dup").ref }] });
+	const twin = (await c.client.call("ui.observe", {})).value;
+	assert.notEqual(twin.window.id, main.window.id, "the duplicate is in front");
+	const at = (view, id) => view.nodes.find((n) => n.id === id);
+	const set = await c.client.call("ui.act", { target: { app: app.id, window: twin.window.id }, steps: [{ set: at(twin, "f").ref, value: "two" }, { set: at(twin, "s").ref, value: "on" }, { press: at(twin, "f").ref }] });
+	assert.deepEqual(set.value.steps.map((step) => step.verified), [true, true, true]);
+	const mainNow = (await c.client.call("ui.observe", { target: { app: app.id, window: main.window.id } })).value;
+	assert.equal(at(mainNow, "f").value, undefined, "the main window's field kept its own value");
+	assert.equal(at(mainNow, "s").flags, undefined, "its switch is off and its field has no focus");
+	// Typing where the focus is, in the main window, reaches no field: the focus is the twin's.
+	const typed = await c.client.call("ui.act", { target: { app: app.id, window: main.window.id }, steps: [{ type: "zz" }] });
+	assert.equal(typed.value.steps[0].verified, false);
+	const twinNow = (await c.client.call("ui.observe", { target: { app: app.id, window: twin.window.id } })).value;
+	assert.equal(at(twinNow, "f").value, "two");
+	assert.deepEqual(at(twinNow, "f").flags, ["focused"]);
+	assert.deepEqual(at(twinNow, "s").flags, ["checked"]);
+	await c.close();
+});
+
+test("a delayed effect is its window's: closing the window cancels it, and it never lands in another window", async () => {
+	const button = (id, name, y, press) => ({ key: id, role: "button", name, id, bounds: [10, y, 80, 28], actions: ["AXPress"], press });
+	const app = {
+		id: "test.pending",
+		name: "Pending",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [button("open", "Open", 10, { open: "child" }), button("later", "Later", 50, { go: "elsewhere", after: 200 }), button("close", "Close", 90, { close: true })] },
+			child: { title: "Child", elements: [button("later", "Later", 10, { go: "elsewhere", after: 200 }), button("spawn", "Spawn", 50, { open: "child", after: 200 }), button("close", "Close", 90, { close: true })] },
+			elsewhere: { title: "Elsewhere", elements: [{ key: "t", role: "text", name: "Elsewhere", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	const at = (view, id) => view.nodes.find((n) => n.id === id).ref;
+	await c.client.call("ui.act", { steps: [{ press: at(home, "open") }] });
+	const child = (await c.client.call("ui.observe", {})).value;
+	assert.equal(child.window.title, "Child");
+	// The child window's delayed go and delayed open, then it closes: neither lands, on the main window or anywhere.
+	const closed = await c.client.call("ui.act", { target: { app: app.id, window: child.window.id }, steps: [{ press: at(child, "later") }, { press: at(child, "spawn") }, { press: at(child, "close") }] });
+	assert.equal(closed.value.steps.length, 3);
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	const after = (await c.client.call("ui.observe", {})).value;
+	assert.equal(after.window.id, home.window.id, "no window was opened after its opener closed");
+	assert.equal(after.window.title, "Home", "the main window never took the closed window's go");
+	// The main window is just the first: its own delayed go is cancelled when it closes, and the child it leaves is untouched.
+	await c.client.call("ui.act", { steps: [{ press: at(after, "open") }] });
+	const second = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { target: { app: app.id, window: home.window.id }, steps: [{ press: at(after, "later") }, { press: at(after, "close") }] });
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	const left = (await c.client.call("ui.observe", {})).value;
+	assert.equal(left.window.id, second.window.id);
+	assert.equal(left.window.title, "Child", "the window left keeps its own screen");
+	await c.close();
 });

@@ -120,6 +120,7 @@ export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorP
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,
+	AGENT37_BOX_TEMPLATE,
 	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,
@@ -152,6 +153,7 @@ export {
 	imagesOf,
 	type KindCapabilities,
 	kindOf,
+	kindServed,
 	type ProviderEntry,
 	PROVIDERS,
 	SETTING_KIND_NAMES,

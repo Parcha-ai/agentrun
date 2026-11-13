@@ -13,8 +13,8 @@
 // Shared with the pi spec: the run's Workspace and its uploaded files, a sandbox run's computer, the kernel registry's
 // hands on them (runTools), the gate from the store's tool settings, the system prompt (environment line, instructions
 // with what the agent learned and its skills, effort guidance), the first message, the end's metrics and the release.
-import { mkdir, rm, rmdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, rm, rmdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, parkOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -62,7 +62,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
-import { claimPromotion, promotionGate, replayLaid } from "./promotion.js";
+import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid } from "./promotion.js";
 import { laidFor, pastOf, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -163,17 +163,46 @@ export function inGrantOrder<T extends { readonly name: string }>(tools: readonl
   return keyed.sort((a, b) => a.key - b.key || a.given - b.given).map(({ tool }) => tool);
 }
 
-/** A claim's private folder removed, then each of `parents` in order while it is empty: one another claim of the run has
- *  laid things in since (a follow-up's) stays, with what is in it. */
-export async function sweepScratch(dir: string, parents: readonly string[]): Promise<void> {
-  await rm(dir, { recursive: true, force: true });
+/** Every earlier claim's private folder of the run (`<harnesses>/<n>`, n below `epoch`) removed: what a claim whose runner
+ *  died left (its release never ran), or a sweep of its own cut off partway. A claim at `epoch` or later (a live one, or a
+ *  next claim's while this one lets go late) is never touched. Each removal is whole or is finished by the next sweep. */
+export async function sweepEarlier(harnesses: string, epoch: number): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(harnesses);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) {
+    if (/^\d+$/.test(name) && Number(name) < epoch) await rm(join(harnesses, name), { recursive: true, force: true });
+  }
+}
+
+/** A claim's end: every earlier claim's folder of the run (sweepEarlier) and the claim's own (`<harnesses>/<epoch>`)
+ *  removed, then each of `parents` in order while it is empty: one another claim of the run has laid things in since (a
+ *  follow-up's) stays, with what is in it. Run again over what a cut-off sweep left, it finishes it. */
+export async function sweepScratch(harnesses: string, epoch: number, parents: readonly string[]): Promise<void> {
+  // An earlier folder that cannot be swept never keeps this claim's own folder: its removal is attempted anyway, and the
+  // earlier failure is thrown after it (with this one's, when both fail).
+  const failures: unknown[] = [];
+  await sweepEarlier(harnesses, epoch).catch((error: unknown) => { failures.push(error); });
+  await rm(join(harnesses, String(epoch)), { recursive: true, force: true }).catch((error: unknown) => { failures.push(error); });
+  if (failures.length === 0) await rmEmptyParents(parents);
+  else await rmEmptyParents(parents).catch((error: unknown) => { failures.push(error); });
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, failures.map((error) => (error as Error)?.message ?? String(error)).join("; "));
+}
+
+async function rmEmptyParents(parents: readonly string[]): Promise<void> {
   for (const parent of parents) {
     try {
       await rmdir(parent);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return;
-      throw error;
+      if (code === "ENOTEMPTY" || code === "EEXIST") return;
+      // Already gone (a sweep cut off after it, or never made): the folder above it may still be left empty.
+      if (code !== "ENOENT") throw error;
     }
   }
 }
@@ -200,6 +229,18 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
+  // The claim's private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is
+  // in it, then the agent's: the next claim, here or on another runner, lays its own, its harness's session coming back from
+  // the run's journal. Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its
+  // release follows the run's end commit) never has the next claim's folder swept from under it. A claim whose runner died
+  // never ran its release: every claim sweeps the earlier claims' folders of its run at its start and again at its end, so
+  // a killed CLI's home and session state never outlive the run. Held here, before any step that can fail (the install, the
+  // MCP claim, the computer): a claim that fails in its setup still sweeps what the earlier claims left, as specBuilt lets
+  // go what was held when the build throws.
+  const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
+  const harnesses = join(scratch, "harness");
+  const dir = join(harnesses, String(claim.epoch));
+  holds.hold({ scratch: { sweep: () => sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
   // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor (the loop's) and this spec's
   // log cut, before any of the run's text is written: a run's text may quote one it was never handed.
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) await holdStored(redact, deps.store, deps.sealKey, deps.data);
@@ -257,9 +298,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin made at the first claim or read as written, its
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // Before the session opens: a refusal (a pin that cannot be made, a pinned meta tool) ends the run in its words.
-  // A credential the claim opens mid-run (a GitHub App token, a per_run server's handed one) joins the run's redactors.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -291,7 +332,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...((launch as { computer?: ComputerSetting }).computer !== undefined ? { computer: (launch as { computer?: ComputerSetting }).computer } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does, with
@@ -306,19 +347,16 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // skills laid for it) in this claim's private folder inside it, never on the run's disk. The scratch is an alias of the
   // run's folder for the run's file tools: a path the CLI builds from its working directory lands in the run's folder, and
   // any other absolute path is refused (workspace/paths.ts portPath).
-  // The private folder is swept at the spec's release, the claim's end, then the scratch folder if nothing else is in it:
-  // the next claim, here or on another runner, lays its own, its harness's session coming back from the run's journal.
-  // Its own per claim (by the claim's epoch), so a run reopened while this claim still lets go (its release follows the
-  // run's end commit) never has the next claim's folder swept from under it.
-  const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
-  const harnesses = join(scratch, "harness");
-  const dir = join(harnesses, String(claim.epoch));
-  holds.hold({ scratch: { sweep: () => sweepScratch(dir, [harnesses, scratch]) } });
-  // Made again once if a parent went as it was made (the last claim's sweep removing the then empty scratch folder).
-  await mkdir(dir, { recursive: true, mode: 0o700 }).catch(async (error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-  });
+  // Made again if a parent went as it was made (another claim's sweep removing the then empty scratch or agent folder).
+  for (let tries = 1; ; tries += 1) {
+    try {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || tries === 3) throw error;
+    }
+  }
+  await sweepEarlier(harnesses, claim.epoch).catch((error: unknown) => log(`an earlier claim's scratch folder could not be swept: ${(error as Error)?.message ?? String(error)}`));
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
   // (295 s), and in Mode 1 none at all: no bash family, its folder being one of this server's own (run-tools.ts).
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
@@ -448,6 +486,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // refusal of writes under .learning/ is the adapter loop's own (it knows the turn), never a file's. The run's MCP servers
   // (mcpServersOf its grants) hold a harness's own name for an MCP tool to that tool's settings.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcpServersOf(granted));
+  // What a script's shell and files are held to: this gate, so a denied bash or write holds inside computer_script too.
+  tools.computer?.guard.install(async (tool, args) => {
+    await gate.permissions.refresh();
+    return gate.permissions.decide(tool, args);
+  });
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -478,8 +521,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
-    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown,
-  }))) : {};
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
+  })), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
+  // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
+  await replayClaimed(deps.store, runRow.agentId, launch, firstChoice);
+  // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
+  // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
+  const replay = await replayCallsFor(deps.store, claim.runId, launch, context);
   const { serve: workflowFirst, revise: workflowRevise } = firstChoice;
   const workflows = laidFor(laidFlows, firstChoice);
   const learns = learnsWorkflows(revision.kind, workflows);
@@ -522,7 +570,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate); they run through the run's
       // own MCP as the loop wraps it. Its model nodes run on the session's one model: what each node's trace says it ran on.
       gate.learn(workflows);
-      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId });
+      learnedTool = await learnedWorkflowHostTool({ run, kind: revision.kind, granted, plane: launch.plane, env: toolEnv, work: root, workflows, permissions: gate.permissions, ctx, tiers, ...(mcp ? { mcp } : {}), workspace: ws.workspace, modelName: () => chosen.model.modelId, ...(replay ? { replay } : {}) });
     }
   }
   const session: SessionSpec = {

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
 import { VOLUME_SUBPATH_ENGINE } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
@@ -52,7 +53,7 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 	});
 
 	it("creates the computer, the daemon running from the volume's subpath and the run's folder another of its subpaths, with no bind", async () => {
-		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", mount: { kind: "bind", path: work }, labels: { "agentrun.test": "volume" } });
+		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", mount: { kind: "bind", path: work }, labels: { "agentrun.test": "volume" } }, newRequest("volume"));
 		assert.equal(made.ok, true, JSON.stringify(made));
 		ref = made.value;
 		const [inspected] = JSON.parse(docker("inspect", ref.name));
@@ -90,7 +91,7 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 	});
 
 	it("an allowlist's egress proxy runs from its code staged below the volume's root, mounted by subpath: create waits for its ready line", async () => {
-		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: { allow: ["example.com"] }, labels: { "agentrun.test": "volume-allow" } });
+		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: { allow: ["example.com"] }, labels: { "agentrun.test": "volume-allow" } }, newRequest("volume-allow"));
 		assert.equal(made.ok, true, JSON.stringify(made));
 		try {
 			const [proxy] = JSON.parse(docker("inspect", `${made.value.name}-egress`));

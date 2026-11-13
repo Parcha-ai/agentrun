@@ -195,3 +195,11 @@ test("dry run passes a report-terminal workflow with zero special-casing (the st
   };
   assert.deepEqual(await dryRunWorkflow(workflow), { ok: true, status: "passed" });
 });
+
+test("a dry run that passed hands the workflow's output to onOutput, a value its output schema takes; its result keeps its shape", async () => {
+  const outputs = [];
+  const result = await dryRunWorkflow(wf({ node: "decide", label: "pick", instructions: "Decide.", out: "Output", as: "final" }), { onOutput: (output) => outputs.push(output) });
+  assert.deepEqual(result, { ok: true, status: "passed" });
+  assert.equal(outputs.length, 1);
+  assert.deepEqual(Object.keys(outputs[0]).sort(), ["code", "rationale", "verdict"]);
+});

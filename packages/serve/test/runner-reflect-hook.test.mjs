@@ -13,7 +13,7 @@ const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
 const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
 /** A hook over fake deps; `answer` is what the turn's ask resolves with. */
-function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew } = {}) {
+function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts } = {}) {
   const calls = { asked: [], checked: [] };
   const deps = {
     facts: async () => ({ learns: true, costUsd: 0.01, ...facts }),
@@ -26,6 +26,7 @@ function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n`
     newRunId: () => "run-learn-1",
     now: () => AT,
     ...(nothingNew ? { nothingNew } : {}),
+    ...(compileFacts ? { compileFacts } : {}),
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
@@ -259,4 +260,27 @@ test("a run that only ran its learned workflows is not asked, and its look back 
     assert.deepEqual(calls.asked, [], "nothing asked");
     assert.deepEqual(kept, { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, answered_at: new Date(AT).toISOString(), job_cost_usd: costUsd, look_back_usd: 0 } } }] }, `job cost ${costUsd}`);
   }
+});
+
+// #2641 review (class C): a held revision's compile turn is asked while its champion serves. A run its champion answered
+// alone gave nothing new to look back on, so it is asked the compile turn alone (no look-back), and the draft it keeps
+// is proposed as any compiled draft is; with no compile due it is asked nothing, as before.
+test("a run only its learned workflows answered, with a held revision due, is asked the compile turn alone and keeps its draft", async () => {
+  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
+  const compileFacts = async () => ({ mode: "revise", workflow: "answer", current: flow, held, reference: "REF", notes: [], traces: [], tools: [], judges: false });
+  const answer = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
+  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
+  const { hook, input, calls } = hookWith({ nothingNew: async () => true, compileFacts, answer, check });
+  const kept = await hook(input());
+  assert.deepEqual(calls.asked.map(({ opts }) => opts.step), ["compile-1"], "the compile turn alone: no look-back asked");
+  assert.match(calls.asked[0].prompt, /^One more turn: revise your learned workflow `answer`\./);
+  const proposal = kept.also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.equal(proposal.state, "proposed");
+  assert.deepEqual(proposal.compiled.workflow, "answer");
+  assert.ok(kept.also.some((row) => row.table === "learning_run"), "graded as any compiled draft");
+  // No compile due: nothing asked, dropped in said.onlyWorkflow's words at no cost.
+  const none = hookWith({ nothingNew: async () => true, compileFacts: async () => undefined });
+  assert.deepEqual(await none.hook(none.input()), { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, ...ANSWERED } } }] });
+  assert.deepEqual(none.calls.asked, []);
 });

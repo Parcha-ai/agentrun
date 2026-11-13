@@ -76,5 +76,10 @@ export default {
   },
   // `short:`, a viewport too low for a page's every panel (a phone in landscape). A variant, not a screen: a raw screen
   // would turn off the `max-*` variants, which need every screen to be a plain min-width.
-  plugins: [plugin(({ addVariant }) => addVariant("short", "@media (max-height: 500px)"))],
+  // `roomy:`, a viewport at least `md` wide AND more than 500px tall: where the desktop sidebar fits beside the page. A phone
+  // on its side is wide (844) and short (390), so it gets the phone's top bar and menu, as portrait does.
+  plugins: [plugin(({ addVariant }) => {
+    addVariant("short", "@media (max-height: 500px)");
+    addVariant("roomy", "@media (min-width: 768px) and (min-height: 501px)");
+  })],
 } satisfies Config;

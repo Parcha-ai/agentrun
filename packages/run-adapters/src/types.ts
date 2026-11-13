@@ -53,7 +53,7 @@ export interface HostTool {
    *  way, by the child's key. `model`: the calling session's model as its harness resolves it (pi's: a pi-ai Model, whose
    *  input and input limits a file read sizes an image by); `output`: where the call's output goes while it runs (the
    *  session's live view of the running tool). Each is absent where a harness has none to give. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -224,6 +224,9 @@ export interface ModelPort {
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
    *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
+  /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
+   *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
+  noteReturned?(note: string): void;
 }
 
 /** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs

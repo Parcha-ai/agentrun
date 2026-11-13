@@ -12,14 +12,15 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
-import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { computerToolsFor } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
-/** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
-const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
+/** A kind's computer tools, as the kernel registry lists them for its provider's groups (the desktop's and the phone's
+ *  are the same tools). */
+const kindTools = (kind) => computerToolsFor(KIND_REGISTRY.PROVIDERS.flatMap((one) => one.capabilities).find((one) => one.kind === (kind === "phone" ? "android" : kind)).groups);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -99,9 +100,9 @@ test("the module's own table takes archil mounts on Daytona, Modal and E2B (modu
 
 test("a setting the registry does not give is refused in words that name the setting, the registry's own reasons in them", async () => {
   assert.deepEqual(await resolve({ kind: "laptop", provider: "docker" }, 1), { refused: "This agent's computer: \"laptop\" is not a setting kind: none, sandbox, desktop, phone, browser. Set it in Settings → Computers." });
-  assert.deepEqual(await resolve({ kind: "desktop" }, 1), { refused: "A desktop computer needs a provider: pick one of Docker, E2B, Orgo for this agent's computer in Settings → Computers." });
+  assert.deepEqual(await resolve({ kind: "desktop" }, 1), { refused: "A desktop computer needs a provider: pick one of Docker, E2B, Agent37, Orgo for this agent's computer in Settings → Computers." });
   assert.deepEqual(await resolve({ kind: "desktop", provider: "daytona" }, 2), {
-    refused: "Daytona gives no desktop computer: kind desktop is a desktop machine, not a linux one; kind desktop needs groups screen, input.pointer, input.keys, which the provider does not declare. Pick one of Docker, E2B, Orgo for this agent's computer in Settings → Computers.",
+    refused: "Daytona gives no desktop computer: kind desktop is a desktop machine, not a linux one; kind desktop needs groups screen, input.pointer, input.keys, which the provider does not declare. Pick one of Docker, E2B, Agent37, Orgo for this agent's computer in Settings → Computers.",
   });
   assert.deepEqual(await resolve({ kind: "phone", provider: "nokia" }, 2), { refused: "\"nokia\" is no computer provider this server knows: pick one of Phone harness for this agent's computer in Settings → Computers." });
 });

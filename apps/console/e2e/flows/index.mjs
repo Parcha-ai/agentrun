@@ -39,6 +39,7 @@ import costPerRun from "./cost-per-run.mjs";
 import workflowReplay from "./workflow-replay.mjs";
 import learningLoop from "./learning-loop.mjs";
 import toolCards from "./tool-cards.mjs";
+import narrowLayouts from "./narrow-layouts.mjs";
 
 export const flows = [
   setupOpen,
@@ -69,4 +70,5 @@ export const flows = [
   workflowReplay,
   learningLoop,
   toolCards,
+  ...narrowLayouts,
 ];

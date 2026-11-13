@@ -1,10 +1,10 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, LearningChange, LearningDiff, LearningNote, NoteProblem, NoteText, Page } from "./learning";
-import type { McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest } from "./v2";
+import type { ApiError, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateView, RaiseAnswer, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerInput, TriggerMade, TriggerSecret, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -56,7 +56,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 /** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -266,6 +266,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
     /** One account-level read of a provider with its saved keys; it never makes a computer. */
     testComputer: (provider: string) => call<ComputerTest>("POST", `/computers/${encodeURIComponent(provider)}/test`),
+    /** A code that pairs a person's own computer: its driver, on any OS, trades it for its own token, once, before it
+     *  expires. No Idempotency-Key: a second POST is a second code, and the first still pairs until it expires. */
+    createPairing: () => call<Pairing>("POST", "/computers/pairings"),
+    /** Removes a paired computer (204): its token ends, its socket closes, and a run holding it loses it. */
+    removeComputer: (id: string) => call<unknown>("DELETE", `/computers/${encodeURIComponent(id)}`),
     /** Archil (Mode 2): on or off, its disk settings and its key by name, never a value. */
     archil: () => call<Archil>("GET", "/workspace/archil"),
     /** Turns Archil on, or changes it: the settings replaced, the key given sealed (null removes it). The answer is the view. */
@@ -289,7 +294,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  of its secret, which the first answer showed once. */
     createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
     /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body: {} }),
+    rotateTriggerSecret: (id: string, body: { secret?: string } = {}) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body }),
     updateTrigger: (id: string, body: TriggerInput) => call<Trigger>("PATCH", trigger(id), { body }),
     deleteTrigger: (id: string) => call<unknown>("DELETE", trigger(id)),
     /** Runs a schedule now: `key` is the click's own Idempotency-Key, so the same click sent again fires once. */
@@ -308,9 +313,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
     listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
-    previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
+    /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
+    previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
     /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
     saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
+    /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
+    composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
+     *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
+    saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     deleteMcpServer: (name: string) => call<unknown>("DELETE", mcpServer(name)),
     /** Starts an OAuth sign-in to the server at `url`: the page the person opens to approve it. */

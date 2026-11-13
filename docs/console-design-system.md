@@ -260,7 +260,9 @@ After a change to a token, also look: `npm run storybook`, then "Design system /
 ## The catalogue over MCP, and stories as tests
 
 `npm run storybook` in `apps/console` also serves the catalogue to coding agents over MCP, at
-`http://127.0.0.1:6006/mcp` (Streamable HTTP; add it to an agent as an HTTP MCP server). Its tools list the components
+`http://127.0.0.1:6006/mcp` (Streamable HTTP; add it to an agent as an HTTP MCP server, on an AgentRun started with
+`AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which a server needs before it takes an MCP server on loopback: set it only on a machine
+you alone use). Its tools list the components
 and stories (`docs-list`), show a component's or a story's documentation (`docs-show`, `docs-show-story`), find the
 stories that render a source file (`stories-find-by-component`) or that changed (`stories-changed`), give a story's
 preview URL (`stories-preview`), say how to write a story (`get-storybook-story-instructions`), and run story tests
