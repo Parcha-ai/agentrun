@@ -52,11 +52,11 @@ async function piRun(t, launch) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Clock" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [] } });
-  const body = { input: { content: "Say the time." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-4-5" }, ...launch };
+  const body = { input: { content: "Say the time." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, ...launch };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body });
   await server.flush?.();
-  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
-  const route = { model: "claude-sonnet-4-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
+  const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.output ?? 0) * 10) / 1e6;
+  const route = { model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (_harness, given) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) }) });
   const row = await until(async () => {

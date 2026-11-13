@@ -27,9 +27,9 @@ const KEY = `not-a-secret-${"z"}`;
  *  requests land. `calls`: the gateway answers a tool call on that path (not on Chat Completions). */
 const SOURCES = {
   gateway: { model: undefined, env: (url) => ({ AGENT_MODEL_BASE_URL: `${url}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "team-model", AGENT_MODEL_PRICE: "1,1" }), wire: "openai-responses", path: "/v1/responses", calls: true },
-  anthropic: { model: "anthropic/claude-sonnet-4-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), wire: "anthropic-messages", path: "/v1/messages", calls: true },
-  openai: { model: "openai/gpt-5", env: () => ({ OPENAI_API_KEY: KEY }), wire: "openai-responses", path: "/v1/responses", calls: true },
-  openrouter: { model: "openrouter/openai/gpt-5", env: () => ({ OPENROUTER_API_KEY: KEY }), wire: "anthropic-messages", path: "/v1/chat/completions", calls: false, translated: true },
+  anthropic: { model: "anthropic/claude-sonnet-5-5", env: (url) => ({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: url }), wire: "anthropic-messages", path: "/v1/messages", calls: true },
+  openai: { model: "openai/gpt-6.1-sol", env: () => ({ OPENAI_API_KEY: KEY }), wire: "openai-responses", path: "/v1/responses", calls: true },
+  openrouter: { model: "openrouter/openai/gpt-6.1-sol", env: () => ({ OPENROUTER_API_KEY: KEY }), wire: "anthropic-messages", path: "/v1/chat/completions", calls: false, translated: true },
 };
 
 /** A fetch that sends each request to the gateway at `url`, on its own path: a provider's origin (OpenAI's, OpenRouter's)

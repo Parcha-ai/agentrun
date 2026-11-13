@@ -1,6 +1,6 @@
 // A person's hold on a run's desktop or phone (serve/src/workspace/computer-hold.ts): agent, pending (the take waits out
 // the agent's call in flight) and person; a take ends given, answered, idle, away or released, each said once; while the
-// person has it, the run's screen, input and phone calls park, and at the hand-back a look runs on the screen as the
+// person has it, the run's computer calls park, and at the hand-back a look runs on the screen as the
 // person left it and an act is not done, the model told the person had it. The agent's ask is one at a time, clamped to
 // its longest wait, and ends done, cancelled or expired. Driven by events and a fake clock: nothing here sleeps.
 import assert from "node:assert/strict";
@@ -21,20 +21,15 @@ function fakeTime(start = 1_000_000) {
   };
 }
 
-/** A desktop's and a phone's ports that record each call. */
+/** A computer's one port that records each op, and the run's exec beside it. */
 function ports() {
   const calls = [];
-  const record = (name, answer) => async (...args) => (calls.push([name, ...args]), answer);
   return {
     calls,
-    desktop: {
-      maxExecS: 600, exec: record("exec", { exitCode: 0, signal: null, timedOut: false }),
-      screen: { shot: record("screen.shot", { png: new Uint8Array([1]), width: 1, height: 1 }) },
-      input: { actions: record("input.actions") },
-    },
-    phone: {
+    hands: {
       maxExecS: 600,
-      phone: { shot: record("phone.shot", { png: new Uint8Array([2]), width: 1, height: 1 }), tree: record("phone.tree", { nodes: [], total: 0, truncated: false }), tap: record("phone.tap"), swipe: record("phone.swipe"), type: record("phone.type"), key: record("phone.key"), apps: { list: record("phone.apps.list", ["mail"]), open: record("phone.apps.open") } },
+      exec: async () => (calls.push("exec"), { exitCode: 0, signal: null, timedOut: false }),
+      computer: { groups: ["ui", "screen", "input.pointer", "apps", "exec", "files"], call: async (op, args) => (calls.push(op), { value: { op, args }, text: op, images: [] }) },
     },
   };
 }
@@ -86,64 +81,51 @@ test("a take while the agent's call is in flight is pending until that call ends
   let finish;
   const inShot = new Promise((resolve) => (finish = resolve));
   const calls = [];
-  const hands = heldHands({ screen: { shot: async () => (calls.push("shot"), await inShot, { png: 1 }) }, input: { actions: async () => void calls.push("actions") } }, hold);
-  const first = hands.screen.shot();
+  const hands = heldHands({ computer: { groups: ["ui"], call: async (op) => (calls.push(op), op === "observe" ? await inShot : undefined, { value: null, text: op, images: [] }) } }, hold);
+  const first = hands.computer.call("observe", {});
   await settled(Promise.resolve());
   assert.equal(hold.take(), true);
   assert.equal(hold.state(), "pending", "the take waits out the call in flight");
-  const parked = hands.input.actions([{ type: "click" }]);
+  const parked = hands.computer.call("act", { steps: [{ press: "@e1" }] });
   assert.equal(await settled(parked), false, "a new agent call is parked while the take is pending");
   finish();
   await first;
   assert.equal(hold.state(), "person", "the call ended: the person drives");
   hold.give();
-  await assert.rejects(parked, (error) => error.code === TAKEN_OVER, "the parked act is not done");
-  assert.deepEqual(calls, ["shot"]);
+  await assert.rejects(parked, (error) => error.kind === TAKEN_OVER, "the parked act is not done");
+  assert.deepEqual(calls, ["observe"]);
 });
 
-test("while held, a desktop's look waits and then runs, and its act waits and then is not done, in words; with nobody holding, both run", async () => {
-  const { calls, desktop } = ports();
+test("while held, a look (observe, a screenshot, the app list) waits and then runs, and an act (act, raw input, opening an app) waits and then is not done, in words; with nobody holding, both run", async () => {
+  const { calls, hands: own } = ports();
   const hold = computerHold();
-  const hands = heldHands(desktop, hold);
-  await hands.input.actions([{ type: "click" }]);
-  assert.deepEqual(calls.map(([name]) => name), ["input.actions"], "nobody holds it: the act runs");
+  const hands = heldHands(own, hold);
+  await hands.computer.call("act", { steps: [{ press: "@e1" }] });
+  assert.deepEqual(calls, ["act"], "nobody holds it: the act runs");
   hold.take();
-  const look = hands.screen.shot();
-  const doing = hands.input.actions([{ type: "type", text: "hi" }]);
-  assert.equal(await settled(look), false, "the look waits while the person holds it");
-  assert.equal(await settled(doing), false, "so does the act");
-  assert.deepEqual(calls.map(([name]) => name), ["input.actions"], "neither reached the computer");
+  const looks = ["observe", "screenshot", "apps.list"].map((op) => hands.computer.call(op, {}));
+  const acts = ["act", "input.act", "apps.open"].map((op) => hands.computer.call(op, {}));
+  for (const call of [...looks, ...acts]) assert.equal(await settled(call), false, "every look and act waits while the person holds it");
+  assert.deepEqual(calls, ["act"], "none reached the computer");
   hold.give();
-  assert.deepEqual(await look, { png: new Uint8Array([1]), width: 1, height: 1 }, "the look runs after the hand-back");
-  await assert.rejects(doing, (error) => error.code === TAKEN_OVER && error.message === personHadWords("desktop", "input"));
-  assert.deepEqual(calls.map(([name]) => name), ["input.actions", "screen.shot"], "the act was never sent");
+  assert.deepEqual((await Promise.all(looks)).map((answer) => answer.text), ["observe", "screenshot", "apps.list"], "the looks run after the hand-back");
+  const refused = await Promise.allSettled(acts);
+  assert.deepEqual(refused.map((one) => [one.status, one.reason?.kind, one.reason?.message]), [
+    ["rejected", TAKEN_OVER, personHadWords("act")], ["rejected", TAKEN_OVER, personHadWords("input")], ["rejected", TAKEN_OVER, personHadWords("app opening")],
+  ]);
+  assert.match(personHadWords("act"), /observe again before you act/);
+  assert.deepEqual(calls, ["act", "observe", "screenshot", "apps.list"], "the acts were never sent");
   assert.equal((await hands.exec("true", { timeoutS: 1 })).exitCode, 0, "exec passes through, held or not");
 });
 
-test("a phone's looks (its screen, its structure, its apps) wait and run; its acts (tap, swipe, typing, a key, opening an app) wait and are not done", async () => {
-  const { calls, phone } = ports();
+test("the shell's and the files' ops through the computer are not the person's: they pass through while held", async () => {
+  const { calls, hands: own } = ports();
   const hold = computerHold();
-  const hands = heldHands(phone, hold);
+  const hands = heldHands(own, hold);
   hold.take();
-  const parked = [hands.phone.shot(), hands.phone.tree(), hands.phone.apps.list(), hands.phone.tap({ x: 1, y: 2 }), hands.phone.swipe({ from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, durationMs: 1 }), hands.phone.type("x"), hands.phone.key("back"), hands.phone.apps.open("mail")];
-  for (const call of parked) assert.equal(await settled(call), false);
-  hold.give();
-  const answers = await Promise.allSettled(parked);
-  assert.deepEqual(answers.slice(0, 3).map((a) => a.status), ["fulfilled", "fulfilled", "fulfilled"]);
-  assert.deepEqual(answers.slice(3).map((a) => [a.status, a.reason?.code, a.reason?.message]), [
-    ["rejected", TAKEN_OVER, personHadWords("phone", "tap")], ["rejected", TAKEN_OVER, personHadWords("phone", "swipe")],
-    ["rejected", TAKEN_OVER, personHadWords("phone", "typing")], ["rejected", TAKEN_OVER, personHadWords("phone", "key press")],
-    ["rejected", TAKEN_OVER, personHadWords("phone", "app opening")],
-  ]);
-  assert.deepEqual(calls.map(([name]) => name), ["phone.shot", "phone.tree", "phone.apps.list"], "only the looks reached the phone");
-});
-
-test("a phone that offers neither its tree nor its keys (an iPhone) keeps neither through the hold", () => {
-  const { phone } = ports();
-  const { tree, key, ...bare } = phone.phone;
-  const hands = heldHands({ ...phone, phone: bare }, computerHold());
-  assert.equal(hands.phone.tree, undefined);
-  assert.equal(hands.phone.key, undefined);
+  for (const op of ["shell.run", "files.read", "files.write", "files.list", "files.stat"]) assert.equal((await hands.computer.call(op, {})).text, op);
+  assert.deepEqual(calls, ["shell.run", "files.read", "files.write", "files.list", "files.stat"]);
+  assert.deepEqual(hands.computer.groups, own.computer.groups, "the port keeps its groups");
 });
 
 test("the agent's ask: one at a time, clamped to its longest wait, answered by the person, or expired; a hand-back while the person holds the computer answers it done, and the take ends answered", async () => {

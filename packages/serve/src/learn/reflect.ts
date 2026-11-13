@@ -16,18 +16,25 @@ export const NOTE_BLOCK = "note";
  *  with four backticks so a ``` line inside does not close it. */
 export const SKILL_BLOCK = "skill";
 export const WORKFLOW_BLOCK = "workflow";
+/** What a later round's end-of-run prompt says first (reflectPrompt's `later`): the run looked back before, at an end a
+ *  follow-up opened it again from, so only what came since is new. */
+export const LATER_LOOK = "You looked back on this run before. Since then the conversation went on: keep only what the messages since then teach (a reviewer's word on your answer included), and never repeat a note you kept then.";
+
 /** The end-of-run turn's message. `dir` is the run's copy of the folder relative to the run's workspace (`.learning`),
  *  where the agent can read its notes: the prompt never names a path of the host's, which a box would not see. `active`
  *  is how many notes are active in it, so how many lines the index has left. The turn keeps notes and a skill; a job
- *  that repeats is compiled into a learned workflow by the compile turn (learn/compile.ts), never drafted here. */
-export function reflectPrompt(options: { dir: string; active: number }): string {
-  const { dir, active } = options;
+ *  that repeats is compiled into a learned workflow by the compile turn (learn/compile.ts), never drafted here. `later`,
+ *  a later round's (a follow-up opened the run again after it looked back): the prompt says so (LATER_LOOK) after its
+ *  first line. */
+export function reflectPrompt(options: { dir: string; active: number; later?: boolean }): string {
+  const { dir, active, later = false } = options;
   if (typeof dir !== "string" || dir === "" || dir.startsWith("/") || UNSEEN.test(dir)) throw new Error("the directory must be a path relative to the run's workspace, with no control or unseen characters");
   if (!Number.isSafeInteger(active) || active < 0) throw new Error("the count of active notes must be a whole number, 0 or more");
   const left = Math.max(0, INDEX_LINES - active);
   return [
     "The task is done. Before the run ends, say what this run taught you that will help in later runs, if anything.",
     "",
+    ...(later ? [LATER_LOOK, ""] : []),
     "Look back over the whole conversation: what the user asked, anything they asked you to remember (even if you said you",
     "saved it), what you tried, and what worked. Only what you answer now is kept: files you wrote during the task are not.",
     "Use no tool in this turn.",

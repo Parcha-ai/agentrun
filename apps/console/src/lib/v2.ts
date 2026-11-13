@@ -90,10 +90,17 @@ export type RunLearningRead = Answer<"getRunLearning">;
 /** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
  *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
 export type LearningCost = Answer<"getLearningCost">;
+/** The held-out tests recorded for an agent (GET /v2/agents/{id}/learning/evals), newest first. */
+export type LearningEvals = Answer<"listLearningEvals">;
+export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
+/** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
+ *  workflow.json, oldest first, each with the text it had then. */
+export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
+export type WorkflowRevision = WorkflowRevisions["revisions"][number];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];
@@ -164,6 +171,11 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
 export type ComputerKindView = Computers["kinds"][number];
+/** A person's own computer paired with this server: its name, what it paired as, its driver's build, whether it is
+ *  attached now, and the run that holds it. */
+export type PairedComputer = Computers["paired"][number];
+/** POST /v2/computers/pairings' answer: a code good once, until it expires. */
+export type Pairing = Answer<"createPairing">;
 /** A provider of computers: its secrets ("computer:<provider>:<KEY>", set or not, where from and when, never a value),
  *  the full names of those it requires, whether it is metered, and whether a run could have it now. */
 export type ComputerProvider = Answer<"saveComputerKeys">;
@@ -179,3 +191,11 @@ export type Archil = Answer<"getWorkspaceArchil">;
 export type ArchilBody = Body<"putWorkspaceArchil">;
 /** POST /v2/workspace/archil/test's answer. */
 export type ArchilTest = Answer<"testWorkspaceArchil">;
+/** One of an agent's saved browser sign-ins, as GET /v2/agents/{id} shows it: never its pointer. `held` while a run holds
+ *  its save lease (`held_by`); `unreadable`, its pointer doesn't open under this server's seal key, so runs start signed
+ *  out until it is forgotten. */
+export type SignIn = components["SignIn"];
+/** DELETE /v2/agents/{id}/sign-ins/{key}'s answer: what each vendor did with its object. */
+export type SignInForgotten = Answer<"forgetSignIn">;
+/** GET /v2/agents/{id}'s answer as served. */
+export type ServedAgent = Answer<"getAgent">;

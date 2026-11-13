@@ -329,7 +329,7 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract, health, an MCP server's OAuth callback and client document, and GitHub's two browser legs back to Connect (a 302); the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
+test("every route, called with no credential, is a 401 but capabilities, the contract, health, an MCP server's OAuth callback and client document, GitHub's two browser legs back to Connect (a 302), and a driver's pair, whose code is its credential; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
   const server = await owned(t);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -345,6 +345,9 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     // So is the browser GitHub sends back after it makes the App (the callback) or installs it (installed): its state and
     // the cookie Connect set are the check, and both legs only ever send it on (302), to the console with why on a failure.
     else if (["gitHubCallback", "gitHubInstalled"].includes(route.name)) assert.equal(anonymous.status, 302, `${route.method} ${path}: ${anonymous.status}`);
+    // A driver pairing a computer has no credential of the server's: the pairing code in its body is the credential, so
+    // an empty body is a 422 (computer-attach-e2e.test.mjs pairs one).
+    else if (route.name === "pairComputer") assert.equal(anonymous.status, 422, `${route.method} ${path}: ${anonymous.status} ${anonymous.text}`);
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
@@ -429,7 +432,7 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
   assert.match(open, /^Set your password: http:\/\/127\.0\.0\.1:\d+\/setup \(/m);
   assert.match(open, /^Open http:\/\/127\.0\.0\.1:\d+\/$/m, "with accounts on, the Open line holds no token");
   assert.match(await bin({ AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/), /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22} \(or paste AGENTRUN_TOKEN\)$/m);
-  assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?token=.*\n/), /Set your password|Set up this server/);
+  assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?launch=.*\n/), /Set your password|Set up this server/);
 });
 
 test("with accounts on, the token link signs no browser in: it sets no cookie, and a cookie made from the token is no credential, before or after signing out everywhere", async (t) => {

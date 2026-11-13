@@ -27,6 +27,7 @@ import { COST_WINDOW, type RunPath } from "../learning-cost.js";
 
 export { COST_WINDOW };
 import type { Store } from "../store/store.js";
+import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 import { type GuardRow, guardsOf, LEARNED_NODES } from "../learned-nodes.js";
 
@@ -46,6 +47,9 @@ export interface WorkflowFirst {
   readonly revision: string | null;
   /** A replay run's (RunLaunch.replay): the workflow runs alone, a hand-back ends the run with no agent turn. */
   readonly replay?: true;
+  /** The agent's output schema, when it has one: the workflow's answer is served shaped to it (answer-json.ts
+   *  answerAsServed), else the job goes back to the agent. */
+  readonly outputSchema?: unknown;
 }
 
 /** What WORKFLOW_FIRST keeps: the step's end (its call, and whether it answered or handed back), or why the workflow did
@@ -65,7 +69,7 @@ export interface Revise {
 }
 
 /** How many of the agent's newest runs the money rule reads (pastOf). */
-const PAST_RUNS = 500;
+export const PAST_RUNS = 500;
 
 /** One of the agent's runs as the money rule reads it: its record's path fields, its booked cost, when it started. */
 export type PastRun = { readonly metrics: unknown; readonly costUsd: number | null; readonly startedAt: number };
@@ -180,8 +184,9 @@ export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): str
  *  line when the launch forces the agent, more than one fits, there is no by-hand cost to hold the workflow to, or the
  *  rule stops it. A replay run (launch.replay) serves the workflow it replays, by name, alone: no promotion, no money rule;
  *  none when its claim laid no workflow by that name at that digest (runner/promotion.ts replayClaimed then refuses the
- *  claim: the run ends failed, never on the agent's path). */
-export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly PastRun[]>, promoted?: Promoted): Promise<FirstChoice> {
+ *  claim: the run ends failed, never on the agent's path). `outputSchema`: the agent's, when it has one: what it serves
+ *  carries it, so its answer is served shaped to it (answer-json.ts answerAsServed). */
+export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly PastRun[]>, promoted?: Promoted, outputSchema?: unknown): Promise<FirstChoice> {
   if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return {};
   if (launch.replay) {
     const { workflow: name, digest } = launch.replay;
@@ -190,7 +195,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
       log?.(`workflow-first: replay of ${name} at ${digest}: the run's claim laid no workflow by that name, or its input is no object; the replay fails`);
       return {};
     }
-    return { serve: { name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, replay: true } };
+    return { serve: { name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, replay: true, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
   }
   if (launch.workflowFirst === false) {
     log?.("workflow-first: off for this run (workflow_first: false); the agent takes it");
@@ -227,7 +232,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   }
   const champion = chosen !== laid ? { champion: chosen } : {};
   const digest = workflowDigest(chosen);
-  const serve = { ...champion, serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed } };
+  const serve = { ...champion, serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
   if (!past) return serve;
   const line = costLineOf(await past().catch(() => []), chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return serve;
@@ -286,6 +291,23 @@ const stepFailedIn = (entries: readonly { readonly kind: string; readonly data?:
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
 export type ReplayMetrics = { readonly of: string; readonly outcome: "answered" | "handed_back" | "failed" };
+
+/** What run `entries` (its root's) say its learned workflow answered alone: the workflow and its answer (the model's
+ *  message written just before the WORKFLOW_FIRST entry, in its commit); undefined for a run it did not answer. A follow-up that opens such a
+ *  run again is the agent's first turn: its session never saw the job or the answer (servedAnswerText). */
+export function servedAnswerOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { workflow: string; answer: string } | undefined {
+  const at = entries.findLastIndex((entry) => entry.kind === WORKFLOW_FIRST && (entry.data as { outcome?: unknown } | undefined)?.outcome === "answered");
+  const workflow = at < 0 ? undefined : (entries[at]!.data as { workflow?: unknown }).workflow;
+  if (typeof workflow !== "string") return undefined;
+  const said = entries.slice(0, at).findLast((entry) => entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model")?.data as { text?: unknown } | undefined;
+  return { workflow, answer: typeof said?.text === "string" ? said.text : "" };
+}
+
+/** Said to the agent between the job and a follow-up's message, on a run its learned workflow answered alone: which
+ *  workflow answered and what, so the follow-up (a reviewer's word on that answer) reads against it. */
+export function servedAnswerText(name: string, answer: string): string {
+  return [`Your learned workflow \`${name}\` ran first on this job and answered it. Its answer:`, "", answer.trim() || "(it said nothing)"].join("\n");
+}
 
 /** The agent's first input on a handback: the hand-back first (which workflow, and its own words for why, the trace the
  *  call answered), then the job as it was launched. The loop cuts it of every secret the runner holds before it is sent. */

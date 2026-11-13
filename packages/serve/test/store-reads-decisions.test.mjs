@@ -1,5 +1,5 @@
-// A run's workflow decision receipts over the one store (store-reads/decisions.ts): the same rows durableDecisions read
-// from a run's own database, read now through the journal view: the keyed `.count` and family rows in order. graph-view's ended-run path reads a stored workflow run's decisions this way.
+// A run's workflow decision receipts over the one store (store-reads/decisions.ts): the rows a run's own database once
+// held, read now through the journal view: the keyed `.count` and family rows in order. graph-view's ended-run path reads a stored workflow run's decisions this way.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

@@ -1,9 +1,11 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
-    "startMcpOAuth": ["url", "scopes.[]", "client_id"]
+    "startMcpOAuth": ["url", "scopes.[]", "client_id"],
+    "listComposioTools": ["toolkit"],
+    "saveComposioServer": ["toolkit", "tools.[]", "user_id"]
   },
   "bodyFill": {
     "callMcp": { "id": 1 }
@@ -26,7 +28,9 @@
     "putMcpPrivateHosts": "Allowing private-network hosts for MCP servers' sign-ins takes the owner's password session in the console; the server refuses every token on it.",
     "restoreLearningFile": "Restoring a retired learning file takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
     "promoteLearnedWorkflow": "Making a learned workflow an agent of its own takes the owner's password session in the console, as an approval does; the server refuses every token on it.",
-    "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command."
+    "mcpOAuthCallback": "The owner's browser reaches it, sent back by the authorization server with the cookie the start set there; it takes no token, and the CLI has no such cookie, so it has no command.",
+    "pairComputer": "A computer's driver (Computerd) calls it with the pairing code the owner made, and no token: the owner's CLI and clients make the code (createPairing) and never pair.",
+    "attachComputer": "A paired computer's driver dials it, a WebSocket upgrade with the computer's own token: no request of the owner's CLI or clients is one."
   },
   "commands": {
     "getCapabilities": ["server", "capabilities"],
@@ -71,8 +75,11 @@
     "deleteHomeFile": ["home", "delete"],
     "getAgentLearning": ["learning", "get"],
     "getLearningCost": ["learning", "cost"],
+    "listLearningEvals": ["learning", "evals"],
+    "recordLearningEval": ["learning", "record-eval"],
     "listLearningNotes": ["learning", "notes"],
     "listLearningLog": ["learning", "log"],
+    "listLearnedWorkflowRevisions": ["learning", "workflow-revisions"],
     "readLearningFile": ["learning", "read"],
     "writeLearningFile": ["learning", "write"],
     "retireLearningFile": ["learning", "retire"],

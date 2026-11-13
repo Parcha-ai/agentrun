@@ -8,14 +8,16 @@ import { isHeld, held, retiredLearned, WORKFLOWS_DIR } from "./skills.js";
 import { buildIndex, compiledInto, INDEX_FILE, INDEX_LINES, type LearnedNote, mergedNote, NOTE_FILE, parseNoteFile, ruleOf, supersede } from "./notes.js";
 import { mergeProblems, type Problem, supersededBy } from "./check.js";
 import type { IndexEntry, NoteText } from "./grade.js";
-import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, type Snapshot, snapshotNotes, textsAt, topOf, writeLearning } from "./folder.js";
+import { FolderRefused, FolderTooLarge, type FolderChange, readLearning, readRunDiff, readSnapshot, runDiffKey, type Snapshot, snapshotNotes, textsAt, topOf, writeLearning } from "./folder.js";
 import type { Workspace } from "../workspace/index.js";
 
 export type LearningChange =
   | {
       kind: "merge";
-      /** The run that learned: the commit's Run-Id trailer and the diff file's name. */
+      /** The run that learned: the commit's Run-Id trailer and, with `round`, the diff file's name (runDiffKey). */
       runId: string;
+      /** Which of the run's looks back merges (absent: its first): a follow-up's later round merges once of its own. */
+      round?: number;
       /** The grader's reason: the commit's message and the log's `reason`. */
       reason: string;
       /** What merges, already checked: notes, a skill's files, a draft's files, each whole. */
@@ -108,7 +110,7 @@ type Computed = LearningCommitResult | { pending: true; left?: LeftNote[] };
 export async function learningCommit(ws: Workspace, change: LearningChange, opts: { retries?: number } = {}): Promise<LearningCommitResult> {
   try {
     if (change.kind === "merge") {
-      const known = await readRunDiff(ws, change.runId);
+      const known = await readRunDiff(ws, runDiffKey(change.runId, change.round));
       if (known) {
         // Its merge is on main already (a retry after a crash, say): the new notes it did not write it left out, said
         // again as the merge's own settle says them against main now (`taken` for a name main holds with another rule,
@@ -239,7 +241,7 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
   return {
     result: { pending: true, ...(left.length ? { left } : {}) },
     change: {
-      by: { run: change.runId, reason: change.reason },
+      by: { run: change.runId, reason: change.reason, ...(change.round !== undefined && change.round > 1 ? { round: change.round } : {}) },
       writes: [...files].map(([path, text]) => ({ path, text })),
       absent: added.map((note) => note.file),
       ...(change.seed ? { same: [...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring].map((path) => ({ commit: change.seed!, path })) } : {}),
@@ -337,8 +339,8 @@ export async function mainTexts(ws: Workspace, paths: readonly string[]): Promis
  *  `paths`, each a note's file (one it holds nothing at is not in it), read at that commit, those paths alone (textsAt:
  *  one read-only exec, bounded by the paths asked, never the whole folder or its log), never main's now, which a person
  *  may have edited since. Undefined when the run merged nothing here. */
-export async function mergedAt(ws: Workspace, runId: string, paths: readonly string[]): Promise<{ texts: Record<string, string> } | undefined> {
-  const diff = await readRunDiff(ws, runId);
+export async function mergedAt(ws: Workspace, runId: string, paths: readonly string[], round?: number): Promise<{ texts: Record<string, string> } | undefined> {
+  const diff = await readRunDiff(ws, runDiffKey(runId, round));
   if (!diff) return undefined;
   const texts = await textsAt(ws, diff.merge, paths);
   if (!texts) throw new Error(`the run's merge ${diff.merge} is not in the learning folder`);

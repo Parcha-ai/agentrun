@@ -15,7 +15,7 @@ import { runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
-import { atLeast, bodyOf, capOf, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, githubWhen, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf } from "@/lib/schedules";
 import type { Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or a schedule's editor
@@ -34,11 +34,11 @@ const TONE: Record<Firing["status"], Tone | "plain"> = { started: "success", sen
 /** Triggers (serve's trigger/1): schedules and webhooks, each starting an agent's capped runs with no one there. */
 /** `refreshMs`: how often an open trigger's page reads it again, so a firing shows as it happens (the list, twice that). */
 /** `now`: the page's clock, for whether a one-time schedule's time has passed. */
-export function SchedulesPage({ v2, view, go, agentName, minEvery, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; refreshMs?: number; now?: () => number }) {
-  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} />;
+export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPause, refreshMs = 15_000, now = Date.now }: PageProps & { view: ScheduleView; minEvery?: number; failuresToPause?: number; refreshMs?: number; now?: () => number }) {
+  if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} failuresToPause={failuresToPause} />;
   if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} now={now} />;
-  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} />;
+  return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} failuresToPause={failuresToPause} />;
 }
 
 /** `read` again every `every` ms while the tab shows, and once when it shows again; nothing while it is hidden (SWR's
@@ -61,10 +61,16 @@ const onceWords = (state: OnceState): string | null => (!state ? null : "ran" in
 /** The server's refusal of a one time already passed (serve's trigger-schedule.ts), whatever time it names. */
 const PAST_REFUSAL = /has already passed\.?$/;
 
-/** How a schedule's last firing went, or that it has not fired. */
-const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
+/** A trigger that is off: "Turned off" when the server turned it off itself (a failure streak, a source it can't read),
+ *  "Paused" when a person did. */
+function OffChip({ trigger }: { trigger: Trigger }) {
+  return trigger.disabled ? <Chip tone="warning">Turned off</Chip> : <Chip tone="muted">Paused</Chip>;
+}
 
-function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: number; now: () => number }) {
+/** How a schedule's last firing went, or that it has not fired. */
+const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)}${t.last_firing.catch_up ? " · caught up late" : ""} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
+
+function ScheduleList({ v2, go, agentName, every, now, failuresToPause }: PageProps & { every: number; now: () => number; failuresToPause?: number }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -105,9 +111,10 @@ function ScheduleList({ v2, go, agentName, every, now }: PageProps & { every: nu
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={hashOf(t.id)} className="min-w-0 break-words text-prose font-semibold hover:underline">{t.name}</a>
                     <Chip>{KIND_WORDS[t.source.kind]}</Chip>
-                    {!t.enabled && !onceState(t, now()) && <Chip tone="muted">Paused</Chip>}
+                    {!t.enabled && !onceState(t, now()) && <OffChip trigger={t} />}
                   </div>
                   <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName, now())}</p>
+                  {disabledWords(t, failuresToPause) && <p className="mt-1 break-words text-small text-warning-text">{disabledWords(t, failuresToPause)}</p>}
                 </div>
                 <div className="min-w-0 font-mono text-small text-muted-foreground md:text-right">
                   <p className="break-words">{lastWords(t)}</p>
@@ -173,7 +180,7 @@ function NotASchedule() {
   );
 }
 
-function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id: string; every: number; now: () => number }) {
+function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: PageProps & { id: string; every: number; now: () => number; failuresToPause?: number }) {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [firings, setFirings] = useState<Firing[]>([]);
   const [error, setError] = useState<Problem | null>(null);
@@ -182,6 +189,9 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
   const [confirming, setConfirming] = useState(false);
   // A webhook's Rotate secret: asked first (the old secret stops signing at once), then the new one shown that once.
   const [rotating, setRotating] = useState(false);
+  const [givingSecret, setGivingSecret] = useState(false);
+  const [given, setGiven] = useState("");
+  const [secretSet, setSecretSet] = useState(false);
   const [fresh, setFresh] = useState<string | null>(null);
   // A rotation out: its own flag, not `busy` (a Run now that ends first clears that), so a second rotation never goes out
   // while the first is, and an older answer never shows a secret the newer one already revoked.
@@ -237,10 +247,16 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
     setTrigger(answer);
   }, trigger.enabled ? "the pause" : "the resume");
   const remove = () => act("delete", async () => { await v2.deleteTrigger(id); go("#/triggers"); }, "the delete");
+  // A composio trigger's secret is Composio's: given here, sealed, never shown again.
+  const giveSecret = async () => {
+    if (rotateOut.current) return;
+    rotateOut.current = true; setRenewing(true); setSaid(null);
+    try { await v2.rotateTriggerSecret(id, { secret: given.trim() }); setGivingSecret(false); setGiven(""); setSecretSet(true); } catch (e) { setSaid(problem(e, "the secret")); } finally { rotateOut.current = false; setRenewing(false); }
+  };
   const rotate = async () => {
     if (rotateOut.current) return;
     rotateOut.current = true; setRenewing(true); setSaid(null); setFresh(null);
-    try { setFresh((await v2.rotateTriggerSecret(id)).signing_secret); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
+    try { setFresh((await v2.rotateTriggerSecret(id)).signing_secret ?? null); } catch (e) { setSaid(problem(e, "the new secret")); } finally { rotateOut.current = false; setRenewing(false); }
   };
   const runNow = async () => {
     if (firing.current) return;
@@ -263,14 +279,21 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
       <a href="#/triggers" className="caps flex items-center gap-2 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Triggers</a>
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
-          <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <Chip tone="muted">Paused</Chip>}</h1>
+          <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
           <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="solid" onClick={() => void runNow()} disabled={busy === "fire"}><Zap aria-hidden /> {busy === "fire" ? "Starting" : "Run now"}</Button>
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
           {!hook && !gh && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> Edit</Button>}
-          {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
+          {hook && hook.source.signature === "composio" && (!givingSecret ? <Button size="sm" onClick={() => setGivingSecret(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Set secret</Button> : (
+            <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void giveSecret(); }}>
+              <Input name="secret" type="password" autoComplete="off" aria-label="Composio's webhook secret" className="w-64" value={given} onChange={(e) => setGiven(e.target.value)} />
+              <Button size="sm" variant="solid" type="submit" disabled={!given.trim() || renewing}>Save</Button>
+              <Button size="sm" variant="ghost" type="button" onClick={() => { setGivingSecret(false); setGiven(""); }}>Cancel</Button>
+            </form>
+          ))}
+          {hook && hook.source.signature !== "composio" && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
               <Button size="sm" variant="solid" onClick={() => { setRotating(false); void rotate(); }}>Yes, make a new one</Button>
@@ -286,6 +309,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
           )}
         </div>
       </div>
+      {disabledWords(trigger, failuresToPause) && (
+        <p role="status" data-disabled className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">
+          {disabledWords(trigger, failuresToPause)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : trigger.disabled?.reason === "auto_paused" ? (done && "passed" in done ? "Its time has passed: edit its time first, then Resume." : done ? "" : "Resume turns it on again.") : ""}
+        </p>
+      )}
       {said && <ProblemCard problem={said} className="mt-4" />}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
@@ -294,7 +322,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
         <dt className="caps text-label text-muted-foreground">Cost cap</dt><dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>
         {hook ? <>
           <dt className="caps text-label text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-small">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-small text-muted-foreground">{HOOK_URL_HINT}</span></dd>
-          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
+          <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}{hook.source.signature === "composio" && !secretSet && !(trigger as { secret?: { set?: boolean } }).secret?.set ? " (no secret set yet: every request is refused)" : ""}</dd>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{hook.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{hook.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every signed request"}</dd>
         </> : gh ? <>
@@ -311,7 +339,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now }: PageProps & { id:
             {firings.map((f) => (
               <li key={f.key} data-firing={f.key} className="flex flex-col gap-1 border-b px-4 py-2.5 text-body last:border-b-0 sm:flex-row sm:items-start sm:gap-4">
                 <span className="flex shrink-0 items-center gap-2"><Chip tone={TONE[f.status]}>{FIRING_LABEL[f.status]}</Chip><span className="font-mono text-small text-muted-foreground">{at(f.nominal_at)}</span></span>
-                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? FIRED_BY[f.by] : `${firingWords(f)}${f.by === "manual" ? " · Run now" : ""}`}</span>
+                <span className="min-w-0 flex-1 break-words">{f.status === "started" ? `${FIRED_BY[f.by]}${f.catch_up ? ", caught up late" : ""}` : `${firingWords(f)}${f.catch_up ? " · caught up late" : ""}${f.by === "manual" ? " · Run now" : ""}`}</span>
                 {f.run_id && <a href={`#/runs/${encodeURIComponent(f.run_id)}`} className="shrink-0 font-mono text-small underline-offset-2 hover:underline">Run {runLabel(f.run_id)}</a>}
               </li>
             ))}
@@ -523,7 +551,7 @@ function Copyable({ title, text, label, hint }: { title: string; text: string; l
   );
 }
 
-const SIGNATURES: ("standard" | "github")[] = ["standard", "github"];
+const SIGNATURES: ("standard" | "github" | "composio")[] = ["standard", "github", "composio"];
 
 /** A new webhook trigger: each signed request to its URL starts a capped run of the agent. The create's answer carries
  *  its signing secret that once (or, on a retry under the same Idempotency-Key, a note in its place): shown with the URL,
@@ -565,7 +593,9 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className="max-w-2xl p-5 md:p-8">
         {back}
         <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Webhook className="size-5 text-primary-text" aria-hidden />{made.name}</h1>
-        <p className="mt-2 text-body text-muted-foreground">Send each request to this URL, signed with this secret ({SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.</p>
+        <p className="mt-2 text-body text-muted-foreground">{made.source.kind === "webhook" && made.source.signature === "composio"
+          ? "Register this URL as your Composio project's webhook subscription, then set the secret Composio gives you on this trigger with Set secret. Until then every request is refused; after, each Composio event starts a run."
+          : `Send each request to this URL, signed with this secret (${SIGNATURE_WORDS[made.source.kind === "webhook" ? made.source.signature ?? "standard" : "standard"]}). Each one starts a run.`}</p>
         {made.signing_secret ? <SecretOnce label="The webhook's URL and secret" url={hookUrlOf(made)} secret={made.signing_secret} /> : (
           <section aria-label="The webhook's URL and secret" className="mt-4 space-y-3 border p-4 text-body">
             <Copyable title="URL" text={hookUrlOf(made)} label="Copy URL" hint={HOOK_URL_HINT} />
@@ -596,6 +626,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
           </div>
           {issues["source.signature"] && <p className="mt-1 text-small text-destructive-text" role="alert" data-issue="source.signature">{issues["source.signature"]}</p>}
         </fieldset>
+        {draft.signature === "composio" && <p className="text-small text-muted-foreground">Composio makes this webhook's secret when you register the trigger's URL as your project's webhook subscription: set it on the trigger then.</p>}
         <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },

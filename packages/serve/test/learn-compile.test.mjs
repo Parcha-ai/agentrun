@@ -22,7 +22,7 @@ const { compiledInto, parseNoteFile } = await import("../dist/learn/notes.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { seedOf } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
-const { reflectRequestId } = await import("../dist/runner/end-of-run.js");
+const { reflectRequestId, reflectRanges } = await import("../dist/runner/end-of-run.js");
 const { decisionProvidersIn } = await import("../dist/decisions.js");
 const reflect = await import("../dist/learn/reflect.js");
 const learningEnd = await import("../dist/runner/learning-end.js");
@@ -166,8 +166,12 @@ test("compileTurn: one that never passes stops after 1 + 3 attempts with its err
 });
 
 test("each compile attempt is its own request id: never answered from the look-back's submission or an earlier attempt", () => {
-  const ids = [reflectRequestId("run-1"), reflectRequestId("run-1", true), reflectRequestId("run-1", false, "compile-1"), reflectRequestId("run-1", true, "compile-2")];
-  assert.deepEqual(ids, ["learn-reflect-run-1", "learn-reflect-run-1:again", "learn-reflect-run-1:compile-1", "learn-reflect-run-1:compile-2"]);
+  const ids = [reflectRequestId("run-1"), reflectRequestId("run-1", true), reflectRequestId("run-1", false, 1, "compile-1"), reflectRequestId("run-1", true, 1, "compile-2"), reflectRequestId("run-1", false, 2, "compile-1")];
+  assert.deepEqual(ids, ["learn-reflect-run-1", "learn-reflect-run-1:again", "learn-reflect-run-1:compile-1", "learn-reflect-run-1:compile-2", "learn-reflect-run-1:round-2:compile-1"]);
+  // A compile step is its round's: the rounds a run's journal holds are counted without it (reflectRanges).
+  const input = (requestId, entry) => ({ type: "input", requestId, entry });
+  const ranges = reflectRanges([input(ids[0], 10), input(ids[2], 14), input(ids[3], 18), input(reflectRequestId("run-1", false, 2), 40), input(ids[4], 44)], [{ kind: "agentrun.end", id: 30 }, { kind: "agentrun.end", id: 60 }]);
+  assert.deepEqual(ranges.map(({ from }) => from), [10, 40]);
 });
 
 test("the three-offers draft ask is gone: no DRAFT_AFTER_RUNS, no draftForOf, and the look-back's prompt keeps no workflow", () => {

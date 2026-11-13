@@ -69,6 +69,8 @@ export type Problem = { readonly rule: string; readonly path?: string; readonly 
 export interface MergeChange {
   readonly kind: "merge";
   readonly runId: string;
+  /** The round of the run's looks back it merges, past the first (learn/folder.ts runDiffKey). */
+  readonly round?: number;
   readonly reason: string;
   readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly held?: readonly string[];
@@ -97,10 +99,11 @@ export interface GraderRun {
 }
 
 export interface LearningLoopDeps {
-  /** The run that learned, from the learning run's launch row (its input's runId). */
-  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly agentId: string; readonly instructions?: string } | undefined>;
-  /** Its kept proposal (store.learning.proposal). */
-  proposal(runId: string): Promise<LearningProposal | undefined>;
+  /** The run that learned, from the learning run's launch row (its input's runId), and the round of its looks back the
+   *  learning run grades (its input's round; absent, the first). */
+  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly round?: number; readonly agentId: string; readonly instructions?: string } | undefined>;
+  /** Its kept proposal of that round (store.learning.proposal). */
+  proposal(runId: string, round: number): Promise<LearningProposal | undefined>;
   /** The agent's learning folder (learn/folder.ts learningWorkspace): its Workspace, and its end, called once the run is
    *  done with it, whichever way it goes out. */
   folder(agentId: string): { readonly workspace: unknown; end(): Promise<void> };
@@ -116,7 +119,7 @@ export interface LearningLoopDeps {
   /** Run `runId`'s merge, when it is on main already (learn/folder.ts readRunDiff: its diff file, named by the run as its
    *  commit's Run-Id trailer names it; a resume after its commit, before its end was recorded): the texts its own commit
    *  holds at these note paths, as that merge saved them, whatever main says of them since. Undefined when it is not. */
-  merged(ws: unknown, runId: string, paths: readonly string[]): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
+  merged(ws: unknown, runId: string, paths: readonly string[], round?: number): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
 }
@@ -238,7 +241,7 @@ const itemsByFile = (verdict: Verdict): Map<string, Verdict["items"][number]> =>
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
  *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
-export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>): MergeChange {
+export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>, round = 1): MergeChange {
   const judged = itemsByFile(verdict);
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
   const files = (merging.files ?? []).map(({ file, text }) => ({ path: file, text }));
@@ -252,7 +255,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
   // The compiled draft, when the verdict keeps it: the notes it does the work of are marked as it merges.
   const compiled = merging.compiled && files.some(({ path }) => path === `workflows/${merging.compiled!.workflow}/workflow.json`) && merging.compiled.from_notes.length ? { workflow: merging.compiled.workflow, notes: [...merging.compiled.from_notes] } : undefined;
   return {
-    kind: "merge", runId, reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
+    kind: "merge", runId, ...(round > 1 ? { round } : {}), reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
     ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}), ...(compiled ? { compiled } : {}),
   };
 }
@@ -385,7 +388,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
           return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
         }
-        const kept = await learning.proposal(source.runId);
+        const round = source.round ?? 1;
+        const kept = await learning.proposal(source.runId, round);
         if (!kept) {
           await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
           return { state: "ended" };
@@ -495,7 +499,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           let onMain: Readonly<Record<string, string>> = {};
           let already = false;
           try {
-            const merge = await learning.merged(ws, source.runId, notePaths);
+            const merge = await learning.merged(ws, source.runId, notePaths, source.round);
             already = merge !== undefined;
             onMain = merge ? merge.texts : notePaths.length ? await learning.mainTexts(ws, notePaths) : {};
           } catch (error) {
@@ -506,7 +510,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           const taken = already ? { verdict: oneItemAFile(proposal, graded.verdict), replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
           const verdict = taken.verdict;
           const merging = keptOf(proposal, verdict);
-          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded });
+          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded }, round);
           // Nothing new left to merge: dropped, unless the grader kept a re-filed skill whose rule main already holds as a
           // note (takenOnMain's SAME_NOTE). Its old SKILL.md is still retired (mergeChangeOf's retire), in a write of that
           // alone, so no old skill stays served beside the note.

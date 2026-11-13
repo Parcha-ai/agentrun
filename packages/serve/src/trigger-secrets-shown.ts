@@ -35,7 +35,7 @@ export function triggerMade(made: Record<string, unknown>, minted: string | unde
 }
 
 /** POST /triggers/{id}/secret's answer (the owner's session alone reaches it): the new value, and its metadata. */
-export const triggerRotated = (id: string, minted: string, at: string) => ({ secret: triggerSecretMeta(id, true, at), signing_secret: minted });
+export const triggerRotated = (id: string, minted: string | undefined, at: string) => ({ secret: triggerSecretMeta(id, true, at), ...(minted !== undefined ? { signing_secret: minted } : {}) });
 
 /** A template's apply answer's warning for its webhook trigger `i`: its secret is in no apply answer (the Idempotency-Key
  *  record would keep it), so the person gets it from the console. */

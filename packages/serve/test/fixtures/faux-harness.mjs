@@ -115,10 +115,10 @@ export function script(spec, session = {}) {
   // request open until `<file>` exists, then answers. A process opened once `<file>` exists answers at once.
   // The wrap-up scripts below that test a note due by the run's measured spend ask few output tokens in their first
   // request, so its step-0 figure (judged on that request itself, as pi's) is not due first: 1,024 on the output-priced
-  // faux model, 512 on Sonnet 4.5's prices, whose 5,000-token input alone is $0.019 at the cache write's price.
+  // faux model, 512 on Sonnet 5.5's prices, whose 5,000-token input alone is $0.0125 at the cache write's price.
   const crashAt = /Wrap up across a crash at (\S+)\./.exec(text)?.[1];
   if (crashAt) return [{ call: "read", args: { path: "a.txt" }, usd: 0.3, outputTokensAsked: 1_024 }, ...(existsSync(crashAt) ? [] : [hangSignalled(`${crashAt}.held`)]), { say: "Done.", usd: 0.01 }];
-  // Claude Code on Sonnet 4.5 (faux-sonnet45.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
+  // Claude Code on Sonnet 5.5 (faux-sonnet55.mjs): each request asks the CLI's own max_tokens, 32,000. "at its start": a
   // 25,000-token first prompt, then one more request. "on a small cap": a 5,000-token prompt, a $0.01 request and one more.
   // "restarts before the note at <file>": a 5,000-token prompt, a $0.04 request, then a hold (writing `<file>.held`) with
   // no request open until `<file>` exists, then one more request.

@@ -6,7 +6,7 @@
 // model with no output ceiling, cannot be kept within a cap: under one they are refused for good.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CACHE_WARM_MS, CapRefused } from "../dist/kernel/cap/index.js";
+import { CACHE_WARM_MS, CapRefused, previousAfter } from "../dist/kernel/cap/index.js";
 import { providerInputOverhead } from "../dist/host/index.js";
 import { capOn, FREE, GPT, modelRequest, SONNET, T0, UNPRICED, usd } from "./kernel-cap-support.mjs";
 
@@ -97,6 +97,26 @@ test("another model than the previous answer's counts no cache: worst case, no b
   const admitted = await cap.admit(modelRequest(SONNET, 100_000, 1_000, { previous: warm({ model: GPT.id }) }));
   near(admitted.heldUsd, admitted.worstUsd);
   assert.equal(admitted.boundUsd, 0);
+});
+
+test("a request smaller than the previous one (a compaction, another conversation's) reads none of its cache: worst case, no bound", async () => {
+  const { cap } = capOn(10);
+  const admitted = await cap.admit(modelRequest(SONNET, 40_000, 1_000, { previous: warm() }));
+  near(admitted.heldUsd, admitted.worstUsd, "never under what it can cost");
+  assert.equal(admitted.boundUsd, 0);
+});
+
+test("history resets at a smaller request: it never sticks on the request the conversation left, and never prices from another's", () => {
+  const earlier = { ...warm(), counted: true };
+  const next = (overrides) => ({ ...earlier, boundTokens: 100_000, endedAt: T0, ...overrides });
+  assert.equal(previousAfter(undefined, next()).boundTokens, 100_000, "the first request is the previous");
+  assert.equal(previousAfter(earlier, next({ boundTokens: 120_000 })).boundTokens, 120_000, "a growing body continues it");
+  assert.equal(previousAfter(earlier, next({ boundTokens: 100_000 })).boundTokens, 100_000, "an equal body too");
+  assert.equal(previousAfter(earlier, next({ boundTokens: 30_000 })), undefined, "a compaction's smaller body resets history");
+  // Then the request after it starts a new history, warm for the one after that.
+  assert.equal(previousAfter(undefined, next({ boundTokens: 35_000 })).boundTokens, 35_000);
+  assert.equal(previousAfter(earlier, next({ model: GPT.id, boundTokens: 30_000 })).model, GPT.id, "another model's request replaces it");
+  assert.equal(previousAfter(earlier, next({ counted: false, boundTokens: 30_000 })).counted, false, "a bound measured another way is no comparison");
 });
 
 test("a request is held at the output it is sent with, its thinking budget included", async () => {
