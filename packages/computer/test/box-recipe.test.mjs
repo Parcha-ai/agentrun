@@ -204,6 +204,6 @@ test("the Agent37 build builds nothing when the template already names this reci
   assert.equal((await agent37Build.build({ apiKey: AGENT37_KEY, fetch: stale.fetch, apiUrl: "https://api.agent37.test", log: () => {}, pollMs: 1 })).revision, 4, "another recipe's template is built again");
   const failing = fakeBuilds({ fail: true });
   await assert.rejects(agent37Build.build({ apiKey: AGENT37_KEY, fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {}, pollMs: 1 }), /failed: build_failed: step 3 exited 100/);
-  await assert.rejects(agent37Build.build({ apiKey: "sk_live_wrong_key", fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {} }), (error) => /401 invalid_api_key/.test(error.message) && !error.message.includes("sk_live"));
+  await assert.rejects(agent37Build.build({ apiKey: "fake-test-key", fetch: failing.fetch, apiUrl: "https://api.agent37.test", log: () => {} }), (error) => /401 invalid_api_key/.test(error.message) && !error.message.includes("fake-test-key"));
   await assert.rejects(agent37Build.build({ apiKey: "", fetch: failing.fetch }), /set AGENT37_API_KEY/);
 });
