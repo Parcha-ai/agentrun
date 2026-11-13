@@ -27,9 +27,8 @@ import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workfl
 import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
+import { END_PATCH_MS, END_PATCH_UNKNOWN } from "./loop.js";
 
-/** The most the end's patch (cost and metrics) may take before the end is written without it (the pi loop's CUT_STEP_MS). */
-const CUT_STEP_MS = 2_000;
 
 /** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
  *  via the spec, so flat or tiered pricing is the cap's, not this loop's). */
@@ -276,23 +275,24 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     return { state: "parked" };
   }
 
-  /** The end's cost and metrics from the spec, bounded like the pi loop: late or failing, none. */
+  /** The end's cost and metrics from the spec, bounded as the adapter loop's (END_PATCH_MS): late or failing, the end
+   *  says both are unknown (END_PATCH_UNKNOWN). */
   const endPatchOf = async (spec: WorkflowRunSpec, data: EndData): Promise<Pick<EndData, "costUsd" | "metrics">> => {
     if (!spec.endPatch) return {};
     let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CUT_STEP_MS)));
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), END_PATCH_MS)));
     try {
       const patch = await Promise.race([spec.endPatch(data), late]);
       if (patch === "late") {
-        console.warn(`[runner] ${runId}: its end's patch gave no answer within ${CUT_STEP_MS / 1000} s; the end is written without it`);
-        return {};
+        console.warn(`[runner] ${runId}: its end's patch gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its cost and metrics unknown`);
+        return END_PATCH_UNKNOWN;
       }
       return patch ?? {};
     } catch (error) {
       // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
       const text = (error as Error)?.message ?? String(error);
-      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}`);
-      return {};
+      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}; the end is written with its cost and metrics unknown`);
+      return END_PATCH_UNKNOWN;
     } finally {
       clearTimeout(timer);
     }

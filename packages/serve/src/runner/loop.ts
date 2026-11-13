@@ -37,8 +37,16 @@ export const quiet: KernelHooks = { beforeIntent: async () => {}, beforeResult: 
 export const CLOSE_MS = 2_000;
 /** How long a person's stop waits for the turn to settle, by default. */
 export const STOP_SETTLE_MS = 30_000;
-/** The most a cut run's end-of-run step (a store read), or the end's patch, may take before the end is written without it. */
+/** The most a cut run's end-of-run step (a store read) may take before the end is written without it. */
 export const CUT_STEP_MS = 2_000;
+/** The most the end's patch (the run's cost and metrics, read from its journal and the store) may take before the end is
+ *  written without them. Those reads queue behind every other run's on a busy store (eight runs ending at once took over
+ *  2 s), and an end written without them leaves the run's cost and path unknown for good: so it waits as long as a
+ *  stalled store, never a busy one, would hold it. Past it, the end says both are unknown (END_PATCH_UNKNOWN). */
+export const END_PATCH_MS = 30_000;
+/** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
+ *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
+export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
 
 /** Where a commit's batches hold what an expectation waits for: the batch's index and the matched record's id. */
 type Matched = { readonly index: number; readonly id: number };
