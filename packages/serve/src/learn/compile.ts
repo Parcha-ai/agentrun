@@ -73,9 +73,12 @@ export interface CompileTrace {
  *  `reference`: the workflow language as compileReference renders it. `notes`: the agent's active notes, whole.
  *  `traces`: its last runs. `input`: this run's input as it was launched, whose fields a workflow's input takes. `tools`:
  *  those a call node may run, with what each takes and gives (`described`); `judges`: whether the run has a decision
- *  provider (judge, pick and sift nodes are allowed); `jev`: whether one of them is Jev, not denied (guards read it). */
+ *  provider (judge, pick and sift nodes are allowed); `jev`: whether one of them is Jev, not denied (guards read it).
+ *  `outputSchema`: the agent's, when it has one: a run serving the workflow serves its answer shaped to it, else hands the
+ *  run back (answer-json.ts answerAsServed), so the workflow's final output must be that object. */
 export type CompileAsk = {
   readonly reference: string;
+  readonly outputSchema?: unknown;
   readonly notes: readonly { readonly file: string; readonly text: string }[];
   readonly traces: readonly CompileTrace[];
   readonly input?: Readonly<Record<string, unknown>>;
@@ -247,6 +250,9 @@ export const askedForCompile = (text: unknown): "again" | boolean =>
 /** What a compiled workflow gives (#2412): the job's answer as the runs gave it, never a summary of it. */
 export const OUTPUT_FORMAT = "Its output is the job's answer in the output format your runs gave it, and your skill's when one gives a format: its last node writes it, and `output` names that node's state.";
 
+/** What the compile turn is told of the agent's output schema, shown whole after it. */
+export const SHAPE_LINE = "The workflow's final output must be this object: this agent's output schema. A run it serves answers with its output shaped to it, and an output that can't be (one field where it asks for more) hands every run back. Make the schema its `output` names this one, every field, and have its last node write the whole object: the host's dry run holds its answer to it.";
+
 /** The compile turn's message. */
 export function compilePrompt(ask: CompileAsk): string {
   if (ask.mode === "revise" && !WORKFLOW_NAME.test(ask.workflow)) throw new Error("the workflow asked to be revised must be a workflow's name");
@@ -285,6 +291,7 @@ export function compilePrompt(ask: CompileAsk): string {
     "",
     ask.reference,
     "",
+    ...(ask.outputSchema !== undefined ? [SHAPE_LINE, "", "```json", JSON.stringify(ask.outputSchema, null, 2), "```", ""] : []),
     "## A worked example",
     "",
     "A whole job: the facts read, " + (ask.judges ? "a typed question asked of them, " : "") + `the answer decided, ${ask.jev ? "each step under a guard Jev reads" : "each judgment under a guard"} that hands back an unsure step, and a case the policy does not cover handed back.`,

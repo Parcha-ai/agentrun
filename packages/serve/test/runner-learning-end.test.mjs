@@ -531,3 +531,47 @@ test("compile: a draft that never passes is never silent: its errors go with the
   assert.deepEqual(end.draft_errors, kept.proposal.draft_errors);
   assert.ok(end.problems.some((problem) => problem.path === "workflows/answer/workflow.json"), "its end carries the problems too");
 });
+
+// The agent's output schema (answer-json.ts answerAsServed): a learned workflow's answer is served shaped to it, else the
+// run goes back to the agent, so the compile turn is told the schema, and the dry run holds the draft's answer to it with
+// that same function. A one-field draft for a multi-field schema fails its dry run in the schema's words and goes back
+// to the model; the retry that answers the whole object is kept. An agent with no output schema is held to none.
+const MCC_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["mcc", "description", "confidence", "reasoning", "sources"],
+  properties: { mcc: { type: "string" }, description: { type: "string" }, confidence: { type: "number" }, reasoning: { type: "string" }, sources: { type: "array", items: { type: "string" } } },
+};
+const ONE_FIELD = { type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"] };
+const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a merchant's category code; use when asked for one\nexample: {"content":"Acme Hardware, Austin"}\nfrom_notes: [rule-1.md]\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
+  input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the merchant's category code.", out: "Out", as: "answer", tier: "fast" }] },
+})}\n\`\`\`\``;
+
+test("compile against the agent's output schema: a one-field draft fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the one-field draft is kept at once", async (t) => {
+  for (const schema of [MCC_SCHEMA, undefined]) {
+    const w = await world(t, { instructions: "Pick the code.", tools: ["read"], learning: true, ...(schema ? { outputSchema: schema } : {}) }, compiling());
+    await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: REFLECTED }, { say: shapedBlock(ONE_FIELD) }, { say: shapedBlock(MCC_SCHEMA) }] });
+    const row = await w.ended();
+    const { users } = await w.turnOf(row);
+    const prompt = compileAskIn(users);
+    assert.ok(prompt, "the run was asked its compile turn");
+    const again = users.filter((text) => text.startsWith("Your workflow draft did not pass the checks"));
+    const kept = await w.server.learning.proposal("run-1");
+    const { compiled } = kept.proposal;
+    if (!schema) {
+      assert.doesNotMatch(prompt, /final output must be this object/, "no schema, none shown");
+      assert.deepEqual(again, [], "no schema, nothing to shape");
+      assert.deepEqual(compiled.attempts.map(({ ok }) => ok), [true], JSON.stringify(compiled.attempts));
+      continue;
+    }
+    assert.match(prompt, /The workflow's final output must be this object/);
+    assert.ok(prompt.includes(JSON.stringify(MCC_SCHEMA, null, 2)), "the schema itself, whole");
+    assert.equal(again.length, 1, JSON.stringify(users.map((text) => text.slice(0, 80))));
+    assert.match(again[0], /\(attempt 2 of 4\)[\s\S]*dry run[\s\S]*output schema/, again[0]);
+    assert.deepEqual(compiled.attempts.map(({ ok }) => ok), [false, true], JSON.stringify(compiled.attempts));
+    assert.ok(compiled.attempts[0].errors.some((error) => /does not meet the agent's output schema/.test(error)), JSON.stringify(compiled.attempts));
+    assert.deepEqual([kept.proposal.state, kept.proposal.workflows], ["proposed", 1]);
+    assert.equal(kept.proposal.draft_errors, undefined, "no errors once it passed");
+  }
+});

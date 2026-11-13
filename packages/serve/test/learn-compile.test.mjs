@@ -447,3 +447,35 @@ test("guardProblems walks steps alone: a call's args or a step's state holding a
   const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a" } }, { node: "route", branches: { x: { body: { node: "decide", label: "d" } } } }] } };
   assert.deepEqual(compile.guardProblems(deep, { jev: false }).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
 });
+
+// The agent's output schema: shown to the compile turn next to the language, and the dry run's answer held to it with
+// answer-json.ts answerAsServed, the function a run serving the workflow shapes its answer with.
+const SHAPE = { type: "object", additionalProperties: false, required: ["mcc", "description", "confidence"], properties: { mcc: { type: "string" }, description: { type: "string" }, confidence: { type: "number" } } };
+const shapeDraft = (out) => JSON.stringify({
+  v: 2, name: "pick",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
+  input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the code.", out: "Out", as: "answer", tier: "fast" }] },
+});
+
+test("the compile prompt shows the agent's output schema next to the language, whole: the workflow's final output must be this object; with none, nothing", () => {
+  const prompt = compile.compilePrompt(ASK({ outputSchema: SHAPE }));
+  const language = prompt.indexOf("## The workflow language");
+  const example = prompt.indexOf("## A worked example");
+  const at = prompt.indexOf("The workflow's final output must be this object");
+  assert.ok(language < at && at < example, "beside the reference, before the example");
+  assert.ok(prompt.includes(`\`\`\`json\n${JSON.stringify(SHAPE, null, 2)}\n\`\`\``), "the schema, whole");
+  assert.doesNotMatch(compile.compilePrompt(ASK()), /final output must be this object/);
+});
+
+test("a draft's dry run holds its answer to the agent's output schema with answerAsServed: one field fails in the schema's words, the whole object passes, no schema holds it to none", async () => {
+  const one = shapeDraft({ type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"] });
+  const input = JSON.stringify({ content: "Acme Hardware" });
+  const failed = await draftDryRun(dsl, one, input, SHAPE);
+  assert.equal(failed.status, "failed", JSON.stringify(failed));
+  assert.match(failed.detail, /^its dry run failed: its answer does not meet the agent's output schema: /);
+  assert.deepEqual(await draftDryRun(dsl, shapeDraft(SHAPE), input, SHAPE), { status: "passed" });
+  assert.deepEqual(await draftDryRun(dsl, one, input), { status: "passed" });
+  // One field the schema takes alone: the bare value fills it, as a run serving it shapes it.
+  assert.deepEqual(await draftDryRun(dsl, one, input, { type: "object", properties: { mcc: { type: "string" } }, required: ["mcc"], additionalProperties: false }), { status: "passed" });
+});

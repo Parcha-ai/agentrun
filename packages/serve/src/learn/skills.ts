@@ -600,8 +600,11 @@ export function synthesisProblems(doc: unknown, dsl: SchemaResolver): string[] {
  *  line, one JSON object), else on an input synthesized from its input schema. Every model, Jev and tool-call answer is
  *  synthesized from the node's output schema: no request is sent, nothing is paid, no tool runs, and no code it holds
  *  runs in this process (refuseCode). Only a draft the static checks pass is dry-run (propose.ts). It checks the wiring
- *  at run time (the state each step reads, its output's path and schema), never the answers. */
-export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string): Promise<DraftDryRun> {
+ *  at run time (the state each step reads, its output's path and schema), never the answers. With `outputSchema` (the
+ *  agent's), the output of a run that passed is held to it as a run serving the draft serves it (answer-json.ts
+ *  answerAsServed over the tool's text, learned-workflow.ts learnedOutput): one that can't be shaped to it fails, in the
+ *  schema's words, since every run it served would go back to the agent. */
+export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunWorkflow } & SchemaResolver, json: string, example?: string, outputSchema?: unknown): Promise<DraftDryRun> {
   let doc: unknown;
   let input: Record<string, unknown> | undefined;
   try {
@@ -625,10 +628,18 @@ export async function draftDryRun(dsl: { readonly dryRunWorkflow: typeof dryRunW
   const tooLarge = [...synthesisProblems(doc, dsl), ...loopProblems(doc)];
   if (tooLarge.length) return { status: "not_run", detail: tooLarge.join("; ").slice(0, 300) };
   let result: Awaited<ReturnType<typeof dryRunWorkflow>>;
+  let output: { value: unknown } | undefined;
   try {
-    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode, signal: AbortSignal.timeout(DRY_RUN_MS) });
+    result = await dsl.dryRunWorkflow(doc as Workflow, { ...(input ? { input } : {}), maxSteps: DRY_RUN_STEPS, runCode: refuseCode, signal: AbortSignal.timeout(DRY_RUN_MS), onOutput: (value) => { output = { value }; } });
   } catch (error) {
     return { status: "failed", detail: `${DRY_RUN_FAILED}: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+  }
+  if (result.ok && result.status === "passed" && outputSchema !== undefined && output) {
+    // The serving path's own two functions, loaded only for an agent with an output schema (learned-workflow.ts reads
+    // this module).
+    const [{ answerAsServed }, { learnedOutput }] = await Promise.all([import("../answer-json.js"), import("../learned-workflow.js")]);
+    const served = answerAsServed(learnedOutput(output.value), outputSchema);
+    if ("why" in served) return { status: "failed", detail: `${DRY_RUN_FAILED}: ${served.why}`.slice(0, 600) };
   }
   if (result.ok) return result.status === "passed" ? { status: "passed" } : { status: "not_run", detail: (result.skipped ?? []).join("; ").slice(0, 300) || "a check could not run" };
   return { status: "failed", detail: `${DRY_RUN_FAILED}${result.stage ? ` at "${result.stage.slice(0, 64)}"` : ""}: ${result.problems.join("; ").slice(0, 300)}` };
