@@ -606,3 +606,33 @@ describe("Settings → MCP servers, private network hosts", () => {
     expect(section().querySelector('[role="alert"]')?.textContent).toContain(said);
   });
 });
+
+describe("Settings → MCP servers, the Composio preset", () => {
+  const KEY = "not-a-real-composio-key-0123";
+  const ACTIONS = [{ slug: "GITHUB_STAR_REPO", name: "Star a repo", description: "Star a repository." }, { slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "List a repository's issues." }];
+  const TOOLS_PATH = "/v2/settings/mcp-servers/composio/tools";
+  const answer = (c: Sent) => {
+    if (c.path === TOOLS_PATH) return json(200, { toolkit: "github", no_auth: false, tools: ACTIONS });
+    if (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio") return json(200, { server: saved({ name: "gh", auth: { type: "headers", headers: ["x-api-key"] } }), connect_url: "https://connect.composio.test/link/ac_1" });
+    return undefined;
+  };
+
+  it("loads a toolkit's actions, saves the ones picked, and shows the link to connect the account; the key is gone from the page", async () => {
+    const s = server([[], [saved({ name: "gh" })]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    expect(s.writes()[0]).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "github" } });
+    const box = (slug: string) => p.host.querySelector(`input[type="checkbox"][value="${slug}"]`) as HTMLInputElement;
+    expect(p.text()).toContain("Star a repo");
+    await act(async () => { box("GITHUB_LIST_ISSUES").click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
+    const link = [...p.host.querySelectorAll("a")].find((a) => /Connect your github account/.test(a.textContent ?? ""));
+    expect(link?.getAttribute("href")).toBe("https://connect.composio.test/link/ac_1");
+    expect(document.body.innerHTML).not.toContain(KEY);
+  });
+});
