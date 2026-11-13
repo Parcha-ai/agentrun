@@ -47,4 +47,37 @@ describe("AgentPage Forget", () => {
     // The Forget's read began before the newer save: it must not replace it (the older list has no sign-ins; the newer keeps the row).
     expect(host.querySelector('section[aria-label="Sign-ins"]')).toBeTruthy();
   });
+
+  it("a Forget's read dropped for a newer read that then fails still removes the forgotten row", async () => {
+    const base = agentFixture("invoice-checker");
+    const saved = { ...base, sign_ins: [{ key: "default", provider: "browserbase", state: "ready", held_by: null, verified_at: null, secret: { name: "browserbase sign-in", set: true, source: "sign-in", changed_at: "2026-11-05T08:00:00.000Z" } }] } as Agent;
+    let slow!: () => void;
+    let reads = 0;
+    const v2 = {
+      getAgent: async () => {
+        const n = reads++;
+        if (n === 0) return { agent: saved, etag: null };
+        // The Forget's read stays open (and answers with the row still there); the newer read fails.
+        if (n === 1) return { agent: await new Promise<Agent>((r) => { slow = () => r(saved); }), etag: null };
+        throw new Error("read failed");
+      },
+      forgetSignIn: async (_id: string, key: string) => ({ key, removed: [{ provider: "browserbase", at_vendor: "deleted" }] }),
+      listAgentRuns: async () => ({ runs: [] as Run[], next_cursor: null }),
+      statsOver: async () => ({}), getTimeline: async () => ({}), getRun: async () => ({}),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: saved.agent_id, harnesses: editorCaps.harnesses, efforts, go: () => {}, tab: "learning", learning: "on" } as never)));
+    await settle();
+    const byText = (re: RegExp) => [...host.querySelectorAll("button")].find((b) => re.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()))!;
+    await act(async () => { byText(/^Forget/).click(); });
+    await act(async () => { byText(/^Yes, forget/).click(); });
+    await settle();
+    await act(async () => { byText(/^Save newer/).click(); });
+    await settle();
+    await act(async () => { slow(); });
+    await settle();
+    // Nothing newer applied: the page keeps the forget by dropping the key's rows itself.
+    expect(host.querySelector('section[aria-label="Sign-ins"]')?.textContent).toMatch(/No saved sign-ins/);
+  });
 });

@@ -93,13 +93,15 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
   const floor = useRef(0);
   const [stale, setStale] = useState(false);
   // `quiet`: a read that waits for the next tick (or says so itself) on a failure rather than raise the page's retry.
-  // `raise`: a write's read, which lifts the floor. It answers whether the read succeeded.
+  // `raise`: a write's read, which lifts the floor. It answers whether the page now shows a read that began at or after
+  // this one: true when this read applied, or was dropped (superseded) with a newer read already applied. A read that
+  // failed, or was dropped while the newer one is still open or failed, answers false: nothing on the page reflects it.
   const reread = (quiet = false, raise = !quiet): Promise<boolean> => {
     const n = ++rereads.current;
     if (raise) floor.current = n;
     return v2.getAgent(agentId).then(
-      (r) => { if (n > landed.current && n >= floor.current) { landed.current = n; setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } return true; },
-      () => { if (n === rereads.current && !quiet) setStale(true); return false; },
+      (r) => { if (n > landed.current && n >= floor.current) { landed.current = n; setAgent((cur) => (cur && cur.agent_id === r.agent.agent_id ? r.agent : cur)); setStale(false); } return landed.current >= n; },
+      () => { if (n === rereads.current && !quiet) setStale(true); return landed.current >= n; },
     );
   };
   const onAgent = (saved: Agent) => { setAgent((cur) => ({ ...saved, tools: cur?.tools ?? saved.tools })); void reread(); };
