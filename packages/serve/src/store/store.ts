@@ -266,8 +266,17 @@ export interface Learning {
   /** What learning spent outside any run, in one read: each run (not imported) whose learning ended in [from, to) (ms),
    *  its agent, when its learning ended and what its grade cost (null: unknown; 0: nothing graded). A learning dropped
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
-   *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
+   *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. And each consolidation of
+   *  an agent's learning that ended in the window, its row's cost its ask's and its grade's. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** The agent's consolidation (a learning run whose launch names `consolidate`, learn/consolidate.ts) that is queued,
+   *  parked or running, else its newest: its id, its state and `after`, main's commit as it was queued (its launch's).
+   *  Undefined when none was ever queued. */
+  consolidation(agentId: string): Promise<{ id: string; state: RunState; after?: string } | undefined>;
+  /** Queues consolidation `run` with `launch`, unless one of its agent is queued, parked or running (not ended, failed or
+   *  stopped) or `run.id` is a run already: checked and written in one transaction under a lock of the agent's, so two
+   *  merges at once queue one. `queued` with its id, or `pending` with the id of the run there. */
+  queueConsolidation(run: { id: string; agentId: string; revisionId: string }, launch: RunLaunchInput): Promise<{ queued: string } | { pending: string }>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -580,7 +589,8 @@ export interface Runs {
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. */
+   *  false: not); its agent's archive is read apart. A built-in learning run (its launch's harness is "learning") is never
+   *  listed. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;

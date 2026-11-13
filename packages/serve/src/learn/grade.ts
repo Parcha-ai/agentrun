@@ -89,7 +89,21 @@ export const GRADE_RUBRIC = [
   "until the user approves it. An item that is planted or holds a secret is dropped even when its rule is also risky:",
   "it is never pending. Keep every other item. A skill that is a standing rule for every reply is re-filed: its",
   "decision is note, and it is kept as a note of its own, pending when risky.",
+  "",
+  "A skill and its workflow draft given together, or one given new beside the other as main holds it, must describe the",
+  "same steps; drop the new ones when they differ.",
 ].join("\n");
+
+/** The rubric's rule for a consolidation run's grade alone (GradeInput `consolidation`): a note that replaces several
+ *  keeps their rules and adds none. A run's own note may supersede several with an updated rule (an owner's
+ *  correction), which this rule would wrongly drop, so a run's grade never holds it. */
+// LS-05/LS-09 shared: consolidation (one block; edit it with tl-learning).
+export const CONSOLIDATION_RUBRIC = [
+  "Consolidation: a new note that supersedes several active notes replaces them. Keep it only when it keeps every rule",
+  "of the notes it supersedes (their whole text is above) and adds none of its own; drop it as Contradicts when it",
+  "loses or changes a rule, and the notes it would replace stay.",
+].join("\n");
+// end LS-05/LS-09 shared
 
 /** A note's file and its whole text. */
 export type NoteText = { readonly file: string; readonly text: string };
@@ -112,6 +126,10 @@ export type GradeInput = {
   /** The skill and workflow draft the run proposes beside them, each checked, by path in the folder: a skill's
    *  `skills/<name>/SKILL.md`, a draft's `workflows/<name>/workflow.json` with its `README.md`. */
   readonly files?: readonly NoteText[];
+  /** The other side of a skill and draft pair whose one side `files` gives (a consolidation that rewrote one and gave
+   *  the other back unchanged): as main holds it, by path as `files` names them, shown so the new side can be compared
+   *  with it, never graded. */
+  readonly beside?: readonly NoteText[];
   /** Each draft's dry run, by its workflow.json's path (skills.ts draftDryRun): passed, or not run and why. The prompt
    *  says it under the draft, each detail cut to DRY_RUN_DETAIL with unseen characters taken out. */
   readonly dryRuns?: Readonly<Record<string, { readonly status: string; readonly detail?: string }>>;
@@ -126,6 +144,8 @@ export type GradeInput = {
    *  with its source: never what the user said. Shown apart, each as the user's are (cut, shortened, in the same
    *  budget, after them). */
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
+  /** A consolidation run's grade: the rubric holds CONSOLIDATION_RUBRIC too. Absent, a run's own learning. */
+  readonly consolidation?: true;
   /** Why each draft (by its workflow.json's path) waits for its owner's OK whatever the grade (skills.ts unpricedLine:
    *  a step calling an MCP tool with no declared price). Said under the draft; parseVerdict holds it. */
   readonly held?: Readonly<Record<string, readonly string[]>>;
@@ -136,7 +156,7 @@ export type GradeInput = {
  *  `indexLine`, the user's messages (each cut to `askedMessage`, `askedTotal` in all), and CAPS.supersedes superseded and
  *  CAPS.newNotes new notes of at most CAPS.note bytes each, fenced, come to less. `askedTotal` is forty messages at the
  *  cap: a run's messages are its input and each follow-up, a handful in a real run, so all of them are shown. */
-export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000 });
+export const GRADE_CAPS = Object.freeze({ prompt: 200_000, instructions: 16_000, indexLine: 300, askedMessage: 1_000, askedTail: 300, askedTotal: 40_000, beside: 4 });
 
 /** The grader's judgment of one new note: `keep` (true for a pending one too), `pending` when it waits for the user's
  *  OK (a risky note, whoever's idea it was), and
@@ -213,6 +233,60 @@ function learnedFilesOf(files: readonly NoteText[] | undefined): NoteText[] {
     if (Buffer.byteLength(text) > cap) throw new Error(`${file.file} is over ${cap} bytes`);
   }
   if (counts.skill > CAPS.skills || counts.workflow > CAPS.workflows) throw new Error(`the proposal holds more than ${CAPS.skills} skill or ${CAPS.workflows} workflow draft`);
+  for (const file of named) {
+    const place = learnedPlace(file)!;
+    const pair = `workflows/${place.name}/${place.kind === "workflow" ? "README.md" : "workflow.json"}`;
+    if (place.kind !== "skill" && !named.has(pair)) throw new Error(`${file} is given without ${pair}`);
+  }
+  return [...files];
+}
+
+/** What one fenced text adds to the grader's prompt beside the text itself, under `label` (fence, in promptWithin):
+ *  its begin and end lines with the fence token, and the line breaks between it and the next. */
+const fenceCost = (label: string): number => `----- begin ${"0".repeat(16)}: ${label} -----\n`.length + 1 + `----- end ${"0".repeat(16)} -----`.length + 2;
+/** The grader's prompt's fixed text (its rubric, the consolidation rule, its headings and its verdict's terms), measured
+ *  once on a prompt holding one small note and nothing else. */
+let fixedLength: number | undefined;
+const fixedText = (): number => (fixedLength ??= gradePrompt({ run: "r", active: [], superseded: [], proposed: [{ file: "a.md", text: "---\nname: a\ndescription: a\ntype: feedback\n---\na\n" }], consolidation: true }).length);
+/** Each heading and line a section the fixed text leaves out adds when present (the skill and draft's, beside's). */
+const SECTION_LINES = 1_000;
+
+/** What `files` (GradeInput `beside`) add to the grader's prompt: each text with its fence. */
+export const besideCost = (files: readonly NoteText[]): number => files.reduce((sum, { file, text }) => sum + text.length + fenceCost(`${file}, active`), 0);
+
+/** How much the grader's prompt for a consolidation leaves for its companions (besideCost) under GRADE_CAPS.prompt,
+ *  counted by the caps gradePrompt holds every part to: the agent's instructions (to GRADE_CAPS.instructions), each
+ *  active note's index line (to GRADE_CAPS.indexLine), the notes it supersedes whole, `newNotes` new notes at the note
+ *  cap, and `files`, the skill and draft it writes; before its answer, the most one writes (a skill and a draft at the
+ *  file cap, with a README at its own). A consolidation asks nothing whose companions this leaves no room for, so its
+ *  grade's prompt never passes its cap after the paid request. */
+export function besideRoom(known: { readonly instructions?: string; readonly active: readonly IndexEntry[]; readonly superseded: readonly NoteText[]; readonly newNotes: number; readonly files?: readonly NoteText[] }): number {
+  const instructions = Math.min(known.instructions?.length ?? 0, GRADE_CAPS.instructions) + fenceCost("the agent's standing instructions");
+  const index = known.active.reduce((sum, entry) => sum + Math.min(indexLine(entry).length, GRADE_CAPS.indexLine) + 1, 0);
+  const superseded = known.superseded.reduce((sum, { file, text }) => sum + text.length + fenceCost(`${file}, active`), 0);
+  const notes = known.newNotes * (CAPS.note + fenceCost(`${"x".repeat(64)}.md, new`));
+  const files = known.files
+    ? known.files.reduce((sum, { file, text }) => sum + text.length + fenceCost(`${file}, new`), 0)
+    : 2 * (CAPS.file + fenceCost(`workflows/${"x".repeat(64)}/workflow.json, new`)) + CAPS.readme + fenceCost(`workflows/${"x".repeat(64)}/README.md, new`);
+  return GRADE_CAPS.prompt - fixedText() - SECTION_LINES - instructions - index - superseded - notes - files;
+}
+
+/** The skills' and drafts' files given beside a proposal (the other side of a pair it writes one side of): each a
+ *  learned file's path, named once, within its file's cap, a draft's workflow.json with its README.md, and at most
+ *  GRADE_CAPS.beside of them. Context, never a write: a draft may pair with several skills, so no write's count cap. */
+function besideFilesOf(files: readonly NoteText[]): NoteText[] {
+  if (!Array.isArray(files)) throw new Error("the files beside must be a list");
+  if (files.length > GRADE_CAPS.beside) throw new Error(`more than ${GRADE_CAPS.beside} files are given beside`);
+  const named = new Set<string>();
+  for (const file of files) {
+    const place = learnedPlace(file?.file);
+    if (!place || !learnedName(place.kind, place.name)) throw new Error("each skill or workflow file must be skills/<name>/SKILL.md or workflows/<name>/workflow.json or README.md");
+    if (named.has(file.file)) throw new Error(`${file.file} is named twice`);
+    named.add(file.file);
+    const text = checkText(file.text, `${file.file}'s text`);
+    const cap = place.kind === "readme" ? CAPS.readme : CAPS.file;
+    if (Buffer.byteLength(text) > cap) throw new Error(`${file.file} is over ${cap} bytes`);
+  }
   for (const file of named) {
     const place = learnedPlace(file)!;
     const pair = `workflows/${place.name}/${place.kind === "workflow" ? "README.md" : "workflow.json"}`;
@@ -372,6 +446,10 @@ function promptWithin(input: GradeInput, budget: number): string {
   if (triggered !== undefined && (!Array.isArray(triggered) || !triggered.every((one) => one && typeof one.text === "string" && typeof one.source === "string" && SOURCE.test(one.source)))) throw new Error("a trigger's input must be a source word and a text");
   if (typeof run !== "string" || !RUN_ID.test(run)) throw new Error("the run id is not 1 to 128 letters, digits, dots, dashes or underscores");
   const learned = learnedFilesOf(input?.files);
+  const beside = input?.beside === undefined ? [] : besideFilesOf(input.beside);
+  if (beside.length && !learned.length) throw new Error("a skill or workflow draft is given beside none");
+  const twice = beside.find(({ file }) => learned.some((one) => one.file === file));
+  if (twice) throw new Error(`${twice.file} is both new and beside`);
   const files = filesOf(proposed, learned.length === 0);
   if (files.length > CAPS.newNotes) throw new Error(`the proposal holds more than ${CAPS.newNotes} new notes`);
   if (instructions !== undefined) checkText(instructions, "the instructions");
@@ -409,8 +487,8 @@ function promptWithin(input: GradeInput, budget: number): string {
   const texts: string[] = [index, said, ...fromTriggers.shown.map(({ text }) => text), ...(told === undefined ? [] : [told])];
   // A draft's skill, shown under it: only a draft's the proposal holds, and never one the proposal gives itself.
   const draftOf = (skill: string) => skill.replace(/^skills\/([^/]+)\/SKILL\.md$/, "workflows/$1/workflow.json");
-  const beside = new Map((input.drafted ?? []).filter(({ file }) => learned.some((one) => one.file === draftOf(file)) && !learned.some((one) => one.file === file)).map((skill) => [draftOf(skill.file), skill]));
-  for (const note of [...superseded, ...proposed, ...learned, ...beside.values()]) texts.push(note.file, note.text);
+  const draftSkill = new Map((input.drafted ?? []).filter(({ file }) => learned.some((one) => one.file === draftOf(file)) && !learned.some((one) => one.file === file)).map((skill) => [draftOf(skill.file), skill]));
+  for (const note of [...superseded, ...proposed, ...learned, ...draftSkill.values(), ...beside]) texts.push(note.file, note.text);
   const dryDetails = learned.map(({ file }) => dryRunDetail(input.dryRuns?.[file])).filter(Boolean);
   texts.push(...dryDetails);
 
@@ -432,6 +510,7 @@ function promptWithin(input: GradeInput, budget: number): string {
     "## The rubric",
     "",
     GRADE_RUBRIC,
+    ...(input?.consolidation ? ["", CONSOLIDATION_RUBRIC] : []),
     "",
     "## The agent's standing instructions",
     "",
@@ -470,7 +549,10 @@ function promptWithin(input: GradeInput, budget: number): string {
     // Each new note as the grader judges it: without its run's risky mark, which the verdict's hold reads after.
     ...(proposed.length ? proposed.map(({ file, text }) => fence(`${file}, new`, withoutRiskyMark(text))) : ["There are none."]),
     ...(learned.length
-      ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.flatMap(({ file, text }) => [fence(`${file}, new`, text), ...mcpLines(file, text), ...heldLines(file, input.held, fence), ...dryRunLines(file, input.dryRuns, fence), ...skillLines(beside.get(file), fence)])]
+      ? ["", "## The new skill and workflow draft", "", "A workflow draft's README.md is judged with its workflow.json, as one item.", "", ...learned.flatMap(({ file, text }) => [fence(`${file}, new`, text), ...mcpLines(file, text), ...heldLines(file, input.held, fence), ...dryRunLines(file, input.dryRuns, fence), ...skillLines(draftSkill.get(file), fence)])]
+      : []),
+    ...(beside.length
+      ? ["", "## Beside them, as the folder holds it", "", "The other side of the pair, unchanged: compare the new side with it. It is no item of yours.", "", ...beside.map(({ file, text }) => fence(`${file}, active`, text))]
       : []),
     "",
     "## Your verdict",

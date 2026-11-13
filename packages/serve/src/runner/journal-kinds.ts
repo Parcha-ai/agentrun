@@ -91,6 +91,13 @@ export const KINDS = {
   learningDropped: "agentrun.learning.dropped",
   /** The learning folder could not be reached: the run parks and tries again after a backoff. */
   learningUnavailable: "agentrun.learning.unavailable",
+  /** A consolidation run's proposal, as its one ask wrote it and the checks kept it, with what that ask spent: written
+   *  before its grade (a resumed run never asks again). */
+  learningConsolidation: "agentrun.learning.consolidation",
+  /** A consolidation run's one paid ask, as it returned: its answer, what it spent and the main it was asked on, written
+   *  before anything a stop or a crash can cut (its checks, its save), so a resumed run reuses it and is never asked or
+   *  billed twice. */
+  learningConsolidationAsked: "agentrun.learning.consolidation.asked",
   /** A browser hand-over (pi-browser's browser_request_handoff), on the root. The run's browser host commits the ask, the
    *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
    *  the loop applies, taking the row in that commit), or the ask's expiry. The first answer for an ask is its answer. */

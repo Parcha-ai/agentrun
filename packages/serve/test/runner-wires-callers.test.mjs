@@ -91,7 +91,7 @@ async function gradeOn(t, route, capUsd) {
   const { store, dir } = await ended(t);
   const ask = bookedAsk({ ...route, beforeRequest: beforeRequestOf({ capUsd: () => capUsd, modelOf: () => capModelOf(route) }) });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
-  const end = await learningLoopFactory({ store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
+  const end = await learningLoopFactory({ refuse: async () => [], store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
   return { end, store };
 }
 

@@ -25,7 +25,7 @@ export interface GradeRouteAsk {
 export const gradeModelFor = (grade: Pick<GradeRouteAsk, "model" | "own">): string | undefined => grade.model ?? grade.own;
 
 export interface LearningDispatchDeps {
-  readonly store: Pick<Store, "runs" | "agents" | "learning">;
+  readonly store: Pick<Store, "runs" | "agents" | "learning" | "mcp" | "settings">;
   /** The server's data directory: each agent's learning folder. */
   readonly data: string;
   /** The runner's one model route (its pi runs take the same): where a grade goes, on which model, at what price; under
@@ -35,6 +35,8 @@ export interface LearningDispatchDeps {
   readonly now?: () => number;
   /** For tests: the grade's bound, as a signal. Default: GRADE_TIMEOUT_MS from the ask. */
   readonly gradeBound?: () => AbortSignal;
+  /** Every value a consolidation must never keep (the server's sealed secrets and the runner's), read at each one. */
+  readonly refuse: () => Promise<readonly string[]>;
 }
 
 const objectOf = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
@@ -64,10 +66,11 @@ export async function gradeRouteOf(model: string | undefined, env: NodeJS.Proces
 }
 
 /** The learning run's grade route: its launch's grade model, the model the revision of the run that learned names (its
- *  `model`, as main's grade reads agent.model), and that run's agent. */
+ *  `model`, as main's grade reads agent.model), and that run's agent. A consolidation run is its own source: its agent's
+ *  revision, as it was queued. */
 async function gradeOf(store: LearningDispatchDeps["store"], learningRunId: string): Promise<GradeRouteAsk> {
   const body = objectOf((await store.runs.launch(learningRunId)).body);
-  const sourceId = objectOf(body.input).runId;
+  const sourceId = objectOf(body.input).consolidate !== undefined ? learningRunId : objectOf(body.input).runId;
   const source = typeof sourceId === "string" ? await store.runs.get(sourceId) : undefined;
   if (!source) throw new Error(`the learning run ${learningRunId} names no run it learns from`);
   const own = objectOf((await store.agents.revision(source.revisionId))?.body).model;
@@ -85,7 +88,7 @@ export function learningLoopOf(deps: LearningDispatchDeps): LoopFactory {
       const bound = deps.gradeBound ? deps.gradeBound() : AbortSignal.timeout(GRADE_TIMEOUT_MS);
       return bookedAsk(route)(request, AbortSignal.any([signal, bound]), run);
     };
-    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}) })(loopDeps);
+    const loop = learningLoopFactory({ store: deps.store, data: deps.data, ask, ...(deps.log ? { log: deps.log } : {}), ...(deps.now ? { now: deps.now } : {}), refuse: deps.refuse })(loopDeps);
     return {
       start: (claim) => {
         claimed = claim.runId;

@@ -22,7 +22,7 @@ import {
 } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, notALearningRun, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
@@ -819,9 +819,9 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       list: async ({ agentId, revisionId, state, archived, limit }) => {
-        // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
-        // count, stat or notice names it.
-        const where: string[] = [NOT_A_LEARNING_RUN];
+        // A built-in learning run (a run's grade and merge, or an agent's consolidation: its launch names harness
+        // "learning") is no run of a person's: no list, count, stat or notice names it.
+        const where: string[] = [notALearningRun(db.dialect)];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
@@ -1101,6 +1101,9 @@ class SqliteStore implements Store {
       runId: row.run_id, agentId: row.agent_id, turn: JSON.parse(row.turn), proposal: JSON.parse(row.proposal),
       ...(row.learning_run_id === null ? {} : { learningRunId: row.learning_run_id }), createdAt: row.created_at,
     });
+    // A consolidation run: a learning run whose launch names the agent it consolidates (learning-factory.ts consolidationLaunchOf).
+    const finalStates = FINAL_STATES.map((state) => `'${state}'`).join(", ");
+    const consolidationOf = `${d.jsonText("run_launch.body", ["harness"])} = 'learning' AND ${d.jsonText("run_launch.body", ["input", "consolidate", "agentId"])} IS NOT NULL`;
     this.learning = {
       proposal: async (runId) => {
         const row = await db.get<ProposalRecord>("SELECT run_id, agent_id, turn, proposal, learning_run_id, created_at FROM learning_proposals WHERE run_id = ?", runId);
@@ -1122,7 +1125,7 @@ class SqliteStore implements Store {
             ORDER BY COALESCE(lr.ended_at, lp.created_at), lp.run_id`,
           from, to,
         );
-        return rows.flatMap((row): LearningSpend[] => {
+        const proposed = rows.flatMap((row): LearningSpend[] => {
           // A proposal: once its learning run ended, failed or was stopped, its row's cost is the grade's spend (a stop
           // seen after a paid grade keeps it, learning-loop.ts).
           if (row.learning_run_id !== null) return row.run_state === "ended" || row.run_state === "failed" || row.run_state === "stopped" ? [{ agentId: row.agent_id, at: row.run_ended_at ?? row.created_at, costUsd: row.run_cost_usd }] : [];
@@ -1130,7 +1133,44 @@ class SqliteStore implements Store {
           const kept = JSON.parse(row.proposal) as { state?: unknown } | null;
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
         });
+        // An agent's consolidation (learn/consolidate.ts): a learning run of its own, no kept learning naming it, its row's
+        // cost its ask's and its grade's (learning-loop.ts), once it ended, failed or was stopped in the window.
+        const consolidations = await db.all<{ agent_id: string; ended_at: number; cost_usd: number | null }>(
+          `SELECT runs.agent_id, runs.ended_at, runs.cost_usd
+             FROM runs JOIN run_launch ON run_launch.run_id = runs.id
+            WHERE ${d.jsonText("run_launch.body", ["harness"])} = 'learning' AND ${d.jsonText("run_launch.body", ["input", "consolidate", "agentId"])} IS NOT NULL
+              AND runs.state IN ('ended', 'failed', 'stopped') AND runs.ended_at >= ? AND runs.ended_at < ?
+            ORDER BY runs.ended_at, runs.id`,
+          from, to,
+        );
+        return [...proposed, ...consolidations.map((row): LearningSpend => ({ agentId: row.agent_id, at: row.ended_at, costUsd: row.cost_usd }))].sort((a, b) => a.at - b.at);
       },
+      consolidation: async (agentId) => {
+        const row = await db.get<{ id: string; state: RunState; after: string | null }>(
+          `SELECT runs.id, runs.state, ${d.jsonText("run_launch.body", ["input", "consolidate", "after"])} AS after
+             FROM runs JOIN run_launch ON run_launch.run_id = runs.id
+            WHERE runs.agent_id = ? AND ${consolidationOf}
+            ORDER BY CASE WHEN runs.state IN (${finalStates}) THEN 1 ELSE 0 END, runs.started_at DESC, COALESCE(runs.ended_at, 0) DESC, runs.id DESC LIMIT 1`,
+          agentId,
+        );
+        return row ? { id: row.id, state: row.state, ...(typeof row.after === "string" ? { after: row.after } : {}) } : undefined;
+      },
+      queueConsolidation: async ({ id, agentId, revisionId }, launch) =>
+        db.transaction(async (tx) => {
+          // Two merges of one agent at once: the second waits here, then sees the first's run (SQLite's one writer already does).
+          await d.lockKey(tx, `consolidation:${agentId}`);
+          const there = await tx.get<{ id: string }>(
+            `SELECT runs.id FROM runs JOIN run_launch ON run_launch.run_id = runs.id
+              WHERE runs.agent_id = ? AND ${consolidationOf} AND runs.state NOT IN (${finalStates})
+              ORDER BY runs.started_at DESC, runs.id DESC LIMIT 1`,
+            agentId,
+          ) ?? await tx.get<{ id: string }>("SELECT id FROM runs WHERE id = ?", id);
+          if (there) return { pending: there.id };
+          const at = now();
+          await tx.run("INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?)", id, agentId, revisionId, at);
+          await writeLaunch(tx, id, launch, at);
+          return { queued: id };
+        }),
     };
 
     this.settings = {

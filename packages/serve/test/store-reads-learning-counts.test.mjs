@@ -62,7 +62,7 @@ async function fixture(t) {
       return { text: answerOf(verdict), usd: golden.saved.cost_usd?.grade ?? null, tokens: golden.saved.tokens?.grade ?? null };
     };
     const claim = await store.claim(`${runId}-learning`, "runner-b", { leaseMs: 60_000 });
-    await learningLoopFactory({ store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
+    await learningLoopFactory({ refuse: async () => [], store, data: dir, ask })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
   };
   const droppedAs = (reason) => ({ state: "dropped", reason, detail: `Dropped: ${reason}` });
   await graded("merged-1", DAY1, "you");

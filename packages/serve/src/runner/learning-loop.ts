@@ -16,14 +16,17 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { LearningProposal } from "../store/store.js";
-import { CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict } from "../learn/grade.js";
+import { besideCost, besideRoom, CONTRADICTED_REASON, CONTRADICTED_TWICE_REASON, CONTRADICTION_ASK, GRADE_CAPS, gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON, type IndexEntry, type NoteText, type Verdict, type VerdictItem } from "../learn/grade.js";
 import { mergedNote, parseNoteFile, ruleOf } from "../learn/notes.js";
 import type { LearnedFile, NoteLearned, Tokens } from "../learning.js";
-import { learnedPlace } from "../learn/skills.js";
+import { learnedPlace, SKILLS_DIR, WORKFLOWS_DIR } from "../learn/skills.js";
 import { blobOid } from "../learn/folder.js";
 import { notKept, SAME_NOTE, said, STOPPED } from "../learning-words.js";
 import { journalEntries } from "./journal-reader.js";
+import { changedLast, clustersOf, clustersWithin, consolidatePrompt, heldToClusters, partnersOf, rankOf } from "../learn/consolidate.js";
+import type { ConsolidationMain } from "../learn/commit.js";
 import { KINDS } from "./journal-kinds.js";
+import type { DraftTools } from "./learning-end.js";
 import type { Claim, Command, CommandOutcome, Journal, Loop, LoopDeps, LoopEnd, StopReason } from "./loop-contract.js";
 
 /** The grader's bounds, as the server's grade had them (grade.ts): one ask, its answer cut at GRADE_MAX_TOKENS. */
@@ -114,9 +117,67 @@ export interface LearningLoopDeps {
   merged(ws: unknown, runId: string, paths: readonly string[]): Promise<{ readonly texts: Readonly<Record<string, string>> } | undefined>;
   /** The clock (epoch ms), for a parked run's wake. */
   now?(): number;
+  /** Consolidation (learn/consolidate.ts), all of it or none: a loop without it never runs one and never queues one. */
+  consolidation?: ConsolidationDeps;
 }
 
+/** What a learning loop consolidates with: each part required, so none is ever half there. */
+export interface ConsolidationDeps {
+  /** A consolidation run: its agent, the agent's instructions and tools, and the pairs a merge put out of step, from its
+   *  launch; undefined for a run that grades another run's learning. */
+  of(learningRunId: string): Promise<Consolidation | undefined>;
+  /** What a consolidation reads of main (learn/commit.ts consolidationMain): undefined when the folder has none. */
+  main(ws: unknown): Promise<ConsolidationMain | undefined>;
+  /** Each note's runs given it and that read it (the learning view's `runs`), for the rank. */
+  noteRuns(agentId: string): Promise<ReadonlyMap<string, { readonly given: number; readonly read: number }>>;
+  /** The checks over a consolidation's answer, against main as `seed` (propose.ts proposeRun, as a run's end-of-run turn
+   *  is checked): the proposal kept, or why nothing is. */
+  checkAnswer(ws: unknown, input: { readonly seed: string; readonly answer: string; readonly tools: DraftTools }): Promise<CheckedAnswer>;
+  /** After a merge of a run's learning, before its learning run (`learningRunId`) ends: whether a consolidation is due
+   *  for its agent (learn/consolidate.ts consolidationDue), and queue it. A throw parks the learning run, which asks
+   *  again when it wakes (its merge is on main already). */
+  afterMerge(ws: unknown, merged: { readonly agentId: string; readonly runId: string; readonly learningRunId: string }): Promise<void>;
+}
+
+/** A consolidation run's own facts, from its launch. */
+export type Consolidation = { readonly agentId: string; readonly instructions?: string; readonly tools: DraftTools; readonly pairs: readonly { readonly skill: string; readonly workflow: string; readonly changed: "skill" | "workflow" }[] };
+/** What the checks kept of a consolidation's answer, or why nothing. */
+export type CheckedAnswer = { readonly state: "proposed"; readonly proposal: KeptProposal; readonly left?: readonly Problem[] } | { readonly state: "dropped"; readonly reason: string; readonly detail?: string; readonly problems?: readonly Problem[] };
+/** A consolidation's journal entry (journal-kinds.ts learningConsolidation): its proposal held to its clusters, what the
+ *  checks and the hold left out, the notes that stay active, what its ask spent, and `beside`, the other side of each
+ *  pair the proposal writes one side of, as main holds it (the grader compares the two, and grades neither). */
+type ConsolidationData = { readonly proposal: KeptProposal; readonly left: readonly Problem[]; readonly stayActive: readonly string[]; readonly usd: number | null; readonly beside?: readonly NoteText[]; readonly together?: readonly Pair[] };
+/** A skill and its workflow draft, by name. */
+type Pair = { readonly skill: string; readonly workflow: string };
+/** A consolidation run's paid ask as it returned (journal-kinds.ts learningConsolidationAsked): its answer's text, what it
+ *  spent (null when unknown), the main (`seed`) it was asked on, and what it was asked about: the clusters (each a list of
+ *  note files) and the pairs out of step. A resumed run holds the answer to these, never to clusters rebuilt from main
+ *  as it is then (a note merged since may seed another cluster first). */
+type ConsolidationAskedData = { readonly text: string; readonly usd: number | null; readonly tokens?: Tokens | null; readonly seed: string; readonly clusters: readonly (readonly string[])[]; readonly pairs: readonly Pair[] };
+
 const ROOT = ROOT_CONVERSATION_ID;
+
+/** A skill's or a draft's key file: its SKILL.md, or its workflow.json. */
+const keyFileOf = ({ kind, name }: { readonly kind: "skill" | "workflow"; readonly name: string }): string => (kind === "skill" ? `${SKILLS_DIR}/${name}/SKILL.md` : `${WORKFLOWS_DIR}/${name}/workflow.json`);
+
+/** On consolidation's read of main: the companions of a side (`target`), every partner of it (partnersOf) as main holds
+ *  it, a draft's workflow.json and README.md, a skill's SKILL.md, less any in `written`. */
+const companionsOn = (main: { readonly skills: readonly { readonly name: string; readonly text: string }[]; readonly workflows: readonly { readonly name: string; readonly json: string; readonly readme: string }[] }, partners: readonly { readonly skill: string; readonly workflow: string }[]) =>
+  (target: { readonly kind: "skill" | "workflow"; readonly name: string }, written: ReadonlySet<string>): NoteText[] =>
+    partners.filter((pair) => pair[target.kind] === target.name).flatMap((pair): NoteText[] => {
+      if (target.kind === "workflow") {
+        const skill = main.skills.find(({ name }) => name === pair.skill);
+        return skill ? [{ file: keyFileOf({ kind: "skill", name: skill.name }), text: skill.text }] : [];
+      }
+      const workflow = main.workflows.find(({ name }) => name === pair.workflow);
+      return workflow ? [{ file: keyFileOf({ kind: "workflow", name: workflow.name }), text: workflow.json }, { file: `${WORKFLOWS_DIR}/${workflow.name}/README.md`, text: workflow.readme }] : [];
+    }).filter(({ file }) => !written.has(file));
+
+/** The notes a new note supersedes, by its front matter; none for one that does not parse. */
+const parseNoteFileOr = ({ file, text }: { readonly file: string; readonly text: string }): { supersedes: readonly string[] } => {
+  const note = parseNoteFile(file, text);
+  return Array.isArray(note) ? { supersedes: [] } : note;
+};
 
 /** The journal's learning entries' data (journal-kinds.ts learningGraded, learningDropped, learningMerged), as the reader
  *  of a run's learning end reads them (store-reads/learning.ts). What a grade spent: its dollars and tokens, each null when
@@ -134,6 +195,29 @@ const itemOf = (file: string): string => {
   const place = learnedPlace(file);
   return place?.kind === "readme" ? `workflows/${place.name}/workflow.json` : file;
 };
+
+/** The why of a side of a pair the answer rewrote whole whose other side the grade dropped: the two were graded side by
+ *  side, never one beside the other as main holds it, so neither changes alone. */
+export const PAIR_PARTNER_DROPPED = (partner: string) => `Left out with ${partner}, which wasn't kept: the two were checked together, so neither changes alone.`;
+
+/** `verdict` with each pair in `together` (both sides written by a consolidation's answer) kept whole or not at all: when
+ *  the grade dropped one side, the other side's kept items are dropped too (PAIR_PARTNER_DROPPED), and the next
+ *  consolidation asks for the pair again. Dropping it costs no second grade, and a survivor never merges beside a partner
+ *  it was never compared with. */
+export function pairedOf(verdict: Verdict, together: readonly Pair[]): Verdict {
+  if (!together.length) return verdict;
+  let items = verdict.items;
+  for (const { skill, workflow } of together) {
+    const skillSide = items.filter((item) => item.file.startsWith(`${SKILLS_DIR}/${skill}/`));
+    const draftSide = items.filter((item) => item.file.startsWith(`${WORKFLOWS_DIR}/${workflow}/`));
+    const skillDropped = skillSide.some((item) => !item.keep);
+    if (skillDropped === draftSide.some((item) => !item.keep)) continue;
+    const [left, partner] = skillDropped ? [draftSide, `the skill ${skill}`] : [skillSide, `the workflow draft ${workflow}`];
+    const off = new Set(left.filter((item) => item.keep).map((item) => item.file));
+    items = items.map((item): VerdictItem => (off.has(item.file) ? { file: item.file, keep: false, question: "Pair", why: PAIR_PARTNER_DROPPED(partner) } : item));
+  }
+  return { ...verdict, items, merge: verdict.merge && items.some((item) => item.keep) };
+}
 
 /** The why of a note whose name main already holds with other text, which it does not supersede: never written over,
  *  and the rest of what the run learned merges. */
@@ -352,11 +436,15 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
          *  ends ended, failed or stopped, so what learning spent reads from the run rows alone (store learning.spend): a
          *  stop seen after a paid grade never hides it. */
         let spend: number | null = 0;
+        /** A consolidation run's own ask's spend, before its grade's (0 for a run that grades another run's learning): a
+         *  consolidation's cost is both, its ask's and its grade's, on its row as any learning run's. */
+        let asked: number | null = 0;
+        const plus = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : a + b);
         /** One entry on the root, committed; `end` stages the run's state with it (keyed to this entry, its effect), and
          *  `take` the stop row it applies. An end that ends, fails or stops the run keeps what the grade spent as its cost. */
         const append = async (kind: string, data: unknown, end?: "ended" | "failed" | "stopped" | "parked", take?: number) => {
           const writes: StorageWrite[] = [];
-          if (kind === KINDS.learningDropped && data !== null && typeof data === "object" && "usd" in data) spend = (data as DroppedData).usd ?? null;
+          if (kind === KINDS.learningDropped && data !== null && typeof data === "object" && "usd" in data) spend = plus(asked, (data as DroppedData).usd ?? null);
           if (!rooted && !(await journal.conversation(ROOT, context))) writes.push({ type: "conversation", value: { id: ROOT } } as StorageWrite);
           const id = await journal.mintId();
           writes.push({ type: "entry", value: { id, conversationId: ROOT, kind, data } } as StorageWrite);
@@ -373,36 +461,19 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           return { state: "stopped" };
         };
 
-        const source = await learning.sourceOf(claim.runId);
-        if (!source) {
-          await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
-          return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
-        }
-        const kept = await learning.proposal(source.runId);
-        if (!kept) {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
-          return { state: "ended" };
-        }
-        // The row as the end-of-run hook keeps it: its state and words, the kept Proposal inside (a drop queues no learning
-        // run, so a row that isn't proposed is read as nothing to grade).
-        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal; readonly left?: readonly Problem[] } | null;
-        if (row?.state !== "proposed" || !row.proposal) {
-          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
-          return { state: "ended" };
-        }
-        const proposal = row.proposal;
-        // What the checks left out of the proposal (propose.ts Proposed `left`), said with the merge.
-        const checked = Array.isArray(row.left) ? row.left : [];
-
-        /** The grade and the merge, on the agent's learning folder `ws`. */
-        const onFolder = async (ws: unknown): Promise<LoopEnd> => {
+        /** The grade and the merge of `proposal` on the agent's learning folder `ws`, as the learning of `who` (its Run-Id on
+         *  the merge, its `source` in the journal): a run's kept proposal, or a consolidation's own. `checked` is what the
+         *  checks left out, said with the merge; `beside`, what the grader reads with the proposal and grades not (a pair's
+         *  side main holds). After a run's merge, `afterwards` asks whether a consolidation is due, before the run ends. */
+        const settle = async (ws: unknown, who: { readonly runId: string; readonly agentId: string; readonly instructions?: string }, proposal: KeptProposal, checked: readonly Problem[], afterwards: boolean, beside: readonly NoteText[] = [], consolidation = false, together: readonly Pair[] = []): Promise<LoopEnd> => {
+          const source = who;
           const entries = await journalEntries(journal, context);
           rooted = entries.length > 0;
           const unavailable = entries.filter((entry) => entry.kind === KINDS.learningUnavailable).length;
 
           // The grade: once. A verdict already in the journal is the one the merge goes on.
           let graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
-          if (graded) spend = graded.usd;
+          if (graded) spend = plus(asked, graded.usd);
           if (!graded) {
             const main = await learning.readMain(ws, proposal);
             if ("problems" in main) {
@@ -422,7 +493,8 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
             const prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded: main.superseded, proposed: grading,
-              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
+              ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(beside.length ? { beside } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
+              ...(consolidation ? { consolidation: true as const } : {}),
             });
             // What the grade spends, as the server's grade counted it (grade.ts counter): each ask's dollars and tokens
             // added, either unknown (null) once any ask's is, and an ask that fails spent what nobody knows.
@@ -460,7 +532,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               }
             } catch (error) {
               // What the asks spent: a cut one's unknown (null), kept on a stopped run's row as on a dropped one's.
-              spend = usd;
+              spend = plus(asked, usd);
               const end = await halted();
               if (end) return end;
               await append(KINDS.learningDropped, { source: source.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd, tokens } satisfies DroppedData, "ended");
@@ -469,7 +541,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             }
             if (settledItems.length) verdict = { ...verdict, items: [...verdict.items, ...settledItems] };
             graded = { source: source.runId, verdict, usd, tokens, graded: main.graded };
-            spend = usd;
+            spend = plus(asked, usd);
             await append(KINDS.learningGraded, graded);
             // The verdict is durable before the merge, its side effect.
             await deps.flush();
@@ -497,9 +569,11 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
           }
           const taken = already ? { verdict: oneItemAFile(proposal, graded.verdict), replace: [], graded: {} } : takenOnMain(proposal, graded.verdict, onMain);
-          const verdict = taken.verdict;
+          // A pair the answer rewrote whole merges whole or not at all (pairedOf).
+          const verdict = pairedOf(taken.verdict, together);
           const merging = keptOf(proposal, verdict);
-          const change = mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded });
+          // What the grader read beside the proposal is pinned too: changed on main since the seed, the merge is refused.
+          const change = { ...mergeChangeOf(source.runId, merging, verdict, { ...graded.graded, ...taken.graded }), ...(beside.length ? { pinned: beside.map(({ file }) => file) } : {}) };
           // Nothing new left to merge: dropped, unless the grader kept a re-filed skill whose rule main already holds as a
           // note (takenOnMain's SAME_NOTE). Its old SKILL.md is still retired (mergeChangeOf's retire), in a write of that
           // alone, so no old skill stays served beside the note.
@@ -513,14 +587,25 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
             // item alone: said as takenOnMain says it, and nothing of it learned.
             // A merge already on main (a resume after its commit): what it wrote is what its files say, so each note is
             // settled by the files: one written is kept as the grade kept it, one not written is left out (as takenOnMain
-            // or the commit says why).
-            const settled = result.already ? resumedOf(proposal, graded.verdict, verdict, result, onMain) : leftOf(merging, verdict, result.left ?? []);
+            // or the commit says why). It starts from the grade as the first attempt merged by it: a pair dropped whole
+            // (pairedOf) stays dropped.
+            const settled = result.already ? resumedOf(proposal, pairedOf(graded.verdict, together), verdict, result, onMain) : leftOf(merging, verdict, result.left ?? []);
             if (!settled.verdict.items.some((item) => item.keep) && !result.files.length) {
               await append(KINDS.learningDropped, { source: source.runId, reason: "grader", detail: notKept(settled.verdict, lostOf(proposal)) } satisfies DroppedData, "ended");
               return { state: "ended" };
             }
             // A write that retired a skill alone learned nothing new: said so.
             const detail = mergedWords(settled.merging, settled.verdict, checked) || said.empty;
+            // Whether the agent's learning is due a consolidation now, queued before this run ends: a queue that fails
+            // parks the run (its merge is on main, so it wakes to the same merge and asks again), never a lost one.
+            if (afterwards && learning.consolidation) {
+              try {
+                await learning.consolidation.afterMerge(ws, { agentId: source.agentId, runId: source.runId, learningRunId: claim.runId });
+              } catch (error) {
+                await append(KINDS.learningUnavailable, { source: source.runId, error: `a consolidation could not be queued: ${(error as Error)?.message ?? String(error)}` } satisfies UnavailableData, "parked");
+                return { state: "parked", wakeAt: now() + UNAVAILABLE_BACKOFF_MS[Math.min(unavailable, UNAVAILABLE_BACKOFF_MS.length - 1)]! };
+              }
+            }
             await append(KINDS.learningMerged, { source: source.runId, main: result.main, commit: result.commit, files: result.files, detail, verdict: settled.verdict } satisfies MergedData, "ended");
             return { state: "ended" };
           }
@@ -539,11 +624,201 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
           return { state: "parked", wakeAt: now() + wait };
         };
 
+        /** A consolidation run (learn/consolidate.ts) on the agent's learning folder `ws`: its active notes clustered by what
+         *  they say (ranked by their runs' evidence), the pairs out of step read whole, one ask on the grade model for the
+         *  replacements, the usual checks, the hold to its clusters, then the usual grade and merge. Nothing to consolidate
+         *  is no ask. Its proposal is journaled before its grade, so a resumed run never asks again. */
+        const consolidateOn = async (ws: unknown, job: Consolidation, consolidating: ConsolidationDeps): Promise<LoopEnd> => {
+          const who = { runId: claim.runId, agentId: job.agentId, ...(job.instructions ? { instructions: job.instructions } : {}) };
+          const entries = await journalEntries(journal, context);
+          rooted = entries.length > 0;
+          let made = entries.find((entry) => entry.kind === KINDS.learningConsolidation)?.data as ConsolidationData | undefined;
+          // Its paid ask, as it returned on an earlier claim: reused, never asked again.
+          const saved = entries.find((entry) => entry.kind === KINDS.learningConsolidationAsked)?.data as ConsolidationAskedData | undefined;
+          const graded = entries.find((entry) => entry.kind === KINDS.learningGraded)?.data as GradedData | undefined;
+          asked = made ? made.usd : saved ? saved.usd : 0;
+          spend = graded ? plus(asked, graded.usd) : asked;
+          const nothing = async (detail: string, problems?: readonly Problem[]): Promise<LoopEnd> => {
+            await append(KINDS.learningDropped, { source: who.runId, reason: problems?.length ? "checker" : "empty", detail: problems?.length ? said.checker(problems as never) : detail, ...(problems?.length ? { problems } : {}) } satisfies DroppedData, "ended");
+            return { state: "ended" };
+          };
+          if (!made) {
+            const main = await consolidating.main(ws);
+            if (!main) return nothing(said.empty);
+            const runs = await consolidating.noteRuns(job.agentId);
+            const texts = new Map(main.notes.map(({ file, text }) => [file, text]));
+            const notes = main.notes.flatMap(({ file, text }) => {
+              const note = parseNoteFile(file, text);
+              return Array.isArray(note) ? [] : [note];
+            });
+            const counts = (file: string) => runs.get(file) ?? { given: 0, read: 0 };
+            // The clusters, best first, while what they would supersede fits one merge (the checks' cap).
+            const clusters = clustersWithin(clustersOf(notes, (note) => rankOf(counts(note.file))));
+            // Which side of each pair changed last, as main's log says now: a merge since the queue may have changed the
+            // other side (a pair it wrote whole is in step again). A pair past what the log keeps keeps the queue's word.
+            const pairs = job.pairs.flatMap((pair) => {
+              const skill = main.skills.find(({ name }) => name === pair.skill);
+              const workflow = main.workflows.find(({ name }) => name === pair.workflow);
+              if (!skill || !workflow) return [];
+              const changed = changedLast(main.changes, pair.skill, pair.workflow) ?? pair.changed;
+              return changed === "both" ? [] : [{ skill, workflow, changed }];
+            });
+            // What the grader reads beside a rewrite: every partner of the side the model rewrites (the one that did not
+            // change last), as main holds it. A rewrite is asked about only when all of its partners fit beside it, in
+            // the count the grade holds (GRADE_CAPS.beside) and in the room its prompt leaves (besideRoom): never one
+            // shown or pinned in part, and never a paid request whose grade could not be made.
+            const partners = partnersOf({ skills: main.skills, workflows: main.workflows });
+            const companionsOf = companionsOn(main, partners);
+            const active = notes.filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description }));
+            const room = besideRoom({ ...(job.instructions ? { instructions: job.instructions } : {}), active, superseded: clusters.flat().map(({ file }) => ({ file, text: texts.get(file)! })), newNotes: clusters.length });
+            const chosen = new Map<string, NoteText>();
+            const leftOut: Problem[] = [];
+            const fits = new Set<string>();
+            for (const { skill, workflow, changed } of pairs) {
+              const target = changed === "skill" ? { kind: "workflow" as const, name: workflow.name } : { kind: "skill" as const, name: skill.name };
+              const key = `${target.kind}/${target.name}`;
+              if (fits.has(key) || leftOut.some(({ path }) => path === keyFileOf(target))) continue;
+              const all = companionsOf(target, new Set());
+              const next = new Map([...chosen, ...all.map((one): [string, NoteText] => [one.file, one])]);
+              if (next.size <= GRADE_CAPS.beside && besideCost([...next.values()]) <= room) {
+                for (const [file, one] of next) chosen.set(file, one);
+                fits.add(key);
+              } else {
+                leftOut.push({ rule: "consolidate", path: keyFileOf(target), detail: `left out of this consolidation: the ${all.length} files of its partners do not fit beside it in the grade (at most ${GRADE_CAPS.beside} files, and the room its prompt leaves)` });
+              }
+            }
+            const asking = pairs.filter(({ skill, workflow, changed }) => fits.has(changed === "skill" ? `workflow/${workflow.name}` : `skill/${skill.name}`));
+            // What the answer is held to: what it was asked about. On a resume, the saved answer's own, never the clusters
+            // main gives now (a note merged since may seed another cluster first and leave a paid replacement outside).
+            const askedClusters = saved ? saved.clusters : clusters.map((cluster) => cluster.map(({ file }) => file));
+            const askedPairs = saved ? saved.pairs : asking.map(({ skill, workflow }): Pair => ({ skill: skill.name, workflow: workflow.name }));
+            if (!saved && !clusters.length && !asking.length) return leftOut.length ? nothing(said.stale(leftOut as never), leftOut) : nothing(said.empty);
+            const prompt = consolidatePrompt({
+              ...(job.instructions ? { instructions: job.instructions } : {}),
+              clusters: clusters.map((cluster) => cluster.map((note) => ({ file: note.file, text: texts.get(note.file)!, ...counts(note.file) }))),
+              pairs: asking,
+            });
+            // The paid ask, once a run: an earlier claim's answer (saved as it returned) is reused, on the main it was asked
+            // on, so a runner that went down after the request never asks or bills it again.
+            let reply: ConsolidationAskedData;
+            if (saved) reply = saved;
+            else {
+              // A person's stop before the request: nothing is sent, so nothing is spent.
+              const before = await halted();
+              if (before) return before;
+              let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
+              try {
+                // A stop while it runs cuts it at once (stopAsk), as it cuts the grade's.
+                answer = await learning.ask({ prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, AbortSignal.timeout(GRADE_TIMEOUT_MS), stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+              } catch {
+                // A cut request may have been billed: its cost is unknown before a pending stop ends the run on it.
+                asked = null;
+                spend = null;
+                const end = await halted();
+                if (end) return end;
+                await append(KINDS.learningDropped, { source: who.runId, reason: "grade_failed", detail: said.stopped(STOPPED.noReview), usd: null, tokens: null } satisfies DroppedData, "ended");
+                return { state: "ended" };
+              }
+              reply = { text: typeof answer.text === "string" ? answer.text : "", usd: answer.usd === null || !Number.isFinite(answer.usd) ? null : answer.usd, ...(answer.tokens !== undefined ? { tokens: answer.tokens } : {}), seed: main.seed, clusters: askedClusters, pairs: askedPairs };
+              // Saved, with what it spent, before anything that can be cut: durable before its checks.
+              await append(KINDS.learningConsolidationAsked, reply);
+              await deps.flush();
+            }
+            asked = reply.usd;
+            spend = asked;
+            const checked = await consolidating.checkAnswer(ws, { seed: reply.seed, answer: reply.text, tools: job.tools });
+            if (checked.state !== "proposed") return nothing(checked.reason === "empty" ? said.empty : (checked.detail ?? said.empty), checked.problems);
+            // Held to what it was asked (the code check behind the grader's question): each note supersedes only notes of
+            // one cluster, and a skill or a draft is one of a pair out of step. A cluster note no kept note supersedes stays.
+            const replacements = checked.proposal.notes.flatMap(({ file, text }) => {
+              const note = parseNoteFile(file, text);
+              return Array.isArray(note) ? [] : [{ file, text, supersedes: note.supersedes }];
+            });
+            const held = heldToClusters(replacements, checked.proposal.files ?? [], askedClusters, askedPairs);
+            const keptFiles = new Set(held.files);
+            // A kept draft's hold for its owner's OK (an MCP tool with no declared price) goes with it.
+            const heldFor = (kept: ReadonlySet<string>) => {
+              const holds = Object.entries(checked.proposal.held ?? {}).filter(([file]) => kept.has(file));
+              return holds.length ? { held: Object.fromEntries(holds) } : {};
+            };
+            let proposal: KeptProposal = { notes: held.notes.map(({ file, text }) => ({ file, text })), ...(held.files.length ? { files: (checked.proposal.files ?? []).filter(({ file }) => keptFiles.has(file)) } : {}), ...heldFor(keptFiles), seed: reply.seed };
+            const left = [...leftOut, ...(checked.left ?? []), ...held.problems];
+            if (!proposal.notes.length && !proposal.files?.length) return nothing(said.stale(left as never), left);
+            // A pair the answer wrote one side of (the other given back unchanged, which the checks take out): the other
+            // side as main holds it goes to the grader beside it, so it can check both describe the same steps.
+            // Each side the answer writes (it may rewrite the one that changed last instead): its partners it does not write
+            // go to the grader beside it, as main holds them, each once, and the merge pins them. A written side whose
+            // partners do not all fit (the count, the room the actual proposal leaves) is left out, never shown in part.
+            let files = proposal.files ?? [];
+            const writes = new Set(files.map(({ file }) => file));
+            const actual = besideRoom({ ...(job.instructions ? { instructions: job.instructions } : {}), active, superseded: proposal.notes.flatMap((n) => parseNoteFileOr(n).supersedes).map((file) => ({ file, text: texts.get(file) ?? "" })), newNotes: proposal.notes.length, files });
+            const companions = new Map<string, NoteText>();
+            const written = [...new Set(files.flatMap(({ file }) => {
+              const place = learnedPlace(file);
+              return place && place.kind !== "readme" ? [`${place.kind}/${place.name}`] : place ? [`workflow/${place.name}`] : [];
+            }))];
+            for (const key of written) {
+              const [kind, name] = key.split("/") as ["skill" | "workflow", string];
+              const others = companionsOf({ kind, name }, writes);
+              const next = new Map([...companions, ...others.map((one): [string, NoteText] => [one.file, one])]);
+              if (next.size <= GRADE_CAPS.beside && besideCost([...next.values()]) <= actual) for (const [file, one] of next) companions.set(file, one);
+              else {
+                const prefix = `${kind === "skill" ? SKILLS_DIR : WORKFLOWS_DIR}/${name}/`;
+                files = files.filter(({ file }) => !file.startsWith(prefix));
+                left.push({ rule: "consolidate", path: keyFileOf({ kind, name }), detail: `left out of this consolidation: the files of its partners do not fit beside it in the grade (at most ${GRADE_CAPS.beside} files, and the room its prompt leaves)` });
+              }
+            }
+            if (files.length !== (proposal.files ?? []).length) {
+              proposal = { notes: proposal.notes, ...(files.length ? { files } : {}), ...heldFor(new Set(files.map(({ file }) => file))), seed: reply.seed };
+              if (!proposal.notes.length && !files.length) return nothing(said.stale(left as never), left);
+            }
+            const beside = [...companions.values()];
+            // The pairs the answer writes both sides of: graded side by side, merged whole or not at all (pairedOf).
+            const together = askedPairs.filter(({ skill, workflow }) => files.some(({ file }) => file.startsWith(`${SKILLS_DIR}/${skill}/`)) && files.some(({ file }) => file.startsWith(`${WORKFLOWS_DIR}/${workflow}/`)));
+            made = { proposal, left, stayActive: held.stayActive, usd: asked, ...(beside.length ? { beside } : {}), ...(together.length ? { together } : {}) };
+            await append(KINDS.learningConsolidation, made);
+            await deps.flush();
+          }
+          return settle(ws, who, made.proposal, made.left, false, made.beside ?? [], true, made.together ?? []);
+        };
+
+        const consolidating = learning.consolidation;
+        const consolidation = consolidating ? await consolidating.of(claim.runId) : undefined;
+        if (consolidating && consolidation) {
+          const folder = learning.folder(consolidation.agentId);
+          try {
+            return await consolidateOn(folder.workspace, consolidation, consolidating);
+          } finally {
+            await folder.end().catch(() => {});
+          }
+        }
+
+        const source = await learning.sourceOf(claim.runId);
+        if (!source) {
+          await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
+          return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
+        }
+        const kept = await learning.proposal(source.runId);
+        if (!kept) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
+          return { state: "ended" };
+        }
+        // The row as the end-of-run hook keeps it: its state and words, the kept Proposal inside (a drop queues no learning
+        // run, so a row that isn't proposed is read as nothing to grade).
+        const row = kept.proposal as { readonly state?: string; readonly proposal?: KeptProposal; readonly left?: readonly Problem[] } | null;
+        if (row?.state !== "proposed" || !row.proposal) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "no_proposal", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "ended");
+          return { state: "ended" };
+        }
+        const proposal = row.proposal;
+        // What the checks left out of the proposal (propose.ts Proposed `left`), said with the merge.
+        const checked = Array.isArray(row.left) ? row.left : [];
+
         // The folder is ended once the run is done with it, whichever way it goes out. Its end only sweeps what an exec
         // left behind (on Archil, the spill), after the run's own end is committed: a failed sweep changes no end.
         const folder = learning.folder(source.agentId);
         try {
-          return await onFolder(folder.workspace);
+          return await settle(folder.workspace, source, proposal, checked, true);
         } finally {
           await folder.end().catch(() => {});
         }

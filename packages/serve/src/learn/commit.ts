@@ -40,6 +40,9 @@ export type LearningChange =
        *  note holds that name, so the skill's rule would be lost). Its file is checked against the run's seed as a
        *  skill's file the merge writes is. */
       retire?: { skill: string; note: string; rule: string }[];
+      /** Files the grader read beside the merge and it does not write (a consolidation's other side of a pair): each
+       *  checked against the seed as a written skill's file is, so one changed since is a conflict. */
+      pinned?: string[];
     }
   | {
       kind: "person";
@@ -229,7 +232,7 @@ async function mergeOf(change: Extract<LearningChange, { kind: "merge" }>, snaps
       by: { run: change.runId, reason: change.reason },
       writes: [...files].map(([path, text]) => ({ path, text })),
       absent: added.map((note) => note.file),
-      ...(change.seed ? { same: [...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring].map((path) => ({ commit: change.seed!, path })) } : {}),
+      ...(change.seed ? { same: [...new Set([...change.files.filter(({ path }) => !isNote(path)).map(({ path }) => path), ...retiring, ...(change.pinned ?? [])])].map((path) => ({ commit: change.seed!, path })) } : {}),
     },
   };
 }
@@ -358,5 +361,64 @@ export async function readMain(ws: Workspace, proposal: { readonly notes: readon
     // mergeProblems passed: each note superseded is active on main, and named once.
     const superseded = await Promise.all(notes.flatMap((note) => note.supersedes).map(async (file) => ({ file, text: await body(file, oids.get(file)!) })));
     return { active: main.filter((note) => note.status === "active").map(({ file, name, description }) => ({ file, name, description })), superseded, graded: Object.fromEntries(superseded.map(({ file }) => [file, oids.get(file)!])), ...(taken.length ? { taken } : {}) };
+  });
+}
+
+/** What a consolidation reads of main (learn/consolidate.ts), from the folder's snapshot and its bodies (no git, no
+ *  exec): its commit (the seed the consolidation's proposal is checked against), each active note's whole text, each
+ *  active skill's SKILL.md and each active workflow draft's workflow.json and README.md. Undefined when the folder has
+ *  no main yet. */
+export type ConsolidationMain = {
+  readonly seed: string;
+  readonly notes: readonly NoteText[];
+  readonly skills: readonly { readonly name: string; readonly text: string }[];
+  readonly workflows: readonly { readonly name: string; readonly json: string; readonly readme: string }[];
+  /** The paths each change on main wrote, newest first, as its log keeps them: which side of a pair changed last. */
+  readonly changes: readonly (readonly string[])[];
+};
+export async function consolidationMain(ws: Workspace): Promise<ConsolidationMain | undefined> {
+  return readLearning(ws, async ({ snapshot, body }) => {
+    if (!snapshot) return undefined;
+    const notes = await Promise.all(snapshot.notes.filter((note) => note.status === "active").map(async (note) => ({ file: note.file, text: await body(note.file, note.oid) })));
+    const fileOf = (item: Snapshot["skills"][number], name: string) => item.files.find((file) => file.path.endsWith(`/${name}`));
+    const skills = await Promise.all(snapshot.skills.filter((item) => item.status === "active").flatMap((item) => {
+      const file = fileOf(item, "SKILL.md");
+      return file ? [body(file.path, file.oid).then((text) => ({ name: item.name, text }))] : [];
+    }));
+    const workflows = await Promise.all(snapshot.workflows.filter((item) => item.status === "active").flatMap((item) => {
+      const [json, readme] = [fileOf(item, "workflow.json"), fileOf(item, "README.md")];
+      return json && readme ? [Promise.all([body(json.path, json.oid), body(readme.path, readme.oid)]).then(([j, r]) => ({ name: item.name, json: j, readme: r }))] : [];
+    }));
+    return { seed: snapshot.main, notes, skills, workflows, changes: snapshot.log.map((change) => change.files) };
+  });
+}
+
+/** What decides, after a merge, whether a consolidation is due (learn/consolidate.ts consolidationDue): main's commit now;
+ *  the merges of runs on main since `after` (main as the last consolidation was queued; none queued yet, every merge the
+ *  log keeps), a consolidation run's own (`consolidated(run)`) left out, and the paths each wrote, newest first, for the
+ *  pairs out of step (consolidate.ts driftedSince); the bytes of the active notes; and each active skill's name and
+ *  draft's name and README. Counted from the queue, never from a consolidation's commit: one that merged nothing still
+ *  starts the count again, and the count never sits at the log's cap. */
+export async function consolidationState(ws: Workspace, since: { readonly after?: string; readonly consolidated: (run: string) => boolean }): Promise<{ main?: string; mergesSince: number; changes: string[][]; allChanges: string[][]; activeBytes: number; skills: { name: string }[]; workflows: { name: string; readme: string }[] }> {
+  return readLearning(ws, async ({ snapshot, body }) => {
+    if (!snapshot) return { mergesSince: 0, changes: [], allChanges: [], activeBytes: 0, skills: [], workflows: [] };
+    // `changes`: the runs' merges since the last queue (`after`), consolidations' left out: what the growth counter counts
+    // and what put a pair out of step since. `allChanges`: every run's merge in the log, consolidations' too, newest first:
+    // whether a pair is out of step now, so one a consolidation left unfixed is asked about again.
+    const changes: string[][] = [];
+    const allChanges: string[][] = [];
+    let counting = true;
+    for (const change of snapshot.log) {
+      if (change.commit === since.after) counting = false;
+      if (!("run" in change.by)) continue;
+      allChanges.push(change.files);
+      if (counting && !since.consolidated(change.by.run)) changes.push(change.files);
+    }
+    const activeBytes = snapshot.notes.filter((note) => note.status === "active").reduce((sum, note) => sum + note.bytes, 0);
+    const workflows = await Promise.all(snapshot.workflows.filter((item) => item.status === "active").flatMap((item) => {
+      const readme = item.files.find((file) => file.path.endsWith("/README.md"));
+      return readme ? [body(readme.path, readme.oid).then((text) => ({ name: item.name, readme: text }))] : [];
+    }));
+    return { main: snapshot.main, mergesSince: changes.length, changes, allChanges, activeBytes, skills: snapshot.skills.filter((item) => item.status === "active").map(({ name }) => ({ name })), workflows };
   });
 }

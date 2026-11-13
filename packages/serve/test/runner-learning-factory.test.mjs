@@ -23,7 +23,7 @@ async function learnedOnce(t, answer) {
   const kept = { state: "proposed", notes: ["Retries"], skills: [], workflows: [], proposal: { notes: [NOTE] }, detail: "Proposed 1 note." };
   await store.runs.update(source, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, { table: "learning_run", row: { id: "learn-1" } }] });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
-  const factory = learningLoopFactory({ store, data: dir, ask: async () => ({ text: answer, usd: 0.01 }) });
+  const factory = learningLoopFactory({ refuse: async () => [], store, data: dir, ask: async () => ({ text: answer, usd: 0.01 }) });
   return { end: await factory({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim) };
 }
 
@@ -38,7 +38,7 @@ test("a learning run built by the factory goes from its claim to its end: graded
   const launch = await store.runs.launch("learn-1");
   assert.equal(launch.body.harness, LEARNING_HARNESS, "the main factory picks this one by the launch's harness");
 
-  const factory = learningLoopFactory({ store, data: dir, ask: async () => ({ text: KEEP, usd: 0.01 }) });
+  const factory = learningLoopFactory({ refuse: async () => [], store, data: dir, ask: async () => ({ text: KEEP, usd: 0.01 }) });
   const claim = await store.claim("learn-1", "runner-b", { leaseMs: 60_000 });
   const loop = factory({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   assert.deepEqual(await loop.start(claim), { state: "ended" });
@@ -82,7 +82,7 @@ test("a learning run whose launch names no run that learned fails, saying so, an
   const { store, dir } = await storeOn(t);
   await agentWithRevision(store);
   await store.runs.create({ id: "learn-2", agentId: "agent-1", revisionId: "rev-1" }, { body: { harness: LEARNING_HARNESS, input: {} } });
-  const factory = learningLoopFactory({ store, data: dir, ask: async () => assert.fail("no grade") });
+  const factory = learningLoopFactory({ refuse: async () => [], store, data: dir, ask: async () => assert.fail("no grade") });
   const claim = await store.claim("learn-2", "runner-b", { leaseMs: 60_000 });
   const end = await factory({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal }).start(claim);
   assert.equal(end.state, "failed");

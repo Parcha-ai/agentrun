@@ -97,7 +97,7 @@ async function learnedQuoting(t, plant) {
   const prompts = [];
   const createLoop = (loopDeps) => {
     const job = createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim))(loopDeps);
-    const learn = learningLoopFactory({ store, data: dir, ask: async ({ prompt }) => (prompts.push(prompt), { text: KEEP, usd: 0 }) })(loopDeps);
+    const learn = learningLoopFactory({ refuse: async () => [], store, data: dir, ask: async ({ prompt }) => (prompts.push(prompt), { text: KEEP, usd: 0 }) })(loopDeps);
     return {
       start: (claim) => (claim.runId === RUN ? job.start(claim) : learn.start(claim)),
       command: (row) => job.command(row),
