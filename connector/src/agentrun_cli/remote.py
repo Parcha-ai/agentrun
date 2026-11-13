@@ -451,7 +451,7 @@ def worker(state, bridge_path=None, once=False):
         if not isinstance(lease, str) or not lease or len(lease) > 8192:
             raise ValueError('Invalid source command lease.')
         result = journal.begin(command)
-        record = {'command': command, 'expires': epoch(command['lease_expires_at']), 'deadline': epoch(command['deadline_at']), 'events': [], 'sequence': 0, 'result': result, 'saved': result is not None}
+        record = {'command': command, 'expires': epoch(command['lease_expires_at']), 'deadline': epoch(command['deadline_at']), 'events': [], 'pending_batch': None, 'sequence': 0, 'result': result, 'saved': result is not None}
         if result is None:
             record['future'] = pool.submit(dispatch, command)
         active[command_id] = record
@@ -505,7 +505,8 @@ def worker(state, bridge_path=None, once=False):
                         if native_event.get('type') == 'text' and isinstance(native_event.get('text'), str):
                             value = native_event['text']
                             pieces = [{**native_event, 'text': value[offset:offset + 10_000]} for offset in range(0, len(value), 10_000)]
-                        if any(len(json.dumps(row).encode()) > 200_000 for row in pieces) or sum(len(json.dumps(row).encode()) for row in [*record['events'], *pieces]) > 2_000_000:
+                        pending_events = record['pending_batch']['events'] if record['pending_batch'] is not None else []
+                        if any(len(json.dumps(row).encode()) > 200_000 for row in pieces) or sum(len(json.dumps(row).encode()) for row in [*pending_events, *record['events'], *pieces]) > 2_000_000:
                             bridge.cancel(command_id)
                             record['result'] = {'error': 'Native event delivery exceeded the bounded source queue; execution stopped.'}
                             record['events'] = []
@@ -525,7 +526,7 @@ def worker(state, bridge_path=None, once=False):
                     except Exception as error:
                         record['result'] = {'error': safe_message(error)}
                 try:
-                    if record['events']:
+                    if record['pending_batch'] is None and record['events']:
                         events, size = [], 0
                         for event in record['events'][:50]:
                             next_size = len(json.dumps(event).encode())
@@ -533,14 +534,19 @@ def worker(state, bridge_path=None, once=False):
                                 break
                             events.append(event)
                             size += next_size
-                        acknowledgement = request(api_origin, token, 'POST', prefix + f'/commands/{command_id}/events', {
+                        # A reply can be lost after acceptance. Keep this exact sequence and payload
+                        # until acknowledged; later native events belong to the next batch.
+                        record['pending_batch'] = {
                             'lease_token': record['command']['lease_token'], 'sequence': record['sequence'], 'events': events,
-                        })
+                        }
+                        del record['events'][:len(events)]
+                    if record['pending_batch'] is not None:
+                        acknowledgement = request(api_origin, token, 'POST', prefix + f'/commands/{command_id}/events', record['pending_batch'])
                         if acknowledgement.get('accepted') is not True:
                             raise ValueError('The destination did not acknowledge the native event batch.')
-                        del record['events'][:len(events)]
+                        record['pending_batch'] = None
                         record['sequence'] += 1
-                    if record['result'] is not None and not record['events']:
+                    if record['result'] is not None and not record['events'] and record['pending_batch'] is None:
                         if not record['saved']:
                             journal.finish(command_id, record['result'])
                             record['saved'] = True

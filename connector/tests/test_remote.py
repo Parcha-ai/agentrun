@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from agentrun_cli.cli import main
 
@@ -25,7 +26,8 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from agentrun_cli.remote import Journal, request, epoch, safe_message
+from agentrun_cli.remote import Journal, request, epoch, safe_message, worker
+from agentrun_cli.state import State
 from agentrun_cli.network import APIError
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -48,6 +50,7 @@ for await (const line of readline.createInterface({input:process.stdin})){
 class Peer:
     def __init__(self):
         self.requests=[];self.commands=[];self.completed=[];self.events=[];self.redirect=None;self.target=None;self.history=[]
+        self.event_attempts=[];self.event_batches={};self.lose_event_reply=False;self.before_lost_event_reply=None
         peer=self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self,*args): pass
@@ -65,7 +68,19 @@ class Peer:
                 elif self.path.endswith('/poll'):
                     result={'commands':peer.commands,'cancelled':[],'server_time':time.time()};peer.commands=[]
                 elif self.path.endswith('/events'):
-                    peer.events.append(body);result={'accepted':True}
+                    peer.event_attempts.append(body)
+                    key=(self.path,body['sequence'])
+                    if key in peer.event_batches and peer.event_batches[key]!=body:
+                        data=json.dumps({'error':{'code':'idempotency_mismatch'}}).encode()
+                        self.send_response(409);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+                    if key not in peer.event_batches:
+                        peer.event_batches[key]=body;peer.events.append(body)
+                    if peer.lose_event_reply:
+                        peer.lose_event_reply=False
+                        if peer.before_lost_event_reply:peer.before_lost_event_reply()
+                        self.close_connection=True
+                        return
+                    result={'accepted':True}
                 elif self.path.endswith('/complete'):
                     peer.completed.append(body);result={'accepted':True}
                 else:
@@ -112,6 +127,59 @@ class RemoteBoundary(unittest.TestCase):
         self.assertEqual(self.peer.completed[0]['result']['answer'],'Remote answer')
         self.assertEqual(self.peer.events[0]['events'][0]['text'],'Remote answer')
         self.assertEqual(self.peer.events[0]['sequence'],0)
+    def event_delivery_with_lost_reply(self,first,later):
+        state=self.connect();command=self.command(next(iter(state['targets'])))
+        self.peer.commands=[command]
+        dispatched=[];cancelled=[];closed=[];sources=[]
+        class NativeSource:
+            def __init__(self,path,on_event):
+                self.on_event=on_event;sources.append(self)
+            def call(self,message):
+                dispatched.append(message)
+                self.on_event({'session_key':command['session_key'],'event':first})
+                return {'answer':'Native task completed'}
+            def cancel(self,command_id):cancelled.append(command_id)
+            def close(self):closed.append(True)
+        # Accept sequence zero, inject a new native event before dropping its HTTP reply,
+        # then enforce the server's identical-payload rule when the worker retries it.
+        self.peer.lose_event_reply=True
+        self.peer.before_lost_event_reply=lambda:sources[0].on_event({'session_key':command['session_key'],'event':later})
+        with mock.patch('agentrun_cli.remote.Bridge',NativeSource):
+            result=worker(State(self.state),once=True)
+        return result,command,dispatched,cancelled,closed
+
+    def test_worker_retries_an_accepted_event_batch_unchanged_before_sending_new_events(self):
+        first={'type':'text','text':'First native event'}
+        later={'type':'text','text':'New event after the accepted batch'}
+        result,command,dispatched,cancelled,closed=self.event_delivery_with_lost_reply(first,later)
+        self.assertEqual(result['status'],'stopped')
+        attempts=self.peer.event_attempts
+        self.assertEqual([body['sequence'] for body in attempts],[0,0,1])
+        self.assertEqual(attempts[0],attempts[1],'a lost reply must replay the exact accepted batch')
+        self.assertEqual(attempts[0]['events'],[first])
+        self.assertEqual(attempts[2]['events'],[later],'new events wait for the next acknowledged sequence')
+        self.assertEqual(self.peer.events,[attempts[0],attempts[2]])
+        self.assertEqual(self.peer.completed,[{'lease_token':command['lease_token'],'result':{'answer':'Native task completed'}}])
+        self.assertEqual(len(dispatched),1,'delivery retries must never re-execute the native task')
+        self.assertEqual(cancelled,[])
+        self.assertEqual(closed,[True])
+
+    def test_worker_counts_unacknowledged_events_toward_the_source_queue_limit(self):
+        first={'type':'text','text':'a'*190_000}
+        later={'type':'text','text':'b'*1_820_000}
+        self.assertLess(len(json.dumps(later).encode()),2_000_000,'new events alone fit the queue')
+        result,command,dispatched,cancelled,closed=self.event_delivery_with_lost_reply(first,later)
+        self.assertEqual(result['status'],'stopped')
+        attempts=self.peer.event_attempts
+        self.assertEqual([body['sequence'] for body in attempts],[0,0])
+        self.assertEqual(attempts[0],attempts[1],'overflow must not alter an accepted pending sequence')
+        self.assertEqual(sum(len(event['text']) for event in attempts[0]['events']),len(first['text']))
+        self.assertEqual(self.peer.events,[attempts[0]])
+        self.assertEqual(self.peer.completed,[{'lease_token':command['lease_token'],'error':'Native event delivery exceeded the bounded source queue; execution stopped.'}])
+        self.assertEqual(cancelled,[command['command_id']])
+        self.assertEqual(len(dispatched),1)
+        self.assertEqual(closed,[True])
+
     def test_server_cannot_select_an_unapproved_source_target(self):
         self.connect();self.peer.commands=[self.command('unapproved')]
         result=self.cli('worker','--state-dir',str(self.state),'--foreground','--once')
