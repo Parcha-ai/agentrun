@@ -228,6 +228,50 @@ test("a merge that writes a compiled workflow marks each active note it absorbed
   assert.match(at("MEMORY.md"), /rule-1\.md/, "still in the index: still served");
 });
 
+test("a note at the 4 KB cap a compiled workflow marks stays a note: the host's compiled_into line never counts against the cap, so it still retires, restores, and a later note supersedes it through the grader", async (t) => {
+  const { writeNote } = await import("../dist/learning-routes.js");
+  const { gradePrompt } = await import("../dist/learn/grade.js");
+  const { checkNote } = await import("../dist/learn/check.js");
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-compile-cap-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await seedOf(data, "agent-1");
+  const head = note({ name: "Full", description: "A note at the cap", body: "" });
+  const full = `${head}${"x".repeat(4095 - Buffer.byteLength(head))}\n`;
+  assert.equal(Buffer.byteLength(full), 4096);
+  // An owner's note at the cap, through the route a person writes it by.
+  assert.equal((await writeNote(data, "agent-1", "full.md", { ifNoneMatch: "*", body: Buffer.from(full), refuse: [] })).status, 201);
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const flow = JSON.stringify(compile.compileExample(false));
+    const readme = "---\nname: refund-request\ndescription: Answers a refund request\n---\n";
+    const merged = await learningCommit(folder.workspace, { kind: "merge", runId: "run-1", reason: "compiled", graded: {}, files: [{ path: "workflows/refund-request/workflow.json", text: flow }, { path: "workflows/refund-request/README.md", text: readme }], compiled: { workflow: "refund-request", notes: ["full.md"] } });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+  } finally {
+    await folder.end();
+  }
+  const repo = repoOf(data, "agent-1");
+  // git() trims its output: the note ends in its newline.
+  const compiled = `${git(repo, ["show", "main:full.md"])}\n`;
+  assert.match(compiled, /compiled_into: refund-request/);
+  assert.ok(Buffer.byteLength(compiled) > 4096, "the mark is on top of the cap");
+  // A person's own read of it: the note checks pass it as it is on main.
+  assert.deepEqual(checkNote("full.md", Buffer.from(compiled)).problems, []);
+  // A later run's note that supersedes it: the grader reads it whole.
+  const newer = note({ name: "Fuller", description: "The rule again", extra: "supersedes: [full.md]\n" });
+  assert.match(gradePrompt({ run: "run-2", active: [parseNoteFile("full.md", compiled)], superseded: [{ file: "full.md", text: compiled }], proposed: [{ file: "fuller.md", text: newer }] }), /compiled_into: refund-request/);
+  // Retired, then restored: the cap holds for each without the host's line.
+  const etag = () => `"${git(repo, ["rev-parse", "main:full.md"])}"`;
+  const retired = await writeNote(data, "agent-1", "full.md", { ifMatch: etag(), refuse: [] });
+  assert.equal(retired.status, 200);
+  assert.match(retired.text, /status: retired/);
+  const restored = await writeNote(data, "agent-1", "full.md", { ifMatch: etag(), refuse: [], restore: true });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.text, compiled, "back as it was, its mark kept");
+  // A person still cannot write past the cap by adding the line by hand beyond it: the cap counts everything else.
+  const over = `${head}${"x".repeat(4096 - Buffer.byteLength(head))}\n`.replace("type: reference\n", "type: reference\ncompiled_into: refund-request\n");
+  assert.deepEqual(checkNote("over.md", Buffer.from(over)).problems.map(({ rule }) => rule), ["too_large"]);
+});
+
 test("GET /runs/{id}/learning serves the compile record and a failed draft's errors, each cut of the host's secrets", () => {
   const SECRET = "sk-test-0123456789abcdef0123456789";
   const learning = { state: "proposed", reason: null, detail: said.proposed(1, 0, 0), at: new Date(0).toISOString(), compiled: { workflow: "answer", from_notes: ["rule-1.md"], attempts: [{ ok: false, errors: [`workflow: leaks ${SECRET}`] }] }, draft_errors: [`workflow: leaks ${SECRET}`] };

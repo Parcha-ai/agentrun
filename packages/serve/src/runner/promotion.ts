@@ -18,7 +18,11 @@
 // runs are cancelled (in-flight ones stop as any cancelled run does, what they spent stays booked on their rows), and
 // none runs after: a replay run's claim refuses it unless its revision still replays (replayClaimed), so a cancel lost
 // to a crash or a failed write never leaves one running. Its record says superseded. The newer revision is compiled on
-// the folder's main, the challenger's own text, so it already carries that change.
+// the folder's main, the challenger's own text, so it already carries that change. The challenger is reserved before any
+// of its replay runs starts: its replaying record, naming the runs it will start, is kept only while no other revision of
+// the workflow replays (the rival check in the same guarded write), so two claims of two revisions at once start one
+// replay. Every decision is acted on (replay runs started, a refit written, runs cancelled) only by the claim whose write
+// kept it (learn/promote.ts Recorded.won). A replay decided with runs still at work (its deadline passed) cancels them.
 // A replay never repeats a side effect and runs with what a served run of the agent has (learn/replay-calls.ts, SPEC B4):
 // each call node's tool is a read or a write; a read runs live through a cache seeded from the graded run's recorded calls,
 // a write is answered only from that recording (same tool, same canonical arguments) and is never sent, and an input whose
@@ -32,7 +36,7 @@ import { LEARNING_LABEL } from "../learning.js";
 import type { GuardRow } from "../learned-nodes.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../runs-over-store.js";
-import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunRow, type Store } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
@@ -50,7 +54,8 @@ import { recordOnly } from "../learn/promote.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
 
-/** A replay run still not ended this long after its replay started counts as handed back (the agent's answer). */
+/** A replay run still not ended this long after its replay started counts as failed (no evidence), and is cancelled once
+ *  the replay is decided without it. */
 export const REPLAY_DEADLINE_MS = 60 * 60 * 1000;
 
 export interface PromotionDeps {
@@ -220,23 +225,28 @@ async function promoted(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   if (graded.length < REPLAY_MIN) {
     const reason = graded.length ? `${plural(graded.length, "graded input")} it fits, fewer than ${REPLAY_MIN}: promoted on its passing dry run` : `no graded input it fits: promoted on its passing dry run`;
     const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "promote", source: "dry_run", reason, ...seedOf(deps) }, (was) => was === undefined);
-    if (kept.decided === "promote" && kept.source === "dry_run") log(`workflow-first: ${workflow.name} at ${digest}: ${kept.reason}`);
-    return kept.decided === "promote";
+    if (kept.won) log(`workflow-first: ${workflow.name} at ${digest}: ${reason}`);
+    return kept.record?.decided === "promote";
   }
-  // Replay runs, one per graded input, each under an origin key of its own, so two claims deciding the same digest at once
-  // start each once.
-  const runs: string[] = [];
-  for (const one of graded) runs.push(await startReplay(deps, workflow, digest, one));
-  const kept = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs, ...seedOf(deps) }, (was) => was === undefined);
+  // The challenger reserved first: its record names the replay runs it will start (their ids minted here), kept only when
+  // this digest has none yet and no other revision of the workflow replays, in the one guarded write. Only the claim that
+  // kept it starts them: a claim of the same digest, or of another revision, at once, starts none.
+  const ids = graded.map(() => uuidv7());
+  const reserved = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", source: "replay", reason: `replaying on the agent's last ${plural(graded.length, "graded input")} it fits`, runs: ids, ...seedOf(deps) },
+    (was, items) => was === undefined && replayingOf(items, workflow.name, digest).length === 0);
+  if (!reserved.won) {
+    const rival = reserved.record ? undefined : replayingOf(await promotionsOf(store.settings, agentId), workflow.name, digest)[0];
+    if (rival) log(`workflow-first: ${workflow.name} at ${digest}: ${rival.digest} began replaying first; it does not serve this run`);
+    return reserved.record?.decided === "promote";
+  }
+  for (const [i, one] of graded.entries()) await startReplay(deps, workflow, digest, one, ids[i]!);
   log(`workflow-first: ${workflow.name} at ${digest} is new: replaying it on the agent's last ${plural(graded.length, "graded input")} before it serves`);
-  return kept.decided === "promote";
+  return false;
 }
 
 /** Supersedes `record`, a revision still replaying, by the newer revision at `by`: its record decided superseded (kept only
- *  while it still says replaying: a replay that settled first keeps its decision), then each of its replay runs not ended
- *  is cancelled, as a person's cancel is (an in-flight one stops, what it spent booked on its row). The record is the
- *  durable half: a cancel that is lost (a crash after the record, a write that fails) leaves a run whose claim refuses it
- *  (replayClaimed), so each cancel is tried and a failed one only logged. */
+ *  while it still says replaying: a replay that settled first keeps its decision), then its replay runs not ended are
+ *  cancelled (cancelUnended) by the claim whose write kept it. */
 async function supersede(deps: PromotionDeps, record: PromotionRecord, by: string): Promise<void> {
   const { store, agentId, log } = deps;
   const now = deps.now ?? Date.now;
@@ -246,9 +256,19 @@ async function supersede(deps: PromotionDeps, record: PromotionRecord, by: strin
     workflow: record.workflow, digest: record.digest, at: iso(now()), decided: "superseded", source: "replay", reason, superseded_by: by,
     ...(runs.length ? { runs } : {}), ...(record.commit ? { commit: record.commit } : {}),
   }, (was) => was?.decided === "replaying");
-  if (kept.decided !== "superseded" || kept.superseded_by !== by) return;
+  if (!kept.won) return;
+  const cancelled = await cancelUnended(deps, record);
+  log(`workflow-first: ${record.workflow} at ${record.digest} superseded by ${by} while it replayed; ${plural(cancelled, "replay run")} cancelled`);
+}
+
+/** Cancels each of `record`'s replay runs not ended, as a person's cancel is (an in-flight one stops, what it spent booked
+ *  on its row): once its revision is superseded, or decided with runs still at work. How many were sent their cancel. The
+ *  record is the durable half: a cancel that is lost (a crash after the record, a write that fails) leaves a run whose
+ *  claim refuses it (replayClaimed: its revision no longer replays), so each cancel is tried and a failed one only logged. */
+async function cancelUnended(deps: PromotionDeps, record: PromotionRecord): Promise<number> {
+  const { store, log } = deps;
   let cancelled = 0;
-  for (const id of runs) {
+  for (const id of record.runs ?? []) {
     const row = await store.runs.get(id);
     if (!row || FINAL_STATES.includes(row.state)) continue;
     try {
@@ -258,7 +278,7 @@ async function supersede(deps: PromotionDeps, record: PromotionRecord, by: strin
       if (!(error instanceof RunFinal)) log(`workflow-first: replay run ${id} of ${record.workflow} at ${record.digest} was not sent its cancel (${(error as Error)?.message ?? error}); its claim refuses it`);
     }
   }
-  log(`workflow-first: ${record.workflow} at ${record.digest} superseded by ${by} while it replayed; ${plural(cancelled, "replay run")} cancelled`);
+  return cancelled;
 }
 
 /** A graded input a replay runs on: the graded run, its grade, its launch. */
@@ -294,11 +314,10 @@ async function handedTo(deps: PromotionDeps, id: string): Promise<Uint8Array | u
   return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
 }
 
-/** Starts the replay of `workflow` at `digest` on graded input `one` (once: its origin key's run when there is one), with
+/** Starts the replay of `workflow` at `digest` on graded input `one` as run `id` (the id its reserved record names), with
  *  the claimed run's handed credentials (handedTo). */
-async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, one: GradedInput): Promise<string> {
+async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, one: GradedInput, id: string): Promise<void> {
   const { store, agentId, launch } = deps;
-  const key = `replay:${agentId}:${workflow.name}:${digest}:${one.grade.run}`;
   const replay: RunLaunch = {
     input: one.launch.input,
     title: `Replay of ${workflow.name}: ${one.launch.title}`.slice(0, 200),
@@ -317,16 +336,8 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
     ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
     replay: { of: one.grade.run, workflow: workflow.name, digest },
   };
-  const id = uuidv7();
   const sealed = await handedTo(deps, id);
-  try {
-    return (await store.runs.create({ id, agentId, revisionId: deps.revisionId, origin: { key } }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) })).id;
-  } catch (error) {
-    if (!(error instanceof StoreConstraint)) throw error;
-    const existing = await store.runOfOrigin(key);
-    if (existing) return existing.runId;
-    throw error;
-  }
+  await store.runs.create({ id, agentId, revisionId: deps.revisionId }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) });
 }
 
 /** A run's final answer, whole (its last final answer row that is not its end-of-run turn's), or null: none, or its
@@ -403,13 +414,17 @@ async function settle(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
     replay: { ...score, of: read.rows.map((row) => row.of), cost_usd: read.cost, skipped_write: skipped }, ...(record.runs ? { runs: record.runs } : {}),
     ...(record.commit ? { commit: record.commit } : seedOf(deps)),
   }, (was) => was?.decided === "replaying");
-  if (decided.decided === "replaying") return undefined;
-  log(`workflow-first: ${workflow.name} at ${digest} ${decided.decided === "promote" ? "promoted" : "held"}: ${decided.reason}`);
-  if (decided.decided === "hold" && scored.length >= REPLAY_MIN) {
+  // Another claim's decision came first: it logs, cancels and refits; this one reads it.
+  if (!decided.won) return decided.record?.decided === "replaying" ? undefined : decided.record;
+  log(`workflow-first: ${workflow.name} at ${digest} ${ok ? "promoted" : "held"}: ${reason}`);
+  // Decided past its deadline with runs still at work: they are cancelled, never left spending on a decided replay.
+  const cancelled = await cancelUnended(deps, record);
+  if (cancelled) log(`workflow-first: ${workflow.name} at ${digest}: ${plural(cancelled, "replay run")} still at work past the replay's deadline cancelled`);
+  if (!ok && scored.length >= REPLAY_MIN) {
     // Held with guards: one refit over the replay's scored rows (each step's p known: its guards read record-only).
     await refitAndWrite(deps, workflow, digest, scored.map(replayRefitRow), "its replay held it", scored);
   }
-  return decided;
+  return decided.record;
 }
 
 /** A replayed input as a refit row: answered alone only when every guard read a p (record-only, none handed back). */
@@ -434,8 +449,9 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
   const byHand = grades.filter((grade) => grade.path === "agent").slice(-REPLAY_INPUTS);
   const agentAcc = byHand.length ? byHand.filter((grade) => grade.correct).length / byHand.length : record.replay?.agent_acc;
   // Marked checked at this count first, so two claims never check the same window twice.
+  // Only the claim whose write marked it refits: one that lost the write reads the winner's record back, the same cursor.
   const marked = await recordPromotion(store.settings, agentId, { ...record, at: iso(now()), checked: through }, (was) => was?.decided === "promote" && (was.checked ?? 0) === checked);
-  if ((marked.checked ?? 0) !== through || agentAcc === undefined) return marked.decided === "promote";
+  if (!marked.won || agentAcc === undefined) return marked.record?.decided === "promote";
   const rows: RefitRow[] = [];
   for (const grade of served) {
     const run = await store.runs.get(grade.run);
@@ -450,8 +466,8 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
   if (!wrote && servedAcc < agentAcc - PROMOTE_BAR - 1e-9) {
     const reason = `${plural(served.length, "graded run")} it served were right ${(servedAcc * 100).toFixed(1)}% of the time, more than ${PROMOTE_BAR * 100} pts under the agent's ${(agentAcc * 100).toFixed(1)}% by hand`;
     const held = await recordPromotion(store.settings, agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "hold", source: "graded", reason }, (was) => was?.decided === "promote");
-    log(`workflow-first: ${workflow.name} at ${digest} held: ${held.reason}`);
-    return held.decided === "promote";
+    if (held.won) log(`workflow-first: ${workflow.name} at ${digest} held: ${reason}`);
+    return held.record?.decided === "promote";
   }
   return true;
 }

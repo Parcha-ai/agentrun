@@ -30,7 +30,7 @@ import { COST_WINDOW, type RunPath } from "../learning-cost.js";
 export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
-import { type GuardRow, guardsOf, LEARNED_NODES, replaySkippedIn } from "../learned-nodes.js";
+import { endedIn, type GuardRow, guardsOf, replaySkippedIn } from "../learned-nodes.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
  *  revision, under which call, and how it ended. A later claim that finds it never runs the workflow again. */
@@ -285,20 +285,16 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
     // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow).
     const { of, workflow: name, digest: at } = launch.replay;
-    // Handed back when it escalated (an escalate node or a guard: the workflow knowing its limits); a hand-back on a step
-    // that failed (a credential or tool the replay ran without, a step's output off its schema) is failed: no evidence.
-    // Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run, no evidence.
+    // Handed back when the workflow ended escalated (an escalate node or a guard: the workflow knowing its limits), however
+    // many of its nodes failed on the way and were recovered (a map's collected item); a workflow that itself ended failed
+    // (a credential or tool the replay ran without, a step's output off its schema), or was refused, is failed: no
+    // evidence. Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run.
     const skipped = replaySkippedIn(entries);
-    const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && !stepFailedIn(entries) ? "handed_back" : "failed";
+    const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
     return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...(guards.length ? { guards } : {}), replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
   }
   return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(guards.length ? { guards } : {}) };
 }
-
-/** Whether a step of a learned workflow's call in `entries` failed: one of its nodes (LEARNED_NODES) ended `failed`, as the
- *  DSL ends a step that threw (an escalation, an escalate node's or a guard's, ends `escalated`, or no step at all). */
-const stepFailedIn = (entries: readonly { readonly kind: string; readonly data?: unknown }[]): boolean =>
-  entries.some((entry) => entry.kind === LEARNED_NODES && Array.isArray((entry.data as { nodes?: unknown } | undefined)?.nodes) && ((entry.data as { nodes: unknown[] }).nodes).some((node) => (node as { status?: unknown } | null)?.status === "failed"));
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
 export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: { readonly tool: string; readonly step: string } };

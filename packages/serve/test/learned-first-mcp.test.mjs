@@ -54,3 +54,21 @@ test("served first, a learned workflow's MCP node runs once through the run's MC
   assert.equal(view.cost?.usd, 0.05, "the faux model is free: the run's cost is the MCP node's");
   assert.equal(rows.some((row) => /handed it back/.test(row.text ?? "")), false, "never handed back");
 });
+
+// Review on #2644 (follow-up cost): only the workflow's own answer, the model message written with its WORKFLOW_FIRST
+// entry, is passed over. A follow-up's model message after it is the model at work: with nothing booked, the run's cost
+// is unknown, never its booking's.
+test("a CLI record served alone reads no model work; a follow-up's model answer after it does", async () => {
+  const { cliModelWorked } = await import("../dist/runner/metrics.js");
+  const { KINDS } = await import("../dist/runner/journal-kinds.js");
+  const { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } = await import("../dist/runner/workflow-first.js");
+  const served = [
+    { kind: KINDS.callStart, data: { callId: WORKFLOW_FIRST_CALL, tool: "learned_workflow" } },
+    { kind: KINDS.callEnd, data: { callId: WORKFLOW_FIRST_CALL, outcome: "done" } },
+    { kind: KINDS.message, data: { role: "model", text: "5" } },
+    { kind: WORKFLOW_FIRST, data: { workflow: "add-two", digest: "d", revision: null, call: WORKFLOW_FIRST_CALL, outcome: "answered" } },
+  ];
+  assert.equal(cliModelWorked(served), false, "the workflow's call and answer: no model request of the agent's");
+  const followUp = [...served, { kind: KINDS.message, data: { role: "user", text: "Is that right?" } }, { kind: KINDS.message, data: { role: "model", text: "Yes, 5." } }];
+  assert.equal(cliModelWorked(followUp), true, "a follow-up's answer is the model at work");
+});

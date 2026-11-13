@@ -5,8 +5,13 @@
 /** The journal entry a learned_workflow call keeps beside itself: `{ call, workflow, nodes, guards? }`, its call's id, the
  *  workflow's name, each of its nodes that ran (LearnedNode, at most LEARNED_NODES_MAX) and every guard check it made
  *  (GuardRow, never capped: a map over more items than the trace holds keeps each); on a replay run's call that a write
- *  stopped (learn/replay-calls.ts: one the graded run's recording does not have), `replay_skipped: { tool, step }` too. */
+ *  stopped (learn/replay-calls.ts: one the graded run's recording does not have), `replay_skipped: { tool, step }` too; and
+ *  `ended`, how the workflow ended (LearnedEnded), on a call that ended (a replay run's call always keeps its entry). */
 export const LEARNED_NODES = "agentrun.learned_nodes";
+/** How a learned workflow's call ended: `complete` (it answered), `escalated` (it handed back: an escalate node or a guard,
+ *  however many nodes failed on the way and were recovered, a map's collected item say), or `failed` (it threw, or was
+ *  refused before any node ran). */
+export type LearnedEnded = "complete" | "escalated" | "failed";
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
 /** One node of a learned workflow's run, as the DSL ended it (its `node.end` event): its label, its kind, how it ended
@@ -32,6 +37,13 @@ export function guardsOf(entries: readonly { readonly kind: string; readonly dat
     for (const row of guards) if (row && typeof row === "object") rows.push(row as GuardRow);
   }
   return rows;
+}
+
+/** How the newest learned_workflow call of `workflow` in `entries` (its root's) ended (LEARNED_NODES `ended`), or undefined
+ *  when no entry says. */
+export function endedIn(entries: readonly { readonly kind: string; readonly data?: unknown }[], workflow: string): LearnedEnded | undefined {
+  const data = entries.findLast((entry) => entry.kind === LEARNED_NODES && (entry.data as { workflow?: unknown } | undefined)?.workflow === workflow)?.data as { ended?: unknown } | undefined;
+  return data?.ended === "complete" || data?.ended === "escalated" || data?.ended === "failed" ? data.ended : undefined;
 }
 
 /** The write that stopped a replay run's workflow, from its root entries (a LEARNED_NODES entry's `replay_skipped`: a
