@@ -72,8 +72,8 @@ import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type NewRevision, openStore, type RevisionPlace, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
-import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, putGrade, servingOf } from "./learn/promote.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
+import { type Grade, GRADE_SOURCES, type GradeSource, gradeView, promotionsOf, putGrade, servingOf } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -91,7 +91,8 @@ import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { agentCostOverStore, agentLearningOverStore, learningCountsOverStore, learningSpendOverStore } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
@@ -130,6 +131,7 @@ import { readApprovers, writeApprovers } from "./server-approvers.js";
 import type { DraftAsk } from "./learn/skills.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
+import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runViewedKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { createAttachRoutes, pairedView } from "./computer-attach.js";
@@ -140,7 +142,6 @@ import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
-import { runComputerField } from "./run-computer.js";
 import { writesHeld } from "./workspace.js";
 import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
@@ -306,6 +307,8 @@ export type ServeOptions = {
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
   learning?: LearningMode;
+  /** A test's seam: how often a learning batch's loop looks at its run, in ms (learning-batch.ts; default 1000). */
+  batchPollMs?: number;
   /** How much of what a run learned its instructions hold under `# Learned`, in UTF-8 bytes (`--learning-budget`;
    *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the notes that bear on
    *  the run's input whole and a line for each of the rest (learning.ts learnedParts, its note selector). */
@@ -447,11 +450,17 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
+  // A held computer's (computer-held-routes.ts): a run started with hold: true waits for its start, takes its owner's
+  // protocol calls, and keeps its computer after its agent's end until released.
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/start$/, name: "startRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/call$/, name: "callRunComputer" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/release$/, name: "releaseRunComputer" },
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
+  { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
   // A person's own computer paired with this server (computer-attach.ts): the owner's code, the driver's trade of it for
   // its token (no token of the server's: the code is the credential), the attach socket (a WebSocket: the server's
   // upgrade takes it; a plain GET is told so), and a computer's removal.
@@ -520,6 +529,10 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)\/cancel$/, name: "cancelLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
@@ -1150,15 +1163,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
   };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
-  const runComputerOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
-    const run = await store.runs.get(runId);
-    const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
-    const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
-    if (!setting) return {};
-    const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
-    const field = runComputerField(setting, { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) });
-    return field ? { computer: field } : {};
-  };
+  const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
@@ -1310,6 +1315,53 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
+  /** What a learning batch's loop reads of a run, from its view. */
+  const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
+    const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
+    if (!v) return undefined;
+    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
+  };
+  // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
+  // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
+  // (create's answer, read, list, cancel) cut its text as the learning routes do (learningShown, below).
+  const batches = new LearningBatches({
+    settings: store.settings,
+    learning: async (agentId) => {
+      const entry = await needAgent(agentId);
+      if (entry.agent.archivedAt) return { learns: false, why: "it is archived." };
+      if (learning === "off") return { learns: false, why: "this server's learning is off (--learning)." };
+      if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
+      return { learns: true };
+    },
+    // A row's run starts under the row's key (the store's run origin, as an Idempotency-Key's run does), so a start the
+    // server stopped before its row kept the id is found again, never started twice.
+    find: async (key) => (await agents.request(() => agents.store.runOfOrigin(key)))?.runId,
+    start: async (agentId, body, key) => (await startRunOf(await needAgent(agentId), body as Json, { origin: { key } })).id,
+    view: (runId) => batchRunView(runId),
+    // Sent already: a steer the run's commands hold with these words, not refused (a follow-up to an ended run is one too,
+    // its reopen's).
+    sent: async (runId, content) => (await store.commands(runId, 0)).some((c) => c.kind === "steer" && c.refused === null && (c.body as { text?: unknown } | undefined)?.text === content),
+    message: async (runId, content) => void (await message(store, await needRun(runId), content)),
+    // A run that is not there has nothing to stop; any other failure is the loop's (the row stays live and owned).
+    cancel: async (runId) => {
+      const moment = ID.test(runId) ? await momentOverStore(store, runId, viewDepsFor(ownOriginOf())) : undefined;
+      if (moment) await cancel(store, moment);
+    },
+    figures: async (runId) => {
+      const stored = await store.runs.get(runId);
+      if (!stored) return undefined;
+      // A run still going has no stored cost yet (its column is written at its end): its live cost, from its view, stands in,
+      // so a batch's cost now and the cost it books are costRunOf both.
+      const run = FINAL_STATES.includes(stored.state) ? stored : { ...stored, costUsd: (await batchRunView(runId))?.cost_usd ?? null };
+      // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
+      const newest = await store.learning.proposal(runId);
+      const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
+      return figuresOf(await costRunOf(store, run, 0), ends);
+    },
+    // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
+    shown: (agentId) => learningShown(agentId),
+    ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
+  });
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
@@ -1485,6 +1537,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
+  void batches.resume().catch((error: Error) => void process.stderr.write(`agentrun-serve: the learning batches' resume: ${error.message}\n`));
   void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
   // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
   // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
@@ -2124,7 +2177,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** A run create's body as POST /agents/{id}/runs checks it before it reads the agent: each field issue. */
   function runBodyIssues(body: Json): InputIssue[] {
-    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo", "workflow_first"]);
+    const issues = unknownFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "cap_mode", "quote_id", "learning", "archil_disk", "repo", "workflow_first", "hold", "hold_minutes"]);
+    issues.push(...holdIssues(body));
     if (body.repo !== undefined && !(typeof body.repo === "string" && REPO_NAME.test(body.repo))) issues.push({ field: "repo", reason: "wrong_type", message: "repo is a GitHub repository as owner/name, one the agent is bound to" });
     if (body.archil_disk !== undefined) {
       const disk = body.archil_disk;
@@ -2942,6 +2996,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }, store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      case "startRun":
+      case "callRunComputer":
+      case "releaseRunComputer": {
+        // A call on a run's computer (the computer call channel) and a held computer's start and release
+        // (computer-held-routes.ts), over the store: each a command row the run's runner applies.
+        const run = await needRun(id);
+        return send(res, 200, await heldRoute(found.name, run.id, await bodyOf(req), store, { context: ctx }), { "cache-control": "no-store" });
+      }
       case "createPairing":
         return send(res, 201, await attach.createPairing(), { "cache-control": "no-store" });
       case "attachComputer":
@@ -2951,7 +3013,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listComputers":
       case "saveComputerKeys":
-      case "testComputer": {
+      case "testComputer":
+      case "listComputerChoices": {
         // Settings → Computers (computers.ts): the rules are the handler's; this sends its answer.
         const provider = found.name === "listComputers" ? undefined : id;
         const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;
@@ -3243,6 +3306,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const serving = servingOf(records).map((one) => ({ ...one, workflow: shown.name(one.workflow) }));
         return send(res, 200, { agent: id, promotions, serving });
       }
+      case "createLearningBatch": {
+        await needAgent(id);
+        const made = await batches.create(id, await bodyOf(req));
+        return send(res, 202, await batches.read(id, made.id), { location: `/v2/agents/${encodeURIComponent(id)}/learning/batches/${made.id}` });
+      }
+      case "listLearningBatches":
+        await needAgent(id);
+        return send(res, 200, await batches.list(id));
+      case "getLearningBatch":
+        await needAgent(id);
+        return send(res, 200, await batches.read(id, second!));
+      case "cancelLearningBatch":
+        await needAgent(id);
+        return send(res, 200, await batches.cancel(id, second!));
       case "listLearningEvals": {
         await needAgent(id);
         // The agent's eval records (learning-evals.ts), newest first, the latest the one shown: only ever what was posted.
@@ -3815,6 +3892,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
+    // A learning batch's loop ends where it stands, still running: it takes up when a server starts on this data again.
+    await batches.halt();
     await webhooks.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();

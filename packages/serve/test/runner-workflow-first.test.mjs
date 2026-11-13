@@ -9,8 +9,10 @@
 //   - workflow_first false, an input no workflow fits: the agent takes the run from its first turn, path "agent".
 //   - learned_workflow set to ask: the run parks on the step before any node runs; approved, it runs.
 //   - a stop while the step is asked: the claim that holds it ends the run stopped.
-//   - the money rule: a workflow whose last 10 served runs cost more than the agent by hand stops running first, and the
-//     run asks for its revision; under it, at a new digest, under 10 runs or with no by-hand baseline, it serves.
+//   - the money rule: a workflow whose last 10 served runs cost more than the agent by hand, each side all-in (its own cost
+//     and every learning round booked for it, its grades included), stops running first, and the run asks for its
+//     revision; under it, at a new digest, under 10 runs or with no by-hand baseline, it serves. A run whose all-in is
+//     unknown (a grade of unknown cost) is left out of the mean and counted, never read as 0.
 // pi's model and the node's go through the session proxy to a loopback gateway; no sleeps, no port races. The same on a
 // CLI harness (the faux one the harness table hands the runner): one loop serves every harness.
 import assert from "node:assert/strict";
@@ -94,7 +96,7 @@ const until = async (done, what, ms = 40_000) => {
  *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
 *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -130,12 +132,19 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
   // store's own rows, every other read the store's.
   // `pastFromSecondClaim`: the money rule reads them only once a first claim has built its spec (a claim after a crash).
+  // `pastGrades`: by past run id, the cost its grade booked (its learning run's, ended; null: unknown), kept as its round-1
+  // proposal's learning run, as the store keeps a graded run's.
   let claims = 0;
   const runsOf = { ...store.runs, list: async (filter) => [...(pastFromSecondClaim && claims < 1 ? [] : past), ...(await store.runs.list(filter))] };
   for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(store.runs) ?? {})) if (typeof store.runs[key] === "function" && key !== "list" && key !== "constructor") runsOf[key] = store.runs[key].bind(store.runs);
+  const gradeRuns = new Map(Object.entries(pastGrades).map(([id, usd]) => [`grade-${id}`, { id: `grade-${id}`, agentId: "agent-1", revisionId: "rev-1", state: "ended", costUsd: usd, metrics: {}, importedFrom: null, archivedAt: null, epoch: 1, runner: null, startedAt: 0, endedAt: 1 }]));
+  runsOf.get = async (id, ...rest) => gradeRuns.get(id) ?? store.runs.get(id, ...rest);
   // `keptBefore`: earlier runs' kept learning, newest first (learning_proposals), laid before the store's own the same way.
-  const learningOf = { proposal: async (runId) => earlier.find((one) => one.runId === runId) ?? (await store.learning.proposal(runId)), proposals: async (agentId, options) => [...earlier.filter((one) => one.agentId === agentId), ...(await store.learning.proposals(agentId, options))], spend: (window) => store.learning.spend(window) };
-  const depStore = past.length || earlier.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? learningOf : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const learningOf = {
+    proposal: async (runId, round) => earlier.find((one) => one.runId === runId) ?? (runId in pastGrades ? { runId, agentId: "agent-1", round: 1, turn: {}, proposal: {}, learningRunId: `grade-${runId}` } : await store.learning.proposal(runId, round)),
+    proposals: async (agentId, options) => [...earlier.filter((one) => one.agentId === agentId), ...(await store.learning.proposals(agentId, options))],
+  };
+  const depStore = past.length || earlier.length ? new Proxy(store, { get: (target, key) => (key === "runs" ? runsOf : key === "learning" ? new Proxy(target.learning, { get: (l, k) => (k in learningOf ? learningOf[k] : typeof l[k] === "function" ? l[k].bind(l) : l[k]) }) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store: depStore, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
@@ -257,6 +266,30 @@ test("handed back: the compile turn asks for the workflow's next revision by its
   assert.ok(ask, `the compile turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(0, 300)).join("\n---\n")}`);
   assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
   assert.match(textOf(ask.body), /`answer` as it is now:/);
+});
+
+test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {
+  // Served runs at $0.1 each, by hand $0.2: under the line on their own cost; each served run's grade books $0.4, so
+  // all-in they cost $0.5 a run. The by-hand runs' grades are on their side too ($0.05 each: $0.25 all-in).
+  const past = pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 });
+  const pastGrades = Object.fromEntries(past.map((run) => [run.id, run.metrics.path === "agent" ? 0.05 : 0.4]));
+  const { row, gateway, entries, logs } = await piRun(t, { past, pastGrades });
+  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
+  assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
+  const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
+  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.25, COST_WINDOW], "the two numbers are all-in");
+  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.25 by hand, both all-in;/.test(line)), JSON.stringify(logs));
+});
+
+test("money rule, all-in: a served run whose grade's cost is unknown is left out of the mean and counted, never read as 0", async (t) => {
+  // 11 served runs, the newest at $5 with a grade of unknown cost, the 10 older at $0.1: read as 0 its grade would put
+  // it in the window ($0.59 a run, over the by-hand $0.2); left out, the 10 known are the window, under, and it serves.
+  const [newest, ...older] = pastRuns({ served: COST_WINDOW + 1, servedUsd: 0.1, byHandUsd: 0.2 });
+  const { row: under } = await piRun(t, { past: [{ ...newest, costUsd: 5 }, ...older], pastGrades: { "past-0": null } });
+  assert.equal(under.metrics?.path, "workflow", JSON.stringify(under.metrics));
+  // Only 10 served, the newest unknown: 9 known, under COST_WINDOW, so it serves though the 9 cost $0.5 a run.
+  const { row: few } = await piRun(t, { past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastGrades: { "past-0": null } });
+  assert.equal(few.metrics?.path, "workflow", `an unknown run is never one of the window: ${JSON.stringify(few.metrics)}`);
 });
 
 // A teacher's label sent after the run (a follow-up) is the feedback learning runs on: on a run its learned workflow served
@@ -411,6 +444,30 @@ test("held: a compile of it since the hold, past the last 4 runs, asks no revisi
   assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
 });
 
+test("money rule, all-in: a workflow whose runs are cheap but whose grades push its all-in over the agent's by hand stops running first", async (t) => {
+  // Served runs at $0.1 each, by hand $0.2: under the line on their own cost; each served run's grade books $0.4, so
+  // all-in they cost $0.5 a run. The by-hand runs' grades are on their side too ($0.05 each: $0.25 all-in).
+  const past = pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 });
+  const pastGrades = Object.fromEntries(past.map((run) => [run.id, run.metrics.path === "agent" ? 0.05 : 0.4]));
+  const { row, gateway, entries, logs } = await piRun(t, { past, pastGrades });
+  assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
+  assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
+  const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
+  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.25, COST_WINDOW], "the two numbers are all-in");
+  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.25 by hand, both all-in;/.test(line)), JSON.stringify(logs));
+});
+
+test("money rule, all-in: a served run whose grade's cost is unknown is left out of the mean and counted, never read as 0", async (t) => {
+  // 11 served runs, the newest at $5 with a grade of unknown cost, the 10 older at $0.1: read as 0 its grade would put
+  // it in the window ($0.59 a run, over the by-hand $0.2); left out, the 10 known are the window, under, and it serves.
+  const [newest, ...older] = pastRuns({ served: COST_WINDOW + 1, servedUsd: 0.1, byHandUsd: 0.2 });
+  const { row: under } = await piRun(t, { past: [{ ...newest, costUsd: 5 }, ...older], pastGrades: { "past-0": null } });
+  assert.equal(under.metrics?.path, "workflow", JSON.stringify(under.metrics));
+  // Only 10 served, the newest unknown: 9 known, under COST_WINDOW, so it serves though the 9 cost $0.5 a run.
+  const { row: few } = await piRun(t, { past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastGrades: { "past-0": null } });
+  assert.equal(few.metrics?.path, "workflow", `an unknown run is never one of the window: ${JSON.stringify(few.metrics)}`);
+});
+
 test("money rule: under the by-hand cost, a new digest, fewer than 10 served runs, or no by-hand baseline: the workflow serves", async (t) => {
   for (const [why, past] of [
     ["under the by-hand cost", pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 })],
@@ -428,10 +485,15 @@ test("money rule: under the by-hand cost, a new digest, fewer than 10 served run
 
 test("costLineOf: the newest 10 served runs at the digest against the agent's by-hand runs, or the runs before the workflow when there are none", () => {
   const at = Date.UTC(2026, 10, 12);
-  const run = (i, metrics, costUsd) => ({ metrics, costUsd, startedAt: at - i * 60_000 });
+  const run = (i, metrics, allInUsd) => ({ metrics, allInUsd, startedAt: at - i * 60_000 });
   const served = (i, usd, extra = {}) => run(i, { path: i % 2 ? "workflow" : "handed_back", workflow: "answer", workflow_digest: "d", ...extra }, usd);
   const rows = [...Array.from({ length: 12 }, (_, i) => served(i, i < 10 ? 0.3 : 9)), run(12, { path: "agent" }, 0.1), run(13, { path: "agent" }, 0.3), run(14, { path: "agent" }, null)];
-  assert.deepEqual(costLineOf(rows, "answer", "d"), { served: { runs: 10, mean_usd: 0.3 }, by_hand: { runs: 2, mean_usd: 0.2 } }, "the newest 10 served; by hand, cost known");
+  assert.deepEqual(costLineOf(rows, "answer", "d"), { served: { runs: 10, mean_usd: 0.3 }, by_hand: { runs: 2, mean_usd: 0.2 }, unknown_runs: 1 }, "the newest 10 served; by hand, cost known, the unknown one counted");
+  // An unknown served run is left out and counted while the window fills; one past a full window is not read at all.
+  assert.deepEqual(costLineOf([served(0, null), ...rows.slice(1)], "answer", "d").served, { runs: 10, mean_usd: 1.17 }, "the newest unknown: the window reaches one run further back");
+  assert.equal(costLineOf([served(0, null), ...rows.slice(1)], "answer", "d").unknown_runs, 2);
+  assert.equal(costLineOf([...rows.slice(0, 10), served(10, null), ...rows.slice(11)], "answer", "d").unknown_runs, 1, "past the full window: not counted");
+  assert.deepEqual(costLineOf([run(0, { path: "agent" }, null), ...rows.slice(0, 12)], "answer", "d").by_hand, null, "by hand, every cost unknown: no baseline, never $0");
   assert.deepEqual(costLineOf(rows, "answer", "e").served, { runs: 0, mean_usd: null }, "another digest: none served");
   assert.deepEqual(costLineOf([...rows.slice(0, 12), run(20, {}, 0.4), run(21, null, 0.6)], "answer", "d").by_hand, { runs: 2, mean_usd: 0.5 }, "no agent path: the runs before the workflow's first");
   assert.equal(costLineOf(rows.slice(0, 12), "answer", "d").by_hand, null, "no baseline at all");
@@ -440,8 +502,8 @@ test("costLineOf: the newest 10 served runs at the digest against the agent's by
   assert.equal(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "needs_revision" } }]), undefined, "a revision ask served nothing");
   // What the agent's cost per run shows its owner: each workflow at its newest digest, over the line or not.
   const over = [...Array.from({ length: 10 }, (_, i) => served(i, 0.5)), run(10, { path: "agent" }, 0.2), served(11, 0.1, { workflow_digest: "old" })];
-  assert.deepEqual(workflowCostsOf(over), [{ workflow: "answer", digest: "d", state: "needs_revision", served: { runs: 10, mean_usd: 0.5 }, by_hand: { runs: 1, mean_usd: 0.2 } }]);
-  assert.deepEqual(workflowCostsOf([run(0, { path: "workflow", workflow: "answer", workflow_digest: "new" }, null), ...over]), [{ workflow: "answer", digest: "new", state: "serving", served: null, by_hand: { runs: 1, mean_usd: 0.2 } }], "a new digest starts from zero");
+  assert.deepEqual(workflowCostsOf(over), [{ workflow: "answer", digest: "d", state: "needs_revision", served: { runs: 10, mean_usd: 0.5 }, by_hand: { runs: 1, mean_usd: 0.2 }, unknown_cost_runs: 0 }]);
+  assert.deepEqual(workflowCostsOf([run(0, { path: "workflow", workflow: "answer", workflow_digest: "new" }, null), ...over]), [{ workflow: "answer", digest: "new", state: "serving", served: null, by_hand: { runs: 1, mean_usd: 0.2 }, unknown_cost_runs: 1 }], "a new digest starts from zero; its unknown run counted");
   assert.equal(workflowCostsOf([...Array.from({ length: 10 }, (_, i) => served(i, 0.1)), run(10, { path: "agent" }, 0.2)])[0].state, "serving", "under the line");
 });
 
@@ -530,6 +592,12 @@ test("answerAsServed: one answer as served for serving, replay and grading; what
   assert.deepEqual(answerJson(replayed.text), { value: { mcc: "5462" } });
   assert.match(answerAsServed("forty-two", { type: "object", required: ["n"], properties: { n: { type: "number" } } }).why ?? "", /^its answer does not meet the agent's output schema: \/n /);
   assert.deepEqual(answerAsServed("5462", undefined), { text: "5462", value: "5462" }, "no schema: as the workflow gave it");
+  // An object output that fails the schema goes back to the agent, said against the object: never its own text in a field.
+  const wrongType = answerAsServed('{"answer":42,"sure":true}', { type: "object", required: ["answer"], properties: { answer: { type: "string" } } });
+  assert.equal(wrongType.text, undefined, `a mismatched object is not served: ${JSON.stringify(wrongType)}`);
+  assert.match(wrongType.why ?? "", /^its answer does not meet the agent's output schema: \/answer /);
+  // An array output is no object: as text, it fills the one field.
+  assert.deepEqual(answerAsServed('["a"]', mcc).value, { mcc: '["a"]' });
 });
 
 test("a claim that dies after the workflow handed the job back: the next claim sends the handback even when the money rule now stops the workflow", async (t) => {

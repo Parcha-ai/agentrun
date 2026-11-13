@@ -183,6 +183,8 @@ interface Held {
   sealed: boolean;
   renewing: boolean;
   delivering: boolean;
+  /** A command was written while a delivery was in flight: one more delivery follows its end. */
+  deliverAgain: boolean;
   /** The delivery under way, which the end waits for (up to endWaitMs) before it writes. */
   inFlight?: Promise<void>;
   deadline?: unknown;
@@ -295,6 +297,8 @@ export function startRunner(options: RunnerOptions): Runner {
   let killed = false;
   let pollTimer: NodeJS.Timeout | undefined;
   let commandTimer: NodeJS.Timeout | undefined;
+  /** Stops listening for written commands (store.watchCommands); set once the runner has started. */
+  let unwatchCommands: (() => void) | undefined;
   let polling = false;
 
   /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
@@ -356,7 +360,9 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   const stopLoop = (held: Held, reason: StopReason) => {
-    held.stopping = true;
+    // A person's stop of a run that keeps its computer for its owner ends its agent only: its rows (the owner's calls,
+    // the release, a cancel) are still handed on until the computer is let go.
+    if (!held.loop.keepsComputer?.(reason)) held.stopping = true;
     held.loop.stop(reason).catch((error: unknown) => emit({ type: "error", runId: held.claim.runId, step: "stop", message: message(error) }));
   };
 
@@ -414,7 +420,8 @@ export function startRunner(options: RunnerOptions): Runner {
           if (row.kind === "stop" || row.kind === "cancel") {
             held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id, ...(row.kind === "cancel" ? { cancel: true as const } : {}) });
-            break;
+            // A stop that keeps the run's computer leaves the rows after it to be handed on (the loop head ends the rest).
+            continue;
           }
           const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
           if (held.sealed || killed) return;
@@ -432,6 +439,11 @@ export function startRunner(options: RunnerOptions): Runner {
       } finally {
         held.delivering = false;
         if (held.inFlight === delivery) held.inFlight = undefined;
+        // A row written while this delivery ran: read again now (deliver itself checks the run still takes rows).
+        if (held.deliverAgain) {
+          held.deliverAgain = false;
+          if (delivering()) void deliver(held);
+        }
       }
     })();
     held.inFlight = delivery;
@@ -718,7 +730,7 @@ export function startRunner(options: RunnerOptions): Runner {
       },
       redact,
     });
-    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, mib };
+    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
@@ -924,6 +936,15 @@ export function startRunner(options: RunnerOptions): Runner {
 
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
+  // A command written for a run this runner holds is handed on now, not at the next poll. A delivery already in flight
+  // marks the run, and one more delivery follows its end, so a row written mid-delivery is never left to the next poll.
+  unwatchCommands = store.watchCommands(({ runId, what }) => {
+    if (what !== "written" || !delivering()) return;
+    const held = runs.get(runId);
+    if (held === undefined) return;
+    if (held.delivering) held.deliverAgain = true;
+    else void deliver(held);
+  });
 
   /** The untaken stop or cancel row each of `going` ends on (endingRow: a cancel before a stop), past its cursor, by run id:
    *  the close's one read of their rows (store.commandsOf), after the deliveries in flight. The whole of it is bounded by
@@ -967,6 +988,7 @@ export function startRunner(options: RunnerOptions): Runner {
   const stopTimers = () => {
     clearTimeout(pollTimer);
     clearTimeout(commandTimer);
+    unwatchCommands?.();
     clearInterval(renewTimer);
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };

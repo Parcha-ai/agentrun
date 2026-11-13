@@ -201,10 +201,12 @@ describe("CostChart", () => {
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
   it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
-    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 } }] });
-    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run over its last 10 runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
+    const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] });
+    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its last 10 runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
     act(() => root!.unmount()); document.body.innerHTML = "";
-    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 } }] }))).not.toContain("no longer runs first");
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 2 }] }))).toContain("at or over $0.890 a run by hand. 2 runs of unknown cost left out. Its next run");
+    act(() => root!.unmount()); document.body.innerHTML = "";
+    expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "serving", served: { runs: 10, mean_usd: 0.1 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] }))).not.toContain("no longer runs first");
   });
   it("says only the latest runs are drawn when the server sent fewer than there are", () => {
     const host = draw({ ...sample, total_runs: 1200 });

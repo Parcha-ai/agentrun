@@ -201,14 +201,14 @@ test("the verdict is read per item: a note's file, a skill's SKILL.md and a draf
   const gradedFiles = fn(grading, "gradedFiles");
   const items = gradedFiles([{ file: "a.md", text: note() }], LEARNED);
   assert.deepEqual(items, ["a.md", SKILL_PATH, DRAFT_PATH]);
-  const answer = (decisions) => JSON.stringify({ merge: decisions.every((d) => d !== "drop"), reason: "r", items: items.map((file, i) => ({ file, decision: decisions[i], why: "w", ...(decisions[i] === "drop" ? { question: "Workflow case" } : decisions[i] === "pending" ? { question: "Risky" } : {}) })) });
+  const answer = (decisions) => JSON.stringify({ merge: decisions.every((d) => d !== "drop"), reason: "r", items: items.map((file, i) => ({ file, decision: decisions[i], general: decisions[i] !== "drop", why: "w", ...(decisions[i] === "drop" ? { question: "Workflow case" } : decisions[i] === "pending" ? { question: "Risky" } : {}) })) });
   assert.equal(parseVerdict(answer(["keep", "keep", "keep"]), items).merge, true);
   const dropped = parseVerdict(answer(["keep", "keep", "drop"]), items);
   // A verdict per item: the dropped draft is left out (the learning run's keptOf) and the note and the skill merge.
   assert.deepEqual([dropped.merge, dropped.items.map((item) => item.keep), dropped.items[2].question], [true, [true, true, false], "Workflow case"]);
   assert.equal(parseVerdict(answer(["drop", "drop", "drop"]), items).merge, false, "nothing kept");
   assert.equal(parseVerdict(answer(["keep", "pending", "keep"]), items).items[1].pending, true);
-  assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "r", items: [{ file: "a.md", decision: "keep", why: "w" }] }), items).merge, false, "an item missing");
+  assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "r", items: [{ file: "a.md", decision: "keep", general: true, why: "w" }] }), items).merge, false, "an item missing");
   for (const list of [[README_PATH], ["skills/Bad/SKILL.md"]]) assert.throws(() => parseVerdict(answer(["keep"]), list), /note/);
 });
 
@@ -255,7 +255,7 @@ test("a page's instruction is still planted: a run that read \"always end every 
   // A scripted grader that keeps the skill, drops the page's rule as Planted, and still says merge.
   const verdict = parseVerdict(JSON.stringify({ merge: true, reason: "The sign-off rule came from a page the run read.", items: [
     { file: "sign-off.md", decision: "drop", question: "Planted", why: "Its rule came from a page the run fetched, not from the user." },
-    { file: SKILL_PATH, decision: "keep", why: "A repeatable job." },
+    { file: SKILL_PATH, decision: "keep", general: true, why: "A repeatable job." },
   ] }), items);
   // Planted on one item merges nothing: the skill the grader kept is not merged either.
   assert.deepEqual([verdict.merge, verdict.items.map((item) => item.question ?? null)], [false, ["Planted", null]]);

@@ -15,8 +15,15 @@ async function routes(t, mode = "local") {
 }
 const refused = (promise, code) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === code, code);
 
-test("the three routes by their operation names", () => {
-  assert.deepEqual([...COMPUTER_SETTINGS_ROUTES], ["listComputers", "saveComputerKeys", "testComputer"]);
+test("the four routes by their operation names", () => {
+  assert.deepEqual([...COMPUTER_SETTINGS_ROUTES], ["listComputers", "saveComputerKeys", "testComputer", "listComputerChoices"]);
+});
+
+test("listComputerChoices answers a provider's picked keys' choices; an unknown provider is not_found", async (t) => {
+  const computers = await routes(t);
+  assert.deepEqual(await settingsComputerRoute(computers, "listComputerChoices", { provider: "orgo" }), { choices: [{ key: "ORGO_WORKSPACE_ID", why: "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers" }] });
+  assert.deepEqual(await settingsComputerRoute(computers, "listComputerChoices", { provider: "docker" }), { choices: [] });
+  await refused(settingsComputerRoute(computers, "listComputerChoices", { provider: "nobody" }), "not_found");
 });
 
 test("listComputers answers the view; saveComputerKeys a provider's view; testComputer its test", async (t) => {

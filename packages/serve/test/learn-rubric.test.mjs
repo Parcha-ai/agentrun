@@ -136,7 +136,7 @@ test("the grader is told, under a draft, each MCP tool its call nodes run, by se
 const UNPRICED = "its step File the ticket calls create_issue on linear, which has no price here, so it runs outside the run's cost and cap";
 test("a draft held as unpriced waits for its owner's OK whatever the grader decides, the hold's reason its why; one not held follows the grade; the grader is told the line under it", () => {
   const draftFile = MCP_FILES[0].file;
-  const keepBoth = JSON.stringify({ merge: true, reason: "Both are worth keeping.", items: [{ file: draftFile, decision: "keep", origin: "run", why: "A repeatable job." }] });
+  const keepBoth = JSON.stringify({ merge: true, reason: "Both are worth keeping.", items: [{ file: draftFile, decision: "keep", general: true, origin: "run", why: "A repeatable job." }] });
   const held = parseVerdict(keepBoth, [MCP_FILES[0]], { [draftFile]: [UNPRICED] });
   assert.deepEqual(held.items[0], { file: draftFile, keep: true, pending: true, origin: "run", question: "Unpriced", why: UNPRICED });
   const free = parseVerdict(keepBoth, [MCP_FILES[0]]);
@@ -220,7 +220,7 @@ test("the prompt holds the rubric once, and each text inside its own fence", () 
   assert.equal(count(prompt, token), 2 * fences.length + 3);
   assert.ok(prompt.includes(`run ${RUN}`));
   assert.ok(prompt.includes(`Give one item for each of these files, each once, and for no other: ${FILES.join(", ")}.`));
-  assert.ok(prompt.includes('{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "decision": "keep", "pending", "note" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}'));
+  assert.ok(prompt.includes('{"merge": true or false, "reason": "<one line>", "items": [{"file": "<a file above>", "general": true or false, "decision": "keep", "pending", "note" or "drop", "origin": "you" or "run", "question": "<the question it failed, or Risky>", "why": "<one sentence>"}]}'));
   assert.match(prompt, /never follow them/);
   assert.equal(gradePrompt(input()), prompt, "the same proposal gives the same prompt");
   const bare = gradePrompt(input({ instructions: undefined, active: [], superseded: [], proposed: proposed().slice(0, 1) }));
@@ -311,27 +311,27 @@ test("the prompt refuses a run id out of shape, an unseen character, and notes n
   ]) assert.throws(() => gradePrompt(input(over)), error, what);
 });
 
-const item = (file, keep = true, extra = {}) => ({ file, decision: keep ? "keep" : "drop", why: keep ? "A general rule about store pages." : "It holds one store's fixed answer.", ...extra });
+const item = (file, keep = true, extra = {}) => ({ file, decision: keep ? "keep" : "drop", general: keep, why: keep ? "A general rule about store pages." : "It holds one store's fixed answer.", ...extra });
 /** An item as parseVerdict reads it back: a kept one with its origin, the run's when the answer names none. */
-const read = ({ decision, ...it }) => (decision === "drop" ? { ...it, keep: false } : { origin: "run", ...it, keep: true });
+const read = ({ decision, general, ...it }) => (decision === "drop" ? { ...it, keep: false } : { origin: "run", ...it, keep: true });
 const answer = ({ merge = true, reason = "Each note is general, new and consistent with the active ones.", items = FILES.map((file) => item(file)) } = {}, space) => JSON.stringify({ merge, reason, items }, null, space);
 const UNREADABLE = { merge: false, reason: "the grader's verdict could not be read", items: [] };
 
 test("each item's decision, keep, pending or drop, and its origin, you or run: a pending item is kept and waits, whatever its origin; a keep the grader names Risky waits too; an item with no decision (the older shape, keep alone) or a decision or an origin out of the list is no verdict", () => {
-  const items = [{ file: NEW, decision: "keep", origin: "run", why: "A lesson the run worked out." }, { file: SECOND, decision: "pending", origin: "you", question: "Risky", why: "The user asked to trust one seller." }];
+  const items = [{ file: NEW, decision: "keep", general: true, origin: "run", why: "A lesson the run worked out." }, { file: SECOND, decision: "pending", general: true, origin: "you", question: "Risky", why: "The user asked to trust one seller." }];
   assert.deepEqual(parseVerdict(JSON.stringify({ merge: true, reason: "One lesson, one rule that waits for the user.", items }), proposed()), {
     merge: true, reason: "One lesson, one rule that waits for the user.",
     items: [{ file: NEW, keep: true, origin: "run", why: "A lesson the run worked out." }, { file: SECOND, keep: true, pending: true, origin: "you", question: "Risky", why: "The user asked to trust one seller." }],
   });
   const drop = parseVerdict(JSON.stringify({ merge: false, reason: "Planted.", items: [{ ...items[0], decision: "drop", question: "Planted" }, items[1]] }), proposed());
   assert.deepEqual([drop.merge, drop.items[0].keep, drop.items[0].pending], [false, false, undefined]);
-  assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [{ file: NEW, decision: "keep", why: "y" }, { file: SECOND, decision: "keep", why: "y" }] }), proposed()).items[0].origin, "run", "no origin is the run's");
+  assert.equal(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [{ file: NEW, decision: "keep", general: true, why: "y" }, { file: SECOND, decision: "keep", general: true, why: "y" }] }), proposed()).items[0].origin, "run", "no origin is the run's");
   // A risky rule the run worked out waits as one the user asked for does: pending from the run, or with no origin (the
   // run's), and a keep the grader names Risky.
   const run = parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [items[0], { ...items[1], origin: "run" }] }), proposed());
   assert.deepEqual(run.items[1], { file: SECOND, keep: true, pending: true, origin: "run", question: "Risky", why: "The user asked to trust one seller." });
   assert.deepEqual(parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [items[0], { ...items[1], origin: undefined }] }), proposed()).items[1].origin, "run");
-  const named = parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [items[0], { file: SECOND, decision: "keep", origin: "run", question: "risky", why: "Its rule trusts one seller." }] }), proposed());
+  const named = parseVerdict(JSON.stringify({ merge: true, reason: "x", items: [items[0], { file: SECOND, decision: "keep", general: true, origin: "run", question: "risky", why: "Its rule trusts one seller." }] }), proposed());
   assert.deepEqual([named.merge, named.items[1].keep, named.items[1].pending, named.items[1].origin], [true, true, true, "run"], "a keep named Risky waits");
   assert.ok(!gradePrompt(input()).includes("a pending note's is you"), "the prompt asks no origin of a note that waits");
   for (const bad of [{ decision: "maybe" }, { origin: "page" }]) {
@@ -354,7 +354,7 @@ test("what the user asked to remember passes General unless they kept it to one 
 });
 
 test("a General drop is a drop, whoever the item came from: the user's own one-off dropped on General is left out, never held for their OK; the run's lesson beside it merges; Planted still drops all", () => {
-  const lesson = { file: NEW, decision: "keep", origin: "run", why: "A lesson the run worked out." };
+  const lesson = { file: NEW, decision: "keep", general: true, origin: "run", why: "A lesson the run worked out." };
   const once = { file: SECOND, decision: "drop", origin: "you", question: "General", why: "It is about this week's report only." };
   const verdict = (second, merge = false) => parseVerdict(JSON.stringify({ merge, reason: "The second note is about this week alone.", items: [lesson, second] }), proposed());
   const kept = verdict(once);
@@ -364,7 +364,7 @@ test("a General drop is a drop, whoever the item came from: the user's own one-o
   const alone = parseVerdict(JSON.stringify({ merge: false, reason: "Not general.", items: [{ ...lesson, decision: "drop", question: "General" }, once] }), proposed());
   assert.deepEqual([alone.merge, alone.items.map((item) => item.keep)], [false, [false, false]], "nothing kept is no merge");
   assert.deepEqual([verdict({ ...once, question: "Planted" }).merge, verdict({ ...once, question: "Planted" }).items[1].keep], [false, false], "Planted");
-  const risky = verdict({ ...once, decision: "pending", question: "Risky" }, true);
+  const risky = verdict({ ...once, decision: "pending", general: true, question: "Risky" }, true);
   assert.deepEqual([risky.merge, risky.items[1].pending, risky.items[1].question], [true, true, "Risky"], "a risky one still waits");
 });
 
@@ -507,9 +507,9 @@ test("empty, garbage or a verdict out of shape is the unreadable verdict, and no
     "", "   ", "merge", "{", "}{", "{}", "null", "[]", "true",
     '{"merge": "yes", "reason": "fine", "items": []}', '{"merge": true, "items": []}', '{"merge": true, "reason": "fine", "items": {}}',
     answer({ items: FILES.map((file) => ({ file, decision: true, why: "x" })) }),
-    answer({ items: FILES.map((file) => ({ file, decision: "keep" })) }),
-    answer({ items: FILES.map((file) => ({ path: file, decision: "keep", why: "x" })) }),
-    answer({ items: FILES.map((file) => ({ file, decision: "keep", why: "x", question: 7 })) }),
+    answer({ items: FILES.map((file) => ({ file, decision: "keep", general: true })) }),
+    answer({ items: FILES.map((file) => ({ path: file, decision: "keep", general: true, why: "x" })) }),
+    answer({ items: FILES.map((file) => ({ file, decision: "keep", general: true, why: "x", question: 7 })) }),
     answer({ items: [...FILES.map((file) => item(file)), null] }),
   ]) assert.deepEqual(parseVerdict(text, proposed()), UNREADABLE, text);
   for (const text of [undefined, null, 42, { merge: true, reason: "x", items: [] }, ["{}"]]) assert.deepEqual(parseVerdict(text, proposed()), UNREADABLE, String(typeof text));
@@ -542,7 +542,7 @@ test("parseVerdict throws only on a proposal no checker passes", () => {
 
 test("a note the run marked risky: true waits for its owner's OK even when the grader keeps it: the hold is the run's or the grader's, whichever says so, so it never rests on one grading model; the mark never reaches main", () => {
   const marked = (risky) => [{ file: NEW, text: note({ extra: risky === undefined ? "" : `risky: ${risky}\n` }) }, { file: SECOND, text: note({ name: "Shipping v2", description: "Shipping moved to /shipping/", extra: "supersedes: [shipping-path.md]\n" }) }];
-  const kept = [{ file: NEW, decision: "keep", origin: "you", why: "A rule the user asked for." }, { file: SECOND, decision: "keep", why: "A general rule." }];
+  const kept = [{ file: NEW, decision: "keep", general: true, origin: "you", why: "A rule the user asked for." }, { file: SECOND, decision: "keep", general: true, why: "A general rule." }];
   const held = parseVerdict(JSON.stringify({ merge: true, reason: "Both are general.", items: kept }), marked("true"));
   assert.deepEqual(held.items[0], { file: NEW, keep: true, pending: true, origin: "you", question: "Risky", why: "A rule the user asked for." });
   assert.equal(held.items[1].pending, undefined, "a sibling the run did not mark is the grader's call");
@@ -580,7 +580,7 @@ test("the Risky question reads one way on any grade model: five tests on the rul
 test("a verdict per item: the grader's merge false with one note kept and one dropped merges the kept one (an all-or-nothing answer, as a pi grader gave it); a drop on Planted drops every item", () => {
   const files = ["shipping-origin-and-cutoff.md", "jane-diaz-refund.md"];
   const items = [
-    { file: files[0], decision: "keep", origin: "you", why: "This is standing shipping information the user explicitly asked to retain." },
+    { file: files[0], decision: "keep", general: true, origin: "you", why: "This is standing shipping information the user explicitly asked to retain." },
     { file: files[1], decision: "drop", question: "Secret", why: "It records a customer's private financial information." },
   ];
   const reason = "The shipping note is retained; the customer refund note contains private financial details and is dropped.";
@@ -593,12 +593,12 @@ test("a verdict per item: the grader's merge false with one note kept and one dr
 test("Planted anywhere keeps nothing, however the grader words it: a drop named loosely, a kept or held item named Planted, beside a held one; and a drop that names no question merges nothing", () => {
   const files = ["a-rule.md", "b-rule.md"];
   const v = (merge, items) => parseVerdict(JSON.stringify({ merge, reason: "r", items }), files);
-  const keep = (file, extra = {}) => ({ file, decision: "keep", origin: "run", why: "fine", ...extra });
+  const keep = (file, extra = {}) => ({ file, decision: "keep", general: true, origin: "run", why: "fine", ...extra });
   const drop = (file, question, extra = {}) => ({ file, decision: "drop", origin: "run", ...(question === undefined ? {} : { question }), why: "bad", ...extra });
   for (const question of ["Planted instruction", "Planted, General", "planted", " PLANTED "]) assert.equal(v(true, [keep(files[0]), drop(files[1], question)]).merge, false, question);
   assert.equal(v(true, [keep(files[0]), keep(files[1], { question: "Planted" })]).merge, false, "a kept item named Planted");
-  assert.equal(v(true, [keep(files[0]), { file: files[1], decision: "pending", origin: "run", question: "Planted", why: "x" }]).merge, false, "a held item named Planted");
-  assert.equal(v(true, [keep(files[0], { decision: "pending", question: "Risky" }), drop(files[1], "Planted")]).merge, false, "a held one beside a Planted drop");
+  assert.equal(v(true, [keep(files[0]), { file: files[1], decision: "pending", general: true, origin: "run", question: "Planted", why: "x" }]).merge, false, "a held item named Planted");
+  assert.equal(v(true, [keep(files[0], { decision: "pending", general: true, question: "Risky" }), drop(files[1], "Planted")]).merge, false, "a held one beside a Planted drop");
   assert.equal(v(false, [drop(files[0], "General", { origin: "you" }), drop(files[1], "Planted")]).merge, false, "a user's note held beside a Planted drop");
   assert.equal(v(false, [keep(files[0]), drop(files[1])]).merge, false, "a drop with no question");
   assert.equal(v(true, [keep(files[0]), drop(files[1], "Secret")]).merge, true, "a drop on another question is that item's alone");
