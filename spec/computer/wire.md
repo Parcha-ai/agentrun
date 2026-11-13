@@ -220,7 +220,9 @@ The result:
 - `expect.window`: `{"title"?, "role"?}`, at least one, and alone (no `text` or `ref`). The computer polls until the
   act's app shows a main window whose title holds `title` and whose role is `role` (`"window"` matches an ordinary
   one), and the act's `state` is then that window's. A dialog that opens a moment after a click is waited for this way.
-  No such window in time is `unmet`, as any expect is, never `not_found`, even when the app has no window at all. It
+  No such window in time is `unmet`, as any expect is, never `not_found`, even when the app has no window at all. An
+  act that begins with no window keeps waiting for one of its own app: it never falls back to the app in front, and it
+  never ends early because the app has no window left (`window: "closed"` is for a step that closed one). It
   reads only the window's title and role, so it runs with `ui.tree` off too. `ui.expect-window` checks it.
 - `foreground`: the call allows the foreground route, which moves the user's pointer and focus. Default false.
 
@@ -269,7 +271,9 @@ The result:
   waits for it. `ui.settle-tree` times acts on a focused field.
 - **A set holds.** A `set` step answers `verified: true` only when its value still holds `setHoldMs` (500 ms) after the
   act settled: the driver reads the element again then. An app that takes the value back (a field that rejects it, a
-  switch a policy turns back off) answers `verified: false`, though the set itself ran. `ui.set-holds` sets the
+  switch a policy turns back off) answers `verified: false`, though the set itself ran. The hold is waited out even
+  when a later step closed the last window: a value that cannot be read then is `verified: false`, never true.
+  `ui.set-holds` sets the
   fixture's Code field, which takes its value back.
 - **An act follows its app's windows.** When a step closes the window the act is aimed at, the act follows the app's
   next main window, as after a `nav`: the steps after it, the settle, the expect and the answered `state` are that

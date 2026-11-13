@@ -340,6 +340,12 @@ test("one run holds an attached computer; offline refuses create; release never 
 	const held = (await provider.create(spec, request)).value;
 	assert.match(held.id, new RegExp(`^${paired.id}\\.[0-9a-f]{16}$`), "the run's ref names its hold");
 	assert.equal((await provider.create(spec, request)).value.id, held.id, "the same request again answers its hold");
+	const relabelled = await provider.create({ ...spec, labels: { run: "b" } }, request);
+	assert.equal(relabelled.error.code, "exists", "the same request id with other labels is another request");
+	assert.match(relabelled.error.message, /other labels/);
+	assert.equal((await provider.create({ ...spec, labels: { run: "a", extra: "1" } }, request)).error.code, "exists", "labels beyond the claim's");
+	assert.equal((await provider.create({ ...spec, labels: {} }, request)).error.code, "exists", "labels short of the claim's");
+	assert.equal((await provider.create(spec, request)).value.id, held.id, "the claim's own labels still answer");
 	const second = await provider.create({ ...spec, labels: { run: "b" } }, req());
 	assert.equal(second.error.code, "refused");
 	assert.deepEqual((await provider.list({ run: "a" })).value.map((one) => one.ref.id), [held.id]);

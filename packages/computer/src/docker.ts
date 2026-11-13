@@ -64,6 +64,7 @@ import { checkMount, type MountKind, type MountReadBack, WORKSPACE } from "./mou
 import {
 	type AttachedComputer,
 	type CallContext,
+	type CreateContext,
 	type ComputerCapabilities,
 	checkGpu,
 	checkTenure,
@@ -435,7 +436,8 @@ export class DockerProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	async create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<ComputerRef>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<ComputerRef>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		const user = userOf(spec.user) ?? this.#user;

@@ -448,6 +448,11 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			const before = holdsBy.get(context.requestId);
 			if (before !== undefined) {
 				if (hub.hold(paired.id) !== before) return fail("exists", `${paired.name}'s hold ${before} was made for this request and has ended: create with a new request id`);
+				// The hold carries the labels of the request that made it: a retry that asks for other labels is another request.
+				const claimed = hub.claimed(paired.id) ?? {};
+				const asked = spec.labels ?? {};
+				const same = Object.keys(asked).length === Object.keys(claimed).length && holds(claimed, asked);
+				if (!same) return fail("exists", `${paired.name}'s hold ${before} was made for this request with other labels: create with a new request id`);
 				return ok({ ...holdRef(before), notes: [ATTACHED_NOTE] });
 			}
 			if (!hub.online(paired.id)) return offline();

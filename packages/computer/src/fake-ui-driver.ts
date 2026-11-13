@@ -90,7 +90,7 @@ interface AppState {
 	 * Its windows, the one in front last. The main one shows screen and moves with bounds; one a press opened shows its
 	 * own screen. None: the app runs with no window (its last one closed).
 	 */
-	windows: Array<{ id: string; screen?: string; bounds?: [number, number, number, number] }>;
+	windows: Array<{ id: string; screen?: string; history?: string[]; bounds?: [number, number, number, number] }>;
 	/** How many windows a press has opened, which names the next one. */
 	opened: number;
 	timers: Set<NodeJS.Timeout>;
@@ -504,6 +504,13 @@ export class FakeUiDriver implements UiSource {
 				return;
 			}
 			if (effect.go === undefined) return;
+			// A window a press opened navigates on its own screen and history; the main window's are the state's.
+			const own = state.windows.find((one) => one.id === windowId);
+			if (own?.screen !== undefined) {
+				(own.history ??= []).push(own.screen);
+				own.screen = effect.go;
+				return;
+			}
 			state.history.push(state.screen);
 			state.screen = effect.go;
 			state.focus = undefined;

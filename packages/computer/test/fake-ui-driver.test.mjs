@@ -790,3 +790,63 @@ test("the CLI answers hello and ui.observe on stdin and stdout", async () => {
 	assert.equal(byId[3].result.app.id, APP);
 	await new Promise((resolve) => child.on("exit", resolve));
 });
+
+test("a window wait that begins with no window keeps its app: it never falls back to the front app and never ends as closed", async () => {
+	const other = { id: "test.other", name: "Other", start: "a", size: [300, 200], screens: { a: { title: "Other", elements: [{ key: "t", role: "text", name: "Other", bounds: [10, 10, 80, 28] }] } } };
+	const c = await fakeUiConnection({ apps: [UI_FIXTURE, other] });
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: seen.nodes.find((n) => n.id === "close").ref }] });
+	await c.client.call("apps.launch", { id: other.id });
+	// Another app's window is in front and the app's own has none: a wait for a window of the app does not take the front one.
+	const began = Date.now();
+	const none = await c.client.call("ui.act", { target: { app: APP }, steps: [], expect: { window: { role: "window" }, timeoutMs: 400 } });
+	assert.equal(none.value.expect, "unmet", "unmet at its timeout, the usual unmet");
+	assert.ok(Date.now() - began >= 350, `it waited out its timeout: ${Date.now() - began} ms`);
+	const waiting = c.client.call("ui.act", { target: { app: APP }, steps: [], expect: { window: { title: "UI fixture" }, timeoutMs: 3000 } });
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	await c.client.call("apps.launch", { id: APP });
+	const met = await waiting;
+	assert.equal(met.value.expect, "met", "the window that came later meets it");
+	const front = (await c.client.call("ui.observe", { since: met.value.state })).value;
+	assert.equal(front.app.id, APP, "the state is the app's window, not the front app's");
+	await c.close();
+});
+
+test("a set followed by a step that closes the last window still holds its 500 ms and answers verified false", async () => {
+	const c = await fakeUiConnection();
+	await c.client.call("apps.launch", { id: APP });
+	const seen = (await c.client.call("ui.observe", {})).value;
+	const ref = (id) => seen.nodes.find((n) => n.id === id).ref;
+	const began = Date.now();
+	const done = await c.client.call("ui.act", { steps: [{ set: ref("code"), value: "1234" }, { press: ref("close") }] });
+	assert.ok(Date.now() - began >= SET_HOLD_MS, `the hold was waited out: ${Date.now() - began} ms`);
+	assert.equal(done.value.window, "closed");
+	assert.equal(done.value.steps[0].verified, false, "its value cannot be read, so it is not verified");
+	await c.close();
+});
+
+test("a go in a window a press opened changes that window's screen, never the main one", async () => {
+	const app = {
+		id: "test.second",
+		name: "Second",
+		start: "home",
+		size: [300, 200],
+		screens: {
+			home: { title: "Home", elements: [{ key: "open", role: "button", name: "Open", id: "open", bounds: [10, 10, 80, 28], actions: ["AXPress"], press: { open: "child" } }] },
+			child: { title: "Child", elements: [{ key: "go", role: "button", name: "Go", id: "go", bounds: [10, 10, 80, 28], actions: ["AXPress"], press: { go: "grandchild" } }] },
+			grandchild: { title: "Grandchild", elements: [{ key: "t", role: "text", name: "Grandchild", bounds: [10, 10, 80, 28] }] },
+		},
+	};
+	const c = await fakeUiConnection({ apps: [app] });
+	await c.client.call("apps.launch", { id: app.id });
+	const home = (await c.client.call("ui.observe", {})).value;
+	const opened = await c.client.call("ui.act", { steps: [{ press: home.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Child" } } });
+	assert.equal(opened.value.expect, "met");
+	const child = (await c.client.call("ui.observe", {})).value;
+	await c.client.call("ui.act", { steps: [{ press: child.nodes.find((n) => n.id === "go").ref }] });
+	assert.equal((await c.client.call("ui.observe", {})).value.window.title, "Grandchild", "the opened window moved on");
+	const main = (await c.client.call("ui.observe", { target: { app: app.id, window: `${app.id}#main` } })).value;
+	assert.equal(main.window.title, "Home", "the main window stayed where it was");
+	await c.close();
+});

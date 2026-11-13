@@ -634,11 +634,12 @@ export class UiEngine {
 		let last: UiView | undefined;
 		if (!closed) {
 			let settled = await this.#settle(aim, signal);
-			if (!settled.ok && settled.error.code === "not_found" && aim !== undefined) {
+			// A wait that began with no window keeps its app: it never follows the foreground and never ends as closed.
+			if (!settled.ok && settled.error.code === "not_found" && aim !== undefined && !windowless) {
 				const where = await reaim();
 				if (!where.ok) return where;
 				if (where.value === "closed") closed = true;
-				else if (where.value === "followed" || ranAny || windowless) settled = await this.#settle(aim, signal);
+				else if (where.value === "followed" || ranAny) settled = await this.#settle(aim, signal);
 			}
 			if (!closed) {
 				if (settled.ok) last = settled.value;
@@ -650,16 +651,17 @@ export class UiEngine {
 			const result = steps[index];
 			return "set" in step && result !== undefined && !("error" in result) && result.verified ? [index] : [];
 		});
-		if (sets.length > 0 && last !== undefined) {
+		if (sets.length > 0) {
+			// The hold is waited out even when the window closed: a value that cannot be read after it is not verified.
 			await sleep(SET_HOLD_MS, signal);
 			if (signal.aborted) return aborted("ui.act");
-			const later = await after();
+			const later = closed || last === undefined ? "closed" : await after();
 			const seen = later === "gone" || later === "closed" || !later.ok ? undefined : later.value;
 			for (const index of sets) {
 				if (seen === undefined || !this.#setHolds(params.steps[index] as { set: UiRef; value: string }, seen)) steps[index] = { ...(steps[index] as UiRun), verified: false };
 			}
 			if (later === "closed") closed = true;
-			else if (seen !== undefined && fingerprint(seen) !== fingerprint(last)) {
+			else if (seen !== undefined && last !== undefined && fingerprint(seen) !== fingerprint(last)) {
 				const calm = await this.#settle(aim, signal);
 				if (!calm.ok) return calm;
 				last = calm.value;

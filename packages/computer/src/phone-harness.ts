@@ -44,6 +44,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
@@ -516,7 +517,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 
 	// --- the provider ----------------------------------------------------------------------------------------------
 
-	create(spec: ComputerSpec, context: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
 		return ledgerSafe(() => this.#create(spec, context));
 	}
 
@@ -549,7 +550,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return daemonWatch(this, ref, handlers, options);
 	}
 
-	async #create(spec: ComputerSpec, { signal }: { signal?: AbortSignal } = {}): Promise<Result<CreatedComputer>> {
+	async #create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");

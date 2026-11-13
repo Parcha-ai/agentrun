@@ -48,6 +48,7 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
 	checkGpu,
 	checkTenure,
@@ -695,7 +696,8 @@ export class E2BProvider implements ComputerProvider {
 		return { ...this.#connection, requestTimeoutMs: ms, ...(signal ? { signal } : {}) };
 	}
 
-	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const launched = await this.#launch(spec, signal);
 		if (!launched.ok) return launched;
 		const { sandbox, ref, made } = launched.value;
