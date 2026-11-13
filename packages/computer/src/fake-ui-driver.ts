@@ -103,6 +103,9 @@ interface AppState {
 	origin: [number, number, number, number];
 	/** How many windows a press has opened, which names the next one. */
 	opened: number;
+	/** How many main windows a launch has opened: the first is <app>#main, each one after its last window closed is
+	 *  <app>#main-<n>, a new window whose refs are never the closed one's. */
+	mains: number;
 }
 
 const SCREEN = { width: 1440, height: 900, scale: 2 };
@@ -285,12 +288,15 @@ export class FakeUiDriver implements UiSource {
 		}
 		if (!this.#running.has(app.id)) {
 			const offset = 40 * this.#running.size;
-			this.#running.set(app.id, { app: app.id, windows: [], windowAt: Date.now() + this.#windowAfterMs, origin: [100 + offset, 80 + offset, ...app.size], opened: 0 });
+			this.#running.set(app.id, { app: app.id, windows: [], windowAt: Date.now() + this.#windowAfterMs, origin: [100 + offset, 80 + offset, ...app.size], opened: 0, mains: 0 });
 		}
 		const state = this.#running.get(app.id) as AppState;
 		// A running app with no window opens its main one, on its first screen: at launch, and again once its last one
 		// closed, as a Mac app does when launched.
-		if (state.windows.length === 0) this.#openWindow(state, app, `${app.id}#main`, app.start, [...state.origin]);
+		if (state.windows.length === 0) {
+			state.mains += 1;
+			this.#openWindow(state, app, state.mains === 1 ? `${app.id}#main` : `${app.id}#main-${state.mains}`, app.start, [...state.origin]);
+		}
 		if (p.background !== true) this.#front = app.id;
 		return ok({});
 	}

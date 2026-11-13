@@ -90,7 +90,20 @@ export class CreateRequests {
 		if (inFlight !== undefined) {
 			const differs = specDiffer(spec, inFlight.spec, userOf === undefined ? {} : { userOf });
 			if (differs.length > 0) return refuse("exists", otherSpecWords(name, "is being made", differs));
-			return inFlight.result;
+			// The wait is this caller's to cut off by its own signal: aborted then, and the first create, and the computer
+			// it makes, go on untouched.
+			const signal = context.signal;
+			if (signal === undefined) return inFlight.result;
+			const cut = () => refuse("aborted", `create was aborted while another create of this request made ${name}, which goes on`);
+			if (signal.aborted) return cut();
+			return new Promise<Result<CreatedComputer>>((resolve, reject) => {
+				const onAbort = () => resolve(cut());
+				signal.addEventListener("abort", onAbort, { once: true });
+				inFlight.result.then(
+					(result) => (signal.removeEventListener("abort", onAbort), resolve(result)),
+					(error: unknown) => (signal.removeEventListener("abort", onAbort), reject(error)),
+				);
+			});
 		}
 		if (this.#ended.has(name)) return refuse("exists", endedWords(name));
 		const creating = { spec, result: make(name) };

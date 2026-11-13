@@ -601,7 +601,9 @@ public final class UiDriver {
 			Outline.Entry entry = node == null || full == null ? null : full.find(node.key());
 			if (entry == null) return false;
 			if (entry.node.checkable()) return entry.flags.contains("checked") == (s.text.equals("on") || s.text.equals("true"));
-			return java.util.Objects.equals(entry.value, Outline.trim(s.text));
+			// The field's exact text, as the set's own read back compares it (readback), never the trimmed text a view shows.
+			String now = entry.node.text() == null ? "" : entry.node.text();
+			return now.equals(s.text);
 		}
 	}
 

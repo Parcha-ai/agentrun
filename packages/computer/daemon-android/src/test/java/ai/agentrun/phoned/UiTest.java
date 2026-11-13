@@ -383,6 +383,28 @@ final class UiTest {
 		eq(false, wifi.checked);
 	}
 
+	static void testASetWhoseTextTheAppTrimsInTheHoldIsNotVerified() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.device.internet();
+		Map<String, Object> field = phone.node(phone.call("ui.observe", "{}"), "Network name");
+		FakeNode name = null;
+		synchronized (phone.device) {
+			for (FakeDevice.FakeWindow w : phone.device.windows) for (FakeNode n : w.root.children) if ("com.android.settings:id/name".equals(n.viewId)) name = n;
+		}
+		yes(name != null, "the fixture's Network name field");
+		// The field takes " Home " as set, then trims it a moment later: the text it holds is no longer what was set.
+		FakeNode taken = name;
+		taken.on(a -> {
+			if (a.equals("ACTION_SET_TEXT")) phone.device.after(UiDriver.SET_HOLD_MS / 2, () -> {
+				taken.text = taken.text.trim();
+				phone.device.changed();
+			});
+		});
+		Map<String, Object> acted = phone.call("ui.act", "{\"steps\":[{\"set\":\"" + field.get("ref") + "\",\"value\":\" Home \"}]}");
+		eq(Json.obj("route", "semantic", "verified", false), step(acted, 0));
+		eq("Home", taken.text);
+	}
+
 	static void testRowNamingSkipsActionableChildren() {
 		FakeNode row = FakeNode.of("android.widget.LinearLayout").at(0, 0, 100, 100).tappable();
 		FakeNode box = FakeNode.of("android.widget.CheckBox").at(80, 10, 95, 30).text("Remember");

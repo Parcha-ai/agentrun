@@ -627,13 +627,16 @@ test("a step that closes the act's window: with none left the act answers window
 	assert.match(none.error.message, /running with no window: its last one closed, and apps\.launch opens it again/);
 	assert.deepEqual(await c.client.call("apps.launch", { id: APP }), { ok: true, value: {} });
 	seen = (await c.client.call("ui.observe", {})).value;
-	assert.equal(seen.window.id, `${APP}#main`, "apps.launch opened the main window again");
+	assert.equal(seen.window.id, `${APP}#main-2`, "apps.launch opened a new main window, never the closed one's id");
+	// A ref from the closed window is stale: it never reaches the new window's element of the same key.
+	const old = await c.client.call("ui.act", { steps: [{ press: close }] });
+	assert.equal(old.value.steps[0].error?.kind, "stale", JSON.stringify(old));
 	await c.client.call("ui.act", { steps: [{ press: seen.nodes.find((n) => n.id === "open").ref }], expect: { window: { title: "Another window" } } });
 	const another = (await c.client.call("ui.observe", {})).value;
 	const followed = await c.client.call("ui.act", { target: { app: APP, window: another.window.id }, steps: [{ press: another.nodes.find((n) => n.id === "close").ref }] });
 	assert.equal(followed.value.window, undefined);
 	const main = (await c.client.call("ui.observe", { since: followed.value.state })).value;
-	assert.equal(main.window.id, `${APP}#main`);
+	assert.equal(main.window.id, `${APP}#main-2`);
 	assert.deepEqual(main.diff, { added: [], removed: [], changed: [] }, "the act's state is the main window it followed");
 	await c.close();
 	// ui.window-closed fails a driver that answers not_found once its window closed; ui.window-follow one that answers

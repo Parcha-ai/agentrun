@@ -671,6 +671,24 @@ test("create is once per request: a retry at once, once it is up, and from anoth
 	assert.deepEqual(sameButLifetime[1], sameButLifetime[0], "a retry's own lifetime is not another spec");
 });
 
+test("a create of a request in flight that its own signal cuts off is aborted at once; the first create and its computer go on", async () => {
+	const fake = fakeDocker();
+	const context = { requestId: "docker-cut-retry" };
+	const controller = new AbortController();
+	const first = fake.provider.create(SPEC, context);
+	const second = fake.provider.create(SPEC, { ...context, signal: controller.signal });
+	controller.abort();
+	const cut = await second;
+	assert.equal(cut.error?.code, "aborted", JSON.stringify(cut));
+	assert.match(cut.error.message, /^create was aborted while another create of this request made computer-[0-9a-f]{12}, which goes on$/);
+	const made = await first;
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(fake.names(), [made.value.name], "the first create's computer is there");
+	// One already cut off before it asks is aborted too.
+	const late = await fake.provider.create(SPEC, { requestId: "docker-cut-early", signal: AbortSignal.abort() });
+	assert.equal(late.error?.code, "aborted");
+});
+
 test("a retry whose computer stops while the retry reads it is exists: never answered once it is no longer running", async () => {
 	const requestId = "docker-stops-mid-retry";
 	const name = computerNameFor(requestId);
