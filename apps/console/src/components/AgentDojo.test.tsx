@@ -9,7 +9,7 @@ import type { AgentLearning, LearningNote } from "@/lib/learning";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
 let host: HTMLDivElement;
-const agent = (id: string, learning = true): Agent => ({ agent_id: id, kind: "agentic", revision: "v1", revisions: 1, archived_at: null, definition: { version: 1, name: id, learning, harness: "pi", instructions: "Research a topic.", tools: [], skills: [] } });
+const agent = (id: string, learning: Agent["definition"]["learning"] = true): Agent => ({ agent_id: id, kind: "agentic", revision: "v1", revisions: 1, archived_at: null, definition: { version: 1, name: id, learning, harness: "pi", instructions: "Research a topic.", tools: [], skills: [] } });
 const note = (file: string, status: LearningNote["status"] = "active"): LearningNote => ({ file, status, etag: "v1", origin: "run", name: file, description: "A useful note", type: "feedback", text: "A useful note", superseded_by: null, runs: { given: 0, read: 0 } });
 const view = (id: string, fields: Partial<AgentLearning> = {}): AgentLearning => ({ agent: id, main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null, ...fields });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -59,6 +59,17 @@ describe("Learning Dojo", () => {
     expect(host.textContent).toContain("Paused by server");
     expect(metric("Active notes")).toContain("1");
     expect(host.querySelector('a[href="#/agents/alpha/learning"]')).not.toBeNull();
+  });
+
+  it.each(["on", "off"] as const)("reports notes-only learning accurately when the server is %s", async (server) => {
+    await mount(({ path }) => json(path === "/v2/agents"
+      ? { agents: [agent("notes-agent", "notes")], next_cursor: null }
+      : view("notes-agent", { notes: { items: [note("kept.md")], total: 1, next_cursor: null } })), server);
+    const card = host.querySelector("article")!;
+    expect(card.textContent).toContain(server === "on" ? "Learning on" : "Paused by server");
+    expect(card.textContent).not.toContain("Learning off");
+    expect(metric("Active notes")).toContain("1");
+    expect(card.querySelector('a[href="#/agents/notes-agent/learning"]')).not.toBeNull();
   });
 
   it("does not mistake capability loading or an unsupported server for learning off", async () => {

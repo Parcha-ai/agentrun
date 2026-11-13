@@ -1,4 +1,5 @@
-// Apply a template that runs on a trigger: its Apply screen opens on Never ask, the template's own default (kyb's on
+// Configure a template that runs on a trigger, then apply it through the API playground. Its setup opens on Never ask,
+// the template's own default (kyb's on
 // Ask me). The agent reads Unattended, and a run of it calls a tool this server sets to ask without waiting for anyone: the call runs, and the run ends. The template is
 // market-monitor, which the server ships: a weekly schedule, no key and no MCP server it needs, and one required parameter.
 // The faux model's "Read these paths" rule calls read once (packages/serve/test/fixtures/faux-model.mjs), then answers.
@@ -19,18 +20,30 @@ export default {
     await page.goto(`${base}/#/templates/kyb`);
     const kyb = page.getByRole("group", { name: "Approvals" });
     await kyb.waitFor();
-    check(await kyb.getByRole("radio", { name: /^Ask me/ }).isChecked(), "kyb's Apply screen did not open on Ask me");
+    check(await kyb.getByRole("radio", { name: /^Ask me/ }).isChecked(), "kyb's setup did not open on Ask me");
 
-    // market-monitor runs unattended by its own default: its Apply screen opens on Never ask, saying what that grants.
+    // market-monitor runs unattended by its own default: its setup opens on Never ask, saying what that grants.
     await page.goto(`${base}/#/templates/${TEMPLATE}`);
     const approvals = page.getByRole("group", { name: "Approvals" });
     await approvals.waitFor();
-    check(await approvals.getByRole("radio", { name: /^Never ask/ }).isChecked(), "market-monitor's Apply screen did not open on Never ask");
+    check(await approvals.getByRole("radio", { name: /^Never ask/ }).isChecked(), "market-monitor's setup did not open on Never ask");
     await approvals.getByText("every tool this agent has runs without waiting for you", { exact: false }).waitFor();
     await page.locator('[data-field="parameters.competitors"] input').fill("Acme (acme.com)");
-    const answered = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`);
-    await page.getByRole("button", { name: "Apply", exact: true }).click();
-    const response = await answered;
+    // Continue through the shared Run dropdown. The playground must preserve the template setup before applying it.
+    await page.getByRole("button", { name: "Choose coding agent for Run", exact: true }).click();
+    await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
+    await page.waitForURL((url) => {
+      const [route, query] = url.hash.split("?");
+      const params = new URLSearchParams(query);
+      return route === "#/playground" && params.get("operation") === "apply-template" && params.get("template") === TEMPLATE;
+    });
+    await page.getByRole("button", { name: "Apply", exact: true }).waitFor();
+    check(await page.locator('[data-field="parameters.competitors"] input').inputValue() === "Acme (acme.com)", "the playground lost the configured competitors");
+    check(await page.getByRole("group", { name: "Approvals" }).getByRole("radio", { name: /^Never ask/ }).isChecked(), "the playground lost the unattended approval choice");
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`),
+      page.getByRole("button", { name: "Apply", exact: true }).click(),
+    ]);
     check(response.status() === 201, `the apply answered ${response.status()}: ${await response.text()}`);
     check(JSON.parse(response.request().postData() ?? "{}").overrides?.approvals === "never", "the apply did not send overrides.approvals never");
     const applied = await response.json();

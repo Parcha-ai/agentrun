@@ -79,20 +79,25 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
         </span>
       </button>
       {native && <p className="mt-3 break-all font-mono text-small text-muted-foreground">{native.project} · {native.machine_id}</p>}
-      <div className="mt-auto flex flex-wrap items-center gap-2 pt-5">
-        <span className="caps border px-1.5 py-0.5 text-micro text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
-        {a.runs && <span className="caps border px-1.5 py-0.5 text-micro text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
-        {waiting > 0 && (
-          <Button size="xs" type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
-            className="caps shrink-0 whitespace-nowrap border border-warning/50 bg-warning/10 px-1.5 py-0.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</Button>
-        )}
-        <span className="flex-1" />
-        {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-        <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
-        <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
-        <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
-          {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
-        </Button>
+      {/* Keep each count on one line. The actions move together to their own row when space is tight;
+          if that row is narrower than all four actions, wrap whole controls, never their split buttons. */}
+      <div data-testid="agent-card-footer" className="mt-auto flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1 pt-5">
+        <div data-testid="agent-card-chips" className="flex min-w-0 flex-auto flex-wrap items-center gap-x-2 gap-y-1.5 py-1.5">
+          <Chip className="shrink-0 whitespace-nowrap">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</Chip>
+          {a.runs && <Chip className="shrink-0 whitespace-nowrap">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</Chip>}
+          {waiting > 0 && (
+            <Button size="xs" type="button" aria-label={waitingWords(waiting)} onClick={() => actions.onLearning?.(a.agent_id)}
+              className="h-5 shrink-0 whitespace-nowrap border-warning/50 bg-warning/10 px-1.5 text-micro text-warning-text hover:bg-warning/20">Learning · {waiting}</Button>
+          )}
+        </div>
+        <div data-testid="agent-card-actions" className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+          {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+          <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk?.runtime)} playgroundHref={native || sdk ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
+          <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
+            {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
+          </Button>
+        </div>
       </div>
     </li>
   );

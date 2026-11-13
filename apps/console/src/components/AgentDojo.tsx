@@ -144,7 +144,7 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
 function AgentCard({ row, server }: { row: Row; server: "on" | "off" }) {
   const { agent, view, error } = row;
   const supported = agent.kind === "agentic";
-  const on = agent.definition.learning === true;
+  const on = agent.definition.learning === true || agent.definition.learning === "notes";
   return <article className="flex min-w-0 flex-col border bg-card p-5">
     <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="min-w-0 break-words text-lead font-semibold">{agent.definition.name || agent.agent_id}</h3><Chip tone={supported && on && server === "on" ? "success" : "plain"}>{!supported ? "Workflow" : server === "off" && on ? "Paused by server" : on ? "Learning on" : "Learning off"}</Chip></div>
     {!supported ? <p className="mt-4 text-lead text-muted-foreground">Workflow runs do not learn. Enable learning on an agentic agent.</p>

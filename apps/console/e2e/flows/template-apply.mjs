@@ -1,4 +1,4 @@
-// Apply a template on the Templates page and see its agent open. The template is kyb, which the server ships: it needs no
+// Open a template's API playground from its Run dropdown, apply it, and see its agent open. The template is kyb, which the server ships: it needs no
 // MCP server and no key, and its one required parameter fills its display name, so the agent's name shows the parameter
 // reached the server. Whether the Apply screen shows warnings first is the server's answer, which the flow reads and follows.
 import { check } from "../harness.mjs";
@@ -18,20 +18,22 @@ export default {
     await card.waitFor();
     check(!(await page.locator("main").innerText()).includes("${"), "the Templates page shows a raw ${…} placeholder");
     check(await card.locator("h2").innerText() === "KYB due diligence (… risk appetite)", `the kyb card reads ${JSON.stringify(await card.locator("h2").innerText())}`);
-    await card.getByRole("button", { name: "Apply", exact: true }).click();
-    await page.waitForURL((url) => url.hash === `#/templates/${TEMPLATE}`);
+    await card.getByRole("button", { name: "Choose coding agent for Run", exact: true }).click();
+    await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
+    await page.waitForURL((url) => url.hash === `#/playground?operation=apply-template&template=${TEMPLATE}`);
 
     // The Apply screen: no raw placeholder; the title fills as the required parameter is typed, then Apply.
-    const title = page.getByRole("heading", { level: 1 });
+    const title = page.getByRole("heading", { level: 2, name: /^KYB due diligence/ });
     await title.waitFor();
     check(!(await page.locator("main").innerText()).includes("${"), "the Apply screen shows a raw ${…} placeholder");
     // risk_appetite is one of low, medium or high (its pattern): a choice, never a box to type in.
     await page.locator('[data-field="parameters.risk_appetite"] button[aria-haspopup="listbox"]').click();
     await page.locator(`[role="option"][data-value="${RISK}"]`).click();
     await title.getByText(`KYB due diligence (${RISK} risk appetite)`, { exact: false }).waitFor();
-    const answered = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`);
-    await page.getByRole("button", { name: "Apply", exact: true }).click();
-    const response = await answered;
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`),
+      page.getByRole("button", { name: "Apply", exact: true }).click(),
+    ]);
     check(response.status() === 201, `the apply answered ${response.status()}: ${await response.text()}`);
     const applied = await response.json();
     const agentHash = `#/agents/${encodeURIComponent(applied.agent_id)}`;

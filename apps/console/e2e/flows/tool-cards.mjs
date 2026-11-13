@@ -24,7 +24,7 @@ const SERVER = {
 export default {
   name: "tool-cards",
   signedIn: true,
-  async run({ page, base }) {
+  async run({ page, base, api }) {
     // The saved MCP servers, and an MCP client on this server for pi, so the Tools step lists Linear's tools.
     await page.route("**/v2/settings/mcp-servers", (route) => route.fulfill({ json: { servers: [SERVER] } }));
     await page.route("**/v2/capabilities", async (route) => {
@@ -32,7 +32,11 @@ export default {
       const caps = await response.json();
       await route.fulfill({ response, json: { ...caps, features: { ...caps.features, mcp_client: { ...(caps.features?.mcp_client ?? {}), harnesses: ["pi"] } } } });
     });
-    await page.goto(`${base}/#/agents/new`);
+    // New agents start in the coding-agent handoff. Existing agents still expose the local editor.
+    const made = await api("POST", "/agents", { definition: { version: 1, name: "Tool card layout", instructions: "Answer in one line.", harness: "pi", tools: [], skills: [] } });
+    check(made.status === 201 || made.status === 200, `POST /v2/agents answered ${made.status}: ${JSON.stringify(made.body)}`);
+    check(typeof made.body.agent_id === "string", "created agent has no id");
+    await page.goto(`${base}/#/agents/${encodeURIComponent(made.body.agent_id)}/edit`);
     await page.locator("ol").first().getByRole("button", { name: /Tools & skills/ }).click();
     const mcp = (tool) => page.locator(`[data-tool-card="mcp:linear/${tool}"]`);
     await mcp("create_attachment").waitFor();
