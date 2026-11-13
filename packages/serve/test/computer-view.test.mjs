@@ -54,6 +54,21 @@ test("a browser step with no result yet is the browser opening; one answered, wi
   assert.equal(sessionIn("browser", [call("c1", "snapshot", "error")]), "unopened", "nor an errored one's");
 });
 
+test("every browser step but its release opens a session: an upload or a relaunch first counts too", () => {
+  for (const name of ["browser_upload", "browser_relaunch", "browser_downloads", "browser_read"]) {
+    assert.equal(sessionIn("browser", [call("c1", name)]), "opening", name);
+    assert.equal(sessionIn("browser", [call("c1", name), result("c1")]), "closed", name);
+  }
+});
+
+test("a CLI harness's browser calls (its record's call start and end) read the same as a pi run's", () => {
+  const start = (callId, tool) => ({ kind: "agentrun.call.start", data: { callId, tool, input: {}, at: 1 } });
+  const end = (callId) => ({ kind: "agentrun.call.end", data: { callId, status: "done", output: "ok", at: 2 } });
+  assert.equal(sessionIn("browser", [start("k1", "web_fetch"), end("k1")]), "unopened");
+  assert.equal(sessionIn("browser", [start("k1", "snapshot")]), "opening");
+  assert.equal(sessionIn("browser", [start("k1", "snapshot"), end("k1")]), "closed");
+});
+
 test("a desktop or a phone opens with the run's claim: opening until its viewer answers", () => {
   const up = { kind: "computer.hold", data: { up: true, computer: "desktop", at: 1 } };
   for (const kind of ["desktop", "phone"]) {

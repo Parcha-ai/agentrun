@@ -161,6 +161,23 @@ describe("the run page's Screen tab, for a browser", () => {
     expect(text).not.toContain("closed when the run ended");
   });
 
+  it("a run that ends with its last read unopened reads once more: a browser opened since reads closed, never 'didn't open'", async () => {
+    let opened = false;
+    const p = await moving(async () => ({ state: "none", kind: "browser", hold: "agent", session: opened ? "closed" : "unopened" }));
+    expect(p.section()).toContain("This run hasn't opened its browser.");
+    // The browser opens and closes between two reads, and the run ends before the next one.
+    opened = true;
+    const before = p.reads();
+    await p.show(ended);
+    await settle(150);
+    const atEnd = p.reads();
+    expect(atEnd, "read again at the end").toBeGreaterThan(before);
+    expect(p.section()).toContain("The browser closed when the run ended.");
+    expect(p.section()).not.toContain("didn't open");
+    await settle(150);
+    expect(p.reads(), "and nothing more").toBe(atEnd);
+  });
+
   it("a desktop the run hasn't opened says so in a desktop's words", async () => {
     const desktop = { ...working, status: "input_required", state: "waiting", computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
     const p = await page(async () => ({ state: "none", kind: "desktop", hold: "agent", session: "unopened" }), desktop, "screen");

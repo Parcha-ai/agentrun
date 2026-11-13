@@ -4,8 +4,9 @@
 // is (never opened, opening, closed), or `off` with why there is no computer here. `hold` is who drives now.
 
 import type { JournalEntry } from "./computer-commands.js";
+import { KINDS } from "./runner/journal-kinds.js";
 import type { ViewerKind } from "./store/store.js";
-import { BROWSER_OPENERS } from "./timeline/labels.js";
+import { BROWSER_STEPS } from "./timeline/labels.js";
 
 export type { JournalEntry };
 
@@ -47,6 +48,10 @@ export async function computerView(deps: {
   return { state: "none", kind: computer.kind, hold, session: deps.session(computer.kind) };
 }
 
+/** The browser's steps that open a session when none is open: every one of them but its release (a run, a snapshot, an
+ *  upload or a relaunch alike goes through the session, which the first call launches). */
+const OPENS: ReadonlySet<string> = new Set([...BROWSER_STEPS].filter((name) => name !== "browser_release"));
+
 type Obj = Record<string, unknown>;
 const objOf = (value: unknown): Obj | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Obj) : undefined);
 const messageOf = (entry: JournalEntry): Obj | undefined => {
@@ -56,22 +61,27 @@ const messageOf = (entry: JournalEntry): Obj | undefined => {
 
 /** Where the run's computer of `kind` is, read from the run's journal `entries` (in order), for a run with no viewer
  *  open. A desktop or a phone is opened by the run's claim at its start and held to its end: opening until its viewer
- *  answers. A browser is opened by the agent's browser steps (BROWSER_OPENERS, the calls the Timeline's "A live browser
- *  session started" row reads): unopened with no such call in the run; opening while one has no result yet; closed
- *  otherwise (released, or let go with its process). */
+ *  answers. A browser is opened by the agent's browser steps (OPENS): unopened with no such call in the run; opening
+ *  while one has no result yet; closed otherwise (released, or let go with its process). */
 export function sessionIn(kind: ComputerKind, entries: readonly JournalEntry[]): ComputerSession {
   if (kind !== "browser") return "opening";
   let asked = false;
   const waiting = new Set<string>();
+  const called = (id: unknown, name: unknown): void => {
+    if (typeof id !== "string" || typeof name !== "string" || !OPENS.has(name)) return;
+    asked = true;
+    waiting.add(id);
+  };
   for (const entry of entries) {
     const message = messageOf(entry);
+    const data = objOf(entry.data);
+    // A pi run's calls are its assistant entries' toolCall blocks, answered by tool-result entries; a CLI harness's (Claude,
+    // Codex) are its record's call start and end entries.
     if (entry.kind === "pi.assistant" && message && message.stopReason !== "error" && message.stopReason !== "aborted" && Array.isArray(message.content)) {
-      for (const block of message.content.map(objOf)) {
-        if (block?.type !== "toolCall" || typeof block.id !== "string" || typeof block.name !== "string" || !BROWSER_OPENERS.has(block.name)) continue;
-        asked = true;
-        waiting.add(block.id);
-      }
+      for (const block of message.content.map(objOf)) if (block?.type === "toolCall") called(block.id, block.name);
     } else if (entry.kind === "pi.tool-result" && typeof message?.toolCallId === "string") waiting.delete(message.toolCallId);
+    else if (entry.kind === KINDS.callStart) called(data?.callId, data?.tool);
+    else if (entry.kind === KINDS.callEnd && typeof data?.callId === "string") waiting.delete(data.callId);
   }
   return !asked ? "unopened" : waiting.size ? "opening" : "closed";
 }

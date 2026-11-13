@@ -17,7 +17,8 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  more: signed out (401) reads as `signed_out`, so the tab says why it closed (in the console the same 401 also turns the
  *  page to its sign-in, once the session read again says it ended; the tab's words are what shows meanwhile, and where no
  *  such check runs); a 403 (a token, never a session) has no screen. An ended run has nothing to watch: it is not read
- *  again, and a screen it showed reads as closed (none), whatever the last read said. A page opened on an ended run reads
+ *  again (but once, when the last read said its computer was unopened, since it may have opened one after that read),
+ *  and a screen it showed reads as closed (none), whatever the last read said. A page opened on an ended run reads
  *  once, to know whether it had one. Any other failed read keeps the last answer, so a screen being watched isn't torn
  *  down by one bad poll. Nothing about the answer is logged. `held` puts a take-over's or hand-back's answer (who drives)
  *  in place until the next read. */
@@ -31,10 +32,13 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   // Whether a read has answered on this page: an ended run is then read no more (an off it said included), and a screen
   // it showed reads as closed, until it goes again (a follow-up).
   const answered = useRef(false);
+  // Whether the last answer was a computer the run hadn't opened: one may have opened since, so the end reads once more
+  // before it says the run didn't open one.
+  const unopened = useRef(false);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
-    if (!going && answered.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
+    if (!going && answered.current && !unopened.current) { setNow((prev) => (prev ? closed(prev) : prev)); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const once = async () => {
@@ -42,6 +46,7 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
         const next = await reader.current!();
         if (!alive) return;
         answered.current = true;
+        unopened.current = next.state === "none" && next.session === "unopened";
         if (next.state === "off") setNow(null);
         // An ended run's screen is closed, whatever it last said.
         else if (!going) setNow(closed(next));
