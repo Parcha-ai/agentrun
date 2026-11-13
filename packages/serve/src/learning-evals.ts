@@ -104,8 +104,9 @@ export async function recordEval(store: Store, agentId: string, record: Learning
   for (;;) {
     const was = await store.settings.get(key);
     const next = [record, ...listOf(was)].slice(0, EVALS_KEPT);
-    // putIfAbsent answers what the key holds after: ours (a new id, so no other list equals it) unless another post won.
-    const kept = was === undefined ? JSON.stringify(await store.settings.putIfAbsent(key, next)) === JSON.stringify(next) : await store.settings.replaceIf(key, was, next);
+    // putIfAbsent answers what the key holds after: ours, or ours under a post that raced in between (Postgres inserts and reads
+    // back in separate calls), so ours is kept when its id is in the list, never when the list merely differs from ours.
+    const kept = was === undefined ? listOf(await store.settings.putIfAbsent(key, next)).some((e) => e.id === record.id) : await store.settings.replaceIf(key, was, next);
     if (kept) return;
   }
 }

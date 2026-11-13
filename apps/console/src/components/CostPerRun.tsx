@@ -78,8 +78,11 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   // takeover's marker runs through both.
   const width = Math.max(300, room);
   const plotW = width - M.left - M.right;
-  const first = points[0]!.n, last = points.at(-1)!.n;
-  const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
+  // The axis is every run read (the mix draws the ones whose cost is unknown too), each run one equal slot of the plot and
+  // its dot at the slot's middle: a block of runs in the mix is then whole slots, its edges on slot edges.
+  const first = data.runs[0]!.n, last = data.runs.at(-1)!.n;
+  const slot = plotW / (last - first + 1);
+  const x = (n: number) => M.left + (n - first + 0.5) * slot;
   const { top, above } = yTopOf(points, mean, s.before?.mean_usd ?? null);
   const y = (v: number) => M.top + H - (Math.min(v, top) / top) * H;
   const yTicks = yTicksOf(top);
@@ -96,7 +99,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const pick = (e: PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - r.left) / r.width) * width;
-    setActive(nearest(points, first + ((px - M.left) / plotW) * (last - first)));
+    setActive(nearest(points, first + (px - M.left) / slot - 0.5));
   };
   const step = (e: KeyboardEvent<HTMLDivElement>) => {
     const moves: Record<string, (i: number) => number> = { ArrowRight: (i) => i + 1, ArrowLeft: (i) => i - 1, Home: () => 0, End: () => points.length - 1, PageUp: (i) => i + 10, PageDown: (i) => i - 10 };
@@ -188,7 +191,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
           )}
           <p className="sr-only" aria-live="polite">{at ? readout(at).join(", ") : ""}</p>
         </div>
-        <Mix runs={data.runs} width={width} x={x} step={last === first ? plotW : plotW / (last - first)} plot={[M.left, M.left + plotW]} takeover={s.takeover?.n ?? null} />
+        <Mix runs={data.runs} width={width} x={x} step={slot} plot={[M.left, M.left + plotW]} takeover={s.takeover?.n ?? null} />
         <p className="mt-1 text-small text-muted-foreground">
           Each dot is a run: its own cost plus what learning spent for it (the look-back and the grade). The line is the mean of the last {window} runs.
           {above ? ` ${above === 1 ? "1 run costs" : `${above} runs cost`} more than ${usd(top)} and ${above === 1 ? "is" : "are"} drawn at the top.` : ""}
@@ -236,7 +239,7 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
   if (!blocks.length) return null;
   const [left, right] = plot;
   const clamp = (v: number) => Math.min(right, Math.max(left, v));
-  /** A block's whole step on the axis: from half a run before its first to half a run after its last, inside the plot. */
+  /** A block's whole slots on the axis: from half a run before its first to half a run after its last, inside the plot. */
   const span = (b: Block) => ({ from: clamp(x(b.from) - step / 2), to: clamp(x(b.to) + step / 2) });
   const y = (share: number) => MIX_M.top + height * (1 - share);
   const last = blocks.at(-1)!;
@@ -283,11 +286,11 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
             </g>
           );
         })}
-        {/* The takeover marker carried down from the plot, with a 2px card ring so it reads over a workflow column too. */}
+        {/* The takeover marker carried down from the plot, on the left edge of the takeover run's slot: the edge of its block when
+            the block starts there, in the gap the columns leave between them. */}
         {onPlot && (
           <g data-testid="mix-takeover">
-            <path d={`M${x(takeover!)},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-card" strokeWidth={5.5} />
-            <path d={`M${x(takeover!)},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-chart-workflow" strokeWidth={1.5} />
+            <path d={`M${x(takeover!) - step / 2},${MIX_M.top}V${MIX_M.top + height}`} className="stroke-chart-workflow" strokeWidth={1.5} />
           </g>
         )}
       </svg>

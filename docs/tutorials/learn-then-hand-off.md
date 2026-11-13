@@ -78,7 +78,7 @@ cat > eval.json <<'JSON'
 { "name": "invoice bench, sealed test", "label_source": "invented labels", "n": 200, "correct": 188,
   "cost_per_task_usd": 0.12, "baseline_cost_per_task_usd": 0.89 }
 JSON
-agentrun learning record-eval invoice-sorter --body @eval.json
+agentrun learning record-eval mcc --body @eval.json
 ```
 
 ![The held-out test card: 94% held-out accuracy, 95% interval 89.8% to 96.5% over 200 jobs, and 7.4x cheaper a task than by hand](../assets/tutorials/held-out-test.png)

@@ -103,7 +103,7 @@ describe("CostChart", () => {
     const paths = [...marker.querySelectorAll("path")];
     expect(paths.map((p) => p.getAttribute("class"))).toEqual(["stroke-chart-workflow"]);
     // Runs 21 to 25 are a whole block starting at the takeover: its hover target begins where the line is.
-    const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")!).filter((r) => r.getAttribute("fill-opacity") === "0");
+    const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0");
     const edge = Number(targets[4]!.getAttribute("x"));
     expect(Number(/^M([\d.]+),/.exec(paths[0]!.getAttribute("d")!)![1])).toBeCloseTo(edge, 1);
   });

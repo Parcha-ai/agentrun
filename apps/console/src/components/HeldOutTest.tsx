@@ -25,7 +25,7 @@ export function headlineOf(record: LearningEval) {
   return {
     accuracy: percent(record.accuracy),
     accuracyVs: `95% interval ${percent(lo!)} to ${percent(hi!)}, n=${record.n.toLocaleString("en-US")}`,
-    cost: !counted ? (learned !== null ? level(learned) : "Not counted") : times === null ? level(learned) : times >= 1 ? `${times}x cheaper` : `${Math.round((learned / hand) * 10) / 10}x the cost`,
+    cost: !counted ? (learned !== null ? level(learned) : "Not counted") : times === null || hand === 0 ? level(learned) : times >= 1 ? `${times}x cheaper` : `${Math.round((learned / hand) * 10) / 10}x the cost`,
     costVs: counted ? `${level(learned)} a task vs ${level(hand)} by hand` : learned !== null ? `${level(learned)} a task; by hand not counted` : "The test did not count the cost a task.",
   };
 }
