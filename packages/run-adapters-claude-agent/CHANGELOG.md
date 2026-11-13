@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.37 (2026-11-13)
+
+- A web_search setting of deny or ask now applies to a Claude Code or Codex run's own web search at its next search, including a run that started while it was allow. Before, the setting was read only when the run started, so a run that started with native search kept searching after the setting changed.
+  - Claude Code: each WebSearch asks the run's gate before it runs, as a host tool's call does. A deny refuses it in the gate's words. An ask parks the run on the person with nothing searched; once they allow it, the model's next search with the same query runs once, with no second card.
+  - Codex: its search runs inside the provider's model request, so its proxy reads web_search's setting before each request and offers the provider its search only while the setting is allow. A failed read offers no search.
+  - `SessionIO.permission(tool)` (agentrun-kernel) is the host's setting for a harness's own tool at the time of the read. The runner reads it from the store each time. `ProviderPolicy.apply` may return a promise.
+  - A runner run whose plane resolves web_search to native now gets the harness's own search (#2458). The runner had built the run's environment without its plane, so Claude Code and Codex runs on a runner never had it on.
+- A web_search that resolves to the model provider's own search works again on the runner for pi (#2458). It used to answer "web_search has no model to search on" every time:
+  - A pi run's own web_search on an Anthropic or OpenAI model. That is what `auto` picks for pi, and `native` too. Each search now goes through the run's model proxy with the provider's search tool, and its searches are booked at the provider's price on top of its tokens.
+  - A learned workflow's call node whose web_search resolves native, on any harness.
+
+  Each run's search uses that run's own model route, never one shared by the whole process. Hand-written workflow agents were not affected: their web_search never resolves native. Both harness packages now export their `withWebSearches` price wrapper, and the Codex one its `webSearchUsd`. A claude-agent or codex run's own search is not switched on by this change.
+
+  A capped run holds a hosted search's fees with its tokens before the request is sent, at the most searches the request allows, so the fees can't pass the cap. The kernel's model proxy takes a policy's `feeMaxUsd(body)` and holds it as the request's `feeUsd`; a fee it can't bound leaves the request unmeasured. The proxy also hands `usageOf` the sent body as a second argument, so a pi request on OpenAI's Responses that offered no search reads 0 searches from its body, even when its answer names a search call.
+
 ## 0.1.0-beta.36 (2026-11-13)
 
 - Model defaults move to the current models. The OpenAI default (and OpenRouter's, for pi, codex and opencode) is now gpt-6.1-sol, where OpenRouter's was gpt-6-sol. The Claude Agent adapter's default is now claude-sonnet-5-5 (was claude-sonnet-4-5) and the Codex adapter's is openai/gpt-6-luna (was openai/gpt-5.4-mini). A host that relied on a default names its model; the READMEs' examples name the current ones.
