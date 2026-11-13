@@ -181,7 +181,7 @@ test("a new digest with graded inputs replays before it serves: the agent takes 
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "replay"], ["promote", "replay"]]);
   const { replay } = records[1];
-  assert.deepEqual({ ...replay, of: replay.of.length }, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0, of: 6, cost_usd: replay.cost_usd });
+  assert.deepEqual({ ...replay, of: replay.of.length }, { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0, of: 6, cost_usd: replay.cost_usd, skipped_write: 0 });
   assert.ok(replay.cost_usd > 0, "what the replay cost is on its record");
   assert.equal(records[1].digest, DIGEST);
 });
