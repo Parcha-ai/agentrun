@@ -33,6 +33,8 @@ func list(_ r: CGRect) -> [Double] { [r.minX, r.minY, r.width, r.height] }
 
 func number(_ info: [String: Any], _ key: CFString) -> Int? { (info[key as String] as? NSNumber)?.intValue }
 
+let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+
 /// The window and what is in front of it, from the window server's list (front to back).
 func locate(_ id: Int) -> [String: Any] {
 	let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
@@ -48,6 +50,9 @@ func locate(_ id: Int) -> [String: Any] {
 		if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue == 0 { continue }
 		// The demo app's own menus and popovers belong in its movie; its other ordinary windows may be a person's.
 		if number(info, kCGWindowOwnerPID) == owner && number(info, kCGWindowLayer) != 0 { continue }
+		// The Dock's window at the Dock's level covers the whole display and is clear but for the Dock itself, which shows
+		// app icons: painting it blacked out every frame (CI, macOS 26). A window of its at any other level is painted.
+		if info[kCGWindowOwnerName as String] as? String == "Dock" && number(info, kCGWindowLayer) == dockLevel { continue }
 		guard let d = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: d as CFDictionary) else { continue }
 		let overlap = r.intersection(bounds)
 		if !overlap.isNull && overlap.width > 0 && overlap.height > 0 {
