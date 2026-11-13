@@ -74,20 +74,20 @@ function captureLines(t) {
 }
 
 /** An agent granted the fake server's add and delete_thing (per_run: every call needs the token a run is handed), that
- *  learned `tidy`; `graded` real runs of it, each deleting the thing its job names (`gradedId(i)`), graded right. */
-async function world(t, { graded = 5, gradedId = (i) => `thing-${i}` } = {}) {
+ *  learned `tidy`; `graded` real runs of it, each deleting a thing (`deletes` of the one its job names), graded right. */
+async function world(t, { graded = 5, deletes = (id) => id } = {}) {
   const lines = captureLines(t);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-replay-tools-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const fake = await startFakeMcp({ token: TOKEN });
-  // The agent's model: a job names its thing (`job <n>: delete <id>`); it deletes it once, then says the sum.
+  // The agent's model: a job names its thing (`job <n>: delete <id>`); it deletes `deletes(id)` once, then says the sum.
   const gw = await startFauxGateway({
     call: ({ body }) => {
       const offered = (body?.tools ?? []).some((tool) => tool?.name === "mcp__fake__delete_thing");
       const answered = (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
       const id = /delete ([\w-]+)/.exec(JSON.stringify(body?.messages ?? []))?.[1];
-      return offered && !answered && id ? { name: "mcp__fake__delete_thing", input: { id } } : undefined;
+      return offered && !answered && id ? { name: "mcp__fake__delete_thing", input: { id: deletes(id) } } : undefined;
     },
     text: ({ body }) => `${/sum (\d+)/.exec(JSON.stringify(body?.messages ?? []))?.[1] ?? "?"}`,
   });
@@ -122,7 +122,7 @@ async function world(t, { graded = 5, gradedId = (i) => `thing-${i}` } = {}) {
   };
   // The graded runs: the agent alone (no learning laid), each deleting its thing live, graded right on its sum.
   for (let i = 0; i < graded; i += 1) {
-    const row = await start(`graded-${i}`, i, gradedId(i), false);
+    const row = await start(`graded-${i}`, i, `thing-${i}`, false);
     assert.equal(row.state, "ended", JSON.stringify(row));
     await putGrade(server.settings, "agent-1", { run: `graded-${i}`, correct: true, expected: { sum: String(i + i + 1) }, source: "eval", at: new Date().toISOString(), path: "agent" });
   }
@@ -138,17 +138,18 @@ async function world(t, { graded = 5, gradedId = (i) => `thing-${i}` } = {}) {
 
 test("a replay answers its write from the graded run's recording, never sending it; its read runs live once, then cached; its per_run credential is the claimed run's; nothing is printed", { timeout: 180_000 }, async (t) => {
   const { server, fake, logs, lines, start, replaysEnded, calls } = await world(t);
-  const first = await start("run-1", 7, "thing-7");
-  assert.equal(first.metrics?.path, "agent", `the agent takes the run while its workflow replays: ${JSON.stringify(first.metrics)}\n${logs.join("\n")}`);
+  // The replays start as run-1 is claimed: what the fake saw is counted from before it.
   const deletedBefore = calls("delete_thing").length;
   const addsBefore = calls("add").length;
+  const first = await start("run-1", 7, "thing-7");
+  assert.equal(first.metrics?.path, "agent", `the agent takes the run while its workflow replays: ${JSON.stringify(first.metrics)}\n${logs.join("\n")}`);
   const runs = await replaysEnded(5);
   for (const row of runs) {
     assert.equal(row.state, "ended", JSON.stringify(row));
     assert.equal(row.metrics?.path, "replay");
     assert.equal(row.metrics?.replay?.outcome, "answered", `answered on its own input: ${JSON.stringify(row.metrics)}\n${logs.join("\n")}`);
   }
-  assert.equal(calls("delete_thing").length, deletedBefore, "no replay sent the write: each was answered from its graded run's recording");
+  assert.equal(calls("delete_thing").length, deletedBefore + 1, "run-1's agent deleted its thing; no replay sent the write: each was answered from its graded run's recording");
   assert.equal(calls("add").length - addsBefore, 5, "each replay's read ran live once: its second step of the same read was the cache's");
   assert.ok(calls("add").every((entry) => entry.authorization), "every live read carried the per_run credential");
   // Every replay answered right: promoted on the next run, which the workflow serves.
@@ -162,16 +163,16 @@ test("a replay answers its write from the graded run's recording, never sending 
 
 test("a write whose arguments the recording does not have is never sent: the input is skipped; every input skipped holds the revision in those words", { timeout: 180_000 }, async (t) => {
   // The graded runs deleted other things than their inputs name: no recorded write matches what the workflow asks.
-  const { server, start, replaysEnded, calls, logs } = await world(t, { gradedId: (i) => `other-${i}` });
-  await start("run-1", 7, "thing-7");
+  const { server, start, replaysEnded, calls, logs } = await world(t, { deletes: (id) => `${id}-old` });
   const deletedBefore = calls("delete_thing").length;
+  await start("run-1", 7, "thing-7");
   const runs = await replaysEnded(5);
   for (const row of runs) {
     assert.equal(row.state, "ended", JSON.stringify(row));
     assert.equal(row.metrics?.replay?.outcome, "skipped_write", JSON.stringify(row.metrics));
     assert.deepEqual(row.metrics.replay.skipped, { tool: "mcp:fake/delete_thing", step: "delete" });
   }
-  assert.equal(calls("delete_thing").length, deletedBefore, "no write was sent");
+  assert.equal(calls("delete_thing").length, deletedBefore + 1, "run-1's agent deleted its thing; no replay sent a write");
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
