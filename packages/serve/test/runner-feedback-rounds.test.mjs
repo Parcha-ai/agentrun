@@ -235,7 +235,7 @@ test("a run with rounds: its impact and its cost per run read the same split: th
   const rounds = { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.6, look_back_usd: 0.1, grade_usd: 0.02 };
   // Round 1's job $0.60, a follow-up turn $0.30, two look-backs $0.10: the row holds $1.00.
   assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.4 });
-  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.1 }, "an unknown row cost: the look-backs added up");
+  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: null }, "an unknown row cost with the job known: the spend after the job is unknown, never the look-backs added up as settled");
   const impact = impactLearningOf({ state: "merged", reason: null, at: "2026-11-13T00:01:00.000Z" }, { seedNotes: 1 }, undefined, rounds, 1.0);
   assert.equal(impact.job_cost_usd, 0.6, "the job is round 1's");
   assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");

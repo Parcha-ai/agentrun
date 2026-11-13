@@ -338,9 +338,11 @@ export type RoundsSpend = { answered_at: string; job_cost_usd: number | null; lo
 /** What a run with rounds (`rounds`) kept as it answered, as its cost per run and its impact both read it: its job is
  *  what it had cost when its first round answered; everything its row (`rowUsd`) spent after that (each later round's
  *  follow-up turn and every round's look-back: feedback the run was given is learning, never the job) is its look-back;
- *  the rounds' look-backs added up when the row's cost or the job's is unknown. */
+ *  unknown when the row's cost is and the job's is known (the request no one priced came after the job answered: a later
+ *  round stopped mid-request keeps no figures, so the rounds' sum would read short as if settled); the rounds'
+ *  look-backs added up when the job's cost is unknown. */
 export function roundsLooked(rounds: RoundsSpend, rowUsd: number | null): { answered_at: string; job_cost_usd: number | null; look_back_usd: number | null } {
-  const after = rowUsd === null || rounds.job_cost_usd === null ? rounds.look_back_usd : Math.max(0, Math.round((rowUsd - rounds.job_cost_usd) * 1e9) / 1e9);
+  const after = rounds.job_cost_usd === null ? rounds.look_back_usd : rowUsd === null ? null : Math.max(0, Math.round((rowUsd - rounds.job_cost_usd) * 1e9) / 1e9);
   return { answered_at: rounds.answered_at, job_cost_usd: rounds.job_cost_usd, look_back_usd: after };
 }
 export async function roundsSpendOf(store: Store, runId: string): Promise<RoundsSpend | undefined> {
