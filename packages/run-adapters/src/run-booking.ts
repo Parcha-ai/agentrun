@@ -6,6 +6,9 @@
 //   answered (in flight in any session, in this process or a lost one) counts there at what its host held for it;
 // - `inFlight`: the requests this booking admitted that no record shows yet, each at what it was held at, so two
 //   sessions asking at once never both take room only one of them fits.
+// - what was spent beside its sessions on the run's behalf (`sessions.beside`: a run's learning, graded by runs of its
+//   own), read with them at each admission and added to `spentUsd`, so a run and what it pays for elsewhere never pass
+//   its cap together. Unknown (null) makes the run's spend unknown.
 // Admissions run one at a time across the run's sessions. The priced tools' charges and holds are not here: they are the
 // host's spentUsd and heldUsd hooks (beforeRequestOf), read beside these.
 import { type BeforeRequest, type InFlight, sessionSpendOf } from "./runner.js";
@@ -15,6 +18,9 @@ import type { SessionRecord } from "./types.js";
 export interface RunSessions {
   keys(): readonly string[] | Promise<readonly string[]>;
   read(key: string): Promise<SessionRecord[]>;
+  /** What was spent on the run's behalf outside its sessions, as the host reads it at each admission (what ended at its
+   *  cost, what is under way at the most it may take); null: unknown. None: nothing is. */
+  beside?(): Promise<number | null>;
 }
 
 const idOf = (key: string, turn: number) => `${key}\u0000${turn}`;
@@ -35,6 +41,10 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest): Before
         // A hold-only step still open is no spend in its records: this booking keeps counting the one it admitted, in
         // flight at its hold, until it is answered (a lost claim's, admitted by no booking here, counts nothing).
         for (const turn of spend.turns) if (!spend.openHolds.has(turn)) recorded.add(idOf(key, turn));
+      }
+      if (sessions.beside) {
+        const beside = await sessions.beside();
+        spentUsd = spentUsd === null || beside === null || !Number.isFinite(beside) ? null : spentUsd + beside;
       }
       for (const id of [...admitted.keys()]) if (recorded.has(id)) admitted.delete(id);
       const verdict = await before({ ...request, spentUsd, inFlight: [...admitted.values()] });

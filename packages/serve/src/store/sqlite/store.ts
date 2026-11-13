@@ -1189,6 +1189,31 @@ class SqliteStore implements Store {
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
         });
       },
+      spentBeside: async (runId, { beforeRound } = {}) => {
+        type BesideRecord = { state: RunState | null; cost_usd: number | null; body: string | null };
+        const rows = await db.all<BesideRecord>(
+          `SELECT lr.state, lr.cost_usd, rl.body
+             FROM learning_proposals lp
+             LEFT JOIN runs lr ON lr.id = lp.learning_run_id
+             LEFT JOIN run_launch rl ON rl.run_id = lp.learning_run_id
+            WHERE lp.run_id = ? AND lp.learning_run_id IS NOT NULL${beforeRound === undefined ? "" : " AND lp.round < ?"}`,
+          ...(beforeRound === undefined ? [runId] : [runId, beforeRound]),
+        );
+        const figure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
+        let spent = 0;
+        for (const row of rows) {
+          // A learning run named and never written spent nothing.
+          if (row.state === null) continue;
+          if (FINAL_STATES.includes(row.state) && figure(row.cost_usd)) {
+            spent += row.cost_usd;
+            continue;
+          }
+          const cap = row.body === null ? undefined : (JSON.parse(row.body) as { max_cost_usd?: unknown } | null)?.max_cost_usd;
+          if (!figure(cap)) return null;
+          spent += cap;
+        }
+        return spent;
+      },
     };
 
     this.settings = {
