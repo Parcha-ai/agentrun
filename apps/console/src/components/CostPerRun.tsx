@@ -72,6 +72,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
         <div className="px-4 py-8 text-center" role="status">
           <p className="font-mono text-body">{points.length ? "One run so far." : "No run with a known cost yet."}</p>
           <p className="mx-auto mt-1 max-w-prose text-body text-muted-foreground">{HOW}</p>
+          {notes.map((n) => <p key={n} className="mx-auto mt-1 max-w-prose text-small text-muted-foreground">{n}</p>)}
         </div>
       </Card>
     );
