@@ -433,6 +433,7 @@ test("capabilities(), the exported helper, gives a document that passes the publ
   assert.notDeepEqual(schemaProblems(doc, shape, { ...plain, models: { ...plain.models, source: "elsewhere" } }), []);
   const caps = await capabilities({});
   assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ default_model, ...offer }) => offer) }), []);
+  assert.notDeepEqual(schemaProblems(doc, shape, { ...caps, harnesses: caps.harnesses.map(({ models, ...offer }) => offer) }), [], "a harness without its models is refused too");
 });
 
 test("the decision providers' widening is its own addition, decisions/3 (parallel, then its route), and info lists it", async (t) => {

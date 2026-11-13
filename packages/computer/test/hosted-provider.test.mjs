@@ -374,6 +374,26 @@ test("a retry is held to the GPUs its computer reads back: a GPU request that fi
 	assert.equal(fake.creates(), 2, "never a second machine under one name");
 });
 
+test("a retry from a restarted provider, of a sized request on a host that takes sizes but reads none back (Modal), finds the computer the first made", async () => {
+	const fake = fakeHost({ facts: { specFields: ["cpus", "memoryMb"] } });
+	const spec = { ...SPEC, cpus: 4, memoryMb: 8192 };
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ref = made(await before.create(spec, { requestId: "sized-unread" }));
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal(made(await after.create(spec, { requestId: "sized-unread" })).id, ref.id, "a size read back as nothing is not a drift");
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
+test("a retry from a restarted provider, of a GPU request on a host that reads no GPUs back (Modal), finds the computer the first made", async () => {
+	const H100 = { type: "H100", count: 1 };
+	const fake = fakeHost({ facts: { gpu: { types: ["H100"], max: 1 }, gpuReadBack: false } });
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ref = made(await before.create(SPEC, { requestId: "gpu-unread" }));
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal(made(await after.create({ ...SPEC, gpu: H100 }, { requestId: "gpu-unread" })).id, ref.id, "GPUs the vendor reads none of are not a drift");
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
 test("a retry that finds a desktop running whose display is not up yet waits for it within createMs; one that never comes up as declared is exists after createMs", async () => {
 	const labels = (request) => ({ [COMPUTER]: "1", [NAME]: nameOf(request), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" });
 	const up = (m) => {

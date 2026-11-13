@@ -62,7 +62,7 @@ test("without a default model a revision that names none is refused before it st
   assert.match(keyless.body.error.message, /No OpenAI key here for openai\/gpt-6\.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts\./);
   const unknown = await api("POST", "/agents", agent("unknown", { model: "openai/no-such-model" }));
   assert.equal(unknown.status, 422, "a model pi-ai does not know never runs here: refused at save (runnable.test.mjs)");
-  assert.match(unknown.body.error.fields[0].message, /knows no model no-such-model of openai/);
+  assert.match(unknown.body.error.fields[0].message, /On pi, a model is <provider>\/<model id>, like .*: openai\/no-such-model is not a model pi runs here/);
   assert.deepEqual((await api("GET", "/runs")).body, { runs: [], next_cursor: null }, "nothing started");
 });
 

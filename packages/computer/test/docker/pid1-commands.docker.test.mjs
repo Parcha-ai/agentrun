@@ -1,11 +1,12 @@
-// The commands the Modal provider sends when it uploads the daemon, run where Modal would run them: a container started
-// as root (Modal containers always run as root) with no network, whose command is the provider's entrypoint, the
-// upload streamed into `docker exec -i` as the provider streams it into exec's stdin, and the bridge over
-// `docker exec -i ... computerd stdio`, and the provider's probe through it, refused at every target. On a Debian
-// image (coreutils) and an Alpine one (BusyBox only). The containers keep Docker's default capabilities and the two
-// init --own-network needs, or every one: init leaves itself none, whatever user --user names, root included.
-// AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and `npm run build:daemon`, and debian:bookworm-slim and
-// alpine:3.20 pulled. Each container is named computer-modal-<hex> and removed by that name, pass or fail.
+// The commands the shared adapter sends a pid1 host (Modal), run where such a host runs them: a container started as root
+// (Modal containers always run as root) with no network, whose command is the adapter's entrypoint, the daemon streamed
+// into `docker exec -i` as the adapter streams it through exec's stdin (no file API) and installed beside its path, then
+// moved into place once it reads the sha256 uploaded, and the bridge over the adapter's stdio command, and the probe
+// through it, refused at every target. On a Debian image (coreutils) and an Alpine one (BusyBox only). The containers
+// keep Docker's default capabilities and the two init --own-network needs, or every one: init leaves itself none,
+// whatever user --user names, root included. AGENTRUN_COMPUTER_LIVE_DOCKER=1 only; needs `npm run build` and
+// `npm run build:daemon`, and debian:bookworm-slim and alpine:3.20 pulled. Each container is named computer-pid1-<hex>
+// and removed by that name, pass or fail.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -14,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { DaemonClient } from "../../dist/index.js";
-import * as modal from "../../dist/modal.js";
+import { hostedCommands } from "../../dist/hosted/scripts.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const VERSION = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -42,7 +43,15 @@ const NAMESPACE_CAPS = ["--cap-add", "SYS_ADMIN", "--cap-add", "NET_ADMIN"];
  * 11-11). Init now uses rtnetlink alone, and only a live gVisor run proves that part.
  */
 const GVISOR_LIKE = ["--security-opt", "seccomp=unconfined"];
-const modalCommands = (options) => modal.modalCommands(options);
+/** Where the daemon is streamed before its install, as the adapter's upload through exec leaves it. */
+const STAGING = "/tmp/agentrun-computerd-0123456789abcdef";
+/** The adapter's upload for a host with no file API: the bytes into `cat` as root (hosted/process.ts uploadThroughExec). */
+const STAGE = ["sh", "-c", 'umask 077 && cat > "$1"', "sh", STAGING];
+/** The adapter's commands for a pid1 host: the entrypoint, the install beside the daemon's path, and the bridge. */
+/** This create's nonce, as the adapter makes one: the install writes it to the marker, and the entrypoint starts only
+ *  the daemon whose marker holds it (an empty one is never matched). */
+const NONCE = randomBytes(16).toString("hex");
+const pid1Commands = (options = {}) => hostedCommands({ staging: STAGING, atomic: true, nonce: NONCE, ...options });
 
 /** A /proc status file's fields, by name. */
 const fieldsOf = (text) =>
@@ -53,7 +62,7 @@ const fieldsOf = (text) =>
 			.map((line) => [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 1).trim()]),
 	);
 
-describe("the Modal provider's upload commands in a root container with no network", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
+describe("the adapter's pid1 commands in a root container with no network", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	const names = [];
 	const children = [];
 	after(() => {
@@ -65,34 +74,41 @@ describe("the Modal provider's upload commands in a root container with no netwo
 	});
 
 	/**
-	 * A root container of image, network none, whose command is the provider's entrypoint with init's --user user. It
+	 * A root container of image, network none, whose command is the adapter's entrypoint with init's --user user. It
 	 * keeps Docker's default capabilities and adds the two init --own-network needs, as Modal's root holds every one;
 	 * caps adds docker run flags.
 	 */
 	function sandbox(image, { waitSeconds = 120, user = "1000:1000", caps = [], root = NAMESPACE_CAPS } = {}) {
-		const name = `computer-modal-${randomBytes(6).toString("hex")}`;
+		const name = `computer-pid1-${randomBytes(6).toString("hex")}`;
 		names.push(name);
 		const deadline = new Date(Date.now() + 300_000).toISOString();
-		const commands = modalCommands({ deadline, user, waitSeconds });
+		const commands = pid1Commands({ deadline, user, waitS: waitSeconds });
 		docker("run", "--detach", "--name", name, "--network", "none", "--user", "0:0", ...root, ...caps, image, ...commands.entrypoint);
 		return { name, deadline };
 	}
 
-	/** Streams the daemon in with the provider's upload command, as create does. */
+	/** Streams bytes in and runs the install, as create does; answers the install's run (its status and output). */
+	function install(name, bytes, sha256) {
+		execFileSync("docker", ["exec", "-i", name, ...STAGE], { input: bytes });
+		return spawnSync("docker", ["exec", name, ...pid1Commands({ sha256 }).install], { encoding: "utf8" });
+	}
+
+	/** Streams the daemon in and installs it, as create does. */
 	function upload(name) {
 		const { bytes, sha } = daemon();
-		const uploaded = execFileSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
-		assert.equal(uploaded, `sha256 ${sha}\n`, "the upload prints the sha256 of what it wrote");
+		const installed = install(name, bytes, sha);
+		assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+		assert.match(installed.stdout, new RegExp(`^sha256 ${sha}$`, "m"), "the install prints the sha256 of what it put in place");
 	}
 
 	/** A client over `computerd stdio` once init listens, its hello answered: init drops itself before it listens. */
 	async function connected(name) {
 		const until = Date.now() + 30_000;
 		for (;;) {
-			const child = spawn("docker", ["exec", "-i", name, ...modalCommands().stdio], { stdio: ["pipe", "pipe", "pipe"] });
+			const child = spawn("docker", ["exec", "-i", name, ...pid1Commands().stdio], { stdio: ["pipe", "pipe", "pipe"] });
 			children.push(child);
 			const client = new DaemonClient({ readable: child.stdout, writable: child.stdin });
-			const hello = await client.call("hello", { client: "modal-commands test" }, { signal: AbortSignal.timeout(10_000) });
+			const hello = await client.call("hello", { client: "pid1-commands test" }, { signal: AbortSignal.timeout(10_000) });
 			if (hello.ok) return client;
 			client.close();
 			child.kill("SIGKILL");
@@ -120,61 +136,40 @@ describe("the Modal provider's upload commands in a root container with no netwo
 	}
 
 	for (const image of IMAGES) {
-		it(`${image}: the upload refuses a daemon path another user can change, and makes the daemon's directory root's alone`, () => {
+		it(`${image}: the install refuses a daemon path another user can change, makes the daemon's directory root's alone, and never moves a daemon whose sha256 is not the one uploaded`, () => {
 			const { bytes, sha } = daemon();
-			const upload = modalCommands({ sha256: sha }).upload;
 			// /opt writable by every user: a non-root computer user could swap the binary every connect runs as root.
 			const open = sandbox(image);
 			docker("exec", open.name, "sh", "-c", "mkdir -p /opt && chmod 0777 /opt");
-			const refused = spawnSync("docker", ["exec", "-i", open.name, ...upload], { input: bytes, encoding: "utf8" });
-			assert.notEqual(refused.status, 0, "the upload refuses /opt at mode 0777");
+			const refused = install(open.name, bytes, sha);
+			assert.equal(refused.status, 6, "the install refuses /opt at mode 0777");
 			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx/);
 			assert.equal(docker("exec", open.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent", "nothing installed");
 			// A daemon directory the image left to another user is taken back: root's, 0755, before the daemon is moved in.
 			const owned = sandbox(image);
 			docker("exec", owned.name, "sh", "-c", "mkdir -p /opt/agentrun && chown 1000:1000 /opt/agentrun && chmod 0777 /opt/agentrun");
-			const uploaded = execFileSync("docker", ["exec", "-i", owned.name, ...upload], { input: bytes, encoding: "utf8" });
-			assert.equal(uploaded, `sha256 ${sha}\n`);
+			const installed = install(owned.name, bytes, sha);
+			assert.equal(installed.status, 0, installed.stdout);
 			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun").trim(), "0:0 755", "the daemon's directory is root's alone");
 			// A daemon whose sha256 is not the one named is never moved where the entrypoint looks.
 			const mismatch = sandbox(image);
-			const bad = spawnSync("docker", ["exec", "-i", mismatch.name, ...modalCommands({ sha256: "f".repeat(64) }).upload], { input: bytes, encoding: "utf8" });
-			assert.equal(bad.status, 5, bad.stdout);
+			const bad = install(mismatch.name, bytes, "f".repeat(64));
+			assert.equal(bad.status, 7, bad.stdout);
 			assert.match(bad.stdout, new RegExp(`^sha256 ${sha}\\n.*not moved into place`, "s"));
-			assert.equal(docker("exec", mismatch.name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
+			assert.equal(docker("exec", mismatch.name, "sh", "-c", "test -e /opt/agentrun/computerd || test -e /opt/agentrun/computerd.part && echo there || echo absent").trim(), "absent");
 		});
 
-		it(`${image}: the image route's hold step refuses a daemon path another user can change, and makes it root's alone`, () => {
-			const { bytes } = daemon();
-			const hold = modalCommands().hold;
-			const put = (name, setup) => {
-				docker("exec", name, "sh", "-c", `${setup}; mkdir -p /opt/agentrun`);
-				execFileSync("docker", ["exec", "-i", name, "sh", "-c", "cat > /opt/agentrun/computerd"], { input: bytes });
-			};
-			const open = sandbox(image);
-			put(open.name, "mkdir -p /opt && chmod 0777 /opt");
-			const refused = spawnSync("docker", ["exec", open.name, ...hold], { encoding: "utf8" });
-			assert.equal(refused.status, 7, refused.stdout + refused.stderr);
-			assert.match(refused.stdout, /the daemon at \/opt\/agentrun\/computerd is not root's alone: \/opt is drwxrwxrwx/);
-			const owned = sandbox(image);
-			put(owned.name, "true");
-			docker("exec", owned.name, "sh", "-c", "chown -R 1000:1000 /opt/agentrun && chmod -R 0777 /opt/agentrun");
-			const held = spawnSync("docker", ["exec", owned.name, ...hold], { encoding: "utf8" });
-			assert.equal(held.status, 0, held.stdout + held.stderr);
-			assert.equal(docker("exec", owned.name, "stat", "-c", "%u:%g %a", "/opt/agentrun", "/opt/agentrun/computerd").trim(), "0:0 755\n0:0 755");
-		});
-
-		it(`${image}: the entrypoint waits, the upload streams the daemon in and checks its sha256, init runs as 1000 with no capabilities, and hello answers`, async () => {
+		it(`${image}: the entrypoint waits, the daemon goes in and is moved into place once its sha256 reads back, init runs as 1000 with no capabilities, and hello answers`, async () => {
 			const { name, deadline } = sandbox(image);
 			const { arch, bytes, sha } = daemon();
 			assert.equal(docker("inspect", "--format", "{{.State.Running}}", name).trim(), "true", "the entrypoint waits for the daemon");
 			assert.equal(docker("exec", name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
 
-			const upload = modalCommands({ sha256: sha }).upload;
-			const uploaded = execFileSync("docker", ["exec", "-i", name, ...upload], { input: bytes, encoding: "utf8" });
-			assert.equal(uploaded, `sha256 ${sha}\n`, "the upload prints the sha256 of what it wrote");
+			const installed = install(name, bytes, sha);
+			assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+			assert.match(installed.stdout, new RegExp(`^installer 0 root\nsha256 ${sha}\n$`, "m"), "the install prints who installed it and the sha256 of what it put in place");
 			assert.equal(docker("exec", name, "stat", "-c", "%u:%g %a", "/opt/agentrun/computerd").trim(), "0:0 755");
-			assert.equal(docker("exec", name, "sh", "-c", "test -e /opt/agentrun/.computerd.part && echo left || echo moved").trim(), "moved");
+			assert.equal(docker("exec", name, "sh", "-c", `test -e /opt/agentrun/computerd.part || test -e ${STAGING} && echo left || echo moved`).trim(), "moved");
 
 			const fields = await initStatus(name);
 			assert.equal(fields.Uid, "1000\t1000\t1000\t1000", "init, PID 1, became uid 1000");
@@ -185,10 +180,10 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			const argv = docker("exec", name, "cat", "/proc/1/cmdline").split("\0").filter(Boolean);
 			assert.deepEqual(argv, ["/opt/agentrun/computerd", "init", "--deadline", deadline, "--user", "1000:1000", "--own-network"], "the entrypoint exec'd the daemon: it is PID 1");
 
-			const child = spawn("docker", ["exec", "-i", name, ...modalCommands().stdio], { stdio: ["pipe", "pipe", "pipe"] });
+			const child = spawn("docker", ["exec", "-i", name, ...pid1Commands().stdio], { stdio: ["pipe", "pipe", "pipe"] });
 			children.push(child);
 			const client = new DaemonClient({ readable: child.stdout, writable: child.stdin });
-			const hello = await client.call("hello", { client: "modal-commands test" }, { signal: AbortSignal.timeout(30_000) });
+			const hello = await client.call("hello", { client: "pid1-commands test" }, { signal: AbortSignal.timeout(30_000) });
 			assert.equal(hello.ok, true, JSON.stringify(hello));
 			assert.equal(hello.value.version, VERSION);
 			assert.equal(hello.value.arch, arch);
@@ -203,7 +198,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			const { name } = sandbox(image);
 			upload(name);
 			const client = await connected(name);
-			// The Modal provider's default targets: TCP to 443, and DNS over UDP to 53 (UDP has no accept: no reply is refused).
+			// The adapter's default targets: TCP to 443, and DNS over UDP to 53 (UDP has no accept: no reply is refused).
 			const targets = ["1.1.1.1:443", "8.8.8.8:443", "[2606:4700:4700::1111]:443", "1.1.1.1:53/udp", "[2606:4700:4700::1111]:53/udp"];
 			const argv = ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])];
 			const ran = await client.call("exec.run", { argv, timeoutMs: 30_000 }, { signal: AbortSignal.timeout(40_000) });
@@ -249,12 +244,12 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			});
 		}
 
-		// Why the provider refuses root (ModalProvider.check, ROOT): Modal's exec of the bridge runs /opt/agentrun/computerd
+		// Why the adapter refuses root for a host that takes a spec's user (hostedProvider's check): the vendor's exec of the bridge runs /opt/agentrun/computerd
 		// outside the daemon, with Modal's own root capabilities. After the upload that path is root's, 0755, in a root
 		// 0755 directory under a root / and /opt: a computer user that is not root writes none of them. Root with no
 		// capability still owns every one, so it could rename another program over the path, and the next exec would run
 		// that one with the container's capabilities. Init --own-network refuses root as the computer's user outright.
-		it(`${image}: after the upload, uid 1000 cannot write the daemon or any directory above it; init refuses uid 0 for its programs, in words`, async () => {
+		it(`${image}: after the install, uid 1000 cannot write the daemon or any directory above it; init refuses uid 0 for its programs, in words`, async () => {
 			const as = async (user) => {
 				const { name } = sandbox(image, { user });
 				upload(name);
@@ -277,12 +272,11 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.equal(docker("exec", user.name, "stat", "-c", "%u:%g %a %s", "/opt/agentrun/computerd").trim(), `0:0 755 ${daemon().bytes.length}`, "the daemon is as uploaded");
 
 			const { name } = sandbox(image, { user: "0:0" });
-			// Init refuses as soon as the daemon is moved into place, and ends the container while the upload still reads it
-			// back: the upload's own exit is not this case's (as with the bounding set's, below). It wrote and checked the
-			// daemon before the rename.
+			// Init refuses as soon as the daemon is moved into place, and ends the container while the install still reads it
+			// back: the install's own exit is not this case's (as with the bounding set's, below). It checked the daemon's
+			// sha256 before the rename.
 			const { bytes, sha } = daemon();
-			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
-			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
+			install(name, bytes, sha);
 			const code = exitCodeOf(name);
 			assert.equal(code, "1", "init refused to start, and the container ended");
 			assert.match(spawnSync("docker", ["logs", name], { encoding: "utf8" }).stderr, /init refuses to start: --own-network refuses uid 0 for init's programs/);
@@ -290,14 +284,13 @@ describe("the Modal provider's upload commands in a root container with no netwo
 
 		it(`${image}: init that cannot empty its bounding set (root without CAP_SETPCAP) refuses to start, in words, and the container ends`, () => {
 			const { name } = sandbox(image, { caps: ["--cap-drop", "SETPCAP"] });
-			// The upload's checks after its rename (each `ls` once the daemon is in place) are held 2 s, so the entrypoint,
-			// which polls every 0.2 s, starts init and init ends the container while the upload still runs, every time.
+			// The install's checks after its rename (each `ls` once the daemon is in place) are held 2 s, so the entrypoint,
+			// which polls every 0.2 s, starts init and init ends the container while the install still runs, every time.
 			docker("exec", name, "sh", "-c", 'printf \'#!/bin/sh\\n[ -e /opt/agentrun/computerd ] && sleep 2\\nexec /bin/ls "$@"\\n\' > /usr/local/bin/ls && chmod 0755 /usr/local/bin/ls');
-			// So the upload's own exit is not this case's to require: the container's end cuts it. What it wrote, it
-			// checked before the rename, and the daemon it moved into place is the one that refused.
+			// So the install's own exit is not this case's to require: the container's end cuts it. It checked the daemon's
+			// sha256 before the rename, and the daemon it moved into place is the one that refused.
 			const { bytes, sha } = daemon();
-			const uploaded = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: sha }).upload], { input: bytes, encoding: "utf8" });
-			assert.equal(uploaded.stdout, `sha256 ${sha}\n`, `the upload printed the sha256 of what it wrote before the rename: ${uploaded.status} ${uploaded.stderr}`);
+			install(name, bytes, sha);
 			const code = exitCodeOf(name);
 			assert.equal(code, "1");
 			const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
@@ -309,7 +302,10 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			// Docker's defaults: no CAP_SYS_ADMIN, and its seccomp profile refuses the user namespace too. Neither way: init
 			// refuses, in words naming both, and the computer ends.
 			const neither = sandbox(image, { root: [] });
-			upload(neither.name);
+			// Init refuses as soon as the daemon is moved into place and ends the container, which can cut the install's
+			// read-back (137): its exit is not this case's, as with uid 0's and the bounding set's above.
+			const { bytes, sha } = daemon();
+			install(neither.name, bytes, sha);
 			assert.equal(exitCodeOf(neither.name), "1", "init refused to start, and the container ended");
 			assert.match(spawnSync("docker", ["logs", neither.name], { encoding: "utf8" }).stderr, /init refuses to start: cannot make a network namespace of its own .*CAP_SYS_ADMIN.*, nor can it start itself again in a user and a network namespace of its own/);
 
@@ -317,7 +313,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			const { name, deadline } = sandbox(image, { root: GVISOR_LIKE });
 			upload(name);
 			const client = await connected(name);
-			const hello = await client.call("hello", { client: "modal-commands test" });
+			const hello = await client.call("hello", { client: "pid1-commands test" });
 			assert.equal(hello.ok && hello.value.fence, "userns-netns", JSON.stringify(hello));
 			// PID 1 is the init that started the other: root, no capability left, no_new_privs set.
 			const pid1 = fieldsOf(docker("exec", name, "cat", "/proc/1/status"));
@@ -346,16 +342,7 @@ describe("the Modal provider's upload commands in a root container with no netwo
 			assert.notEqual(exitCodeOf(name), "", "the computer ended on SIGTERM");
 		});
 
-		it(`${image}: an upload whose sha256 does not match exits 5 in words and leaves no daemon where the entrypoint looks`, () => {
-			const { name } = sandbox(image);
-			const { bytes, sha } = daemon();
-			const ran = spawnSync("docker", ["exec", "-i", name, ...modalCommands({ sha256: "f".repeat(64) }).upload], { input: bytes, encoding: "utf8" });
-			assert.equal(ran.status, 5, ran.stdout + ran.stderr);
-			assert.match(ran.stdout, new RegExp(`^sha256 ${sha}\\n.*not moved into place`, "s"));
-			assert.equal(docker("exec", name, "sh", "-c", "test -e /opt/agentrun/computerd && echo there || echo absent").trim(), "absent");
-		});
-
-		it(`${image}: with no upload, the entrypoint's bounded wait ends the container nonzero, in words`, () => {
+		it(`${image}: with no daemon, the entrypoint's bounded wait ends the container nonzero, in words`, () => {
 			const { name } = sandbox(image, { waitSeconds: 2 });
 			const code = exitCodeOf(name);
 			assert.equal(code, "3");

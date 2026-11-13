@@ -27,7 +27,6 @@ import {
 } from "../dist/index.js";
 import { ModalProvider } from "../dist/modal.js";
 import { fakeDocker } from "./fake-docker.mjs";
-import { DAEMON_IMAGE, fakeModal } from "./fake-modal.mjs";
 
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 const dir = mkdtempSync(join(tmpdir(), "computer-labels-test-"));
@@ -94,6 +93,13 @@ test("epochOf reports anything else as no epoch, in words naming the label and w
 	}
 });
 
+/** The Modal SDK's slice, never called: these build a provider only to read what it declares. */
+const MODAL_SDK = {
+	apps: { fromName: () => assert.fail("apps.fromName was called") },
+	images: { fromRegistry: () => assert.fail("images.fromRegistry was called") },
+	sandboxes: Object.fromEntries(["create", "fromId", "list"].map((name) => [name, () => assert.fail(`sandboxes.${name} was called`)])),
+};
+
 /** Each provider's check(), on its fake: no vendor call is made. */
 function providers() {
 	const daemon = join(dir, "computerd");
@@ -101,7 +107,7 @@ function providers() {
 	return [
 		["docker", fakeDocker().provider],
 		["daytona", new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: daemon, fetch: async () => assert.fail("no request") })],
-		["modal", new ModalProvider({ sdk: fakeModal().sdk, app: "computers", daemonImage: DAEMON_IMAGE })],
+		["modal", new ModalProvider({ sdk: MODAL_SDK, app: "computers" })],
 	];
 }
 

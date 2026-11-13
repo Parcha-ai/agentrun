@@ -481,6 +481,8 @@ class DaytonaHost implements MachineHost {
 			vendorAgentPorts: [TOOLBOX_PORT],
 			vendorSockets: [...DAYTONA_SOCKETS],
 			networkReadBack: true,
+			// get reads sb.gpu and sb.gpuType back: a sandbox with none reads none.
+			gpuReadBack: true,
 			network: [...DAYTONA.network],
 			mounts: [...MOUNT],
 			release: ["stop", "delete"],
