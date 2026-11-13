@@ -122,6 +122,20 @@ describe("WebhookPage", () => {
     expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("webhook_off");
   });
 
+  it("never fills the URL field with the shortened URL the server shows: a save after a 410 sends only the URL typed", async () => {
+    // The server's GET shows a saved URL as its origin and last four characters (webhooks.ts shownUrl).
+    const shown = "https://hooks.example.test/…erun";
+    const off: Webhook = { ...SET, url: shown, disabled: { at: "2026-11-03T12:02:00.000Z", reason: "the receiver answered 410 Gone" } };
+    const { v2, calls } = server({ webhook: off, attempts: [] });
+    const page = await open(v2);
+    expect(page.host.querySelector('[aria-label="Webhook URL"]')?.textContent).toContain(shown);
+    expect(page.input().value).toBe("");
+    expect(page.button(/^Save$/)?.disabled).toBe(true);
+    await page.type("https://hooks.example.test/agentrun");
+    await page.click(/^Save$/);
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ url: "https://hooks.example.test/agentrun" }]);
+  });
+
   it("shows a save's answer at once, and a read after it that fails, beside what is shown", async () => {
     const state = { webhook: NONE, attempts: [] as WebhookAttempt[], readsFail: false };
     const { v2 } = server(state);
