@@ -2702,12 +2702,40 @@ const writeKeyOf = (node: WorkflowNode): string | undefined => {
 function confidenceChannelOf(schema: Record<string, unknown>): { schema: Record<string, unknown>; declared: boolean } | undefined {
   const properties = schema.properties;
   if (schema.type !== "object" && (!properties || typeof properties !== "object")) return undefined;
-  if (properties && typeof properties === "object" && Object.hasOwn(properties, SELF_CONFIDENCE_FIELD)) return { schema, declared: true };
+  if (declaresConfidence(schema)) return { schema, declared: true };
+  const field = { type: "number", minimum: 0, maximum: 1, description: SELF_CONFIDENCE_WORDS };
   const required = Array.isArray(schema.required) ? schema.required : [];
+  const widened = withConfidenceInMembers(schema, field);
   return {
-    schema: { ...schema, properties: { ...(properties as Record<string, unknown> ?? {}), [SELF_CONFIDENCE_FIELD]: { type: "number", minimum: 0, maximum: 1, description: SELF_CONFIDENCE_WORDS } }, required: [...required, SELF_CONFIDENCE_FIELD] },
+    schema: { ...widened, properties: { ...(properties as Record<string, unknown> ?? {}), [SELF_CONFIDENCE_FIELD]: field }, required: [...required, SELF_CONFIDENCE_FIELD] },
     declared: false,
   };
+}
+const COMPOSED = ["allOf", "anyOf", "oneOf"] as const;
+const membersOf = (schema: Record<string, unknown>): Record<string, unknown>[] =>
+  COMPOSED.flatMap((key) => (Array.isArray(schema[key]) ? (schema[key] as unknown[]) : [])).filter((m): m is Record<string, unknown> => Boolean(m) && typeof m === "object" && !Array.isArray(m));
+/** Whether the schema, or a member of its allOf / anyOf / oneOf (at any depth), declares the confidence field itself. */
+function declaresConfidence(schema: Record<string, unknown>): boolean {
+  const properties = schema.properties;
+  if (properties && typeof properties === "object" && Object.hasOwn(properties, SELF_CONFIDENCE_FIELD)) return true;
+  return membersOf(schema).some(declaresConfidence);
+}
+/** The schema with the confidence field allowed in every allOf / anyOf / oneOf member (at any depth): a member that is
+ *  closed (`additionalProperties` or `unevaluatedProperties` other than true) would otherwise refuse the field the root
+ *  requires, and every submission with it. The field is never required in a member; the root requires it. */
+function withConfidenceInMembers(schema: Record<string, unknown>, field: Record<string, unknown>): Record<string, unknown> {
+  let out = schema;
+  for (const key of COMPOSED) {
+    const members = schema[key];
+    if (!Array.isArray(members)) continue;
+    out = { ...out, [key]: members.map((member) => {
+      if (!member || typeof member !== "object" || Array.isArray(member)) return member;
+      const inner = withConfidenceInMembers(member as Record<string, unknown>, field);
+      const own = inner.properties && typeof inner.properties === "object" ? inner.properties as Record<string, unknown> : {};
+      return { ...inner, properties: { ...own, [SELF_CONFIDENCE_FIELD]: field } };
+    }) };
+  }
+  return out;
 }
 /** A confidence as a guard reads it: a number in [0, 1], else none. */
 const confidenceOf = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null);
@@ -2721,8 +2749,14 @@ function selfConfidenceOf(node: WorkflowNode, out: Record<string, unknown>): num
   if (node.node === "sift") {
     const answers = (out[key] as { answers?: unknown } | undefined)?.answers;
     if (!Array.isArray(answers) || !answers.length) return null;
-    const each = answers.map((sidecar) => confidenceOf((sidecar as { min_confidence?: unknown } | null)?.min_confidence));
-    return each.some((c) => c === null) ? null : Math.min(...(each as number[]));
+    // A loop, not Math.min(...each): a sift may hold more items than a call takes arguments.
+    let weakest = 1;
+    for (const sidecar of answers) {
+      const confidence = confidenceOf((sidecar as { min_confidence?: unknown } | null)?.min_confidence);
+      if (confidence === null) return null;
+      if (confidence < weakest) weakest = confidence;
+    }
+    return weakest;
   }
   return confidenceOf((out[`${key}$answers`] as { min_confidence?: unknown } | undefined)?.min_confidence);
 }
@@ -2745,10 +2779,16 @@ function guardInputOf(node: WorkflowNode, state: Record<string, unknown>, workfl
   } catch { /* The step ran on it, so it resolves; should it not, the state it ran on stands in. */ }
   return promptStateOf(state, workflow);
 }
-/** What a step wrote: the value under its write key, else the keys it changed (none engine-owned). */
+/** What a code node returned, by the state it produced: a code node with no `as` merges an object it returns, so its
+ *  write key alone cannot say what it wrote. */
+const codeWrote = new WeakMap<Record<string, unknown>, { value: unknown }>();
+/** What a step wrote, even when it equals what was there before: what a code node returned, else the value under its
+ *  write key, else the keys it changed (none engine-owned). */
 function guardOutputOf(node: WorkflowNode, before: Record<string, unknown>, after: Record<string, unknown>): unknown {
+  const returned = node.node === "code" ? codeWrote.get(after) : undefined;
+  if (returned) return returned.value;
   const key = writeKeyOf(node);
-  if (key && Object.hasOwn(after, key) && after[key] !== before[key]) return after[key];
+  if (key && Object.hasOwn(after, key)) return after[key];
   return Object.fromEntries(Object.entries(after).filter(([name, value]) => !holdsDollar(name) && before[name] !== value));
 }
 /** A guarded step's check, once it ran: the host's guardStep gives p, and p below the guard's threshold (or no p at all)
@@ -2892,7 +2932,9 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const patch = node.as ? { [node.as]: out } : (out && typeof out === "object" && !Array.isArray(out) ? out as Record<string, unknown> : { [node.label]: out });
       if (Object.prototype.hasOwnProperty.call(patch, HOST_STATE_KEY)) throw new WorkflowStateError(`code node "${node.label}" wrote the reserved "${HOST_STATE_KEY}" state key`, node.label, HOST_STATE_KEY, "reserved_state_key");
       deps.onEvent?.({ type: "code.patch", label: node.label, detail: patch });
-      return { ...state, ...patch };
+      const next = { ...state, ...patch };
+      codeWrote.set(next, { value: out });
+      return next;
     }
     case "agent":
     case "decide":
