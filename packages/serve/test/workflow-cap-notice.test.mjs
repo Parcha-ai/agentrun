@@ -44,7 +44,7 @@ test("a decision-only workflow paused at its cap before its first request tells 
   const calls = join(await scratch(t), "parallel-calls.jsonl");
   withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, KEYS);
   const hook = await receiver(t);
-  const { api } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  const { api } = await serve(t, { webhookPrivateTargets: true, fauxParallel: FAUX_PARALLEL });
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   assert.equal((await api("POST", "/agents", flowAgent("judge-only", judgeFlow()))).status, 201);
   // Parallel's list price for one decision is $0.001: a $0.0005 cap has no room for the first request.
@@ -90,7 +90,7 @@ const twoNodes = () => ({
 test("waits at the same cap are told once, and a refusal at a higher cap (a raise that did not cover the step) is told again", { timeout: 180_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, KEYS);
   const hook = await receiver(t);
-  const { api } = await serve(t, { faux: PRICED });
+  const { api } = await serve(t, { webhookPrivateTargets: true, faux: PRICED });
   assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   const told = (runId) => hook.got.filter((message) => message.type === "run.needs_input" && message.data.run_id === runId);
   // Two items of a map, both waiting at the $0.05 cap: one pause, one notice.

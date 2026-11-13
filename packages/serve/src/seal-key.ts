@@ -11,7 +11,7 @@
 // The store records the key's fingerprint (an HMAC of a fixed label under the key: never the key, nor a hash of it alone),
 // and every process that opens the store (the server, a runner, the `import` command) checks the key it holds against it
 // (bootSealKey). A store whose secrets were sealed with another key is refused, in words, and no key is ever made over
-// sealed secrets, in the store or beside it in the data directory: a lost key file is not replaced by a new one. A store
+// sealed secrets in the store: a lost key file is not replaced by a new one. A store
 // with no fingerprint takes a key that opens every value it keeps sealed, or any key when it keeps none. The server's
 // start makes a key and records it (and the import's, which sets a data directory up as the server does); a runner reads
 // one and checks it, and never makes or records one. Several data directories in one process each keep their own key.
@@ -174,11 +174,11 @@ function opensUnder(key: Buffer, sealed: Uint8Array, aad: string): boolean {
   }
 }
 
+/** Every secret is kept in the store (the outbound webhook's too, a trigger_settings row): its sealed values are all. */
 async function storeSealOf(store: SealKeyStore): Promise<StoreSeal> {
   const fingerprint = recordedIn(await store.settings.get(SEAL_KEY_SETTING));
   if (fingerprint !== undefined) return { fingerprint, sealed: [] };
-  const rows = (await store.sealedSecrets.all()).map((row) => (key: Buffer) => opensUnder(key, row.sealed, row.aad));
-  return { fingerprint, sealed: rows };
+  return { fingerprint, sealed: (await store.sealedSecrets.all()).map((row) => (key: Buffer) => opensUnder(key, row.sealed, row.aad)) };
 }
 
 const holdsSecrets = (seal: StoreSeal) => seal.fingerprint !== undefined || seal.sealed.length > 0;

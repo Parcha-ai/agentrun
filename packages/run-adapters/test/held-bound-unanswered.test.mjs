@@ -39,6 +39,18 @@ test("the bound a host gives a request (what a cache miss adds) is written besid
   assert.deepEqual(written, [{ turn: 1, model: "m", heldUsd: HOLD, boundUsd: BOUND }]);
 });
 
+test("the booking's boundUsd is what a cache miss adds to the holds of the requests in flight: 0 with none, each one's bound while it is out", async () => {
+  const store = memorySessionStore();
+  const booking = await port(store);
+  assert.equal(booking.boundUsd(), 0);
+  await booking.models.beforeRequest({ model: "m" });
+  await booking.models.beforeRequest({ model: "m" });
+  near(booking.heldUsd(), 2 * HOLD, "two in flight at their holds");
+  near(booking.boundUsd(), 2 * BOUND, "and at their bounds");
+  await booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.01 });
+  near(booking.boundUsd(), BOUND, "one answered: one bound left");
+});
+
 test("a request whose claim was lost before its answer was written counts for the cap at its hold plus its bound in the next process, before and after it is booked cut", async () => {
   const store = memorySessionStore();
   const first = await port(store);

@@ -81,8 +81,8 @@ const allowedExtraFiles = {
   // installer (skill.mjs) and its template package check (template.mjs).
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile, and the scripts that build it
-  // as a Daytona snapshot, a Modal image or an E2B template.
-  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs'],
+  // as a Daytona snapshot, a Modal image, an E2B template or an Agent37 template.
+  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/build-agent37.mjs'],
   agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs'],
 };
 const allowedEndpoints = {
