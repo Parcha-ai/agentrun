@@ -75,13 +75,14 @@ export const refitOf = (records: readonly Promotion[], workflow: string, digest:
 const pctOf = (v: number) => `${Math.round(v * 100)}%`;
 const pts = (delta: number) => `${delta >= 0 ? "+" : ""}${Math.round(delta * 1000) / 10} pts`;
 
-/** A record's numbers in one line: "Replay on 20 graded inputs: workflow 95% vs agent 94% (+1 pts), 2 handed back". A
- *  record without a replay (a dry run) says its reason. */
+/** A record's numbers in one line: "Replay on 20 graded inputs: workflow 95% vs agent 94% (+1 pts), 2 handed back", and
+ *  how many inputs were skipped for a write the graded run's recording doesn't have, when any were (a replay never runs a
+ *  write). A record without a replay (a dry run), or whose every input was skipped, says its reason. */
 export function replayLine(record: Promotion): string {
   const r = record.replay;
   if (!r || !r.n) return record.reason;
   const how = record.source === "refit" ? "Refit on" : record.source === "graded" ? "Checked on" : "Replay on";
-  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back`;
+  return `${how} ${r.n} graded ${r.n === 1 ? "input" : "inputs"}: workflow ${pctOf(r.wf_acc)} vs agent ${pctOf(r.agent_acc)} (${pts(r.delta)}), ${r.handed_back} handed back${r.skipped_write ? `, ${r.skipped_write} skipped: needs a write the recording doesn't have` : ""}`;
 }
 
 /** A guarded step as a workflow's JSON says it: by label (the guard rows' `node`), its signal and threshold. */
