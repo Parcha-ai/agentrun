@@ -27,6 +27,9 @@ const DIRECT_MINIMUM = 0.09;
 /** A step's least, as the cap prices it here: its input bound at the cache-write price and a 1,024-token answer. */
 const leastOf = (bound) => (bound * 3.75 + 1_024 * 15) / 1e6;
 
+const { WRAP_UP_TEXT } = await import("../dist/tool-budget.js");
+/** Whether a tool call of the run was refused in the cap's wrap-up words: they are in a request the run sent after it. */
+const toldToWrapUp = (sent) => sent.some((body) => JSON.stringify(body.messages ?? []).includes(WRAP_UP_TEXT));
 const SONNET = Object.freeze({ id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 });
 const priceOf = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
 const fauxComposer = ({ store, sealKey }) => computerDepsFrom({ env: {}, store, sealKey, faux: fauxComputers({ viewerBase: "http://127.0.0.1:9" }) });
@@ -91,12 +94,20 @@ test("through a gateway, a pi desktop run on Sonnet under $0.04 is refused its f
   assert.match(asked[0]?.answer?.refuse ?? "", /the next step needs at least \$0\.06/, JSON.stringify({ answer: asked[0]?.answer, state: row.state }));
 });
 
-for (const [route, origin, minimum] of [["through a gateway", "https://openrouter.ai/api", GATEWAY_MINIMUM], ["straight to Anthropic", "https://api.anthropic.com", DIRECT_MINIMUM]]) {
-  test(`${route}, the documented minimum ($${minimum}) takes a pi desktop run on Sonnet through four screenshots to its answer; a cent under parks it before its last step`, async (t) => {
+// A cent under the minimum: through a gateway the cap's wrap-up (a run keeps back one typical step and one final answer)
+// refuses the last screenshot before the spend could park the run, so it is told to answer from what it has and does, in its
+// fifth request; straight to Anthropic (a tighter input bound) the cap parks it before its last step.
+for (const [route, origin, minimum, underEnds] of [["through a gateway", "https://openrouter.ai/api", GATEWAY_MINIMUM, true], ["straight to Anthropic", "https://api.anthropic.com", DIRECT_MINIMUM, false]]) {
+  test(`${route}, the documented minimum ($${minimum}) takes a pi desktop run on Sonnet through four screenshots to its answer; a cent under ${underEnds ? "tells it to answer without its last screenshot" : "parks it before its last step"}`, async (t) => {
     const at = await desktopRun(t, minimum, origin);
     assert.deepEqual([at.row.state, at.sent.length], ["ended", 5], JSON.stringify({ state: at.row.state, summary: at.row.summary }));
+    assert.equal(toldToWrapUp(at.sent), false, "at the minimum every screenshot ran: no tool call was refused");
     const under = await desktopRun(t, Math.round((minimum - 0.01) * 100) / 100, origin);
-    assert.deepEqual([under.row.state, under.sent.length], ["parked", 4], JSON.stringify({ state: under.row.state, summary: under.row.summary }));
+    assert.deepEqual([under.row.state, under.sent.length], underEnds ? ["ended", 5] : ["parked", 4], JSON.stringify({ state: under.row.state, summary: under.row.summary }));
+    assert.equal(toldToWrapUp(under.sent), underEnds, "the fourth screenshot was refused in the wrap-up's words only where the run goes on to answer");
+    // Further under, the cap parks it before its last step.
+    const parked = await desktopRun(t, Math.round((minimum - 0.05) * 100) / 100, origin);
+    assert.deepEqual([parked.row.state, parked.sent.length < 5], ["parked", true], JSON.stringify({ state: parked.row.state, sent: parked.sent.length, summary: parked.row.summary }));
   });
 }
 

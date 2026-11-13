@@ -60,10 +60,16 @@ async function start(t: CaseContext): Promise<UiObserveResult> {
 	await launch(t);
 	const treeOff = featureOff(t.hello.features ?? {}, "ui.tree");
 	if (treeOff !== undefined) return t.skip(`the fixture's cases read its elements, and ${treeOff}`);
+	// A fresh window can add an element a moment after Next shows (on the Mac mini, a group in its title bar, every
+	// launch), which an act of no steps then counted as a change. The cases start once two looks in a row agree.
+	let last: string | undefined;
 	return t.until(async () => {
 		const seen = await look(t);
-		return seen.nodes.some((node) => node.id === "next") ? seen : undefined;
-	}, `the fixture's home window, with its Next button, in ui.observe`);
+		const shape = JSON.stringify(seen.nodes.map((node) => [node.ref, node.bounds]));
+		const still = shape === last;
+		last = shape;
+		return still && seen.nodes.some((node) => node.id === "next") ? seen : undefined;
+	}, `the fixture's home window, with its Next button, the same in two looks in a row in ui.observe`);
 }
 
 /** The step's result, which ran: its route one of the protocol's and verified a boolean. */

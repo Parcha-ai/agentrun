@@ -742,6 +742,110 @@ final class EngineTests: XCTestCase {
 		XCTAssertEqual(ran(behind, 0)?.0, .background, "another app in front: the background way first")
 	}
 
+	// MARK: a person takes over
+
+	func testAPersonPressingAKeyStopsTheActAfterAForegroundStep() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			// The route moved the pointer to its click; then a person pressed a key.
+			if entry.hasPrefix("fg.click") { os.with { $0.cursor = Point(340, 420); $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello")), .press(ref(r, "Save"))], foreground: true))
+		XCTAssertEqual(result.steps.count, 2)
+		XCTAssertEqual(ran(result, 0)?.0, .foreground)
+		XCTAssertEqual(stepError(result, 1)?.kind, .aborted, "every step after a foreground one checks, whatever its route")
+		XCTAssertTrue(stepError(result, 1)?.message.contains("used the keyboard or the mouse") == true, stepError(result, 1)?.message ?? "")
+		XCTAssertEqual(os.entries, ["fg.click 170,210 left 1"], "Save was not pressed")
+	}
+
+	func testAPersonMovingThePointerStopsTheForegroundStepBeforeItSends() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.cursor = Point(400, 400) } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(stepError(result, 1)?.kind, .aborted)
+		XCTAssertTrue(stepError(result, 1)?.message.contains("moved the pointer to (400, 400)") == true, stepError(result, 1)?.message ?? "")
+		XCTAssertEqual(os.entries, ["ax.AXPress 3"], "the foreground click was never sent")
+	}
+
+	func testAPressBeforeTheFirstForegroundStepStopsIt() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(stepError(result, 1)?.kind, .aborted)
+		XCTAssertEqual(os.entries, ["ax.AXPress 3"])
+
+		os.react = nil
+		let again = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(again, 0)?.0, .foreground, "a press before the act began is not a take-over")
+	}
+
+	func testTheForegroundRoutesOwnPointerIsNoTakeOver() async throws {
+		let engine = os.engine(background: .off("SkyLight is missing"))
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry.hasPrefix("fg.click") { os.with { $0.cursor = Point(340, 420) } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Hello")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .foreground)
+		XCTAssertEqual(ran(result, 1)?.0, .foreground)
+		XCTAssertEqual(os.entries, ["fg.click 170,210 left 1", "fg.click 170,210 left 1"])
+	}
+
+	func testAnActThatNeverTakesTheForegroundIgnoresAPerson() async throws {
+		let engine = os.engine()
+		let r = try await engine.observe(UiObserveParams())
+		os.react = { entry, os in
+			if entry == "ax.AXPress 3" { os.with { $0.cursor = Point(400, 400); $0.now += 5; $0.personPressed = $0.now } }
+		}
+		let result = try await engine.act(UiActParams(steps: [.press(ref(r, "Save")), .press(ref(r, "Hello"))], foreground: true))
+		XCTAssertEqual(ran(result, 0)?.0, .semantic)
+		XCTAssertEqual(ran(result, 1)?.0, .background)
+		XCTAssertEqual(os.entries, ["ax.AXPress 3", "bg.click 170,210 left 1"])
+	}
+
+	// MARK: the app's keyboard focus
+
+	func testTypingAtTheFocusInsertsOnlyIntoATextInTheKeyWindow() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.with { $0.focusedID = 6 }
+		let list = try await engine.act(UiActParams(steps: [.type("hi", into: nil)]))
+		XCTAssertEqual(ran(list, 0)?.0, .background, "a group with the focus takes keys, not an insert")
+		XCTAssertEqual(os.entries, ["bg.type hi"])
+
+		os.with { $0.focusedID = 4; $0.keyWindow = "9"; $0.log = [] }
+		let elsewhere = try await engine.act(UiActParams(steps: [.type("hi", into: nil)]))
+		XCTAssertEqual(ran(elsewhere, 0)?.0, .background, "the focus is in another of the app's windows")
+		XCTAssertEqual(os.entries, ["bg.type hi"])
+
+		os.with { $0.keyWindow = "7"; $0.log = [] }
+		let here = try await engine.act(UiActParams(steps: [.type("hi", into: nil)]))
+		XCTAssertEqual(ran(here, 0)?.0, .semantic)
+		XCTAssertEqual(os.entries, ["ax.insert 4 hi"])
+	}
+
+	func testAMenuKeyIsPressedOnlyWhenTheTargetIsTheKeyWindow() async throws {
+		let engine = os.engine()
+		_ = try await engine.observe(UiObserveParams())
+		os.with { $0.keyWindow = "9" }
+		let elsewhere = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		XCTAssertEqual(ran(elsewhere, 0)?.0, .background, "the menu would save window 9")
+		XCTAssertEqual(os.entries, ["bg.key super+s"])
+
+		os.with { $0.keyWindow = "7"; $0.log = [] }
+		let here = try await engine.act(UiActParams(steps: [.key("super+s")]))
+		XCTAssertEqual(ran(here, 0)?.0, .semantic)
+		XCTAssertEqual(os.entries, ["ax.AXPress 8"])
+	}
+
 	/// The ui fixture's Save writes 300 ms after its press, past the quiet settle: the expect waits for it, and no other
 	/// route presses Save again. One press, one save.
 	func testADelayedSaveIsPressedOnceAndSavesOnce() async throws {

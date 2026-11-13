@@ -5,13 +5,16 @@
 // scheme whose signature header it carries; a trigger's `signature` names the scheme it takes. A new scheme is one entry
 // here: the source's schema and its check read the table's keys.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { HOOK_TOLERANCE_S, headersRefusal, HOOK_ID, MIN_KEY_BYTES, verify as verifyStandard } from "./standard-webhooks.js";
+import { HOOK_TOLERANCE_S, headersRefusal, HOOK_ID, MIN_KEY_BYTES, verify as verifyStandard, verifyWithKey } from "./standard-webhooks.js";
 import { isObject } from "./validate.js";
 
 type Headers = Record<string, string | string[] | undefined>;
 export type Scheme = {
-  /** The header its signature comes in: a request that carries it, and no other scheme's, is checked by this one. */
+  /** The header its signature comes in: a request that carries it, and no other header's, is checked by a scheme that
+   *  names it; where several do (`composio` shares `webhook-signature` with `standard`) the trigger's own `signature` picks. */
   signatureHeader: string;
+  /** Its secret is the sender's own, given at the trigger's create and rotation, never one this server mints. */
+  givenSecret?: true;
   /** How a sender signs under it, for the OpenAPI document. */
   describe: string;
   /** Why the headers alone are refused, before a byte of the body is read. */
@@ -32,6 +35,8 @@ export type Scheme = {
 
 /** An event's name in a header: printable ASCII with no space (`pull_request`, `ping`). */
 const EVENT = /^[\x21-\x7e]{1,200}$/;
+/** An id a payload's tag may name: short printable ASCII with no space, quote or bracket. */
+const ID_ATTR = /^[A-Za-z0-9_.:@-]{1,100}$/;
 const GITHUB_SIGNATURE = /^sha256=([0-9a-f]{64})$/i;
 const githubHmac = (secret: string, body: string | Buffer): Buffer => createHmac("sha256", Buffer.from(secret, "utf8")).update(body).digest();
 
@@ -89,16 +94,46 @@ export const SIGNATURE_SCHEMES = {
       };
     },
   },
+  // Composio's (docs.composio.dev webhooks, @composio/core's verifyWebhook): the Standard Webhooks headers and message
+  // ("{id}.{timestamp}.{body}", `v1,<base64 HMAC-SHA256>`), but keyed by the UTF-8 bytes of the whole secret string
+  // Composio minted, not by a base64-decoded `whsec_` key. Every trigger of its project comes to the one webhook URL, so
+  // the event is the body's metadata.trigger_slug, and `where` reads the trigger's own data under /data.
+  composio: {
+    signatureHeader: "webhook-signature",
+    givenSecret: true,
+    describe: `\`composio\` takes a Composio trigger's delivery (the webhook subscription whose URL is the trigger's hook_url): the Standard Webhooks headers and message, \`v1,<base64 HMAC-SHA256 of "{webhook-id}.{webhook-timestamp}.{body}">\`, keyed by the UTF-8 bytes of the whole secret string Composio gave the subscription (make the trigger first, register its hook_url as Composio's webhook subscription, then \`POST /v2/triggers/{id}/secret\` with \`{secret}\`; until then every request is refused, and this server never makes one), with the same ${HOOK_TOLERANCE_S} s window and firing key (\`webhook-id\`). Its event is the body's \`metadata.trigger_slug\` (\`GITHUB_ISSUE_ADDED_EVENT\`), else its top-level \`type\` (the subscription's account events, \`composio.connected_account.expired\`), and \`where\` pointers read the payload under \`/data\`.`,
+    precheck: headersRefusal,
+    verify: (key, headers, body, nowMs) => verifyWithKey(Buffer.from(key, "utf8"), headers, body, nowMs),
+    firingKeyOf: (headers) => headers["webhook-id"] as string,
+    // A trigger message names its slug; the subscription's account events (composio.connected_account.expired) have no
+    // metadata, so their event is the body's own type.
+    eventOf(_headers, json) {
+      if (!isObject(json)) return undefined;
+      if (isObject(json.metadata) && typeof json.metadata.trigger_slug === "string") return json.metadata.trigger_slug;
+      return typeof json.type === "string" ? json.type : undefined;
+    },
+    attrsOf(json) {
+      const meta = isObject(json) && isObject(json.metadata) ? json.metadata : {};
+      const short = (value: unknown) => (typeof value === "string" && ID_ATTR.test(value) ? value : undefined);
+      const [triggerId, userId] = [short(meta.trigger_id), short(meta.user_id)];
+      return { ...(triggerId ? { trigger_id: triggerId } : {}), ...(userId ? { user_id: userId } : {}) };
+    },
+  },
 } satisfies Record<string, Scheme>;
 
 export type SchemeName = keyof typeof SIGNATURE_SCHEMES;
 export const SCHEME_NAMES = Object.keys(SIGNATURE_SCHEMES) as SchemeName[];
 export const DEFAULT_SCHEME: SchemeName = "standard";
 
-/** The scheme a request asks for: the one whose signature header it carries. `refusal` when it carries none, or more
- *  than one (a request is checked one way only). */
-export function schemeOf(headers: Headers): { name: SchemeName; scheme: Scheme } | { refusal: string } {
+/** The scheme a request asks for: the one whose signature header it carries. Schemes that share a header (`standard` and
+ *  `composio`) are told apart by the trigger's own (`wanted`, its `signature`): a request is verified under the trigger's
+ *  scheme, so one signed for the other fails its check as any bad signature does. With no `wanted` (before the trigger is
+ *  read, where the headers' check is the same for both) the first of them stands in. `refusal` when it carries no
+ *  signature header, or the headers of more than one. */
+export function schemeOf(headers: Headers, wanted?: string): { name: SchemeName; scheme: Scheme } | { refusal: string } {
   const carried = SCHEME_NAMES.filter((name) => headers[SIGNATURE_SCHEMES[name].signatureHeader] !== undefined);
-  if (carried.length === 1) return { name: carried[0]!, scheme: SIGNATURE_SCHEMES[carried[0]!] };
-  return { refusal: carried.length ? "ambiguous_signature" : "missing_headers" };
+  const byHeader = new Set(carried.map((name) => SIGNATURE_SCHEMES[name].signatureHeader));
+  if (byHeader.size !== 1) return { refusal: byHeader.size ? "ambiguous_signature" : "missing_headers" };
+  const name = carried.find((one) => one === wanted) ?? carried[0]!;
+  return { name, scheme: SIGNATURE_SCHEMES[name] };
 }
