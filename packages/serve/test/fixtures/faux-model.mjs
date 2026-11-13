@@ -43,7 +43,9 @@ export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2
 
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
-  const users = personOf(context).map(textOf);
+  // A person's message the spend cap's note was placed in (a request with one user message takes it appended to that
+  // message) is the person's words alone: the note is the server's, never theirs.
+  const users = personOf(context).map(textOf).map((text) => text.replace(/\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*$/, ""));
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
