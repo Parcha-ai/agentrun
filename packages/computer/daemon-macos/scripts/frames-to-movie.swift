@@ -1,5 +1,6 @@
-// Makes an H.264 movie from mini-demos.py's frames: each frame shown from its time to the next, the current caption
-// written along the bottom. AVFoundation only, so a Mac with Xcode has all it needs.
+// Makes an H.264 movie from mini-demos.py's frames (each already cut to the demo's window by window-frames.swift): each
+// frame shown from its time to the next, the current caption written along the bottom. AVFoundation only, so a Mac
+// with Xcode has all it needs.
 //
 //   swift frames-to-movie.swift TIMELINE.txt OUT.mp4
 //
@@ -68,7 +69,8 @@ let space = CGColorSpaceCreateDeviceRGB()
 let font = CTFontCreateWithName("Helvetica Neue" as CFString, CGFloat(max(14, height / 36)), nil)
 let band = CGFloat(max(28, height / 18))
 
-/// One movie frame: the screen's frame, scaled to the movie, and the caption on a dark band at the bottom.
+/// One movie frame: the window's frame, fit to the movie (the window may change size, and the movie is the first
+/// frame's), and the caption on a dark band at the bottom.
 func draw(_ picture: CGImage, caption: String) -> CVPixelBuffer {
 	var made: CVPixelBuffer?
 	guard let pool = adaptor.pixelBufferPool, CVPixelBufferPoolCreatePixelBuffer(nil, pool, &made) == kCVReturnSuccess, let buffer = made else {
@@ -80,7 +82,11 @@ func draw(_ picture: CGImage, caption: String) -> CVPixelBuffer {
 		data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height, bitsPerComponent: 8,
 		bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: space, bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
 	) else { fail("no drawing context") }
-	context.draw(picture, in: CGRect(x: 0, y: 0, width: width, height: height))
+	let fit = min(Double(width) / Double(picture.width), Double(height) / Double(picture.height))
+	let (w, h) = (Double(picture.width) * fit, Double(picture.height) * fit)
+	context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+	context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+	context.draw(picture, in: CGRect(x: (Double(width) - w) / 2, y: (Double(height) - h) / 2, width: w, height: h))
 	if !caption.isEmpty {
 		context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.72))
 		context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: band))
