@@ -464,7 +464,9 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
               </label>
             ))}
           </div>
-          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {/* Side by side where each has its 14rem (the picker's own least width), else one under the other: the form's
+              columns can be narrower than a phone is wide. */}
+          <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))] gap-4">
             {draft.kind === "cron" && <Field label="Runs" field="source.cron" issue={issues["source.cron"]}><ScheduleWhen label="Runs" name="cron" value={draft.cron} onChange={set("cron")} /></Field>}
             {draft.kind === "at" && <Field label="At, your time" field="source.at" issue={issues["source.at"]} hint={atInstant ? `= ${utcWhen(atInstant)}` : undefined}><Input name="at" type="datetime-local" step={60} value={draft.at} onChange={(e) => pickAt(e.target.value)} /></Field>}
             {draft.kind === "every" && (
