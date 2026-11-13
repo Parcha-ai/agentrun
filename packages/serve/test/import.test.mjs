@@ -531,7 +531,7 @@ test("this server's own secrets, pasted into sessions, are cut out of what the i
   let open = true;
   t.after(() => open && server.close());
   const api = client(server.baseUrl, server.token);
-  const set = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" });
+  const set = await api("PUT", "/settings/webhook", { url: "https://hooks.example/hook" });
   assert.equal(set.status, 201, JSON.stringify(set.body));
   await server.close();
   open = false;
@@ -618,7 +618,7 @@ test("an import handed no seal key, or another one, over a server's store refuse
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let open = true;
   t.after(() => open && server.close());
-  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "https://hooks.example/hook" })).status, 201);
   await server.close();
   open = false;
   const at = join(root, "home");
@@ -661,7 +661,7 @@ test("what an import says on stderr goes through the cut its other lines do: a d
   const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   let open = true;
   t.after(() => open && server.close());
-  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" })).status, 201);
+  assert.equal((await client(server.baseUrl, server.token)("PUT", "/settings/webhook", { url: "https://hooks.example/hook" })).status, 201);
   await server.close();
   open = false;
   const at = join(root, "home");

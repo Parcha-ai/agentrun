@@ -97,6 +97,21 @@ test("an Agent37 computer is kind linux with daemon child, network none read bac
 	assert.equal(restOnly({ type: "default" }).provider.capabilities().isolation, "gvisor");
 });
 
+test("kind desktop declares the screen and input besides the shell, as its descriptor's desktop configuration does, and starts from the box template", async () => {
+	const { PROVIDERS } = await import("../dist/index.js");
+	const desktop = restOnly({ kind: "desktop" }).provider.capabilities();
+	assert.equal(desktop.kind, "desktop");
+	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys"]);
+	assert.equal(desktop.daemon, "child");
+	assert.deepEqual(desktop.mount, ["archil"]);
+	const entry = PROVIDERS.find((one) => one.id === "agent37");
+	const configuration = entry.capabilities.find((one) => one.kind === "desktop");
+	assert.deepEqual(configuration.options, { kind: "desktop" }, "serve builds the desktop with kind desktop");
+	assert.deepEqual(configuration.groups, desktop.groups);
+	assert.deepEqual(entry.defaultImage, { sandbox: "agent37-base", desktop: "agentrun-box" });
+	assert.throws(() => restOnly({ kind: "phone" }), /kind is desktop or linux/);
+});
+
 test("the provider takes the key and the SSH key as options, a key's contents never a path, and refuses a type or region Agent37 has not", async () => {
 	const ssh2 = { Client: class {} };
 	await assert.rejects(create({ sshKey: SSH_KEY, ssh2 }), /options\.apiKey/);
@@ -441,8 +456,8 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	const env = { [ENV.key]: KEY, [ENV.sshKey]: SSH_KEY };
 	assert.deepEqual(settingsFromEnv(env), { apiKey: KEY, sshKey: SSH_KEY });
 	assert.deepEqual(
-		settingsFromEnv({ ...env, [ENV.type]: "default", [ENV.region]: "us", [ENV.apiUrl]: API_URL, [ENV.daemon]: "/tmp/computerd", [ENV.maxLifetimeMs]: "3600000", [ENV.user]: "2510:2510", AGENT37_API_KEY: BARE }),
-		{ apiKey: KEY, sshKey: SSH_KEY, type: "default", region: "us", apiUrl: API_URL, daemonPath: "/tmp/computerd", maxLifetimeMs: 3_600_000, daemonUser: "2510:2510" },
+		settingsFromEnv({ ...env, [ENV.type]: "default", [ENV.region]: "us", [ENV.kind]: "desktop", [ENV.apiUrl]: API_URL, [ENV.daemon]: "/tmp/computerd", [ENV.maxLifetimeMs]: "3600000", [ENV.user]: "2510:2510", AGENT37_API_KEY: BARE }),
+		{ apiKey: KEY, sshKey: SSH_KEY, type: "default", region: "us", kind: "desktop", apiUrl: API_URL, daemonPath: "/tmp/computerd", maxLifetimeMs: 3_600_000, daemonUser: "2510:2510" },
 	);
 	assert.throws(() => settingsFromEnv({ AGENT37_API_KEY: BARE, AGENT37_SSH_KEY: SSH_KEY }), (error) => /set COMPUTER_AGENT37_API_KEY/.test(error.message) && !error.message.includes(BARE));
 	assert.throws(() => settingsFromEnv({ [ENV.key]: KEY }), /set COMPUTER_AGENT37_SSH_KEY/);
@@ -459,6 +474,9 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 	assert.equal(longer.capabilities().maxLifetimeMs, 30 * 60_000, "a longer one is cut to 30 minutes");
 	assert.equal(conformanceModule.conformanceImage({ env: {} }), "agent37-base");
 	assert.equal(conformanceModule.conformanceImage({ env: { [ENV.template]: "box@v1" } }), "box@v1");
+	assert.equal(conformanceModule.conformanceImage({ env: { [ENV.kind]: "desktop" } }), "agentrun-box", "a desktop starts from the box template");
+	const desktop = await conformanceModule.createProvider({ env: { ...env, [ENV.live]: "1", [ENV.kind]: "desktop" }, ...doubles });
+	assert.equal(desktop.capabilities().kind, "desktop");
 	const host = await conformanceModule.createHost({ env, ...doubles });
 	assert.equal(host.id, "agent37");
 	assert.equal(sweepScope({ env }), workspaceOf(KEY));

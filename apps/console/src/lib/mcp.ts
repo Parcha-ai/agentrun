@@ -33,6 +33,8 @@ export type McpPreview = { protocol: string; server_info?: { name?: string; vers
 export type McpRefresh = { added: string[]; removed: string[]; changed: string[]; server: McpServer };
 /** What a preview or save sends as `auth`: a credential only when one was typed (none: keep the sealed one). */
 export type McpAuth = { type: McpAuthType; token?: string; headers?: Record<string, string> };
+/** A Composio toolkit's actions (POST /settings/mcp-servers/composio/tools), `no_auth` when it needs no account. */
+export type ComposioTools = { toolkit: string; no_auth: boolean; tools: { slug: string; name: string; description: string }[] };
 /** Capabilities' `features.mcp_client`. */
 export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
 

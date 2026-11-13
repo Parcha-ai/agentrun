@@ -13,9 +13,15 @@ export const PROXY = "agent37.test";
 
 const { Server, utils } = ssh2;
 
-/** A key pair in OpenSSH form, as `agent37 ssh-keys add` registers one. */
+/**
+ * A key pair in OpenSSH form, as `agent37 ssh-keys add` registers one. ssh2's generator writes a private key its own
+ * parser refuses ("Malformed OpenSSH private key") about once in 250 ed25519 pairs, so a pair it can't read back is made again.
+ */
 export function keyPair() {
-	return utils.generateKeyPairSync("ed25519");
+	for (;;) {
+		const pair = utils.generateKeyPairSync("ed25519");
+		if (!(utils.parseKey(pair.private) instanceof Error)) return pair;
+	}
 }
 
 const json = (status, body) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

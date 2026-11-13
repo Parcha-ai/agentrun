@@ -80,6 +80,8 @@ const RUN_DELETED = "its run was deleted";
 export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cost_usd?: number; effort?: string } | { kind: "message_run"; run_id: string; input: Json };
 /** A trigger as the engine reads its row. */
 type Trigger = Omit<TriggerRow, "source" | "target"> & { source: Source; target: Target };
+/** What the webhook did with a trigger.failed message (webhooks.ts emitTrigger). */
+type Told = "queued" | "unsaved" | "off" | "closed";
 /** What a trigger.failed webhook message says (webhooks.ts). */
 export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
 /** A run's provenance, kept with its launch row: the trigger that started it, and the firing. `name`: the trigger's name as
@@ -114,7 +116,7 @@ export type TriggerDeps = {
   runOf(key: string): Promise<{ run_id: string } | null>;
   /** Queues a trigger.failed webhook message under `key`, the firing's (webhooks.ts emitTrigger): `off` when there is no
    *  webhook to send it to; `unsaved` or `closed` when it is not in the outbox. */
-  notify(failed: TriggerFailed, key: string): Promise<"queued" | "unsaved" | "off" | "closed">;
+  notify(failed: TriggerFailed, key: string): Told | Promise<Told>;
   say(fields: Record<string, string | number>): void;
   clock?: TriggerClock;
   /** The sources this engine reads: the registry's (trigger-adapters.ts), unless a test gives its own. */

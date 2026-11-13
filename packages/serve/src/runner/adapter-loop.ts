@@ -982,7 +982,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session idle with no wait taking messages yet: whether the last turn ended on a question to the person, read
     // first. It is an await, so a wait may start meanwhile: every path below is chosen after it, with nothing awaited
     // between that choice and the message's placing.
-    const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const reopenedBefore = reopen;
+    const endedOnAsk = session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const askedLast = !reopenedBefore && endedOnAsk;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
     // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
@@ -1005,10 +1007,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The row is taken only once the session holds the prompt: pi's in its submission's commit; a CLI's (whose harness
       // writes no submission) in the record's follow-up entry, written right after the send, as sendAfterTurn takes its
       // row. A runner lost between the send and that entry leaves the row untaken, so the next claim sends it again: a
-      // follow-up may be sent twice after a crash, never lost. The answer to a wait in the claim: the row's waiting summary
-      // goes in that commit too.
+      // follow-up may be sent twice after a crash, never lost. The answer to an ask: the row's waiting summary goes in
+      // that commit too, for a wait in the claim and for a question a reopened run parked on (its journal holds its earlier
+      // end, so its claim reads as reopened). Left until the end commit, the answer's turn reads running, held and "Waiting
+      // for your reply", and the server tells that ask again.
       const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(sendId);
-      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
+      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn || endedOnAsk ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
         await theSession.send(content, { id: sendId, ...(by ? { origin: by } : {}) });
