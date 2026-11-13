@@ -618,9 +618,9 @@ export function catalogPrice(catalog: ReadonlyMap<string, readonly Listed[]>, id
   return catalogEntries(catalog, id.slice(slash + 1), id.slice(0, slash));
 }
 
-/** The forms of `id` with its version's separators written the other way: each digit-dash-digit as a dot (gpt-5-4-mini,
- *  gpt-5.4-mini; pair by pair, so llama-3-1-8b is llama-3.1-8b), and each digit-dot-digit as a dash (claude-haiku-4.5,
- *  claude-haiku-4-5). Not `id` itself. */
+/** The forms of `id` with its version's separators written the other way: each digit-dash-digit as a dot (gpt-6-1-terra,
+ *  gpt-6.1-terra; pair by pair, so llama-3-1-8b is llama-3.1-8b), and each digit-dot-digit as a dash (claude-haiku-5.5,
+ *  claude-haiku-5-5). Not `id` itself. */
 const flippedForms = (id: string): string[] => [...new Set([id.replace(/(\d)-(\d)/g, "$1.$2"), id.replace(/(\d)\.(\d)/g, "$1-$2")])].filter((form) => form !== id);
 
 /** `id`'s price in `catalog` (listedPrice): its own entries' metered price when the catalog lists one; else its flipped
