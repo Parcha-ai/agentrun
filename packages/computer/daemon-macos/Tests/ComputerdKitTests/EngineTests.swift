@@ -928,7 +928,7 @@ final class EngineTests: XCTestCase {
 	// MARK: the driver
 
 	func testFeaturesSayWhy() {
-		let driver = Driver(platform: os.platform(background: .off("SkyLight is missing")), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: "26.1 (25B78)", device: Device(maker: "Apple", model: "MacBook Pro")))
+		let driver = Driver(platform: os.platform(background: .off("SkyLight is missing")), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: "26.1 (25B78)", device: Device(maker: "Apple", model: "MacBook Pro")))
 		var f = driver.features()
 		XCTAssertEqual(f["ui.tree"], .on)
 		XCTAssertEqual(f["ui.image"], .on)
@@ -948,7 +948,7 @@ final class EngineTests: XCTestCase {
 	}
 
 	func testDriverAppsHonorThePolicy() async throws {
-		let driver = Driver(platform: os.platform(), policy: Policy(apps: ["com.apple.Notes"]), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let driver = Driver(platform: os.platform(), policy: Policy(apps: ["com.apple.Notes"]), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		let r = driver.router()
 		let list = try await r.handler("apps.list")!(nil)
 		XCTAssertEqual(list, .object(["apps": .array([.object(["id": .string("com.apple.Notes"), "name": .string("Notes")])]), "foreground": .null]))
@@ -959,7 +959,7 @@ final class EngineTests: XCTestCase {
 	}
 
 	func testScreenShotIsChunked() async throws {
-		let driver = Driver(platform: os.platform(), policy: Policy(), machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
+		let driver = Driver(platform: os.platform(), policy: Policy(), caller: .local, machine: MachineInfo(os: "macos", osVersion: nil, device: nil))
 		let r = driver.router()
 		let shot = try await r.handler("screen.shot")!(nil)
 		XCTAssertEqual(shot["eof"], .bool(false))

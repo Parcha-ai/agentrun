@@ -13,13 +13,14 @@ import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
 import { computerCallsOf } from "../computer-calls.js";
-import { labelled, type Reflect } from "../reflect-range.js";
+import { labelled, type Reflect, reflects } from "../reflect-range.js";
 import { reflectRanges } from "../runner/end-of-run.js";
-import { journalEntries, journalRecords } from "../runner/journal-reader.js";
+import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 import { waitingText } from "../tool-gate.js";
+import { Turns } from "../turns.js";
 
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
@@ -32,7 +33,13 @@ export async function runEntries(store: Store, runId: string, context: Context):
  *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
  *  follow-up opened the run again after it). Undefined for a run that asked none. */
 export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until" | "earlier"> | undefined> {
-  const records = await journalRecords(store.readJournal(runId), context);
+  return reflectOf(await journalRecords(store.readJournal(runId), context));
+}
+
+type Records = Awaited<ReturnType<typeof journalRecords>>;
+
+/** runReflect over records already read. */
+function reflectOf(records: Records): Pick<Reflect, "after" | "until" | "earlier"> | undefined {
   const ranges = reflectRanges(records.submissions ?? [], records.entries);
   const newest = ranges.at(-1);
   if (newest === undefined) return undefined;
@@ -192,12 +199,27 @@ const inWorkspace = (cwd: string) => (path: string): string => {
 export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
   const entries = await runEntries(store, runId, context);
   const cli = isCliRecord(entries);
+  const records = await journalRecords(store.readJournal(runId), context);
+  const reflect = reflectOf(records) as Reflect | undefined;
   // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
   // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
-  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
+  // A run whose newest turn a stop or a cancel cut reads it over (run-view.ts statusOf: input_required) from the moment pi
+  // settles that turn's message aborted, before the runner books what the abort cut (its request's end mark comes once the
+  // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
+  // price, never one in flight: never the known sum as its cost while the run reads stopped.
+  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
+  const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), read);
   const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+  return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+}
+
+/** Whether the run's newest turn is over, cut (turns.ts: no message of the run's open, the newest one's end interrupted),
+ *  its end-of-run turn's entries apart, as the run's view reads its status. */
+function turnCutOf(records: Records, reflect: Reflect | undefined): boolean {
+  const turns = new Turns();
+  turns.note(recordOf(records.entries), records.submissions ?? [], reflect ? (id: number) => reflects(reflect, id) : undefined);
+  return turns.end()?.status === "interrupted";
 }
 
 /** `rows` with each tool call's result row carrying the computer protocol calls it made (`computer_calls`, and

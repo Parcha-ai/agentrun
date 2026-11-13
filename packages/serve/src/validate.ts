@@ -2,6 +2,7 @@
 import { type InputIssue, invalid } from "./errors.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
+import { likelyModel, modelShape } from "./model-form.js";
 import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
@@ -40,6 +41,16 @@ export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 export const MODEL_TIER_NAMES = ["fast", "strong"] as const;
 /** `provider/model-id`. */
 export const MODEL_REF = /^[^/\s]+\/\S+$/;
+
+/** What a model that is no `provider/model-id` is told: the form `harness` takes, with examples, and the likely id when
+ *  one is obvious. Structural, so it knows no keys here: the likely id is named in both forms (the vendor's own, and
+ *  OpenRouter's), never one that a server with only the other key could not run. */
+function modelFormIssue(harness: string, given: unknown): string {
+  const own = typeof given === "string" ? likelyModel({}, harness, given) : undefined;
+  const routed = typeof given === "string" ? likelyModel({ OPENROUTER_API_KEY: "-" }, harness, given) : undefined;
+  const likely = own && routed && own !== routed ? `${own}, or ${routed} through OpenRouter` : own;
+  return `${modelShape({}, harness)}: ${typeof given === "string" ? `"${given}"` : "that"} is not one.${likely ? ` Did you mean ${likely}?` : ""}`;
+}
 const SKILL_FILE = "/SKILL.md";
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
@@ -79,7 +90,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.workflow !== undefined && !isObject(d.workflow)) out.push(issue(`${at}.workflow`, "wrong_type", `${at}.workflow is not an object`));
   if (d.model !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.model`, "not_allowed", "A workflow revision keeps no model: its model nodes run on this host's default.", `Remove ${at}.model.`));
-    else if (typeof d.model !== "string" || !MODEL_REF.test(d.model)) out.push(issue(`${at}.model`, "bad_format", `${at}.model is "provider/model-id"`));
+    else if (typeof d.model !== "string" || !MODEL_REF.test(d.model)) out.push(issue(`${at}.model`, "bad_format", modelFormIssue(typeof d.harness === "string" ? d.harness : "pi", d.model)));
   }
   if (d.model_tiers !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.model_tiers`, "not_allowed", "A workflow revision keeps no model tiers: each model node names its tier, run on this host's model for it.", `Remove ${at}.model_tiers.`));

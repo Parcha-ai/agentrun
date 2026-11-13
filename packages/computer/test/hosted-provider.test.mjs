@@ -303,6 +303,16 @@ test("a retry is held to the size its computer reads back where the vendor takes
 	assert.equal(fake.creates(), 1, "never a second machine under one name");
 });
 
+test("a retry from a restarted provider, of a sized request on a host that takes sizes but reads none back (Modal), finds the computer the first made", async () => {
+	const fake = fakeHost({ facts: { specFields: ["cpus", "memoryMb"] } });
+	const spec = { ...SPEC, cpus: 4, memoryMb: 8192 };
+	const before = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ref = made(await before.create(spec, { requestId: "sized-unread" }));
+	const after = hostedProvider(fake.host, { label: "Fakehost", daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	assert.equal(made(await after.create(spec, { requestId: "sized-unread" })).id, ref.id, "a size read back as nothing is not a drift");
+	assert.equal(fake.creates(), 1, "never a second machine under one name");
+});
+
 test("a retry that finds a desktop running whose display is not up yet waits for it within createMs; one that never comes up as declared is exists after createMs", async () => {
 	const labels = (request) => ({ [COMPUTER]: "1", [NAME]: nameOf(request), [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" });
 	const up = (m) => {
@@ -663,6 +673,18 @@ test("Archil: release stop lets the folder go (the final sync, then checkin as r
 	assert.equal(fake.live().length, 1, "a stop keeps the machine");
 	assert.equal(notes.length, 1);
 	assert.match(notes[0].note, /was stopped, and/);
+});
+
+test("Archil: archilEgress (a documentation address here, RFC 5737) goes to the helper's mount as its last word; unset, the mount names no gateway; a malformed one is refused at construction", async () => {
+	const { provider, fake } = setup({ archilEgress: "192.0.2.40:18100:42050" }, { box: { reached: [] } });
+	made(await create(provider, ARCHIL_SPEC));
+	const mount = fake.rootRuns.find(({ verb }) => verb === "mount");
+	assert.equal(mount.argv.at(-1), "egress=192.0.2.40:18100:42050");
+	noToken(mount.argv, "the mount's argv");
+	const plain = setup({}, { box: { reached: [] } });
+	made(await create(plain.provider, ARCHIL_SPEC));
+	assert.ok(!plain.fake.rootRuns.find(({ verb }) => verb === "mount").argv.some((word) => word.startsWith("egress=")));
+	assert.throws(() => setup({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
 });
 
 test("Archil: connect gives a client that syncs after each call that may change the folder", async () => {

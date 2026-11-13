@@ -6,7 +6,6 @@ import { DaytonaProvider } from "../dist/daytona.js";
 import { ModalProvider } from "../dist/modal.js";
 import { fakeDaytona, KEY as DAYTONA_KEY, API } from "./fake-daytona.mjs";
 import { container, fakeDocker } from "./fake-docker.mjs";
-import { fakeModal } from "./fake-modal.mjs";
 import { PhoneHarnessProvider } from "../dist/phone-harness.js";
 import { fakePhoneHarness, KEY as PHONE_KEY } from "./fake-phone-harness.mjs";
 
@@ -59,20 +58,26 @@ test("Daytona: on an account with several computers, one listing page counts the
 });
 
 test("Modal: the provider's app read without creating it; ok whether it exists or not yet; an unauthenticated token is unauthorized", async () => {
-	const fake = fakeModal();
-	const provider = new ModalProvider({ sdk: fake.sdk, app: "computers", daemonImage: `ghcr.io/example/computerd@sha256:${"a".repeat(64)}` });
+	// The SDK's slice as a recorder: apps.fromName answers, and anything else fails the test.
+	const calls = [];
+	const never = (name) => () => assert.fail(`${name} was called`);
+	const sdk = {
+		apps: { fromName: async (...args) => (calls.push(["apps.fromName", ...args]), { appId: "ap-computers" }) },
+		images: { fromRegistry: never("images.fromRegistry") },
+		sandboxes: { create: never("sandboxes.create"), fromId: never("sandboxes.fromId"), list: never("sandboxes.list") },
+	};
+	const provider = new ModalProvider({ sdk, app: "computers" });
 	const tested = await provider.testConnection();
 	assert.equal(tested.ok, true, JSON.stringify(tested));
 	assert.match(tested.value.detail, /Modal answered: the app computers is there/);
-	assert.deepEqual(fake.calls.find(([name]) => name === "apps.fromName").slice(1), ["computers", { createIfMissing: false }], "a read, never a create");
-	assert.ok(!fake.calls.some(([name]) => name === "sandboxes.create"));
-	fake.sdk.apps.fromName = async () => {
+	assert.deepEqual(calls, [["apps.fromName", "computers", { createIfMissing: false }]], "a read, never a create");
+	sdk.apps.fromName = async () => {
 		throw Object.assign(new Error("App 'computers' not found"), { name: "NotFoundError" });
 	};
 	const absent = await provider.testConnection();
 	assert.equal(absent.ok, true, JSON.stringify(absent));
 	assert.match(absent.value.detail, /Modal answered: no app computers yet; the first computer makes it/);
-	fake.sdk.apps.fromName = async () => {
+	sdk.apps.fromName = async () => {
 		throw Object.assign(new Error("Token missing or invalid"), { code: 16 });
 	};
 	const refused = await provider.testConnection();

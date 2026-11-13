@@ -6,7 +6,7 @@
 // network, and no vendor SDK is loaded.
 import { createHash } from "node:crypto";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
-import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-modal.mjs";
+import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
 import { netDevText } from "./net-dev.mjs";
 
@@ -87,7 +87,7 @@ const START = Date.now();
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
- *  - archil: root verbs' answers, as fake-modal's.
+ *  - archil: root verbs' answers, as fake-archil.mjs's.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({

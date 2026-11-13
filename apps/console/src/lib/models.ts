@@ -8,7 +8,14 @@ export function modelLabel(id: string, routePrefix: string | null | undefined): 
 
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
  *  the server's `reason`, when it doesn't). */
-export type HarnessInfo = { id: string; default_model?: string | null; available?: boolean; reason?: string };
+export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; available?: boolean; reason?: string };
+
+/** The models the server offers for a harness (`harnesses[].models`), each in the exact form a definition names it on
+ *  that harness here; none for a harness it does not run, or from a server that lists none. The Model picker's list: the
+ *  one copy is the server's, never a second one here. */
+export function harnessModels(harness: string, harnesses: readonly HarnessInfo[] | undefined): readonly string[] {
+  return harnesses?.find((h) => h.id === harness)?.models ?? [];
+}
 
 /** The model a harness runs when a definition names none, as the server says (`harnesses[].default_model`, null for
  *  none). */

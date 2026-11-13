@@ -21,8 +21,10 @@ import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
 import {
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
+	type ArchilEgress,
 	type ArchilMount,
 	type ArchilRoot,
+	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilRefusals,
@@ -119,6 +121,12 @@ export interface HostedOptions {
 	probeTargets?: string[];
 	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
 	onNote?: ProviderNote;
+	/**
+	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
+	 * lane>` such as 192.0.2.40:18100:42050 (archilEgressOf): for a vendor whose machines reach Archil only through it.
+	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
+	 */
+	archilEgress?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -258,6 +266,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly #timeouts: HostedTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
+	readonly #archilEgress: ArchilEgress | undefined;
 	/** Each create in flight, and the names of the computers this provider ended (create-requests.ts). In memory alone:
 	 *  past it, and past this process, the vendor's listing is what holds. */
 	readonly #requests = new CreateRequests();
@@ -275,12 +284,14 @@ export class HostedProvider implements ComputerProvider {
 			timeouts = {},
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
+			archilEgress,
 		} = options;
 		this.id = host.id;
 		this.host = host;
 		this.#label = label;
 		this.#fail = failOf(host);
 		this.#onNote = onNote;
+		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
@@ -525,8 +536,8 @@ export class HostedProvider implements ComputerProvider {
 				if (differ.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", differ));
 				const attached = await this.#attached(machine, signal);
 				// The image and an Archil mount are in the labels; the user, the network, and a size where the vendor takes
-				// one in a spec, are read back.
-				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field));
+				// one in a spec and reads it back, are read back. A vendor that reads no size back (Modal) cannot show a drift.
+				const sizes = (["cpus", "memoryMb"] as const).filter((field) => this.host.facts.specFields?.includes(field) && attached.ok && attached.value.spec[field] !== undefined);
 				const drift = attached.ok ? readBackDiffer({ ...spec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", ...sizes]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
 				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
@@ -883,6 +894,7 @@ export class HostedProvider implements ComputerProvider {
 			self: computer,
 			releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}),
 			timeoutMs: this.#timeouts.mountMs,
+			...(this.#archilEgress ? { egress: this.#archilEgress } : {}),
 			...(signal ? { signal } : {}),
 		});
 	}
