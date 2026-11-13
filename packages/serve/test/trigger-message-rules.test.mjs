@@ -108,6 +108,14 @@ test("bad webhook headers are refused before the body is read: a body past 256 K
   assert.equal(res.status, 401);
 });
 
+/** The trigger's saved row at the store: a steer marked `answers: false`, untaken and not refused while the run waits, so no
+ *  answer of the run's was this message. */
+async function untakenAnswersFalse(server, runId) {
+  const held = (await server.store.commands(runId, 0)).filter((command) => command.body?.origin?.kind === "trigger");
+  assert.equal(held.length, 1, "the trigger's row is at the store");
+  assert.deepEqual([held[0].kind, held[0].body.answers, held[0].takenAt, held[0].refused], ["steer", false, null, null], JSON.stringify(held[0]));
+}
+
 /** The window cases below hold a message at its door with `beforeSubmit` (ServeOptions: awaited after a message's checks and
  *  before its command row is written), while the run comes to wait (or park, or pause) under it. Each keeps whether the seam
  *  ran, and asserts that before the outcome. */
@@ -143,6 +151,7 @@ test("a run that comes to wait on a person between the firing's check and its do
   assert.deepEqual([read.status, read.state, read.pending?.kind], ["input_required", "waiting", "question"], "the question stands, unanswered");
   const { rows } = await follow(api, run.run_id, ["input_required"]);
   assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
+  await untakenAnswersFalse(server, run.run_id);
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
@@ -317,6 +326,7 @@ test("a run that comes to wait on a tool call's approval between the firing's ch
   assert.deepEqual(answersOf(await server.store.commands(run.run_id, 0)), [], "and never answered");
   const { rows } = await follow(api, run.run_id, ["input_required"]);
   assert.equal(rows.filter(isMessageRow).length, 1, "no message reached it");
+  await untakenAnswersFalse(server, run.run_id);
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
 });
 
