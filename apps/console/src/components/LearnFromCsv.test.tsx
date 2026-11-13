@@ -66,7 +66,7 @@ describe("LearnFromCsv", () => {
     expect(onFinished).not.toHaveBeenCalled();
   });
   it("cancels a running batch", async () => {
-    const v2 = fake([batch()]);
+    const v2 = fake([batch(), batch({ status: "cancelled", finished: 1 })]);
     const host = await show(v2);
     const cancel = [...host.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!;
     await act(async () => { cancel.click(); });
@@ -79,6 +79,7 @@ describe("LearnFromCsv", () => {
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Learn from a CSV")!.click(); });
     const input = host.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(["q,a\nwhat is 2+2,4\nwhat is 3+3,6\n"], "rows.csv", { type: "text/csv" });
+    file.text = async () => "q,a\nwhat is 2+2,4\nwhat is 3+3,6\n";
     Object.defineProperty(input, "files", { value: [file] });
     await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); await new Promise((r) => setTimeout(r, 10)); });
     expect(host.textContent).toContain("rows.csv: 2 rows, 2 columns");

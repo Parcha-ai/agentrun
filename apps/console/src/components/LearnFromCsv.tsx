@@ -1,6 +1,5 @@
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import { Bone } from "@/components/Skeleton";
-import { problem, ProblemCard } from "@/components/learningProblem";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Checkbox, Field, Input } from "@/components/ui/field";
@@ -52,7 +51,7 @@ export function LearnFromCsv({ v2, agentId, onFinished, pollMs = POLL_MS }: { v2
   }, [v2, agentId, pollMs, again]);
 
   if (batch === undefined && !error) return <Bone className="h-24 w-full" />;
-  if (batch === undefined) return <ProblemCard problem={problem(error, "the learning batches")} onRetry={() => setError(null)} className="" />;
+  if (batch === undefined) return <p className="font-mono text-small text-muted-foreground" role="status">Learn from a CSV is not available right now: {error instanceof Error ? error.message : String(error)}.</p>;
   const now = batch && running(batch);
   return (
     <section className="space-y-4" aria-label="Learn from a CSV">
