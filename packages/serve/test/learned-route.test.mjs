@@ -85,7 +85,7 @@ test("R2 a claude-agent run's learned node request reaches the session's proxy w
   const gw = await startFauxGateway({ call: submitsAnswer });
   t.after(() => gw.close());
   const key = fake("anthropic");
-  withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-4-5" }, MODEL_VARS);
+  withEnv(t, { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: gw.url, AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, MODEL_VARS);
   const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   const { runId, rows, view } = await ran(api, data, "claude-gated", "claude-agent", { fields: { max_cost_usd: 5 } });
   const sent = gw.requests.filter((r) => r.method === "POST");
@@ -100,7 +100,7 @@ test("R2 a claude-agent run's learned node request reaches the session's proxy w
   const own = (await entriesOf({ data }, runId, ["runner.request"])).filter((entry) => entry.host === undefined).map((entry) => entry.turn);
   assert.equal(own.includes(booked[0].turn), false, `the node's ${booked[0].turn} is none of the harness's ${own}`);
   assert.equal((await entriesOf({ data }, runId, ["runner.turn"])).filter((entry) => entry.turn === booked[0].turn).length, 1, "settled once, by its own runner.turn");
-  assert.deepEqual(sent.map((r) => [r.path, r.headers["x-api-key"], r.body?.model]), [["/v1/messages", key, "claude-sonnet-4-5"]], `the node's one request, at the gateway, with the run's key: ${said}`);
+  assert.deepEqual(sent.map((r) => [r.path, r.headers["x-api-key"], r.body?.model]), [["/v1/messages", key, "claude-sonnet-5-5"]], `the node's one request, at the gateway, with the run's key: ${said}`);
   assert.deepEqual(sent[0].body.tools.map((tool) => tool.name), ["submit"], "offered the node's submit, and nothing else");
   assert.equal(learnedResult(rows)?.tool_status, "success", JSON.stringify(learnedResult(rows)));
   assert.match(JSON.stringify(learnedResult(rows)), /\{\\?"answer\\?":42\}/);

@@ -1,76 +1,26 @@
-// Fakes of the registry's narrow computer ports (kernel/registry hands.ts: screen, input, phone), for the
-// kernel registry's tests: each records every call, in order, as [method, ...args], and answers what a test scripts.
-// A refusal throws as the port says: an error with the computer's `code` and words.
+// Fakes of the registry's computer ports (kernel/registry hands.ts: computer, handoff), for the kernel registry's tests:
+// each records every call, in order, and answers what a test scripts. A refusal throws as the port says: an error with
+// the computer's `kind` and words.
 
-/** A one-pixel PNG's bytes: what a fake shot answers unless a test gives others. */
-export const PNG = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
+/** A one-pixel PNG, base64: what a fake image answers unless a test gives another. */
+export const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-export const refusal = (code, message) => Object.assign(new Error(message), { code });
+export const refusal = (kind, message) => Object.assign(new Error(message), { kind });
 
-/** A desktop's screen: shot answers `shot` (a PNG of width x height), or throws `refuse`. */
-export function fakeScreen({ width = 1280, height = 800, png = PNG, refuse } = {}) {
+/** The run's computer as the surface answers it: each op answers `answers[op]` (a function of its args, or an answer),
+ *  by default its args echoed as the value; `refuse` throws instead. */
+export function fakeComputerPort({ groups = ["ui", "screen", "input.pointer", "input.keys", "apps", "exec", "files"], answers = {}, refuse } = {}) {
   const calls = [];
   return {
     calls,
-    async shot(options) {
-      calls.push(["shot", options]);
+    groups,
+    async call(op, args, signal) {
+      calls.push([op, args]);
+      if (signal?.aborted) throw signal.reason;
       if (refuse) throw refuse;
-      return { png, width, height };
-    },
-  };
-}
-
-/** A desktop's input: actions records each batch, or throws `refuse`. */
-export function fakeInput({ refuse } = {}) {
-  const calls = [];
-  return {
-    calls,
-    async actions(list) {
-      calls.push(["actions", list]);
-      if (refuse) throw refuse;
-    },
-  };
-}
-
-/** A phone screen's structure, flattened, as the phone port gives it: a field, a button, a label (neither), a switch. */
-export const PHONE_TREE = Object.freeze({
-  nodes: [
-    { role: "android.widget.EditText", id: "com.example.mail:id/to", text: "", label: "To", bounds: { x: 40, y: 300, w: 1000, h: 120 }, clickable: true, editable: true, focused: true },
-    { role: "android.widget.Button", id: "com.example.mail:id/send", text: "Send", bounds: { x: 820, y: 2200, w: 220, h: 120 }, clickable: true, editable: false },
-    { role: "android.widget.TextView", text: "New message", bounds: { x: 40, y: 120, w: 600, h: 80 }, clickable: false, editable: false },
-    { role: "android.widget.Switch", label: "Attach signature", bounds: { x: 900, y: 600, w: 140, h: 80 }, clickable: true, editable: false },
-  ],
-  total: 37,
-  truncated: false,
-});
-
-/** A phone: its screen, touch, typing, keys, apps and its screen's structure. */
-export function fakePhone({ width = 1080, height = 2400, apps = [{ id: "com.example.mail", name: "Mail" }, { id: "com.example.maps" }], foreground = "com.example.mail", tree = PHONE_TREE, refuse } = {}) {
-  const calls = [];
-  const record = (...call) => {
-    calls.push(call);
-    if (refuse) throw refuse;
-  };
-  return {
-    calls,
-    async shot() {
-      record("shot");
-      return { png: PNG, width, height };
-    },
-    async tap(at) { record("tap", at); },
-    async swipe(spec) { record("swipe", spec); },
-    async type(text) { record("type", text); },
-    async key(name) { record("key", name); },
-    async tree() {
-      record("tree");
-      return tree;
-    },
-    apps: {
-      async list() {
-        record("apps.list");
-        return { apps, foreground };
-      },
-      async open(id) { record("apps.open", id); },
+      const answer = answers[op];
+      if (typeof answer === "function") return answer(args);
+      return answer ?? { value: { op, args }, text: `${op} done`, images: [] };
     },
   };
 }

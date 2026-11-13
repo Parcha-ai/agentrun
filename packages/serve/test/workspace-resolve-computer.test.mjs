@@ -12,14 +12,15 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { readBackOf } from "@parcha/agentrun-computer";
-import { capabilityToolDefs } from "@parcha/agentrun-kernel/kernel";
+import { computerToolsFor } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { ARCHIL_KINDS, GPU_ARCHIL_KINDS, KINDS, PROVIDERS } from "./workspace-kinds-fixture.mjs";
 
-/** A kind's own tools, as the kernel registry lists them (the hand-over the desktop and phone share among them). */
-const kindTools = (kind) => capabilityToolDefs(kind).map((def) => def.name);
+/** A kind's computer tools, as the kernel registry lists them for its provider's groups (the desktop's and the phone's
+ *  are the same tools). */
+const kindTools = (kind) => computerToolsFor(KIND_REGISTRY.PROVIDERS.flatMap((one) => one.capabilities).find((one) => one.kind === (kind === "phone" ? "android" : kind)).groups);
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -195,7 +196,7 @@ test("start: a desktop launched with no hello is refused and released: its ports
 });
 
 test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
-  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal or E2B) needs Archil turned on in Settings → Workspace.";
+  const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Daytona, Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
   const failing = (daemon) => ({ keysOf: async () => ({}), answers: async () => false, daemon, launch: async () => { throw new Error("cannot ask Docker its architecture (docker version): Cannot connect to the Docker daemon"); } });
   const start = async (side) => (await resolveComputer({ kind: "sandbox", provider: "docker" }, 1, KINDS, side)).start({ workspace: localWorkspace(scratch()), check: { readBackOf } });
   await assert.rejects(start(failing(async () => ({ up: false, absent: true, reason: "exit 1" }))), (error) => error.code === "computer_unavailable" && error.message === NO_DOCKER);

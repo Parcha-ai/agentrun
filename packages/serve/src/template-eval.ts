@@ -17,7 +17,7 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock, schemaCheck } from "./answer-json.js";
 import { checkNote } from "./learn/index.js";
 import { NOTE_FILE } from "./learn/notes.js";
-import { MCP_SERVER_NAME } from "./mcp-probe.js";
+import { MCP_SERVER_NAME, shownUrl } from "./mcp-probe.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { applyBodyOf, compiled, filledPins, type Package, packageView, readPackage } from "./templates.js";
@@ -750,7 +750,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // directory of its own, gone when the eval is.
     cpSync(options.dir, join(scratch!, "templates", pkg.name), { recursive: true });
     const { startServe } = await import("./server.js");
-    const serve = await startServe({ data: join(scratch!, "data"), port: 0, token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
+    // A local install by construction: its own scratch server, reached on loopback, its fake MCP servers there too.
+    const serve = await startServe({ mcpLoopback: true, data: join(scratch!, "data"), port: 0,token: randomBytes(24).toString("base64url"), templates: join(scratch!, "templates"), drainTimeout: "5s", ...(options.serve ?? {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -762,7 +763,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(join(scratch!, "data"), { onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(join(scratch!, "data"), { mcpLoopback: serve.localInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: join(scratch!, "data"), ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await serve.close();
       removeTree(scratch!);
       throw error;
@@ -860,7 +861,7 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   }
 }
 /** Whether the server's MCP server `name` is still this eval's fake at `url`. */
-const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === url, () => false);
+const ownsFake = (api: Api, name: string, url: string): Promise<boolean> => api("GET", `/settings/mcp-servers/${name}`).then((read) => read.status === 200 && isObject(read.body) && read.body.url === shownUrl(url), () => false);
 const caseCost = (runs: readonly RunResult[]) => Math.round(runs.reduce((sum, r) => sum + (r.cost_usd ?? 0) + r.graders.reduce((g, x) => g + (x.cost_usd ?? 0), 0), 0) * 1e6) / 1e6;
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. */

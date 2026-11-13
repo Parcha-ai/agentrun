@@ -90,6 +90,8 @@ per address (an IPv6 one by its /64) and wrong passwords per server; past the li
 Behind a proxy, set AGENTRUN_TRUSTED_PROXIES to its addresses or ranges (comma-separated; or loopback, linklocal,
 uniquelocal) so each visitor counts by the address its X-Forwarded-For names; unset, that header is never read. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
 data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.
+An MCP server on loopback (a 127.0.0.1 or localhost address) is refused unless AGENTRUN_MCP_ALLOW_LOOPBACK=1 is set at the
+start: set it only on a machine you alone use, since loopback is this machine's other services too.
 
 \`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
 ~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its
@@ -342,6 +344,8 @@ try {
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
+    // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
+    ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -363,7 +367,8 @@ if (!values["no-runner"] && askedAt === undefined) {
     // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
     const { besideRunEnv } = await import("./runner/main.js");
     // With the computer janitor: what a crashed runner of this server left is ended (never under --faux).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true });
+    // Its runs reach an MCP server on loopback only when this server is a local install (Serve.localInstall).
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, mcpLoopback: serve.localInstall });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();

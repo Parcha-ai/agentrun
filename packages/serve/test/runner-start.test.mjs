@@ -41,7 +41,7 @@ const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { hostMemory, runsMemoryMib } = await import("../dist/host.js");
 
 const LAUNCHER = fileURLToPath(new URL("../launcher/agentrun-serve", import.meta.url));
-const MODEL = { provider: "anthropic", modelId: "claude-sonnet-4-5" };
+const MODEL = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
 const READY = /^Runner (\S+) ready: store sqlite schema v(\d+), (\d+) loops$/;
 const SEAL = Buffer.alloc(32, 5).toString("base64");
 /** The ready line of a runner on `kind`'s store. */

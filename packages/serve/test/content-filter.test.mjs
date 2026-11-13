@@ -47,7 +47,7 @@ for (const harness of ["claude-agent", "codex"]) {
 function refusedStream() {
   const usage = { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 };
   const events = [
-    ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-haiku-4-5", content: [], stop_reason: null, stop_sequence: null, usage } }],
+    ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: null, stop_sequence: null, usage } }],
     ["message_delta", { type: "message_delta", delta: { stop_reason: "refusal", stop_sequence: null }, usage }],
     ["message_stop", { type: "message_stop" }],
   ];
@@ -76,9 +76,9 @@ test("claude-agent on the Claude CLI: a provider that stops every answer on its 
     Object.assign(process.env, saved);
   });
   delete process.env.AGENT_MODEL_BASE_URL;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, AGENT_MODEL: "anthropic/claude-haiku-5-5" });
   const { api } = await serve(t, { faux: undefined });
-  assert.equal((await api("POST", "/agents", agent("filtered-cli", { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("filtered-cli", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }))).status, 201);
   const started = await api("POST", "/agents/filtered-cli/runs", { input: { content: "What is 2 plus 2?" } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   // However the CLI ends it (failed, completed or waiting on the person), so a run that does not fail reads as such.

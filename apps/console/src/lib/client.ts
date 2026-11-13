@@ -304,7 +304,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
     listMcpServers: () => call<{ servers: McpServer[] }>("GET", "/settings/mcp-servers"),
-    previewMcpServer: (url: string, auth: McpAuth) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth } }),
+    /** `name`: the saved server an edit form previews, so its address as shown (origin and `/…`) is previewed at the saved endpoint. */
+    previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
     /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. */
     saveMcpServer: (name: string, url: string, auth: McpAuth) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),

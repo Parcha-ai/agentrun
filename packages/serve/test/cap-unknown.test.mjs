@@ -478,9 +478,9 @@ test("a stopped request counts every byte it streamed, whatever its blocks hold:
   assert.equal(await spentSaid(capped), eight(0.004 + (bytes + STOP_ALLOWANCE) * 100 / 1e6));
 });
 
-/** A gpt-5-class model on the Responses API: $1.25 a million input tokens, $10 a million output, reasoning that streams
+/** A gpt-6.1-sol-class model on the Responses API: $2 a million input tokens, $10 a million output, reasoning that streams
  *  only its summary. */
-const responsesReasoner = { ...model({ input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 }, { maxTokens: 128_000, contextWindow: 400_000 }), id: "gpt-5", api: "openai-responses", provider: "openai", reasoning: true };
+const responsesReasoner = { ...model({ input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, { maxTokens: 128_000, contextWindow: 272_000 }), id: "gpt-6.1-sol", api: "openai-responses", provider: "openai", reasoning: true };
 /** A Claude-class model on the Messages API, whose thinking takes a budget: $3 a million input, $15 output. */
 const budgetReasoner = { ...model({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, { maxTokens: 64_000, contextWindow: 200_000 }), id: "claude", api: "anthropic-messages", provider: "anthropic", reasoning: true };
 /** A 20 KB context: one message of 20,000 bytes. */
