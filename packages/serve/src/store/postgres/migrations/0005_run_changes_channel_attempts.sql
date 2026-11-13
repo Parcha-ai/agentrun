@@ -1,5 +1,5 @@
 -- The run-change feed (Runs.changedSince) and each channel post's tries (the outbound webhook's deliveries log), as
--- SQLite's schema version 8 has them.
+-- SQLite's schema version 7 has them.
 --
 -- A change is a run reaching a final state, or let go by its runner (parked, or running with none), written by the
 -- trigger below in the transaction of the write that made it. Postgres has many writers, so a sequence alone does not
@@ -45,4 +45,4 @@ CREATE TABLE IF NOT EXISTS channel_attempts (
 );
 CREATE INDEX IF NOT EXISTS channel_attempts_by_channel ON channel_attempts (channel, seq);
 
-UPDATE store_meta SET schema_version = 6 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 5 WHERE singleton = 1;

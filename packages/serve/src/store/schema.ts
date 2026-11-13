@@ -1,9 +1,9 @@
-// The store's one schema, version 8 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
+// The store's one schema, version 7 (design 2.1). Nothing migrates into it: the rewrite replaces the old stores, and a store
 // an older build made is refused as a version this build does not know. The server sets it up once at its start (a
 // store_meta row holds the version); a runner refuses a version it does not know. Version 2 adds the computer ledger;
 // version 3 numbers each save of a sign-in (sign_ins.save); version 4 stamps an MCP token's end (mcp_servers.token_until);
 // version 5 maps an externally owned agent (agents.external_ref, revisions.external_version); version 6 tells a person's
-// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 8 adds the run-change feed (run_changes) and each
+// stop from a cancel (runs.outcome 'stopped' or 'cancelled'); version 7 adds the run-change feed (run_changes) and each
 // channel post's tries (channel_attempts).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
@@ -16,7 +16,7 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 7;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
