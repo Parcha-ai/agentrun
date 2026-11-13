@@ -405,6 +405,91 @@ function toolboxRecorder() {
 	return { commands, fetch, requests: rec.requests };
 }
 
+/** A log stream that opens at once and sends nothing: the command's output is not what these tests read. */
+const openSocket = () => {
+	const listeners = {};
+	queueMicrotask(() => listeners.open?.({}));
+	return { binaryType: "", addEventListener: (type, listener) => (listeners[type] = listener), close: () => listeners.close?.({ code: 1000 }) };
+};
+
+const DAYTONA_500 = { status: 500, body: { statusCode: 500, message: "internal error", code: "Internal Server Error" } };
+
+/**
+ * One exec with stdin over a toolbox whose input route answers `replies` in turn (a reply, or "throw" for no answer),
+ * one line written: what it settled as, every input request's data, and every pause between two tries. The pause is
+ * injected and records alone, so nothing waits on a clock.
+ */
+async function writeOnce(replies) {
+	const inputs = [];
+	const pauses = [];
+	const left = [...replies];
+	const rec = recorder({
+		[`GET /api/sandbox/${REF.id}`]: { body: sandbox() },
+		[`POST /toolbox/${REF.id}/process/session`]: { body: {} },
+	});
+	const fetch = async (url, init = {}) => {
+		const at = new URL(url);
+		if (init.method === "POST" && at.pathname.endsWith("/exec")) return new Response(JSON.stringify({ cmdId: "cmd-1" }), { status: 200 });
+		if (init.method === "POST" && at.pathname.endsWith("/command/cmd-1/input")) {
+			inputs.push(JSON.parse(init.body).data);
+			const reply = left.shift() ?? { status: 204 };
+			if (reply === "throw") throw new TypeError("fetch failed: other side closed");
+			return new Response(reply.body === undefined ? null : typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body), { status: reply.status });
+		}
+		if (init.method === "DELETE") return new Response(null, { status: 204 });
+		return rec.fetch(url, init);
+	};
+	const pause = async (ms) => {
+		pauses.push(ms);
+	};
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, webSocket: openSocket, pause, timeouts: TIMEOUTS });
+	const started = await provider.host.exec(REF.id, ["computerd", "stdio"], { stdin: true }, { timeoutMs: 1_000 });
+	assert.equal(started.ok, true, started.ok ? "" : started.error.message);
+	const line = '{"jsonrpc":"2.0","id":1,"method":"hello","params":{}}\n';
+	let settled;
+	try {
+		await started.value.write(new TextEncoder().encode(line));
+		settled = "ok";
+	} catch (error) {
+		settled = error.message;
+	}
+	await started.value.kill();
+	return { settled, inputs, pauses, line };
+}
+
+test("stdin: a write Daytona answers its own 500 for is sent again, with a doubling pause, up to three tries; it never reached a reader, so the line is read once", async () => {
+	const once = await writeOnce([DAYTONA_500]);
+	assert.equal(once.settled, "ok");
+	assert.deepEqual(once.inputs, [once.line, once.line], "the same whole line, sent again after the 500");
+	assert.deepEqual(once.pauses, [1], "one pause of retryMs, injected: no clock");
+	const always = await writeOnce([DAYTONA_500, DAYTONA_500, DAYTONA_500, DAYTONA_500]);
+	assert.match(always.settled, /writing to the command failed \(vendor\): POST \/toolbox\/sb-0001\/process\/session\/agentrun-[0-9a-f]{16}\/command\/cmd-1\/input: 500 /);
+	assert.equal(always.inputs.length, 3, "bounded: three tries in all");
+	assert.deepEqual(always.pauses, [1, 2], "each pause twice the one before");
+	assert.doesNotMatch(always.settled, /hello/, "its words never hold what was written");
+});
+
+test("stdin: a write is never sent again where the line may have reached the command: a 4xx, a 502, 503 or 504, a 500 that is not Daytona's own, or no answer", async () => {
+	for (const reply of [
+		{ status: 400, body: { statusCode: 400, message: "invalid body" } },
+		{ status: 404, body: { statusCode: 404, message: "command not found" } },
+		{ status: 410, body: { statusCode: 410, message: "command has already completed with exit code 0" } },
+		{ status: 429, body: { statusCode: 429, message: "too many requests" } },
+		{ status: 502 },
+		{ status: 503, body: { statusCode: 503, message: "unavailable" } },
+		{ status: 504, body: "gateway timeout" },
+		{ status: 500 },
+		{ status: 500, body: "<html>500</html>" },
+		"throw",
+	]) {
+		const what = JSON.stringify(reply);
+		const ran = await writeOnce([reply]);
+		assert.notEqual(ran.settled, "ok", what);
+		assert.equal(ran.inputs.length, 1, `${what}: sent once`);
+		assert.deepEqual(ran.pauses, [], `${what}: no pause`);
+	}
+});
+
 test("exec is a session command of its own: argv as one shell line, async, no input echo; with archilEgress, the helper's mount and revoke take egress= as their last word", async () => {
 	const helper = "/usr/local/sbin/agentrun-archil";
 	const run = async (options, argv) => {

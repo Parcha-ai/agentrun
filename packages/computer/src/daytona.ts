@@ -73,6 +73,8 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "k
 	fetch?: typeof fetch;
 	/** For tests: every log stream opens through it. Default Node's global WebSocket. */
 	webSocket?: WebSocketFactory;
+	/** For tests: the pause before a request is tried again, given its ms and the call's signal. Default a timer. */
+	pause?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	timeouts?: Partial<DaytonaTimeouts>;
 }
 
@@ -119,6 +121,11 @@ interface CallInit {
 	timeoutMs?: number;
 	/** Retry no answer, 429 and 5xx: only for a call that may run twice. */
 	retry?: boolean;
+	/**
+	 * Retry Daytona's own 500 alone (internalRefusal): for a call that must not run twice, which that answer says did
+	 * not run. Never no answer, a timeout, 502, 503 or 504: the request may have reached the toolbox. Not with retry.
+	 */
+	retryInternal?: boolean;
 	/** Any answer below 500 but 429 is a value, with its status, not a failure. */
 	anyStatus?: boolean;
 	/** This one status is a value, with its status, not a failure (and not retried). */
@@ -253,6 +260,17 @@ function codeOf(status: number, text: string): ComputerErrorCode {
 	return "vendor";
 }
 
+/**
+ * Whether an answer is Daytona's own 500: its error body ({"statusCode":500,...}), which its proxy, its runner and the
+ * toolbox each answer for an error set before the request is passed on, or one the toolbox's route returned. The
+ * toolbox's input route (daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/session/input.go) answers 500 when it could not
+ * open the command's input pipe (nothing written) or the write failed (the pipe's reader is gone: the command reads no
+ * more); a request passed on that then fails is 502 with no body (libs/common-go/pkg/proxy/proxy.go, ErrorHandler).
+ */
+function internalRefusal(status: number, bytes: Uint8Array): boolean {
+	return status === 500 && (parseJson(bytes) as { statusCode?: unknown } | null)?.statusCode === 500;
+}
+
 /** Whether fetch failed on a redirect it was told not to follow. */
 function redirected(cause: unknown): boolean {
 	const inner = (cause as { cause?: unknown } | null)?.cause;
@@ -276,13 +294,15 @@ class Rest {
 	readonly #fetch: typeof fetch;
 	readonly #requestMs: number;
 	readonly #retryMs: number;
+	readonly #pause: (ms: number, signal?: AbortSignal) => Promise<void>;
 
-	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: number, retryMs: number) {
+	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: number, retryMs: number, pause: (ms: number, signal?: AbortSignal) => Promise<void> = sleep) {
 		this.#base = base.replace(/\/+$/, "");
 		this.#key = key;
 		this.#fetch = fetcher;
 		this.#requestMs = requestMs;
 		this.#retryMs = retryMs;
+		this.#pause = pause;
 	}
 
 	/** The headers of every call and log stream; split output keeps a session's stdout and stderr apart. */
@@ -297,7 +317,8 @@ class Rest {
 	/** One call, bounded by its timeout and the caller's signal. A failure names the method, path and status, never a header. */
 	async call(method: string, url: string, init: CallInit, signal?: AbortSignal): Promise<Result<Answer>> {
 		const what = `${method} ${new URL(url).pathname}`;
-		const attempts = init.retry === true ? RETRY_ATTEMPTS : 1;
+		const internalOnly = init.retryInternal === true && init.retry !== true;
+		const attempts = init.retry === true || internalOnly ? RETRY_ATTEMPTS : 1;
 		const timeoutMs = init.timeoutMs ?? this.#requestMs;
 		for (let attempt = 1; ; attempt++) {
 			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
@@ -317,16 +338,18 @@ class Rest {
 				const bytes = new Uint8Array(await response.arrayBuffer());
 				if (response.ok || response.status === init.answerStatus || (init.anyStatus === true && response.status < 500 && response.status !== 429)) return ok({ status: response.status, bytes });
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
-				retryable = response.status === 429 || response.status >= 500;
+				retryable = internalOnly ? internalRefusal(response.status, bytes) : response.status === 429 || response.status >= 500;
 				failure = errorOf(codeOf(response.status, text), `${what}: ${response.status} ${text}`, "daytona");
 			} catch (cause) {
 				if (signal?.aborted) return fail("aborted", `${what} was aborted`);
+				// No answer: the request may have reached Daytona, so a call that must not run twice is not sent again.
+				retryable = !internalOnly;
 				if (timeout.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
 				else if (redirected(cause)) return vendorFail("daytona", `${what}: Daytona answered with a redirect, which is never followed: it would carry the key`);
 				else failure = { code: "vendor", vendor: "daytona", message: `${what}: ${(cause as Error).message}` };
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
-			await sleep(this.#retryMs * 2 ** (attempt - 1), signal);
+			await this.#pause(this.#retryMs * 2 ** (attempt - 1), signal);
 		}
 	}
 
@@ -807,7 +830,9 @@ class DaytonaHost implements MachineHost {
 		let sending: Promise<void> = Promise.resolve();
 		const send = (data: string) => {
 			sending = sending.then(async () => {
-				const sent = await this.#rest.call("POST", `${command}/input`, { json: { data } });
+				// Daytona's own 500 alone is sent again: the line reached no reader (internalRefusal), so it is never read
+				// twice; a line read twice would be a JSON-RPC request run twice.
+				const sent = await this.#rest.call("POST", `${command}/input`, { json: { data }, retryInternal: true });
 				// Its words never hold what was written: it may be a disk's token.
 				if (!sent.ok) throw new Error(`writing to the command failed (${sent.error.code}): ${sent.error.message}`);
 			});
@@ -949,6 +974,7 @@ export class DaytonaProvider extends HostedProvider {
 			autoDeleteMinutes,
 			fetch: fetcher,
 			webSocket,
+			pause,
 			timeouts = {},
 			daemonPath,
 			...rest
@@ -967,7 +993,7 @@ export class DaytonaProvider extends HostedProvider {
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
 		const requestMs = hostedTimeouts.requestMs ?? DEFAULT_REQUEST_MS;
 		const host = new DaytonaHost({
-			rest: new Rest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs),
+			rest: new Rest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs, pause),
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,
 			sandboxClass,

@@ -1537,8 +1537,14 @@ its exit code from the session; the session is deleted once the command ends, or
    (`POST .../input`, whole lines, one call after another), and its stdout is the command's log stream, a WebSocket
    with `follow=true`, in which Daytona prefixes each stdout line with `01 01 01` and each stderr line with `02 02 02`
    (split output, asked for with `X-Daytona-Split-Output: true`). Input is sent with `suppressInputEcho`; a line that
-   is a request or a notification, never a reply, is dropped in case a toolbox echoes input anyway. `close()` deletes
-   the session, which ends the bridge and nothing else.
+   is a request or a notification, never a reply, is dropped in case a toolbox echoes input anyway. An input call
+   Daytona answers with its own 500 (its error body, `"statusCode":500`) is sent again, up to three tries with a
+   doubling pause: that answer comes from an error before the call is passed on, or from the toolbox's input route
+   when it could not open the command's input pipe or its reader is gone (`daytonaio/daytona@b5a5d9e7
+   apps/daemon/pkg/session/input.go`), so the line reached no reader. Nothing else is sent again: a call passed on
+   that then fails is a 502 (`libs/common-go/pkg/proxy/proxy.go`), and after a 502, 503, 504, a timeout or no answer
+   the line may have been read, and a line read twice is a request the daemon runs twice. `close()` deletes the
+   session, which ends the bridge and nothing else.
 
 This is the protocol's first binding, stdio over the vendor's exec stream, assembled from two halves: the session
 command's input and its log stream are each one-way, and together they are the duplex byte stream `DaemonClient`
