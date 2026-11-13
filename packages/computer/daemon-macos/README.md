@@ -23,7 +23,7 @@ It speaks the protocol three ways:
 | `input.actions` | The Mac's own keyboard and mouse (groups `input.pointer` and `input.keys`, which with `screen` make it a desktop): move, down, up, click, drag, scroll in clicks or pixels, key, hold, type and wait, in screenshot pixels, posted as a person's hands would post them, to the app in front. It needs Post Event, as the foreground route does. With an owner's list of apps, the app in front must be on it. Someone moving the pointer during a batch stops it (`aborted`), and what it held is released. No touch actions. |
 | `apps.list`, `apps.launch`, `apps.terminate` | NSWorkspace. The list is every app in the Applications folders and every app running. `background: true` opens the app without bringing it forward, and sends it back if it comes forward on its own. |
 | `ui.observe` | The window's accessibility tree, batched, at most a second per call to the app, capped at 5,000 nodes; compact or full; a diff since a state; the window's own image (it shows even when covered). Without Accessibility (`ui.tree` off) it answers the window's image with no nodes and says why, and steps at the image's points still run. |
-| `ui.act` | Each step on the first route that can do it: **semantic** (AXPress, a value set and read back, a menu item for `super+s`; a document's text area takes typed keys first, since an inserted text never marks the document edited), then **background** (input posted to the app's window through SkyLight, without moving the pointer or raising the window), then **foreground** (the real keyboard and mouse) only when the call says `foreground: true`. Each step's result names its route and whether its effect was verified. |
+| `ui.act` | Each step on the first route that can do it: **semantic** (AXPress, a value set and read back, a menu item for `super+s`; a document's text area takes typed keys first, since an inserted text never marks the document edited), then **background** (input posted to the app's window through SkyLight, without moving the pointer or raising the window), then **foreground** (the real keyboard and mouse) only when the call says `foreground: true`. Each step's result names its route and whether its effect was verified. A person using the keyboard or the mouse stops an act before its foreground step, and before every step after one (`aborted`, nothing sent). |
 
 `ui.page` (web pages through the browser's own protocol) and `ui.nav` (macOS has no system back or home) are off, with
 the reason in `hello`.
@@ -49,12 +49,15 @@ macOS 14 or later.
    login. macOS lists it under System Settings > General > Login Items & Extensions. The window's **Remove** unloads
    it and deletes the plist.
 
-3. **Grant it.** The window lists three grants. Click each **Allow…** and switch Computerd on in System Settings:
+3. **Grant it.** The grants window opens the System Settings pane of the first grant still missing beside it. Drag the
+   window's Computerd tile into the pane's list; its rows tick as the grants come in, the next pane opens, and the
+   window closes once all three are in:
    - **Accessibility**: to read windows and press their buttons.
+   - **Post Event** (from the same Accessibility list): to click and type into a window.
    - **Screen Recording** (Screen & System Audio Recording): to see windows and the screen.
-   - **Post Event** (listed under Accessibility): to click and type into a window.
 
-   Then click **Raise it now** for the screen capture alert and answer it, so it never appears in the middle of a task.
+   In the window after it, click **Raise it now** for the screen capture alert and answer it, so it never appears in
+   the middle of a task.
 
 4. **Check it.**
 

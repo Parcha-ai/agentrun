@@ -11,9 +11,11 @@ export interface LedgerEntry {
   labels: Record<string, string>;
 }
 
-/** One provider's ledger, in the shape a descriptor's `ledger` option takes: put, get, list, remove and swap of its entries. */
+/** One provider's ledger, in the shape a descriptor's `ledger` option takes: put, claim, get, list, remove and swap of its entries. */
 export interface ProviderLedger<E extends LedgerEntry = LedgerEntry> {
   put(entry: E): Promise<void>;
+  /** entry put only while none is kept under its id, in one statement: whether it was put. */
+  claim(entry: E): Promise<boolean>;
   get(id: string): Promise<E | undefined>;
   list(): Promise<E[]>;
   remove(id: string): Promise<void>;
@@ -29,6 +31,10 @@ export function storeLedger<E extends LedgerEntry = LedgerEntry>(ledger: Compute
     put: async (entry) => {
       const { id, labels, ...detail } = entry;
       await ledger.put(provider, id, labels, detail);
+    },
+    claim: (entry) => {
+      const { id, labels, ...detail } = entry;
+      return ledger.claim(provider, id, labels, detail);
     },
     get: async (id) => {
       const row = await ledger.get(provider, id);

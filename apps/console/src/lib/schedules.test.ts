@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
-import { bodyOf, capWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf } from "./schedules";
+import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf } from "./schedules";
 import type { Firing } from "./v2";
 
 const draft = (over: Partial<Draft>): Draft => ({ ...emptyDraft(), agentId: "triage", content: "Triage last night's issues.", maxCost: "2", ...over });
@@ -87,6 +87,23 @@ describe("a schedule's line", () => {
 
   it("says an interval in its largest whole unit", () => {
     expect([60, 90, 3600, 7200, 5400, 86400].map(span)).toEqual(["minute", "90 seconds", "hour", "2 hours", "90 minutes", "24 hours"]);
+  });
+});
+
+// The server turns a trigger off itself after a failure streak, or when its source no longer reads (serve's
+// trigger.disabled): the trigger says why, not just that it is off.
+describe("why a trigger turned itself off", () => {
+  // The count that turned it off is the server's threshold (capabilities' failures_to_pause), not the streak now: a
+  // failed Run now after the shutdown raises the streak, a successful one resets it, and neither changes why.
+  it("says the threshold that turned it off, or that its source can't be read; nothing for one a person paused", () => {
+    const off = { at: "2026-11-05T09:00:00Z", reason: "auto_paused" as const };
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 5, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 6, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 0, disabled: off }), 5)).toBe("Turned off after 5 failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, failures_in_a_row: 6, disabled: off }))).toBe("Turned off after failures in a row.");
+    expect(disabledWords(trigger({ enabled: false, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } }))).toBe("Turned off: its source can't be read (unknown time zone Mars/Base).");
+    expect(disabledWords(trigger({ enabled: false, disabled: { at: "2026-11-05T09:00:00Z", reason: "agent_archived", detail: "Its agent Triage is archived." } }))).toBe("Turned off: Its agent Triage is archived.");
+    expect(disabledWords(trigger({ enabled: false, disabled: null }))).toBeNull();
   });
 });
 

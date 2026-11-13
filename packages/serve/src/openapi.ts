@@ -10,10 +10,14 @@ import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
+import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
+import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
+import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
+import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -38,6 +42,8 @@ import { BASH_POLICIES } from "./bash-read-only.js";
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
+import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
+import { PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
 
 type Json = Record<string, unknown>;
 
@@ -481,8 +487,9 @@ const LAST_CHANGE = closed({
   at: { type: "string", format: "date-time", description: "When: the commit's time." },
 }, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md), a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
 const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED, last_change: LAST_CHANGE } };
+const LEARNING_BY = { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." };
 const LEARNING_CHANGE = closed({
-  by: { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." },
+  by: LEARNING_BY,
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
   reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`." },
   files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`." },
@@ -650,6 +657,7 @@ const COMPUTER_PROVIDER = closedWith({
   host_tools: CHOICE_HOST_TOOLS,
 }, {
   why: { type: "string", description: "Why it is not ready, in words naming the setting to fill." },
+  picked: { type: "array", items: { type: "string" }, description: "The names of the secrets a person picks from the vendor's own list (GET /computers/{provider}/choices: Orgo's workspace, by name) rather than pastes. Absent when it has none." },
   shell_note: CHOICE_SHELL_NOTE,
   gpu: { ...COMPUTER_PROVIDER_GPU, description: "A sandbox provider's GPUs, where it declares them: the choices an agent's `computer.gpu` names." },
   network: { type: "string", description: "For a vendor-hosted computer, what this server's allow-list (AGENTRUN_BOX_ALLOW) means for it, in words: one with no network has none (\"no network, so this server's allow-list isn't offered\"); one on an open network is open (\"an open network (the vendor's own, or public addresses from this machine); this server's allow-list doesn't apply\"), except where AGENTRUN_BOX_ALLOW is none and the computer needs a network, which this server refuses (\"needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none\"; the provider is then not ready, and its runs are refused). Absent where the allow-list applies (Docker), or where it depends on the image a provider's configurations name." },
@@ -659,8 +667,60 @@ const COMPUTER_PROVIDER = closedWith({
     description: "Present where an agent's computer of this kind can be kept between its runs (`computer.persistent: true`): its provider keeps one for an agent (Orgo's Linux desktop, which its suspend keeps with its memory). Absent where none can.",
   },
 });
+/** A paired computer in GET /computers' `paired` (computer-attach.ts PairedView). */
+const PAIRED_COMPUTER = closed({
+  id: { type: "string", description: "Its id: an agent's `computer.provider` names it (`{kind: \"desktop\", provider: <id>}`), and DELETE /computers/{computer_id} removes it." },
+  name: { type: "string", description: "What the person called it when they paired it." },
+  kind: { type: "string", description: "The machine kind it paired as (its hello's `kind`, such as `desktop` or `android`)." },
+  serves: { type: "array", items: COMPUTER_KIND, description: "The kinds of an agent's computer setting it serves, from its driver's last hello: an agent's `computer` names it under one of these." },
+  unserved: { type: ["string", "null"], description: "When it serves no kind (`serves` is empty), why, naming what its driver lacks and to update the driver: \"desk-1's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on desk-1\". Its driver's next hello after an update counts. Null when it serves a kind." },
+  os: { type: "string", description: "Its OS, as its hello said it." },
+  os_version: { type: ["string", "null"], description: "Its OS's version as its driver says it, with a build where the driver knows one; null where it says none." },
+  device: { oneOf: [closed({ maker: { type: "string" }, model: { type: "string" } }), { type: "null" }], description: "The machine, as its driver says it (`maker`, `model`); null where it says none." },
+  arch: { type: "string", description: "Its architecture, as its hello said it." },
+  screen: { oneOf: [closed({ width: { type: "number" }, height: { type: "number" }, scale: { type: "number" } }), { type: "null" }], description: "Its main screen in points, and pixels per point; null for a computer with no screen." },
+  groups: { type: "array", items: { type: "string" }, description: "The capability groups its driver offers: its live hello's while it is attached, else its last hello's. A run uses only these." },
+  features: { type: "object", additionalProperties: { oneOf: [{ const: true }, closed({ off: { type: "string", description: "Why it is off here, in words a person can act on." } })] }, description: "What its groups can and cannot do on it, by feature name (true, or off with why), as its driver says it: live while attached, else as paired." },
+  driver: { type: "string", description: "Its driver's build: its live hello's while it is attached, else the one it last said." },
+  online: { type: "boolean", description: "Whether its driver is attached to this server now." },
+  held_by_run: { type: ["string", "null"], description: "The run that holds it now; null when none does." },
+  held_until: { type: ["string", "null"], format: "date-time", description: "When the holding run's hold ends, released or not: the run's lifetime. Past it the run's connections close and the next run may claim it, and the computer stays attached. Null when no run holds it." },
+  pairing: { type: "string", description: "The pairing (POST /computers/pairings' `id`) whose code paired it." },
+  created_at: { type: "string", format: "date-time", description: "When it was paired." },
+  seen_at: { type: ["string", "null"], format: "date-time", description: "When it last attached; null before its first." },
+});
+/** POST /computers/pairings' answer. */
+const PAIRING = closed({
+  id: { type: "string", description: "Names this pairing, not its code: the computer the code makes carries it as `pairing` in GET /computers' `paired`, so the page that made the code can tell its own code was used, and by which computer." },
+  code: { type: "string", pattern: PAIRING_CODE_PATTERN.source, description: "The code to type into the driver, such as K7PD-W3QX." },
+  expires_at: { type: "string", format: "date-time", description: "When it stops pairing; it is good once before then." },
+});
+/** POST /computers/pair's body: the driver's. */
+const PAIR_REQUEST = closedWith({
+  code: { type: "string", description: "The code the console showed; spaces and case are taken as typed." },
+  name: { type: "string", minLength: 1, maxLength: PAIRED_NAME_MAX, description: "What the person calls the computer: \"Ada's MacBook Pro\"." },
+  hello: {
+    type: "object",
+    required: ["protocol", "version", "os", "kind", "arch", "groups"],
+    properties: {
+      protocol: { type: "string", description: `The protocol version the driver speaks: this server's is ${PROTOCOL_VERSION}.` },
+      version: { type: "string", description: "The driver's own build." },
+      os: { enum: ["linux", "windows", "macos", "android", "ios"] },
+      kind: { enum: ["linux", "desktop", "android", "ios", "browser"] },
+      arch: { type: "string" },
+      groups: { type: "array", items: { type: "string" } },
+    },
+    description: "The driver's own answer to hello, as it would give it: what the server pairs (its kind, OS, groups and features).",
+  },
+}, {});
+/** POST /computers/pair's answer. */
+const PAIRED_TOKEN = closed({
+  computer: { type: "string", description: "The paired computer's id." },
+  token: { type: "string", description: "The computer's token (`art_` and 32 random bytes): shown only here; the driver keeps it in the OS's keychain." },
+});
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
+  paired: { type: "array", items: PAIRED_COMPUTER, description: "The person's own computers paired with this server (Settings → Computers → Pair a computer), oldest first, each online or not. Each is also a provider of its kind under `kinds`, ready while it is online." },
   kinds: {
     type: "array",
     items: closedWith({
@@ -684,13 +744,45 @@ const ACCOUNT_TEST = {
     closed({ ok: { const: false }, why: { type: "string", description: "Why the test did not pass, in plain words naming what to check: never a key." } }),
   ],
 };
+/** GET /computers/{provider}/choices (computers.ts choices): each picked key, its choices or why there are none. */
+const COMPUTER_CHOICES = closed({
+  choices: {
+    type: "array",
+    description: "Each key the provider lists under `picked`, in its descriptor's order.",
+    items: {
+      oneOf: [
+        closedWith({
+          key: { type: "string", description: "The KEY, as PUT /computers/{provider}/keys takes it." },
+          options: { type: "array", description: "The values the vendor's list offers, in its order.", items: closed({ value: { type: "string", description: "The value saved under the key." }, label: { type: "string", description: "Its words, as a person picks it (a workspace's name)." } }) },
+        }, {
+          saved: { type: "string", description: "The option whose value is saved under the key now, where one is. Absent when none is saved, or the saved one is not offered." },
+        }),
+        closed({ key: { type: "string", description: "The KEY, as PUT /computers/{provider}/keys takes it." }, why: { type: "string", description: "Why there is none to pick, in plain words: never a key." } }),
+      ],
+    },
+  },
+});
+/** held/1: what POST /runs/{run_id}/start and .../computer/release answer (computer-held-routes.ts heldRoute). */
+const HELD_ANSWER = (state: "started" | "released") => closed({ held: closed({ state: { const: state } }) });
 /** A run's computer, on the run read (run-computer.ts runComputerField). */
 const RUN_COMPUTER = {
   ...closedWith({
     kind: { enum: ["sandbox", "desktop", "phone", "browser"] },
     provider: { type: "string" },
     state: { enum: ["starting", "ready", "taken_over", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over); `failed` when the run could not have its computer (error code `computer_unavailable`)." },
-  }, { why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." } }),
+  }, {
+    why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." },
+    held: {
+      ...closedWith({
+        state: { enum: ["starting", "waiting", "started", "ended", "released"], description: "`starting` until the run's computer comes up; `waiting`, up and held, the agent not started (POST /runs/{run_id}/start); `started`, the agent runs; `ended`, the agent is done or was stopped and the run keeps the computer for its owner; `released`, let go (POST /runs/{run_id}/computer/release, no call for `minutes`, or the run's end)." },
+        minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: "How long the hold waits with no call from its owner (the run's `hold_minutes`)." },
+      }, {
+        until: { type: "string", format: "date-time", description: "When the hold lets the computer go if no call comes first. Absent once released." },
+        why: { enum: ["timeout", "lost"], description: "Why it was let go when no release did: `timeout`, no call came for `minutes`; `lost`, the runner that held it lost the run, and its computer with it." },
+      }),
+      description: "A run started with `hold: true`: where its held computer is.",
+    },
+  }),
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
@@ -713,6 +805,8 @@ const AGENT_ARCHIL_VIEW = closed({
   },
 });
 const COMPUTER_MARK = { "x-agentrun-serve": "computer/1" };
+/** attach/1: a person's own computer paired with this server (computer-attach.ts). */
+const ATTACH_MARK = { "x-agentrun-serve": "attach/1" };
 const ARCHIL_MARK = { "x-agentrun-serve": "archil/1" };
 const PROVIDER_PARAM = { name: "provider", in: "path", required: true, description: "The provider's id (GET /computers lists them).", schema: { type: "string", minLength: 1 } };
 /** computer/1: a run's live computer kind, one live view family for every kind (GET /runs/{run_id}/computer). */
@@ -816,6 +910,7 @@ const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an 
  *  day whose firing is no longer kept, `{ok: "duplicate"}`); none for a request with no event, or whose events no
  *  trigger takes. Its firings' `by` names the sources `adapters` give. */
 const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
+const GIVEN_TRIGGER_SECRET = { type: "string", minLength: 24, "x-agentrun-secret": true, description: "The secret Composio gave the webhook subscription whose URL is this composio trigger's `hook_url`, the whole string as Composio shows it (under 24 bytes, or with whitespace, is refused). Kept sealed as a minted secret is, never answered or shown again. A composio trigger is made with none (Composio makes it once the URL is registered) and refuses every request until this sets one; any other trigger takes none." };
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
 const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
@@ -975,6 +1070,64 @@ const LEARNING_COST = closed({
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
+const BATCH_LESSONS = closed({ notes: { type: "array", items: { type: "string" } }, skills: { type: "array", items: { type: "string" } }, workflows: { type: "array", items: { type: "string" } } });
+const BATCH_ROW = closedWith(
+  { n: { type: "integer", minimum: 1, description: "The row's number, 1 the first: rows run in this order." }, state: { enum: ["pending", "running", "done", "failed"], description: "`done`: the run answered, was told the reference, and that turn completed and its learning settled; `failed`: its run failed, was cancelled or waited on a person, its review was not sent, or its review's turn did not complete (`error` says). A row is failed only once its run has stopped." }, reference: { type: "string", description: "The reference answer, as the person gave it." } },
+  {
+    run_id: { type: "string", description: "The row's run: its page has the timeline, the answer and the learning." },
+    answer: { ...NULL_STRING, description: "The run's answer as compared (the `answer_field` of a JSON answer when the batch names one), cut at 2000 characters (compared whole: the review quotes it to 2000 characters and says when it was cut); null when it gave none." },
+    right: { type: "boolean", description: "Whether the answer equals the reference once trimmed, case-folded and whitespace-collapsed (two numbers by value). A display: the learning grade is the judge." },
+    reviewed: { type: "boolean", description: "The reference was sent to the run as a review, once." },
+    path: { enum: [...RUN_PATHS], description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
+    cost_usd: COST_USD("The job's own cost."), learning_usd: COST_USD("What learning cost for the run."), total_usd: COST_USD("Their sum; for a failed row, what its run cost."),
+    learned: { ...BATCH_LESSONS, description: "The notes, skills and workflow drafts the run's learning kept, by name." },
+    merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning last merged (its job's round or its review's)." },
+    error: { type: "string", description: "Why a failed row failed." },
+  },
+);
+const BATCH_HEAD = {
+  id: { type: "string" }, agent_id: { type: "string" }, created_at: DATE_TIME, ended_at: { ...DATE_TIME, type: ["string", "null"] },
+  status: { enum: ["running", "completed", "cancelled", "stopped"], description: "`completed`: every row ran; `cancelled`: a person's cancel; `stopped`: the batch could not go on (`stopped` says why, or `error` for the server's own failure)." },
+  stopped: { enum: ["cap", "cost_unknown", "learning_off", null], description: "Why a batch stopped before its last row: `cap`, the cap's room does not cover another row (the mean total of the rows done); `cost_unknown`, a row's cost is not known, and a cap is never guessed at; `learning_off`, the agent no longer learns here (its learning, or the server's, was turned off: `error` says which), checked before every row, so no row runs unlearned." },
+  inputs: { type: "array", items: { type: "string" }, description: "The columns each run is given, as {column: value}." },
+  answer: { type: "string", description: "The column holding the reference answer: never given to the run before its answer." },
+  answer_field: { ...NULL_STRING, description: "The dotted path in a JSON answer the reference is compared to; null: the whole answer." },
+  effort: { ...NULL_STRING, description: "The runs' effort, when the batch names one." },
+  max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend: each row's run (its job, its look-back and its review's turn) is capped at what is left, and a row starts only when what is left covers the mean total of the rows done. The grades of what the runs learned are booked into the batch's cost and shown, but no cap stops a grade (as on every run), so the batch's cost can pass the cap by its last grades." },
+  total: { ...COUNT, description: "The rows." }, finished: { ...COUNT, description: "Rows done or failed." },
+  right: { ...COUNT, description: "Done rows whose answer is the reference." }, wrong: { ...COUNT, description: "Done rows whose answer is not." }, failed: { ...COUNT, description: "Failed rows." },
+  spent_usd: { type: "number", minimum: 0, description: "The finished rows' total cost." }, unknown_cost_rows: { ...COUNT, description: "Finished rows whose cost is not known (the batch stops on the first)." },
+  paths: closed({ agent: COUNT, handed_back: COUNT, workflow: COUNT }, "Done rows by the path their run took."),
+  lessons: { ...BATCH_LESSONS, description: "What the batch's learning kept, each name once." },
+  revisions: { type: "array", items: closed({ row: { type: "integer", minimum: 1 }, commit: NULL_STRING, workflows: { type: "array", items: { type: "string" } } }), description: "The merges that touched learned workflows, in order, one per merge (a row's job and its review each learn in a round of their own): the row whose learning made it, that merge's commit of the agent's learning folder, and the workflows it added or changed." },
+  cost_usd: { type: ["number", "null"], minimum: 0, description: "The batch's cost so far; in a progress read, the row in flight's too, as its row will book it: its run's cost so far and its learning's, grades that ended included. Null when a finished row's cost, or the row in flight's, is not known: the known part is never shown as the whole." },
+  remaining_usd: { type: ["number", "null"], minimum: 0, description: "What is left of the cap: `max_cost_usd` less `spent_usd`; null when a finished row's cost is not known." },
+};
+const LEARNING_BATCH_SUMMARY = closedWith(BATCH_HEAD, { error: { type: "string", description: "The server's own failure that stopped the batch." } });
+const LEARNING_BATCH = closedWith({ ...BATCH_HEAD, current: { type: ["integer", "null"], minimum: 1, description: "The row whose run is in flight." }, rows: { type: "array", items: BATCH_ROW } }, { error: { type: "string" } });
+const BATCH_ID = { name: "batch_id", in: "path", required: true, schema: { type: "string", pattern: "^lb_[0-9a-f]{16}$" } };
+const BATCH_MARK = { "x-agentrun-serve": "learningbatch/1" };
+const EVAL_TEXT = (description: string, example: string) => ({ type: "string", minLength: 1, maxLength: EVAL_TEXT_MAX, description, example });
+const EVAL_IN = {
+  name: EVAL_TEXT("What ran the test, one line: a bench's name and set, a script's.", "invoice bench, sealed test"),
+  n: { type: "integer", minimum: 1, maximum: EVAL_JOBS_MAX, description: "The held-out jobs the test counted: jobs the agent never learned from." },
+  correct: { type: "integer", minimum: 0, maximum: EVAL_JOBS_MAX, description: "How many of the `n` jobs the agent with what it learned got right: 0 to `n`." },
+};
+const EVAL_IN_OPTIONAL = {
+  label_source: { ...EVAL_TEXT("Where the right answers came from, one line; null (or absent) when not said.", "teacher labels, 87% strict vs people"), type: ["string", "null"] },
+  cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted." },
+  baseline_cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted." },
+  learned_revision: { type: ["string", "null"], pattern: "^[0-9a-f]{7,64}$", description: "The learning folder's commit the test ran from; null (or absent) when not said." },
+};
+const LEARNING_EVAL = closed({
+  id: { type: "string" },
+  ...EVAL_IN,
+  ...EVAL_IN_OPTIONAL,
+  accuracy: { type: "number", minimum: 0, maximum: 1, description: "`correct` over `n`, to four places: the server's." },
+  ci: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2, description: "The 95% Wilson interval around `accuracy`, [low, high], to four places: the server's, from `n` and `correct`." },
+  recorded_at: { type: "string", format: "date-time" },
+}, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
+
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning": {
     get: {
@@ -994,6 +1147,50 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "learningcost/1",
+    },
+  },
+  "/agents/{agent_id}/learning/batches": {
+    post: {
+      operationId: "createLearningBatch", tags: ["agents"], summary: "Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each",
+      description: `Rows with the columns to give the agent (\`inputs\`) and the one that holds the reference answer (\`answer\`; never given to the run before it answers). The server runs the agent on each row in order, one at a time (what a row teaches is what the next is given), as POST /agents/{agent_id}/runs does with \`input\` = {column: value}; when a run has answered and its learning has settled, it is sent a review, \`Review: the reference answer is "X"; you answered "Y".\`, the same words right or wrong (an answer past 2000 characters quoted to there, the review saying it was cut), as a message to the finished run, which looks back again. Progress is kept by the server, never the page: read it at GET .../batches/{batch_id}. One batch runs at a time per agent (409 agent_not_runnable otherwise), and the agent's current revision must say learning (409 otherwise). \`max_cost_usd\` is required and caps the runs: each row's run (job, look-back, review turn) is capped at what is left, \`cap_mode\` strict (every input token priced uncached, so no request passes it, a cache miss included), and a row starts only when what is left covers the mean total of the rows done; the grades of what they learned are booked and shown but uncapped, as on every run. The loop stops \`cap\` there, and \`cost_unknown\` when a row's cost is not known. At most ${BATCH_ROWS_MAX} rows, each cell at most ${BATCH_CELL_MAX} characters, the whole body under the body limit. A batch still running when the server stopped takes up at its first unfinished row when it starts again.`,
+      parameters: [AGENT_ID],
+      requestBody: { required: true, content: { "application/json": { schema: closedWith(
+        { inputs: { type: "array", items: { type: "string" }, minItems: 1, description: "The columns each run is given." }, answer: { type: "string", description: "The column holding the reference answer." }, rows: { type: "array", minItems: 1, maxItems: BATCH_ROWS_MAX, items: { type: "object", additionalProperties: { type: "string" } }, description: "Each row: {column: text}, with every input column and the answer column." }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped." } },
+        { answer_field: { type: "string", description: "A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer." }, effort: { type: "string", description: "The runs' effort, as a run's." } }) } } },
+      responses: { "202": { ...json(LEARNING_BATCH, "The batch, started."), headers: { Location: { schema: { type: "string" } } } }, ...errors(400, 401, 403, 404, 409, 413, 422, 429, 500) }, ...BATCH_MARK,
+    },
+    get: {
+      operationId: "listLearningBatches", tags: ["agents"], summary: "The agent's learning batches, latest first",
+      description: "The latest 20, each as its header (no rows). Every text is cut as the agent's learning reads are: 403 when they are withheld.",
+      parameters: [AGENT_ID], responses: { "200": json(closed({ batches: { type: "array", items: LEARNING_BATCH_SUMMARY } }), "The batches."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/batches/{batch_id}": {
+    get: {
+      operationId: "getLearningBatch", tags: ["agents"], summary: "A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took",
+      description: "Read from the store: it holds after a page reload or a server restart (a running batch takes up again). Each row's input is not repeated here: its run holds it. Every text (an answer, a reference, an error, a lesson's name) is cut of the server's secrets and the agent's sign-in pointers as they are now, as GET /agents/{agent_id}/learning cuts them, and withheld the same way (403) when one of the agent's sign-ins can't be read here.",
+      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/batches/{batch_id}/cancel": {
+    post: {
+      operationId: "cancelLearningBatch", tags: ["agents"], summary: "Cancel a running learning batch",
+      description: "Cancels the run in flight and ends the loop; rows done stay done, and the row in flight is failed. A batch that already ended is answered as it is. Answers the batch once its loop has ended, cut as a read is; a 403 (withheld) answers a cancel that stood.",
+      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/evals": {
+    get: {
+      operationId: "listLearningEvals", tags: ["agents"], summary: "The agent's eval records: the latest, and every one kept, newest first",
+      description: `What the console's Learning tab heads with: the latest record of a test on held-out jobs (jobs the agent never learned from), its accuracy with the 95% Wilson interval and the cost a task with learning against by hand. Only ever what was posted (POST below): never computed from the agent's own runs, which are the jobs it learned from. Append-only, the latest ${EVALS_KEPT} kept.`,
+      parameters: [AGENT_ID], responses: { "200": json(closed({ agent: { type: "string" }, latest: { anyOf: [LEARNING_EVAL, { type: "null" }], description: "The latest record: the one the console shows; null when none is recorded." }, evals: { type: "array", items: LEARNING_EVAL, maxItems: EVALS_KEPT, description: "Newest recorded first." } }), "The agent's eval records."), ...errors(401, 404, 429, 500) }, ...MARK,
+    },
+    post: {
+      operationId: "recordLearningEval", tags: ["agents"], summary: "Record a held-out test of the agent: its counts and the cost a task, with learning and by hand",
+      description: `Post the counts of a test run on held-out jobs (jobs the agent never learned from): \`n\` jobs, \`correct\` of them right, the cost a task with learning and by hand, where the labels came from. The server computes \`accuracy\` and its 95% Wilson interval \`ci\`; a body that sends either is refused. Only a held-out test belongs here: numbers from the jobs the agent learned on read as held-out on the console. Aggregates only: no rows, no inputs. Appended, the latest first; the latest ${EVALS_KEPT} kept. A field that is missing or wrong is 422 input_invalid by field, and nothing is kept. With Idempotency-Key, a retry answers the first request's record.`,
+      parameters: [AGENT_ID, ref("parameters/IdempotencyKey")],
+      requestBody: { required: true, content: { "application/json": { schema: closedWith(EVAL_IN, EVAL_IN_OPTIONAL) } } },
+      responses: { "201": { description: "Recorded.", headers: { "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: LEARNING_EVAL } } }, ...errors(400, 401, 404, 422, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/notes": {
@@ -1065,6 +1262,19 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
       parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS }, ...MARK,
+    },
+  },
+  "/agents/{agent_id}/learning/workflows/{name}/revisions": {
+    get: {
+      operationId: "listLearnedWorkflowRevisions", tags: ["agents"], summary: "A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then",
+      description: "The commits on the agent's learning main that changed `workflows/<name>/workflow.json`, the latest `limit` of them, oldest first, each with who made it (a run's merge, or a person), when, why, and the workflow's text at that commit (`null` when that commit holds no such file). What the console's learned-workflow replay steps through, drawing each text as a graph and marking its nodes new or edited against the revision before. One read-only exec per revision returned. `total` counts every such commit the log holds; `truncated` is true when the log itself is cut (it keeps the latest 200 changes). A workflow no commit in the log changed is 404. " + SIGN_IN_WITHHELD,
+      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, { name: "limit", in: "query", required: false, description: "The latest revisions to answer. At most 50.", schema: { type: "integer", minimum: 1, maximum: 50, default: 20 } }],
+      responses: { "200": json(closed({
+        name: { type: "string" },
+        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." } }), description: "Oldest first." },
+        total: { ...COUNT, description: "How many commits in the log changed this workflow's workflow.json, `limit` aside." },
+        truncated: { type: "boolean", description: "The agent's log is cut at its latest 200 changes, so older revisions may exist." },
+      }), "The workflow's revisions."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/promote": {
@@ -1319,6 +1529,47 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "computer/1",
     },
   },
+  "/runs/{run_id}/start": {
+    post: {
+      operationId: "startRun", tags: ["runs"], summary: "Start a held run's agent",
+      description: "A run started with `hold: true` waits, its computer up and held, until this starts its agent on its input. A row the run's runner applies: answered once the agent is started. 404 for a run that holds no computer; 409 `computer_not_live` when its computer is not up yet (`computer.held.state` starting), its agent already started, or the computer was let go; 503 when no runner took the row within a minute. The owner's: the server's token or the owner's session. A run never holds the server's token.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(HELD_ANSWER("started"), "The agent is started."), ...errors(401, 404, 409, 422, 429, 500, 503) },
+      "x-agentrun-serve": "held/1",
+    },
+  },
+  "/runs/{run_id}/computer/call": {
+    post: {
+      operationId: "callRunComputer", tags: ["runs"], summary: "Send a run's computer one protocol call",
+      description: `One call of the computer protocol (spec/computer) on a running run's computer: a sandbox, a desktop or a phone. A run that holds its computer (\`hold: true\`) takes calls before its agent starts, while it runs, and after it ended until the release; each call starts the hold's \`hold_minutes\` again. The answer is the computer's, verbatim: \`{ok: true, value}\` or \`{ok: false, error: {code, message, data?}}\`, the method's result or error as the protocol defines it. A row the run's runner answers, behind the owner's take-over as the agent's calls are: while a person holds the desktop or phone, the call waits for the hand-back. A call runs ${CALL_MS / 1000} seconds at most, its wait included (then \`{ok: false, error: {code: "timeout"}}\`). The run's record keeps each call's method, outcome and time, never its params or its answer's bytes. \`method\` is one of the protocol's methods (422 otherwise). 404 for no such run; 409 \`computer_not_live\` when the run is not running, has no computer that takes calls, or let its computer go; 503 when no runner took the row in time. The owner's: the server's token or the owner's session. A run never holds the server's token, so its agent drives its computer through its own tools alone.`,
+      parameters: [ref("parameters/RunId")],
+      requestBody: {
+        required: true,
+        content: { "application/json": { schema: closedWith({ method: { enum: [...PROTOCOL_METHODS], description: "The protocol method." } }, { params: { type: "object", additionalProperties: true, description: "The method's params. Absent: {}." } }) } },
+      },
+      responses: {
+        "200": json({
+          oneOf: [
+            closed({ ok: { const: true }, value: { description: "The method's result." } }),
+            closed({ ok: { const: false }, error: { type: "object", additionalProperties: true, required: ["code", "message"], properties: { code: { type: "string" }, message: { type: "string" } }, description: "The computer's error: its code, its words and its data." } }),
+          ],
+        }, "The computer's answer."),
+        ...errors(401, 404, 409, 422, 429, 500, 503),
+      },
+      "x-agentrun-serve": "channel/1",
+    },
+  },
+  "/runs/{run_id}/computer/release": {
+    post: {
+      operationId: "releaseRunComputer", tags: ["runs"], summary: "Let a held run's computer go",
+      description: "The owner is done with the computer a run holds (`hold: true`). After the agent's end the run then ends as its agent did, and its computer goes with it; before the start, the run ends cancelled, its agent never run; while the agent runs, the run no longer waits after its end. A row the run's runner applies. 404 for a run that holds no computer, and for one already let go (released, timed out, or the run is over); 409 `computer_not_live` when it is not up yet; 503 when no runner took the row within a minute. The owner's: the server's token or the owner's session.",
+      parameters: [ref("parameters/RunId")],
+      requestBody: { required: false, content: { "application/json": { schema: closed({}) } } },
+      responses: { "200": json(HELD_ANSWER("released"), "The computer is let go."), ...errors(401, 404, 409, 422, 429, 500, 503) },
+      "x-agentrun-serve": "held/1",
+    },
+  },
   "/runs/{run_id}/computer": {
     get: {
       operationId: "getRunComputer", tags: ["runs"], summary: "Watch the run's computer live and take it over: its viewer link, for the owner",
@@ -1397,6 +1648,50 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [PROVIDER_PARAM],
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 404, 429, 500) },
       ...COMPUTER_MARK,
+    },
+  },
+  "/computers/{provider}/choices": {
+    get: {
+      operationId: "listComputerChoices", tags: ["local"], summary: "The values a computer provider's picked keys offer, read from the vendor",
+      description: "Each key the provider lists under `picked` (GET /computers), with the values the vendor's own list offers for it, read with the provider's saved keys (Orgo's workspaces, each its id and its name): it never makes a computer. A person picks one, and PUT /computers/{provider}/keys saves its value under the key. Where there is none to pick, `why` says so in plain words (a required key not saved, an account with none), never a key. A provider with no picked key answers an empty list.",
+      parameters: [PROVIDER_PARAM],
+      responses: { "200": json(COMPUTER_CHOICES, "Each picked key's choices, or why there are none."), ...errors(401, 404, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
+  "/computers/pairings": {
+    post: {
+      operationId: "createPairing", tags: ["local"], summary: "A code that pairs a person's own computer with this server",
+      description: `Settings → Computers → Pair a computer. A new code of eight letters and digits (two groups of four, no 0, O, 1 or I), good once for ${PAIRING_CODE_TTL_MS / 60_000} minutes: the person types it, with this server's address, into the driver on their computer, which trades it for its own token (POST /computers/pair). The server keeps the code's SHA-256, never the code. A new code does not cancel an older one.`,
+      responses: { "201": json(PAIRING, "The code, and when it expires."), ...errors(401, 429, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/pair": {
+    post: {
+      operationId: "pairComputer", tags: ["local"], summary: "A driver trades a pairing code for its computer's token (no token: the code is the credential)",
+      description: `The driver on a person's own computer sends the code the console showed, the computer's name and its own hello. The code must exist, be unused and be unexpired: it is then used up, and the computer is paired. A wrong, used or expired code is 404, with no word about which; each source address gets ${PAIR_TRIES_PER_MINUTE} tries a minute (429 past them, with Retry-After). A hello of another protocol version than the server's (${PROTOCOL_VERSION}) is 422 in words that say which side to update, and the code stays good; so is a hello that serves no kind of computer (a desktop that declares no input.pointer and input.keys groups, say), which no agent could pick, in words that name what the driver lacks. The token is shown only in this answer: the driver keeps it in the OS's keychain and dials GET /computers/attach with it. It has no expiry; it ends when the computer is removed (DELETE /computers/{computer_id}). The server keeps its SHA-256 alone.`,
+      security: [],
+      requestBody: { required: true, content: { "application/json": { schema: PAIR_REQUEST } } },
+      responses: { "201": json(PAIRED_TOKEN, "The computer's id and its token."), ...errors(404, 422, 429, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/attach": {
+    get: {
+      operationId: "attachComputer", tags: ["local"], summary: "The attach socket: a paired computer's driver dials it (a WebSocket)",
+      description: `A WebSocket (spec/computer/attach.md). The driver dials it with \`Authorization: Bearer <its token>\` (POST /computers/pair) and the subprotocol \`${ATTACH_SUBPROTOCOL}\`. A token no paired computer has (unknown, or its computer removed) is 401 before the upgrade; another subprotocol is 426. Frames are text, one JSON-RPC message each, at most ${MAX_LINE_BYTES} bytes (a bigger one closes the socket with 1009, a binary frame with 1003). The server is the caller: it sends hello, and the computer is attached while its hello is what it paired as (else closed with 4400, or 4426 for another protocol version); then the server sends a run's calls. Each side pings every ${ATTACH_HEARTBEAT_MS / 1000} s, and one that hears nothing for ${ATTACH_IDLE_MS / 1000} s closes with 4408. The same computer dialing again replaces its older socket (4409); removing it closes the socket with 4401. A request with no upgrade is 400. One server process holds the socket, so a run uses a paired computer only on a runner in that process (the start's runner beside the server).`,
+      responses: { "101": { description: "Switching to the attach WebSocket." }, ...errors(400, 401, 500) },
+      ...ATTACH_MARK,
+    },
+  },
+  "/computers/{computer_id}": {
+    delete: {
+      operationId: "deleteComputer", tags: ["local"], summary: "Remove a paired computer: its token ends and its socket closes",
+      description: "Revokes the computer's token (its next dial is 401), ends a run's hold on it (the run's next call to it fails), and closes its live socket with 4401, so the driver stops dialing and asks to be paired again. The computer itself is untouched. 404 for an id no paired computer has, or one removed already.",
+      parameters: [{ name: "computer_id", in: "path", required: true, description: "The paired computer's id (GET /computers lists them under `paired`).", schema: { type: "string", minLength: 1 } }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 404, 429, 500) },
+      ...ATTACH_MARK,
     },
   },
   "/workspace/archil": {
@@ -1806,7 +2101,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Any of its fields. `enabled: false` stops its firings; `enabled: true` again, or a new source, goes on from now: the time it was off is skipped, never caught up. A firing already due goes on.",
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: TRIGGER_WRITE } } } },
-      responses: { "200": json(TRIGGER, "Changed."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
+      responses: { "200": json(TRIGGER_READ, "Changed: the trigger as a read answers it, with its secret's metadata."), ...errors(400, 401, 404, 409, 415, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
     delete: {
@@ -1828,18 +2123,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/triggers/{trigger_id}/secret": {
     post: {
       operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
-      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's.",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's. A trigger whose `signature` is `composio` is never made a secret: it takes the one Composio gave in the body's `secret` (required here, and answers its metadata alone), and every other trigger takes no body.",
       parameters: [TRIGGER_ID],
+      requestBody: { required: false, content: { "application/json": { schema: closedWith({}, { secret: GIVEN_TRIGGER_SECRET }) } } },
       // The owner's password session alone (secret-writes.ts), never the document's bearer.
       security: [{ ownerSession: [] }],
-      responses: { "200": json(closed({ secret: TRIGGER_SECRET_META, signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata; a composio trigger, its metadata alone."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },
   "/hooks/{trigger_id}": {
     post: {
       operationId: "receiveHook", tags: ["local"], summary: "Fire a webhook trigger: a request signed by its secret, no token",
-      description: `This server's one route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\`, the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), and for a GitHub delivery \`number\` (pull_request.number, else issue.number), \`head_sha\` (pull_request.head.sha) and \`base_sha\` (pull_request.base.sha; neither on a comment event), read from the signed body so the cut never loses them, each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
+      description: `A route with no token: the request's signature is its credential, checked on the raw body before anything else. A webhook trigger's \`signature\` names the scheme its requests are signed under (default \`${DEFAULT_SCHEME}\`), and a request is checked by the one scheme whose signature header it carries (${SCHEME_NAMES.map((name) => `\`${SIGNATURE_SCHEMES[name].signatureHeader}\` for \`${name}\``).join(", ")}): ${SCHEME_NAMES.map((name) => SIGNATURE_SCHEMES[name].describe).join(" ")} The body's bytes are signed as sent, whatever its content type. The body is any text, at most 256 KiB (413 past it), arriving whole within ${HOOK_BODY_MS / 1000} s (408 past that); its first ${PAYLOAD_KEPT_BYTES / 1024} KiB reach the agent inside \`<trigger-payload source="webhook" scheme="..." event="..." action="..." delivery="..." untrusted>\`, the event as the scheme reads it, the action the JSON body's top-level \`action\`, the delivery the unsigned delivery id (GitHub's X-GitHub-Delivery), and for a GitHub delivery \`number\` (pull_request.number, else issue.number), \`head_sha\` (pull_request.head.sha) and \`base_sha\` (pull_request.base.sha; neither on a comment event), read from the signed body so the cut never loses them, each when there is one. A bad or missing signature, a stale or future timestamp, no scheme's signature header or more than one, a scheme other than the trigger's, an unknown trigger, one that is off and one that is not a webhook's all answer the same 401. A verified request its trigger's \`accept\` does not take (GitHub's \`ping\` among them, when no rule names it) answers 200 \`{"ok": "ignored"}\`, fires nothing and is said in the log. The first request with a firing key (as its scheme reads it: the signed \`webhook-id\`, or the SHA-256 of a GitHub body) answers 202 once its firing is recorded, and its run starts after; the same key again, for a day after, answers 200 with that firing (or \`{"ok": "duplicate"}\` once the firing has left the trigger's kept history; each trigger keeps up to ${SEEN_KEPT} keys for their day, the oldest let go first past that) and starts nothing. A trigger holds at most ${DUE_KEPT} firings due (a message_run firing waits while its run works): past them a new delivery answers 429 \`rate_limited\` with Retry-After and records nothing, so the sender sends it again later.`,
       security: [],
       parameters: [TRIGGER_ID],
       requestBody: { required: true, content: { "*/*": { schema: {} } } },
@@ -2085,6 +2381,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Archil mode only: the disk this run keeps its folder on, instead of its agent's own (a disk per customer, say). It is the caller's: agentrun never makes, renames or removes it, and removing the agent's disk never touches it. It is read at Archil before the run is made: none of that id, or one in another region than the account key's, is 422 at `archil_disk.disk_id` in words naming the region, and no run is made (503 when Archil can't be asked). The claim reads it again, so a disk removed in between fails the run in the same words. Its id alone: never a key or a region. The run's mount credential is minted on this disk, so Archil takes it on no other. 422 in Mode 1, or with no account key saved.",
       "x-agentrun-serve": "archil/1",
     },
+    hold: { type: "boolean", description: `true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after \`hold_minutes\` with no call from the owner: before the start, the run then ends cancelled. The run read's \`computer.held\` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 \`hold\` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and \`computer.held.why\` is \`lost\`.`, "x-agentrun-serve": "held/1" },
+    hold_minutes: { type: "integer", minimum: 1, maximum: HOLD_MAX_MINUTES, description: `With \`hold: true\`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: ${HOLD_MINUTES}. Above ${HOLD_MAX_MINUTES}, or without hold, is 422.`, "x-agentrun-serve": "held/1" },
   },
   TimelineUsage: { ...SO_FAR, not_metered: { type: "integer", minimum: 1, description: "Set when the run made tool calls with no price (an MCP tool its owner set none for): how many. They ran outside the run's cost and its cap, and never make `usd` unknown.", "x-agentrun-serve": "mcpservers/1" } },
   Usage: { unpriced_runs: { type: "integer", minimum: 0, description: "How many runs in the report have a cost no one knows on them: they add no dollars to `total_usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" } },
@@ -2181,6 +2479,31 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: { type: "object", additionalProperties: false, required: ["label", "kind", "status", "duration_ms"], properties: { label: { type: "string" }, kind: { type: "string", description: "The node's kind, as the workflow DSL names it (`extract`, `agent`, `call`, ...)." }, status: { type: "string", description: "How the node ended: `ok`, `failed` or `escalated`. Why a node failed is never shown: its text may hold part of a secret." }, duration_ms: { type: "number" }, model: { type: "string", description: "A model node's (agent, decide, extract, report): the model it ran on, as the run's model route names it. Absent on a call node." }, tier: { type: "string", description: "The tier the model node named (`fast`, `strong`); absent for none, which runs on the run's own model." } } },
       description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. Absent on every other row.",
       "x-agentrun-serve": "learnednodes/1",
+    },
+    computer_calls: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false, required: ["method", "ok", "ms"],
+        properties: {
+          method: { type: "string", description: "The computer protocol method (spec/computer)." },
+          ok: { type: "boolean" },
+          ms: { type: "number" },
+          code: { type: "string", description: "The error's code, when the call failed." },
+          steps: {
+            type: "array",
+            items: { type: "object", additionalProperties: false, required: ["do"], properties: { do: { type: "string", description: "The step's kind: press, set, perform, click, type, key, nav, scroll or drag." }, route: { type: "string", description: "The route it ran by." }, verified: { type: "boolean", description: "Whether a readback showed it took." }, error: { type: "string", description: "The kind of error that refused it." } } },
+            description: "A ui.act call's steps, in order.",
+          },
+          expect: { enum: ["met", "unmet"], description: "A ui.act call's expect: whether it held." },
+        },
+      },
+      description: "On a tool call's `tool_result` row alone: each computer protocol call the tool made, in order, at most 200. Never a param's value or an answer's bytes: no screenshot, and no text a step set or typed. Absent on a call that made none.",
+      "x-agentrun-serve": "computercalls/1",
+    },
+    computer_calls_dropped: {
+      type: "integer",
+      description: "On a `tool_result` row whose call made more than 200 computer calls: how many past the 200 its record left out. Absent otherwise.",
+      "x-agentrun-serve": "computercalls/1",
     },
     learning: {
       ...closed({ state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON, detail: { type: ["string", "null"] } }),

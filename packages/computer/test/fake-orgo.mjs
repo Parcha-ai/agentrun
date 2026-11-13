@@ -23,6 +23,9 @@ let counter = 0;
 const newId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;
 const json = (status, body, headers = {}) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
+/** A workspace as Orgo's GET /workspaces lists one (made-up values, the fields the provider reads and a few it skips). */
+export const fakeWorkspace = (id, name, { status = "active", deleted_at = null } = {}) => ({ id, name, status, deleted_at, role: "owner", desktops: [], member_count: 1 });
+
 /**
  * A fake Orgo REST API, as a fetch. Options:
  *  - create: "ok" (default), "fail" (400 in words), "unauthorized" (401), or "creating" (the computer answers status
@@ -37,9 +40,10 @@ const json = (status, body, headers = {}) => new Response(body === undefined ? n
  *    desktop's screenshot and input calls, fake-orgo-desktop.mjs), or undefined;
  *  - upload: (form) => what an upload with destPath does in the computer (fake-orgo-desktop.mjs puts the file there);
  *  - power: (record, verb) => what a stop, suspend, start or resume does inside (a stop's cold start loses init);
+ *  - workspaces: what GET /workspaces lists (default one, WORKSPACE), or an HTTP status it fails with;
  * fake.requests holds every request: { method, path, headers, body, form }; fake.computers each computer's record.
  */
-export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, power, deleteRefused = () => undefined } = {}) {
+export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, power, deleteRefused = () => undefined, workspaces = [fakeWorkspace(WORKSPACE, "agentrun")] } = {}) {
 	const computers = new Map();
 	const requests = [];
 	let wakingLeft = waking;
@@ -148,6 +152,10 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 		if (path === "/files/upload" && method === "POST") {
 			if (form?.get("destPath")) await upload?.(form);
 			return json(200, { success: true, file: { id: "f1", filename: form?.get("file")?.name } });
+		}
+		if (path === "/workspaces" && method === "GET") {
+			if (typeof workspaces === "number") return json(workspaces, { error: "Workspaces unavailable", code: "workspaces_unavailable" });
+			return json(200, { workspaces, projects: workspaces });
 		}
 		if ((match = /^\/workspaces\/([^/]+)$/.exec(path)) && method === "GET") {
 			if (match[1] !== WORKSPACE) return json(404, { error: "Workspace not found", code: "workspace_not_found" });

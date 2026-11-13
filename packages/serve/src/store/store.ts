@@ -290,6 +290,8 @@ export interface LearningSpend {
 export interface StagedTake {
   readonly command: number;
   readonly effect: number;
+  /** What the command answers, JSON, written with its take (Store.answerOf reads it once). */
+  readonly answer?: unknown;
 }
 
 /** What a journal commit writes beside its batches, in its one transaction, under its fence: the run row's patch and rows
@@ -963,6 +965,9 @@ export interface ComputerLedgerRow {
 export interface ComputerLedger {
   /** Saves `labels` and `detail` for `provider`'s session `sessionId`, inserted or replaced in place. */
   put(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Saves `labels` and `detail` for the session only while no row is kept for it, in one statement (two writers never
+   *  both claim it): true when it was saved; false, with nothing written, when a row was there. */
+  claim(provider: string, sessionId: string, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
   /** The session's row, or undefined when none is kept. */
   get(provider: string, sessionId: string): Promise<ComputerLedgerRow | undefined>;
   /** Every session of `provider`, by its id. */
@@ -973,6 +978,58 @@ export interface ComputerLedger {
    *  compare-and-set, so two writers that read one row never both write it): true when it was replaced; false, with
    *  nothing written, when the row changed since or is gone. */
   swap(provider: string, sessionId: string, was: { readonly labels: Readonly<Record<string, string>>; readonly detail: Readonly<Record<string, unknown>> }, labels: Readonly<Record<string, string>>, detail: Readonly<Record<string, unknown>>): Promise<boolean>;
+}
+
+/** A person's own machine paired with this server (spec/computer/attach.md, store schema `paired_computers`): its driver
+ *  dials the attach socket with the token pairing gave it, of which the store keeps only the SHA-256. */
+export interface PairedComputerRow {
+  readonly id: string;
+  /** What the person calls it. */
+  readonly name: string;
+  /** Its driver's last hello: at pairing, then each socket's (kind, os, groups, features). Kind and os stay what it
+   *  paired as, since a socket that says others is refused at hello; groups follow its driver, so an updated driver's
+   *  new groups serve the kinds they make. */
+  readonly hello: Readonly<Record<string, unknown>>;
+  /** The driver build its last hello named. */
+  readonly driver: string;
+  readonly labels: Readonly<Record<string, string>>;
+  /** The pairing (addCode's id) whose code made it. */
+  readonly pairingId: string;
+  readonly createdAt: number;
+  /** When its last socket said hello; null before its first. */
+  readonly seenAt: number | null;
+  /** When it was removed: its token no longer dials. Null while it is paired. */
+  readonly revokedAt: number | null;
+}
+
+/** What pairing records for a new computer: its row's own fields, and its token's SHA-256. */
+export interface NewPairedComputer {
+  readonly id: string;
+  readonly name: string;
+  readonly hello: Readonly<Record<string, unknown>>;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly tokenSha256: string;
+}
+
+/** Paired computers and the pairing codes that make them (store schema `paired_computers`, `pairing_codes`). A code is
+ *  kept by its SHA-256 alone, good once until its expiry; a computer by its token's SHA-256. */
+export interface PairedComputers {
+  /** Keeps a new code's SHA-256 until `expiresAt`, under the pairing `id` the computer it makes keeps. Codes past their
+   *  expiry go in the same write. */
+  addCode(id: string, codeSha256: string, expiresAt: number): Promise<void>;
+  /** Burns the code and records `computer`, in one transaction: false, with nothing written, when no unexpired code has
+   *  that SHA-256 (wrong, used or expired alike). */
+  pair(codeSha256: string, computer: NewPairedComputer): Promise<boolean>;
+  /** The computer's row, removed or not; undefined when no computer has that id. */
+  get(id: string): Promise<PairedComputerRow | undefined>;
+  /** The paired (not removed) computer whose token has this SHA-256. */
+  byToken(tokenSha256: string): Promise<PairedComputerRow | undefined>;
+  /** Every paired computer not removed, oldest first. */
+  list(): Promise<PairedComputerRow[]>;
+  /** A socket of the computer said `hello` now: kept as its hello, and its build (`hello.version`) as its driver. */
+  seen(id: string, hello: Readonly<Record<string, unknown>>): Promise<void>;
+  /** Removes the computer: its token dials no more. False when it was not paired (unknown, or removed already). */
+  revoke(id: string): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -1110,7 +1167,9 @@ export type ViewerKind = "browser" | "desktop" | "phone";
 
 /** One open computer session's viewer as the store keeps it: one row per (run, computer kind, session tag), its token
  *  sealed (sealedAt.liveViewer), `at` the store's clock when it was put, `runner` the claim's holder. */
-export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
+/** `host`: where the viewer answers when its runner is on another host than the server (live-reach.ts); none, the
+ *  server's own machine (loopback). */
+export type LiveViewerRow = { kind: ViewerKind; tag: string; host?: string; port: number; id: string; sealed: Uint8Array; at: number; runner: string };
 
 /** The computer sessions' viewer hand-overs (browser-live.ts): the runner puts and drops them under its claim, the server
  *  reads them. The rows go with the run's end (its end commit), a take or reclaim of the run (a newer epoch, in the
@@ -1118,7 +1177,7 @@ export type LiveViewerRow = { kind: ViewerKind; tag: string; port: number; id: s
 export interface LiveViewers {
   /** The runner's put under its claim, upsert on (run_id, kind, tag), `at` stamped by the store: false when the claim is
    *  stale (its epoch moved on, or its lease ran out), and nothing written. */
-  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
+  put(claim: Claim, viewer: { kind: ViewerKind; tag: string; host?: string; port: number; id: string; sealed: Uint8Array }): Promise<boolean>;
   /** The runner's drop, fenced by its claim's epoch: with no kind every row of the run; a kind with no tag that kind's
    *  rows; a kind and a tag that one row. */
   drop(claim: Claim, kind?: ViewerKind, tag?: string): Promise<void>;
@@ -1151,6 +1210,8 @@ export interface Store {
   readonly sealedKeys: SealedKeys;
   /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
   readonly computerLedger: ComputerLedger;
+  /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
+  readonly pairedComputers: PairedComputers;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */
   readonly triggerSettings: TriggerSettings;
   /** The outbox of a channel the server sends itself, its tries and what it told each run. */
@@ -1210,6 +1271,14 @@ export interface Store {
   /** Marks the command taken (or refused, with `reason`) under the claim, once: a command already taken stays as it was.
    *  Fenced on a stale claim. */
   take(claim: Claim, commandId: number, outcome?: "taken" | "refused", reason?: string): Promise<void>;
+  /** What the run's command answered, read once: the row's answer is cleared in the same transaction, so its bytes do not
+   *  stay in the store. Undefined when the row is untaken, refused, taken with no answer, already read, or not the run's. */
+  answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined>;
+  /** Tells `listener` when a command of a run in this store is written ("written", after command() commits) or taken,
+   *  refused or answered ("answered": a take, a run update that takes, a journal commit that takes or ends the run).
+   *  A hint to read now, for handles in this process only: a row another process writes wakes nothing here, the reader's
+   *  poll finds it. Called after the commit, asynchronously; a listener's throw is swallowed. Answers the unsubscribe. */
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void;
   /** Counts a failed resume on the untaken command that woke the run, under the claim, and answers its tries; the command
    *  stays untaken. Fenced on a stale claim; StoreConstraint when the command is taken or not the run's. */
   retry(claim: Claim, commandId: number): Promise<number>;

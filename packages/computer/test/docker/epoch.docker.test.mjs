@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
 import { EPOCH_LABEL, RUN_LABEL, releaseOlder, runLabels } from "../../dist/index.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
@@ -38,7 +39,7 @@ describe("run and epoch labels on Docker", { skip: LIVE ? false : "set AGENTRUN_
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
 		provider = new DockerProvider({ daemonPath });
 		const make = async (key, labels) => {
-			const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { ...labels, [TEST_LABEL]: test, key } });
+			const created = await provider.create({ image: "alpine:3.20", lifetimeMs: 10 * 60_000, network: "none", labels: { ...labels, [TEST_LABEL]: test, key } }, newRequest(`epoch-${key}`));
 			assert.equal(created.ok, true, `${key}: ${JSON.stringify(created)}`);
 			refs[key] = created.value;
 		};

@@ -504,7 +504,7 @@ export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, 
  *  stop cut short is booked only once its proxy sees the provider's side end, which can be after its node ended, and the
  *  run's end waits for it (bookingsSettled), as the pi adapter's loop does. */
 function deferredHooks() {
-  let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined } | undefined;
+  let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined; noteReturned?(n: string): void } | undefined;
   let loop: WorkflowHostHooks | undefined;
   let unbooked = 0;
   const bookedAll: (() => void)[] = [];
@@ -525,6 +525,7 @@ function deferredHooks() {
       },
       responded: (ids: never, ticket?: never) => (port ?? missing()).responded?.(ids, ticket) ?? Promise.resolve(),
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
+      noteReturned: (note: never) => (port ?? missing()).noteReturned?.(note),
     },
     setPort: (p: typeof port) => { port = p; },
     /** Waits, at most CLOSE_MS, until every request admitted is booked, and says how many are still not. Past the bound

@@ -105,8 +105,10 @@ jobs:
             packages/computer/daemon-macos/build-*.log
             /tmp/computerd-ci/ui-conformance.json
             /tmp/computerd-ci/stderr.log
+            /tmp/computerd-ci/demos/
             ~/Library/Logs/Computerd.log
           if-no-files-found: ignore
+          retention-days: 7
 
   linux:
     name: core on Linux

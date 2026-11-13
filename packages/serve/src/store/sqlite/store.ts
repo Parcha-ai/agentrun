@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, SCHEMA_VERSION } from "../schema.js";
@@ -18,7 +19,7 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
-  type ComputerLedger, type ComputerLedgerRow, RUN_CHANGES_PAGE, type RunChangeCursor,
+  type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -26,7 +27,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
   if (!/^(0|[1-9][0-9]{0,15})$/.test(cursor)) throw new TypeError(`${JSON.stringify(cursor)} is not a run-change cursor this store gave`);
   return Number(cursor);
 };
-import type { Dialect } from "../dialect.js";
+import { type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
@@ -170,6 +171,8 @@ type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
+type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
+const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -375,6 +378,7 @@ class SqliteStore implements Store {
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
+  readonly pairedComputers: PairedComputers;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
   readonly mcpOauth: McpOauth;
@@ -677,8 +681,8 @@ class SqliteStore implements Store {
         }),
       pending: async () =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE status = 'due' OR (status = 'failed' AND (notified IS NULL OR notified = 0)) ORDER BY at, ${d.firingOrder}`)).map(firingOf),
-      message: async ({ triggerId, key }, runId, command, bound) =>
-        db.transaction(async (tx) => {
+      message: async ({ triggerId, key }, runId, command, bound) => {
+        const sent = await db.transaction(async (tx) => {
           const at = now();
           await d.lockRow(tx, "triggers", "id", triggerId);
           const firing = await tx.get<{ status: string }>("SELECT status FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
@@ -698,7 +702,10 @@ class SqliteStore implements Store {
           await tx.run(`UPDATE trigger_firings SET status = 'sent', run_id = ?, reason = NULL, ${clear} WHERE trigger_id = ? AND key = ?`, runId, triggerId, key);
           await tx.run("UPDATE triggers SET failures_in_a_row = 0, updated_at = ? WHERE id = ?", at, triggerId);
           return { sent: true as const, commandId: row!.id };
-        }),
+        });
+        if (sent !== undefined && "sent" in sent) wakeCommands(this.where, { runId, what: "written" });
+        return sent;
+      },
       waiting: async () =>
         (await db.all<FiringRecord & { free: number | boolean }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
@@ -879,8 +886,8 @@ class SqliteStore implements Store {
         // Archiving an archived run keeps its first time: a second archive is a no-op, never a new time.
         await db.write([archived ? { sql: "UPDATE runs SET archived_at = COALESCE(archived_at, ?) WHERE id = ?", params: [now(), runId] } : { sql: "UPDATE runs SET archived_at = NULL WHERE id = ?", params: [runId] }]);
       },
-      reopen: async (runId, { kind, body = null }, { launchSealed } = {}) =>
-        db.transaction(async (tx) => {
+      reopen: async (runId, { kind, body = null }, { launchSealed } = {}) => {
+        const command = await db.transaction(async (tx) => {
           // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
           // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
           const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
@@ -889,7 +896,10 @@ class SqliteStore implements Store {
           if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
-        }),
+        });
+        wakeCommands(this.where, { runId, what: "written" });
+        return command;
+      },
       wake: async (runId) => {
         // On the deadlines' clock (the database's on Postgres), as the claimable rule reads wake_at.
         const n = clock();
@@ -916,13 +926,13 @@ class SqliteStore implements Store {
       update: async (claim, patch, rows = {}) => {
         if (Array.isArray(rows) || typeof rows !== "object" || rows === null) throw new TypeError("runs.update's third argument is { also?, take?, signInSettleMs? }");
         const { also = [], take = [], signInSettleMs = 0 } = rows;
-        return db.transaction(async (tx): Promise<UpdatedRun> => {
+        const updated = await db.transaction(async (tx): Promise<UpdatedRun> => {
           // A run update may end the run, moving its epoch on: held against every write under the claim (dialect lockRow).
           await d.lockRow(tx, "runs", "id", claim.runId, "update");
           const at = now();
           const row = await applyRunPatch(tx, claim, patch, also, at, d, storeNow(d, () => at));
           for (const commandId of take) {
-            if ((await tx.runCounted("UPDATE commands SET taken_at = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", at, commandId, claim.runId)) === 0) {
+            if ((await tx.runCounted(`UPDATE commands SET taken_at = ?, ${settledBody(d)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, at, commandId, claim.runId)) === 0) {
               throw new CommandTaken(claim.runId, commandId);
             }
           }
@@ -943,6 +953,9 @@ class SqliteStore implements Store {
           }
           return row;
         });
+        // After the commit: the readers of this run's command answers in this process wake (a take, or the run gone final).
+        if (take.length > 0 || patch.state === "ended" || patch.state === "stopped" || patch.state === "failed") wakeCommands(this.where, { runId: claim.runId, what: "answered" });
+        return updated;
       },
     };
 
@@ -1128,9 +1141,9 @@ class SqliteStore implements Store {
           const at = now();
           const fence = claimFence(claim, storeNow(d, () => at));
           const changed = await tx.runCounted(
-            `INSERT INTO computer_viewers (run_id, kind, tag, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
-              ON CONFLICT (run_id, kind, tag) DO UPDATE SET port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
-            viewer.kind, viewer.tag, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
+            `INSERT INTO computer_viewers (run_id, kind, tag, host, port, viewer_id, sealed, at, runner, epoch) SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM runs WHERE ${fence.where}${d.shareLock}
+              ON CONFLICT (run_id, kind, tag) DO UPDATE SET host = excluded.host, port = excluded.port, viewer_id = excluded.viewer_id, sealed = excluded.sealed, at = excluded.at, runner = excluded.runner, epoch = excluded.epoch`,
+            viewer.kind, viewer.tag, viewer.host ?? null, viewer.port, viewer.id, viewer.sealed, at, claim.runner, claim.epoch, ...fence.params,
           );
           return changed > 0;
         }),
@@ -1147,12 +1160,12 @@ class SqliteStore implements Store {
       // The server's read: only the run's epoch, under a live lease on the store's clock, written by the run's runner.
       of: async (runId) => {
         const live = clock();
-        const rows = await db.all<{ kind: ViewerKind; tag: string; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
-          `SELECT v.kind, v.tag, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
+        const rows = await db.all<{ kind: ViewerKind; tag: string; host: string | null; port: number; viewer_id: string; sealed: Uint8Array; at: number; runner: string }>(
+          `SELECT v.kind, v.tag, v.host, v.port, v.viewer_id, v.sealed, v.at, v.runner FROM computer_viewers v JOIN runs r ON r.id = v.run_id
             WHERE v.run_id = ? AND v.epoch = r.epoch AND r.claimed_until >= ${live.sql} AND v.runner = r.runner ORDER BY v.at DESC, v.tag`,
           runId, ...live.params,
         );
-        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
+        return rows.map((row): LiveViewerRow => ({ kind: row.kind, tag: row.tag, ...(row.host !== null ? { host: row.host } : {}), port: row.port, id: row.viewer_id, sealed: new Uint8Array(row.sealed), at: row.at, runner: row.runner }));
       },
     };
 
@@ -1243,6 +1256,10 @@ class SqliteStore implements Store {
       put: async (provider, sessionId, labels, detail) => {
         await db.write([{ sql: "INSERT INTO computer_ledger (provider, session_id, labels, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (provider, session_id) DO UPDATE SET labels = excluded.labels, detail = excluded.detail, updated_at = excluded.updated_at", params: [provider, sessionId, JSON.stringify(labels), JSON.stringify(detail), now()] }]);
       },
+      claim: async (provider, sessionId, labels, detail) => {
+        const [result] = await db.write([{ sql: "INSERT INTO computer_ledger (provider, session_id, labels, detail, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (provider, session_id) DO NOTHING", params: [provider, sessionId, JSON.stringify(labels), JSON.stringify(detail), now()] }]);
+        return (result?.changes ?? 0) === 1;
+      },
       get: async (provider, sessionId) => {
         const row = await db.get<ComputerLedgerRecord>("SELECT provider, session_id, labels, detail, updated_at FROM computer_ledger WHERE provider = ? AND session_id = ?", provider, sessionId);
         return row === undefined ? undefined : ledgerRowOf(row);
@@ -1257,6 +1274,44 @@ class SqliteStore implements Store {
           sql: "UPDATE computer_ledger SET labels = ?, detail = ?, updated_at = ? WHERE provider = ? AND session_id = ? AND labels = ? AND detail = ?",
           params: [JSON.stringify(labels), JSON.stringify(detail), now(), provider, sessionId, JSON.stringify(was.labels), JSON.stringify(was.detail)],
         }]);
+        return (result?.changes ?? 0) === 1;
+      },
+    };
+
+    const PAIRED = "SELECT id, name, hello, driver, labels, pairing_id, created_at, seen_at, revoked_at FROM paired_computers";
+    this.pairedComputers = {
+      addCode: async (id, codeSha256, expiresAt) => {
+        await db.write([
+          { sql: "DELETE FROM pairing_codes WHERE expires_at <= ?", params: [now()] },
+          { sql: "INSERT INTO pairing_codes (id, code_sha256, expires_at) VALUES (?, ?, ?)", params: [id, codeSha256, expiresAt] },
+        ]);
+      },
+      // The code is burned and the computer written in one transaction: a code two drivers send at once pairs one.
+      pair: (codeSha256, computer) =>
+        db.transaction(async (tx) => {
+          const at = now();
+          const code = await tx.get<{ id: string }>("SELECT id FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at);
+          if (code === undefined || (await tx.runCounted("DELETE FROM pairing_codes WHERE code_sha256 = ? AND expires_at > ?", codeSha256, at)) !== 1) return false;
+          await tx.run(
+            "INSERT INTO paired_computers (id, name, hello, driver, labels, token_sha256, pairing_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            computer.id, computer.name, JSON.stringify(computer.hello), String(computer.hello.version ?? ""), JSON.stringify(computer.labels), computer.tokenSha256, code.id, at,
+          );
+          return true;
+        }),
+      get: async (id) => {
+        const row = await db.get<PairedRecord>(`${PAIRED} WHERE id = ?`, id);
+        return row === undefined ? undefined : pairedOf(row);
+      },
+      byToken: async (tokenSha256) => {
+        const row = await db.get<PairedRecord>(`${PAIRED} WHERE token_sha256 = ? AND revoked_at IS NULL`, tokenSha256);
+        return row === undefined ? undefined : pairedOf(row);
+      },
+      list: async () => (await db.all<PairedRecord>(`${PAIRED} WHERE revoked_at IS NULL ORDER BY created_at, id`)).map(pairedOf),
+      seen: async (id, hello) => {
+        await db.write([{ sql: "UPDATE paired_computers SET seen_at = ?, hello = ?, driver = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), JSON.stringify(hello), String(hello.version ?? ""), id] }]);
+      },
+      revoke: async (id) => {
+        const [result] = await db.write([{ sql: "UPDATE paired_computers SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", params: [now(), id] }]);
         return (result?.changes ?? 0) === 1;
       },
     };
@@ -1601,7 +1656,7 @@ class SqliteStore implements Store {
     if (open && !open.closed) return open;
     const journal: RunStorage = new RunStorage(this.#db, claim, this.#now, () => {
       if (this.#journals.get(key) === journal) this.#journals.delete(key);
-    });
+    }, this.where);
     this.#journals.set(key, journal);
     return journal;
   }
@@ -1637,7 +1692,23 @@ class SqliteStore implements Store {
     },
     // The message's launch secrets, in the command's own write: written only when the command is (a final run refuses both).
     ...(launchSealed ? [{ sql: "UPDATE run_launch SET sealed = ? WHERE run_id = ?", params: [launchSealed, runId] }] : [])]);
+    wakeCommands(this.where, { runId, what: "written" });
     return commandOf(result!.rows[0] as CommandRecord);
+  }
+
+  watchCommands(listener: (event: { readonly runId: string; readonly what: "written" | "answered" }) => void): () => void {
+    return watchCommandsAt(this.where, listener);
+  }
+
+  async answerOf(runId: string, commandId: number): Promise<{ readonly value: unknown } | undefined> {
+    // Read and cleared in one transaction, so two readers never both get it. A refused row never holds one.
+    const text = await this.#db.transaction(async (tx) => {
+      const row = await tx.get<{ answer: string | null }>("SELECT answer FROM commands WHERE id = ? AND run_id = ? AND taken_at IS NOT NULL AND refused IS NULL", commandId, runId);
+      if (row?.answer === undefined || row.answer === null) return undefined;
+      // The clear counts: a reader that lost the race to another one clears nothing and gets nothing.
+      return (await tx.runCounted("UPDATE commands SET answer = NULL WHERE id = ? AND run_id = ? AND answer IS NOT NULL", commandId, runId)) === 0 ? undefined : row.answer;
+    });
+    return text === undefined ? undefined : { value: JSON.parse(text) };
   }
 
   async commands(runId: string, after: number): Promise<Command[]> {
@@ -1689,8 +1760,9 @@ class SqliteStore implements Store {
     // The clock is read inside the transaction, so the lease check and the write are one.
     await this.#db.transaction(async (tx) => {
       const now = await underClaim(tx, claim, this.#now);
-      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE id = ? AND run_id = ? AND taken_at IS NULL", now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
+      await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(this.#db.dialect)} WHERE id = ? AND run_id = ? AND taken_at IS NULL`, now, outcome === "refused" ? (reason ?? "refused") : null, commandId, claim.runId);
     });
+    wakeCommands(this.where, { runId: claim.runId, what: "answered" });
   }
 
   async retry(claim: Claim, commandId: number): Promise<number> {

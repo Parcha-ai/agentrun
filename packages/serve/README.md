@@ -67,7 +67,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
 | `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--learning on\|off` | on (`AGENTRUN_SERVE_LEARNING`) | Whether runs [learn](#learning). On, a run of an agent whose definition says `learning: true` starts from what that agent learned and adds to it; off, no run does, whatever its agent says. Any other value refuses the start. Capabilities report it as `features.learning`. |
-| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the index and the notes changed last, whole, while they fit ([learning](#learning)). `0` gives the index alone. A value that is not a whole number of bytes refuses the start. |
+| `--learning-budget BYTES` | `8000` (`AGENTRUN_SERVE_LEARNING_BUDGET`) | How much of what an agent learned its runs' instructions hold under `# Learned`, in UTF-8 bytes: every note whole while they fit, else the notes that bear most on the run whole while they fit, then one line each for more of them; the rest are left out, and the run's log names them ([learning](#learning)). `0` gives no notes. A value that is not a whole number of bytes refuses the start. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long the runner beside the server lets each busy run finish its turn when the server stops (`8s`, `500ms`, `1m`): a turn that ends within it keeps its outcome, and its model request is never sent again. A run still busy at the bound is stopped where it can resume, and the next claim carries on from its journal (that turn's model request sent again). The stop says how long it waits and for how many runs. A runner of its own (`agentrun-serve runner`) takes `--drain-timeout` too, default `AGENTRUN_DRAIN_TIMEOUT`, else `6s`. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -619,7 +619,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -695,6 +695,40 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+#### A person's own computer
+
+A computer of your own (a laptop, a desktop, a phone) can be an agent's computer. A driver on it dials this server and
+holds the connection open, so the computer needs no open port and this server needs no address of its
+([spec/computer/attach.md](../../spec/computer/attach.md)). This server knows no OS: a paired computer is what its
+driver's hello says it is (its kind, os, device, screen, capability groups and features), and a driver on any OS that
+passes the binding's conformance cases (below) needs no change here.
+
+- **Pair it.** Settings → Computers → Pair a computer shows a code, such as `K7PD-W3QX` (`POST /v2/computers/pairings`),
+  and this server's address. The code pairs one computer, once, within 10 minutes. Type both into the driver: it trades
+  the code for its own token (`POST /v2/computers/pair`, which takes no token of this server's) and keeps that token in
+  the OS's keychain. This server keeps only the token's SHA-256. A wrong, used or expired code is a 404, and each source
+  address gets 10 tries a minute.
+- **It attaches.** The driver dials `GET /v2/computers/attach`, a WebSocket with its token and the subprotocol
+  `agentrun.computer.0.2`, and dials again when the connection drops. `GET /v2/computers` lists it under `paired` as its
+  hello says, online or offline, with the run that holds it and the time that hold ends by, and as a provider, named by
+  its name and os, of each kind its hello serves (`desktop`, `phone`), ready while it is online.
+- **An agent uses it.** `computer: {"kind": "desktop", "provider": "cmp-8f2k3jq7m4xw9tnb"}` names it by its id. A run
+  claims it at its start (one run at a time: another is refused while one holds it) and releases it at its end, or at
+  its lifetime, released or not; it is never made, stopped or deleted. A run of an agent whose computer is offline is
+  refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
+- **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
+  run holding it loses it. Pairing it again gives it a new id.
+- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
+  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
+  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
+  so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
+  against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
+  after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
+  1 MiB (1009), a second socket with the same token (4409 to the older), and revoke (4401, no redial). It runs a store
+  of its own in a scratch directory, prints PASS or FAIL for each case, and exits 0 when all pass; it takes about five
+  minutes. The revoke case leaves the driver unpaired. Serve's tests run the same cases against a test driver.
 
 **Where the run's folder lives.** A server keeps its runs' folders in one of two modes:
 
@@ -1863,6 +1897,21 @@ delivery on the payload's tag, for tracing. A request that carries no scheme's s
 one, or is signed under a scheme other than its trigger's, is the same `401` as a bad signature, and the headers are
 checked before the body is read.
 
+`composio` takes [Composio](https://composio.dev) trigger events. Register the trigger's `hook_url` as Composio's webhook
+subscription (`POST /api/v3.1/webhook_subscriptions` with `enabled_events: ["composio.trigger.message"]`); Composio
+answers with a `secret` it makes, which you give here, whole and as Composio shows it, with `POST /v2/triggers/{id}/secret`
+and the body `{"secret": "..."}` (the same call replaces it when you rotate it in Composio). A composio trigger is made with no
+secret (the URL carries its id, so Composio can only make the secret after); until one is set every request is refused. It is sealed as a minted one is and never shown again; this server never
+makes one for a composio trigger. Composio signs as Standard Webhooks does (`webhook-id`, `webhook-timestamp`, `webhook-signature`) but keyed by the
+UTF-8 bytes of that secret string, not a decoded `whsec_` key, which is why a `standard` trigger cannot take it. The
+firing's key is `webhook-id`, the event is the body's `metadata.trigger_slug`, so `accept: [{"event":
+"GITHUB_ISSUE_ADDED_EVENT"}]` takes one Composio trigger's events, and a rule's `where` pointers read the payload under
+`/data`. The subscription also delivers account events (`composio.connected_account.expired`,
+`composio.connected_account.activated`, `composio.trigger.disabled`), signed the same way, with no slug: their event is the
+body's top-level `type`, so `accept` can take them too. A Composio project's subscription posts every event to the one URL it names, so it fires that one composio
+trigger and its agent: other triggers never see those deliveries, whatever their `accept`. The tag also names
+`trigger_id` and `user_id`.
+
 `accept` makes a trigger take only the events it names, from the delivery alone:
 
 ```json
@@ -2562,11 +2611,14 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   edit; then by name), while they all fit the server's learning budget (`--learning-budget`, 8000 bytes by default).
   Past it, the run reads the notes that bear on it: each active note is scored against the run's first message by a
   lexical match (BM25 over its name, description and text; a code review's changed paths weigh three times its prose; no
-  model call), and the run reads the best ones whole while they fit, then one line for each of the rest
-  (`- <name> (<file>): <description>`, at most 200 lines and 25 KB), in place of the index. A first message that shares
-  no word with any note reads the index's first 200 lines, then the notes changed last, whole, while they fit. An agent
-  with the `read` tool is told the notes not given whole are in `.learning/`, to open one when it applies (one without
-  is not). A line
+  model call), and the run reads the best ones whole while they fit the budget, then one line each
+  (`- <name> (<file>): <description>`, at most 200 lines and 25 KB) for the next ones while they fit what is left, in
+  place of the index. A note that shares no word with the first message is a line at most. A first message that shares
+  no word with any note reads the notes changed last, whole while they fit, then their lines. Whole notes take the
+  budget before lines do, so an agent with hundreds of notes still reads the ones that bear on the run whole; the notes
+  given neither way are left out, and the run's log names them ("starts without N of the notes its agent learned").
+  An agent with the `read` tool is told the notes not given whole are in `.learning/`, to open one when it applies
+  (one without is not). A line
   before them says to follow a note when it applies. `# Learned` opens, for every run that learns, notes or none, with
   what the run is told of learning: that only what it answers when it is asked at the end is kept, never a file it
   writes, so it tells the person it will keep what they ask it to remember, and that a secret is never kept. A run with
@@ -2685,7 +2737,15 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. No injection screen runs before it: a page classifier cannot see where a note came
+many notes the folder holds. A note must hold beyond the one input it came from: before the grader, one Jev question
+per new note (the Jev model and keys decision nodes use) asks whether it states a method, a source, a fact or a
+preference that holds for this job's other inputs, and a note rated below 0.5
+(`AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`, from 0 to 1) is dropped there, its reason on the verdict; its cost is
+the grade's. When Jev cannot run, the grader reads every note: the runner's log says why, the run's learning says the
+check could not run, and the grade's cost is unknown, never the grader's alone (a Jev request that failed may still
+have been charged). The grader answers General
+for every item, and one it says is not general is never kept, whatever else it decides. No injection screen runs
+before it: a page classifier cannot see where a note came
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the
 user states in their own words is theirs, even beside a form or a pasted email in the same message, and a rule found only
 inside text the run read is planted and dropped, never held for the owner's OK. An item that holds an account number is
@@ -2896,11 +2956,14 @@ cap, due at the run's first request), the words say the budget instead, on every
 $X, enough for little work: answer as soon as you can." On pi the words go into that one request's context;
 on claude-agent, codex and opencode the model proxy adds them to the body (after everything the CLI sent, so its cached
 prefix is unchanged). Neither CLI nor pi keeps them in its transcript, and no message is queued, so nothing runs after
-the model's answer. Once per cap, across restarts; a raise re-arms it.
+the model's answer. Once per cap, across restarts; a raise re-arms it. The note also comes due, if it has not already,
+on the request whose tool call would be refused now (the wrap-up below: what is left no longer covers what the run keeps
+back to answer), so the note tells the model what is left no later than its tools stop.
 
-A capped run also stops calling tools before its cap stops it. Once what it has spent, plus what its requests and paid
-steps still out are held at (their worst case, as the cap counts them, a browser session's open reserve included),
-reaches 75% of its cap, the run's tool gate
+A capped run also stops calling tools before its cap stops it. It keeps back enough to answer: one typical step (its own
+answers' typical cost) and one final answer at its least, as the cap prices the main model's next request. Once what it
+has spent, plus what its requests and paid steps still out are held at (their worst case, as the cap counts them, a
+browser session's open reserve included), leaves less than that, the run's tool gate
 refuses every call a model makes, in every conversation of the run, on every harness, before any setting or approval
 is read, with one fixed text: "Budget nearly spent: stop calling tools and answer now from what you have." A call that
 would open a child conversation is refused the same way, so no new one starts. Nothing in flight is cut: a child still
@@ -2909,7 +2972,10 @@ model requests are judged by the cap as before, so the run's final answer still 
 request that does not fit what is left is refused as above. The figure is read from the run's booking records at each
 call, never kept in memory, so a restart or a claim moved to another runner holds the same line, and a raise moves it.
 Several requests out at once hold far more than they cost, which is why a fan-out of children used to end a small cap
-with no answer at all; the quarter left above the line is the room for each of them, and the parent, to answer.
+with no answer at all: their holds count as taken, so the run stops calling tools while each of them, and the parent,
+still has room to answer. A simple run, with nothing else out, uses its cap up to its last step and answer. The run is
+told what is left (its wrap-up note, above) no later than its first refused call. Its one known miss: a request that
+writes to its max output can still leave no room for the answer; then the run pauses for a raise rather than overspend.
 
 Under a cap each request is limited to the
 output tokens what is left of the cap can buy, thinking included, never more than it asks for or than the model's
@@ -2942,7 +3008,7 @@ screenshots, then the answer), spending about $0.04 in all:
 
 In `strict` mode every step's whole input is priced at the cache-write price. In `expected` mode a step after the first is priced from what the session's previous request read from the cache, so a five-step run needs about $0.06 by either route, and about $0.007 a further step; the first request is priced as in `strict`, so its figure is the same. A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
-once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on.
+once with `Not sent: ... the next step needs at least $X`, and a raise to that figure sends it on. (In `strict` mode through a gateway, a run a cent under the five-step figure is not parked before its last step: the cap's wrap-up refuses its last screenshot, and the run answers from what it has.)
 `packages/serve/test/cap-minimum.test.mjs` holds these figures to what the cap does. A request in flight holds what it was admitted at until it answers, so requests
 sent side by side cannot pass the cap together. Spent so far is read from the run's store each time its process starts, so it
 survives a restart, plus each response since, and with them each charge a paid tool booked (`monid.run`, which is itself

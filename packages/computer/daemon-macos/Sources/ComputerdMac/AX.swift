@@ -213,7 +213,9 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 		guard let wid = sky.windowID(element) else { throw RPCError.notFound("\(id)'s window has no window server id") }
 		guard let bounds = AX.frame(element) else { throw RPCError.notFound("\(id)'s window has no frame") }
 		let title = AX.string(AX.copy(element, kAXTitleAttribute))
-		return ResolvedTarget(app: UiApp(id: id, name: app.localizedName ?? id, pid: Int(pid)), pid: pid, window: UiWindow(id: String(wid), title: title, bounds: bounds))
+		let kind = AX.copy(element, [kAXRoleAttribute, kAXSubroleAttribute])
+		let role = Roles.window(role: AX.string(kind[0]), subrole: AX.string(kind[1]))
+		return ResolvedTarget(app: UiApp(id: id, name: app.localizedName ?? id, pid: Int(pid)), pid: pid, window: UiWindow(id: String(wid), title: title, role: role, bounds: bounds))
 	}
 
 	// MARK: the tree
@@ -367,6 +369,15 @@ final class MacAccessibility: Accessibility, @unchecked Sendable {
 
 	func focused(_ target: ResolvedTarget) -> ElementHandle? {
 		AX.element(AX.copy(AXUIElementCreateApplication(target.pid), kAXFocusedUIElementAttribute)).map { ElementHandle(ax: $0) }
+	}
+
+	func takesText(_ element: ElementHandle) -> Bool {
+		let v = AX.copy(element.ax, [kAXRoleAttribute, kAXSubroleAttribute])
+		return AX.string(v[0]).map { Roles.textInput.contains($0) } == true || AX.string(v[1]) == "AXSearchField"
+	}
+
+	func keyWindow(_ target: ResolvedTarget) -> String? {
+		AX.element(AX.copy(AXUIElementCreateApplication(target.pid), kAXFocusedWindowAttribute)).flatMap(sky.windowID).map { String($0) }
 	}
 
 	// MARK: menus

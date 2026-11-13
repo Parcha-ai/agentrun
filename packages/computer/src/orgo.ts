@@ -24,6 +24,7 @@ import type { KindCapabilities } from "./kinds.js";
 import { checkMount, type MountKind } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
 import { OrgoDesktopProvider, type OrgoDesktopOptions } from "./orgo-desktop.js";
+import { type WorkspaceHolder, workspaceChoices, workspaceHolder } from "./orgo-workspaces.js";
 import {
 	COMPUTER_ID,
 	filterProblem,
@@ -65,7 +66,9 @@ import {
 	type ComputerProvider,
 	type ComputerRef,
 	type ComputerSpec,
+	type CreateContext,
 	type CreatedComputer,
+	type KeyChoice,
 	checkGpu,
 	checkTenure,
 	type NetworkPolicy,
@@ -122,8 +125,12 @@ export interface OrgoTimeouts {
 export interface OrgoProviderOptions {
 	/** The Orgo API key. Serve passes ORGO_API_KEY's value; the provider never reads the environment or logs it. */
 	apiKey: string;
-	/** The workspace this deployment's computers live in; the provider lists, attaches and releases only there. */
-	workspaceId: string;
+	/**
+	 * The workspace this deployment's computers live in; the provider lists, attaches and releases only there. Absent:
+	 * the key's account's one workspace, read from Orgo when first needed; with several or none, every call that needs
+	 * it is refused in words (orgo-workspaces.ts soleWorkspace).
+	 */
+	workspaceId?: string;
 	/** Orgo's API, https; default https://www.orgo.ai/api. */
 	apiUrl?: string;
 	/** For tests: every REST call goes through it. Default the global fetch. */
@@ -298,7 +305,7 @@ export class OrgoProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #rest: OrgoRest;
 	readonly #channel: OrgoChannel;
-	readonly #workspaceId: string;
+	readonly #workspace: WorkspaceHolder;
 	readonly #daemonPath: string;
 	readonly #maxLifetimeMs: number;
 	readonly #uid: string;
@@ -315,7 +322,7 @@ export class OrgoProvider implements ComputerProvider {
 
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, ledger = orgoMemoryLedger() }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
-		if (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId)) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is required");
+		if (workspaceId !== undefined && (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId))) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is an Orgo workspace id when given");
 		let url: URL;
 		try {
 			url = new URL(apiUrl);
@@ -337,8 +344,8 @@ export class OrgoProvider implements ComputerProvider {
 			throw new Error("probeTargets must name at least one address for the probe, each host:port or host:port/udp");
 		}
 		this.#rest = orgoRest({ apiKey, apiUrl: url.href, ...(fetch ? { fetch } : {}) });
-		this.#channel = channel ?? orgoTerminalChannel({ rest: this.#rest, workspaceId, ...(webSocket ? { webSocket } : {}) });
-		this.#workspaceId = workspaceId;
+		this.#workspace = workspaceHolder(workspaceId, this.#rest, merged.requestMs);
+		this.#channel = channel ?? orgoTerminalChannel({ rest: this.#rest, workspace: (signal) => this.#workspace.read(signal), ...(webSocket ? { webSocket } : {}) });
 		this.#daemonPath = daemonPath;
 		this.#maxLifetimeMs = maxLifetimeMs;
 		[this.#uid, this.#gid] = [String(Number(ids[1])), String(Number(ids[2]))];
@@ -404,7 +411,8 @@ export class OrgoProvider implements ComputerProvider {
 		return refusals;
 	}
 
-	async create(spec: ComputerSpec, { signal }: CallContext = {}): Promise<Result<CreatedComputer>> {
+	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
+		const signal = context?.signal;
 		const refusals = this.check(spec);
 		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
 		let daemon: Buffer;
@@ -414,6 +422,8 @@ export class OrgoProvider implements ComputerProvider {
 			return fail("not_found", `no daemon binary at ${this.#daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
 		}
 		if (signal?.aborted) return fail("aborted", "create was aborted before Orgo was called");
+		const workspace = await this.#workspace.read(signal);
+		if (!workspace.ok) return workspace;
 		// An agent's own computer outlives the run: no janitor's deadline and no Orgo end, the owner in its name and labels.
 		// Init still takes one, maxLifetimeMs out, since it ends its programs at its deadline, with no most in practice:
 		// each attach moves it maxLifetimeMs out again (#ownedInit).
@@ -429,7 +439,7 @@ export class OrgoProvider implements ComputerProvider {
 		const ram = spec.memoryMb === undefined ? 4 : spec.memoryMb / 1024;
 		const cpu = spec.cpus ?? (CPU_FOR_RAM[ram] as number);
 		const body = {
-			workspace_id: this.#workspaceId,
+			workspace_id: workspace.value,
 			name,
 			os: "linux",
 			ram,
@@ -655,7 +665,10 @@ export class OrgoProvider implements ComputerProvider {
 	}
 
 	/** Orgo's record of a computer; not_found once Orgo no longer has it. */
+	/** Orgo's record of a computer. The workspace is read first, so #ours knows it for every record read. */
 	async #get(id: string, signal?: AbortSignal): Promise<Result<OrgoComputer>> {
+		const workspace = await this.#workspace.read(signal);
+		if (!workspace.ok) return workspace;
 		const read = await this.#rest.request<OrgoComputer>("GET", `/computers/${encodeURIComponent(id)}`, { timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
 		if (typeof read.value?.name !== "string" || typeof read.value.status !== "string") return vendorFail("orgo",`Orgo's record of ${id} has no name or status`);
@@ -668,7 +681,8 @@ export class OrgoProvider implements ComputerProvider {
 		// A Windows or macOS computer in the workspace is the desktop provider's (orgo-desktop.ts), where Orgo says its os.
 		return (
 			nameParts(record.name) !== undefined &&
-			(record.workspace_id ?? record.project_id) === this.#workspaceId &&
+			this.#workspace.id !== undefined &&
+			(record.workspace_id ?? record.project_id) === this.#workspace.id &&
 			(name === undefined || sameComputer(record.name, name)) &&
 			record.status !== "deleted" &&
 			(record.os === undefined || record.os === "linux")
@@ -776,11 +790,14 @@ export class OrgoProvider implements ComputerProvider {
 
 	/** The workspace's computers, as Orgo lists them. */
 	async #desktops(signal?: AbortSignal): Promise<Result<OrgoComputer[]>> {
-		const read = await this.#rest.request<{ desktops?: unknown }>("GET", `/workspaces/${encodeURIComponent(this.#workspaceId)}`, { timeoutMs: this.#timeouts.listMs, ...(signal ? { signal } : {}) });
+		const workspace = await this.#workspace.read(signal);
+		if (!workspace.ok) return workspace;
+		const id = workspace.value;
+		const read = await this.#rest.request<{ desktops?: unknown }>("GET", `/workspaces/${encodeURIComponent(id)}`, { timeoutMs: this.#timeouts.listMs, ...(signal ? { signal } : {}) });
 		if (!read.ok) return read;
 		const desktops = read.value?.desktops;
-		if (!Array.isArray(desktops)) return vendorFail("orgo",`Orgo's workspace ${this.#workspaceId} lists no computers array`);
-		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: this.#workspaceId })));
+		if (!Array.isArray(desktops)) return vendorFail("orgo",`Orgo's workspace ${id} lists no computers array`);
+		return ok(desktops.filter((one): one is OrgoComputer => typeof one?.id === "string" && typeof one.name === "string").map((one) => ({ ...one, workspace_id: id })));
 	}
 
 	/** The live view: screen.watch on a connection of the watch's own (daemonWatch), never Orgo's VNC (proxy only). */
@@ -1085,6 +1102,11 @@ export class OrgoProvider implements ComputerProvider {
 	/** Settings' test: one read of the workspace's computers (list with no label to read from inside), which makes nothing. */
 	async testConnection(context: CallContext = {}): Promise<Result<{ detail: string }>> {
 		return listTested("Orgo", await this.list({}, context));
+	}
+
+	/** Settings' pick of ORGO_WORKSPACE_ID (workspaceId): every workspace the key's account sees, by name. Makes nothing. */
+	keyChoices(option: string, { signal }: CallContext = {}): Promise<Result<KeyChoice[]>> {
+		return workspaceChoices(this.#rest, option, { timeoutMs: this.#timeouts.requestMs, ...(signal ? { signal } : {}) });
 	}
 
 	async network(ref: ComputerRef, policy?: NetworkSpec, { signal }: CallContext = {}): Promise<Result<NetworkPolicy>> {

@@ -17,12 +17,13 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect } from "node:net";
 import type { Duplex } from "node:stream";
+import { dialHost, isLiveHost, LIVE_PROOF_HEADER, liveProof, type LiveReach } from "./live-reach.js";
 import { sealColumn, sealedAt, unsealColumn } from "./store/seal.js";
 import type { Claim, LiveViewerRow, Store, ViewerKind } from "./store/store.js";
 
 /** What the run's process hands the server for one session's viewer; `at`, when (the newest is the one shown). `kind`, the
  *  computer it views, as the store's row says it. */
-export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number; kind?: ViewerKind };
+export type LiveHandover = { port: number; id: string; token: string; tag: string; at?: number; kind?: ViewerKind; host?: string };
 /** The computer kinds a store row may name. */
 const VIEWER_KINDS: readonly string[] = ["browser", "desktop", "phone"] satisfies ViewerKind[];
 
@@ -35,7 +36,7 @@ const TAG = /^[A-Za-z0-9._:-]{1,200}$/;
 
 /** The viewer `fullscreen` URL pi-browser's live view gives (an http URL on the loopback address, /v/<id>#t=<token>) for session `tag`, as
  *  a hand-over; undefined for any other shape (a vendor's own URL never is one). */
-export function handoverOf(fullscreen: string, tag: string): LiveHandover | undefined {
+export function handoverOf(fullscreen: string, tag: string, liveHost?: string): LiveHandover | undefined {
   let url: URL;
   try {
     url = new URL(fullscreen);
@@ -45,8 +46,10 @@ export function handoverOf(fullscreen: string, tag: string): LiveHandover | unde
   const id = /^\/v\/([^/]+)$/.exec(url.pathname)?.[1];
   const token = new URLSearchParams(url.hash.slice(1)).get("t") ?? "";
   const port = Number(url.port);
-  if (url.protocol !== "http:" || url.hostname !== LOOPBACK || !Number.isInteger(port) || port < 1 || port > 65_535 || !id || !VIEWER_ID.test(id) || !TOKEN.test(token) || !TAG.test(tag)) return undefined;
-  return { port, id, token, tag };
+  // Loopback, or the runner's own live host when it is on another host than its server (live-reach.ts): no other.
+  const remote = liveHost !== undefined && url.hostname === liveHost;
+  if (url.protocol !== "http:" || (url.hostname !== LOOPBACK && !remote) || !Number.isInteger(port) || port < 1 || port > 65_535 || !id || !VIEWER_ID.test(id) || !TOKEN.test(token) || !TAG.test(tag)) return undefined;
+  return { port, id, token, tag, ...(remote ? { host: liveHost } : {}) };
 }
 
 /** The store's live viewers (store.liveViewers: put and drop under the runner's claim, of() for the server) carry the
@@ -58,10 +61,10 @@ export type LiveViewerStore = Pick<Store, "liveViewers">;
  *  claim is stale and nothing was written. The time is the store's. */
 export async function putLiveViewer(store: LiveViewerStore, sealKey: Buffer, claim: Claim, handover: LiveHandover): Promise<boolean> {
   if (!TAG.test(handover.tag)) throw new Error("a hand-over's tag is not a session's tag");
-  const { tag, port, id, token } = handover;
+  const { tag, port, id, token, host } = handover;
   // Every viewer this file hands over is the browser kind: pi-browser's own viewer. Other computer kinds (desktop, phone)
   // get their own hand-over; the store's viewer table carries the kind so the kinds never collide on a shared tag.
-  return store.liveViewers.put(claim, { kind: "browser", tag, port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, "browser", tag), token) });
+  return store.liveViewers.put(claim, { kind: "browser", tag, ...(host !== undefined ? { host } : {}), port, id, sealed: sealColumn(sealKey, sealedAt.liveViewer(claim.runId, "browser", tag), token) });
 }
 
 /** Session `tag`'s hand-over goes, and no other's; with no tag, every one of the run's (its runner let its sessions go). A
@@ -75,13 +78,15 @@ export async function dropLiveViewer(store: LiveViewerStore, claim: Claim, tag?:
  *  token opened and checked; undefined for anything else, a seal that does not open among them (never a throw). */
 function handoverOfRow(sealKey: Buffer, runId: string, row: Partial<LiveViewerRow>): LiveHandover | undefined {
   if (!(typeof row.kind === "string" && VIEWER_KINDS.includes(row.kind) && Number.isInteger(row.port) && row.port! > 0 && row.port! < 65_536 && VIEWER_ID.test(String(row.id)) && typeof row.tag === "string" && TAG.test(row.tag) && Number.isFinite(row.at) && row.sealed instanceof Uint8Array)) return undefined;
+  // A host that is no host name or address names no viewer.
+  if (row.host !== undefined && !isLiveHost(row.host)) return undefined;
   let token: string;
   try {
     token = unsealColumn(sealKey, sealedAt.liveViewer(runId, row.kind!, row.tag), row.sealed).toString("utf8");
   } catch {
     return undefined;
   }
-  return TOKEN.test(token) ? { kind: row.kind!, port: row.port!, id: row.id!, token, tag: row.tag, at: row.at! } : undefined;
+  return TOKEN.test(token) ? { kind: row.kind!, port: row.port!, id: row.id!, token, tag: row.tag, at: row.at!, ...(row.host !== undefined ? { host: row.host } : {}) } : undefined;
 }
 
 /** Run `runId`'s viewers, of every computer kind, as its live claim handed them over, newest first, each with its kind and
@@ -108,10 +113,15 @@ export const familyReaches = (family: LiveFamily, handover: LiveHandover): boole
 export const viewerLink = (runId: string, handover: LiveHandover, family: LiveFamily = "browser"): string => `/v2/runs/${encodeURIComponent(runId)}/${family}/live/v/${handover.id}#t=${handover.token}`;
 
 /** The run's viewer answers at its port for this session: its page is there (200), not released (404). Bounded: a dead
- *  process's port answers nothing, or another listener's 404. */
-export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boolean> {
+ *  process's port answers nothing, or another listener's 404. A viewer on a runner on another host (its row's host) is
+ *  asked only when `reach` counts that host among this server's runners', with the proxy's proof; else it does not
+ *  answer, and nothing is dialled (live-reach.ts). */
+export function viewerAnswers(handover: LiveHandover, reach?: LiveReach, ms = 1_000): Promise<boolean> {
+  const host = dialHost(handover.host, reach);
+  if (host === undefined) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const req = httpRequest({ host: LOOPBACK, port: handover.port, method: "HEAD", path: `/v/${handover.id}`, timeout: ms }, (res) => {
+    const headers = reach ? { [LIVE_PROOF_HEADER]: liveProof(reach, handover.id) } : {};
+    const req = httpRequest({ host, port: handover.port, method: "HEAD", path: `/v/${handover.id}`, timeout: ms, headers }, (res) => {
       res.resume();
       resolve(res.statusCode === 200);
     });
@@ -121,10 +131,11 @@ export function viewerAnswers(handover: LiveHandover, ms = 1_000): Promise<boole
   });
 }
 
-/** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), whatever
- *  its computer's kind; undefined when none does. */
-async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>): Promise<LiveHandover | undefined> {
-  for (const handover of await readLiveViewers(store, sealKey, runId)) if (await answers(handover)) return handover;
+/** The newest viewer of run `runId` its runner put over the store whose port answers (`answers`, viewerAnswers), among the
+ *  kinds `family`'s address reaches (familyReaches: every kind under the computer family, a browser's alone under the
+ *  browser's); undefined when none does. */
+export async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean>, family: LiveFamily = "computer"): Promise<LiveHandover | undefined> {
+  for (const handover of await readLiveViewers(store, sealKey, runId)) if (familyReaches(family, handover) && (await answers(handover))) return handover;
   return undefined;
 }
 
@@ -132,7 +143,7 @@ async function answeringViewer(store: LiveViewerStore, sealKey: Buffer, runId: s
  *  (/browser/live): the newest its runner put whose port answers (`answers`, viewerAnswers), as `{ viewer }`; undefined
  *  when none does. What run-reads-over-store's runBrowserState takes as its `liveViewer` dep. */
 export async function liveViewerLink(store: LiveViewerStore, sealKey: Buffer, runId: string, answers: (handover: LiveHandover) => Promise<boolean> = viewerAnswers): Promise<{ viewer: string } | undefined> {
-  const handover = await answeringViewer(store, sealKey, runId, answers);
+  const handover = await answeringViewer(store, sealKey, runId, answers, "browser");
   return handover && { viewer: viewerLink(runId, handover, "browser") };
 }
 
@@ -151,18 +162,18 @@ export type ViewerSeam = { put(handover: LiveHandover): Promise<unknown>; drop(t
  *  else: with no seam no viewer is handed over, and nothing is written (never a file in the run's folder, the agent's
  *  workspace). `changed`: a session launched (its viewer put) or released (its own hand-over dropped, never another's);
  *  `reopened`: a kept session's viewer opened again after a restart; `released`: the run let its sessions go, every
- *  hand-over of it dropped. */
-export function sessionHandovers(seam: ViewerSeam | undefined) {
+ *  hand-over of it dropped. `liveHost`: the runner's live host, when it is on another host than its server. */
+export function sessionHandovers(seam: ViewerSeam | undefined, liveHost?: string) {
   const put = async (handover: LiveHandover): Promise<unknown> => seam?.put(handover);
   const drop = async (tag?: string): Promise<void> => seam?.drop(tag);
   return {
     changed: async (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string): Promise<void> => {
       if (change === "released") return drop(row.session.tag);
-      const handover = row.liveView ? handoverOf(row.liveView.fullscreen, row.session.tag) : undefined;
+      const handover = row.liveView ? handoverOf(row.liveView.fullscreen, row.session.tag, liveHost) : undefined;
       if (handover) await put(handover);
     },
     reopened: async (tag: string, fullscreen: string | null | undefined): Promise<void> => {
-      const handover = fullscreen ? handoverOf(fullscreen, tag) : undefined;
+      const handover = fullscreen ? handoverOf(fullscreen, tag, liveHost) : undefined;
       if (handover) await put(handover);
     },
     released: (): Promise<void> => drop(),
@@ -173,7 +184,7 @@ export function sessionHandovers(seam: ViewerSeam | undefined) {
  *  pi-browser's viewer, never the run's port's answer, under this route's own CSP, framed by this server's own origin alone.
  *  The page reads the viewer's id from its path and its token from the fragment, as pi-browser's own does. */
 export const LIVE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
-const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css)$/;
+const LIVE_REST = /^\/(v\/[A-Za-z0-9_-]{22}|viewer\.js|viewer\.css|computer-viewer\.js|computer-viewer\.css)$/;
 export const liveRest = (rest: string): boolean => LIVE_REST.test(rest);
 
 /** The viewer run `runId`'s live route serves at `rest`, read over the store: a viewer's page ("/v/<id>") by its own path
@@ -185,9 +196,13 @@ export async function liveViewerFor(store: LiveViewerStore, sealKey: Buffer, run
   return viewer ? liveViewerById(store, sealKey, runId, viewer) : liveViewer(store, sealKey, runId);
 }
 
-export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string): Promise<void> {
-  const { viewerAssets } = await import("@parcha/pi-browser/live-view");
-  const [type, body] = rest === "/viewer.js" ? ["text/javascript; charset=utf-8", viewerAssets.js] : rest === "/viewer.css" ? ["text/css; charset=utf-8", viewerAssets.css] : ["text/html; charset=utf-8", viewerAssets.html];
+/** `page`: whose page a viewer's path ("/v/<id>") serves, the browser's (pi-browser's viewer) or a desktop's or phone's
+ *  (computer-viewer.ts); each page's two files are under names of their own. */
+export async function serveViewerFile(req: IncomingMessage, res: ServerResponse, rest: string, page: "browser" | "computer" = "browser"): Promise<void> {
+  const { viewerAssets: browser } = await import("@parcha/pi-browser/live-view");
+  const { computerViewerAssets: computer } = await import("./computer-viewer.js");
+  const assets = rest.startsWith("/computer-viewer.") || (rest.startsWith("/v/") && page === "computer") ? computer : browser;
+  const [type, body] = rest.endsWith(".js") ? ["text/javascript; charset=utf-8", assets.js] : rest.endsWith(".css") ? ["text/css; charset=utf-8", assets.css] : ["text/html; charset=utf-8", assets.html];
   res.writeHead(200, { "content-type": type, "content-length": Buffer.byteLength(body), "content-security-policy": LIVE_CSP, "referrer-policy": "no-referrer", "cache-control": "no-store", "x-content-type-options": "nosniff" });
   res.end(req.method === "HEAD" ? undefined : body);
 }
@@ -232,20 +247,25 @@ export class OpenViewers {
 /** The viewer's WebSocket to the run's port: the request line and the handshake's own headers, the Host and Origin the
  *  run's viewer takes (its own), and nothing else of the owner's (no cookie); then both ways, unread. */
 /** Once piping starts, the viewer's socket carries the run's WebSocket stream: nothing is ever written into it after that,
- *  an error only ends it. `onPiping` hears when that starts (the server's own failure handling then destroys, never writes). */
-export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string, onPiping?: () => void): void {
+ *  an error only ends it. `onPiping` hears when that starts (the server's own failure handling then destroys, never writes).
+ *  A viewer on a runner on another host is dialled only when `reach` counts that host among this server's runners', with
+ *  the proxy's proof; else the answer is 404 and nothing is dialled (live-reach.ts). */
+export function proxyLiveUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, handover: LiveHandover, rest: string, onPiping?: () => void, reach?: LiveReach): void {
   const key = String(req.headers["sec-websocket-key"] ?? "");
   const version = String(req.headers["sec-websocket-version"] ?? "");
   if (!/^[A-Za-z0-9+/]{22}==$/.test(key) || version !== "13") return void socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-  const upstream = connect({ host: LOOPBACK, port: handover.port });
+  const host = dialHost(handover.host, reach);
+  if (host === undefined) return void socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+  const proof = reach ? `${LIVE_PROOF_HEADER}: ${liveProof(reach, handover.id)}\r\n` : "";
+  const upstream = connect({ host, port: handover.port });
   let piping = false;
   const end = () => {
     socket.destroy();
     upstream.destroy();
   };
   upstream.once("connect", () => {
-    const own = `${LOOPBACK}:${handover.port}`;
-    upstream.write(`GET ${rest} HTTP/1.1\r\nHost: ${own}\r\nOrigin: http://${own}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+    const own = `${host}:${handover.port}`;
+    upstream.write(`GET ${rest} HTTP/1.1\r\nHost: ${own}\r\nOrigin: http://${own}\r\n${proof}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     if (head.length) upstream.write(head);
     piping = true;
     onPiping?.();

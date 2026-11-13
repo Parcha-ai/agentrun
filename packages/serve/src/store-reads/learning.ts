@@ -25,6 +25,7 @@ import type { AnalyticsFilter } from "./analytics.js";
 import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
+import { GENERAL_UNCHECKED } from "../learn/general.js";
 import type { Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -46,9 +47,9 @@ function answeredOf(row: KeptRow): Pick<Learning, "answered_at" | "job_cost_usd"
   return { answered_at: row.answered_at, job_cost_usd: usdOrNull(row.job_cost_usd), look_back_usd: usdOrNull(row.look_back_usd) };
 }
 
-/** Run `runId`'s learning end; null when the run kept no learning. Proposed while its learning run has not ended. */
-export async function runLearningEnd(store: Store, runId: string): Promise<RunLearningEnd | null> {
-  const kept = await store.learning.proposal(runId);
+/** Run `runId`'s learning end (its newest round's, or round `round`'s); null when the run kept no learning. Proposed while its learning run has not ended. */
+export async function runLearningEnd(store: Store, runId: string, round?: number): Promise<RunLearningEnd | null> {
+  const kept = await store.learning.proposal(runId, round);
   if (!kept) return null;
   const row = (kept.proposal ?? {}) as KeptRow;
   return { ...(await endOfKept(store, kept, row)), ...answeredOf(row) };
@@ -76,20 +77,24 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   // What the grade spent: the graded entry's, or what a grade that failed spent before it did.
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
+  // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
+  // every note. Its provider's error stays in the journal.
+  const skipped = (graded?.unchecked ?? dropped?.unchecked) !== undefined;
+  const withSkip = (detail: string | null) => (skipped ? [detail, GENERAL_UNCHECKED].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
     const verdict = merged.verdict;
     const what = verdict ? learnedOf(keptOf(row.proposal, verdict), verdict) : { learned: [], pending: [], skills: [], workflows: [] };
     return {
-      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
+      state: "merged", reason: null, detail: withSkip(merged.detail), at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
       learned: what.learned, ...(what.pending.length ? { pending: what.pending } : {}), ...(what.skills.length ? { skills: what.skills } : {}), ...(what.workflows.length ? { workflows: what.workflows } : {}),
     };
   }
   const reason = (dropped?.reason ?? null) as Learning["reason"];
   const lost = reason === "grader" ? lostOf(row.proposal) : [];
   return {
-    state: "dropped", reason, detail: dropped?.detail ?? null, at: endedAt,
+    state: "dropped", reason, detail: withSkip(dropped?.detail ?? null), at: endedAt,
     ...(dropped?.problems?.length ? { problems: [...dropped.problems] as Learning["problems"] } : left),
     // The verdict, when one was given; the blobs it read only go with a merge (the server kept them for its merge alone).
     ...(graded ? { verdict: graded.verdict } : {}), ...cost, ...(lost.length ? { lost } : {}),
@@ -193,10 +198,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   for (const run of ended) {
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) === "workflow") continue;
-    const started = await learningStartOfRun(store, run.id);
-    const { looked, grade } = await learningSpendOf(store, run.id);
-    const { path, workflow } = await journalReadsOf(store, run, started);
-    runs.push({ n: runs.length + 1, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) });
+    runs.push(await costRunOf(store, run, runs.length + 1));
   }
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length };
 }
@@ -211,6 +213,18 @@ async function learningSpendOf(store: Store, runId: string): Promise<{ looked: R
   const looked = answeredOf((kept.proposal ?? {}) as KeptRow);
   const learningRun = kept.learningRunId ? await store.runs.get(kept.learningRunId) : undefined;
   return { looked, grade: learningRun && FINAL_STATES.includes(learningRun.state) ? (learningRun.costUsd ?? null) : 0 };
+}
+
+/** One run of the cost series, as number `n` of it: its figures and its path (agentCostOverStore's loop body, and a learning
+ *  batch's row once the run's learning has settled). */
+export async function costRunOf(store: Store, run: NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>, n: number): Promise<CostRun> {
+  const started = await learningStartOfRun(store, run.id);
+  // A run a follow-up opened again (a review's, a person's) learned in rounds: every round's look-back and grade are its
+  // learning (roundsSpendOf), never the newest round's alone.
+  const rounds = await roundsSpendOf(store, run.id);
+  const { looked, grade } = rounds ? { looked: rounds, grade: rounds.grade_usd } : await learningSpendOf(store, run.id);
+  const { path, workflow } = await journalReadsOf(store, run, started);
+  return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, learned_revision: started?.seed ?? null, ...runCostOf(run.costUsd, looked, grade) };
 }
 
 /** What a run's journal tells the agent's learning view and its cost per run: the notes its job opened (`read`, once

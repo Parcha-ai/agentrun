@@ -27,7 +27,11 @@ import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
-import { type ComputerDeps, computerDepsFrom } from "../workspace/computer-deps.js";
+import { claimViewOpener } from "../computer-live.js";
+import { runnerLiveOf } from "../live-reach.js";
+import { envValue, type KeyEnv } from "../key-meta.js";
+import { fauxComputers } from "../faux-computers.js";
+import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { startJanitor } from "../workspace/computer-janitor.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
@@ -129,6 +133,16 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
   return out;
 }
 
+/** The run's computer at its claim, composed once for a runner (workspace/computer-deps.ts computerDepsFrom), the live view
+ *  of a desktop or a phone (computer-live.ts openClaimView) with it: runnerLoop's, runnerBeside's and a test's in-process
+ *  runner's. `own`: where Docker has the data directory and this host's addresses, and a test's kind registry and
+ *  provider loader in place of the computer package's. Under --faux (the runs' environment names the faux model, as a
+ *  --faux server's and a `runner --faux` give it), --faux's computers are beside them, as the server's start check
+ *  reads them (server.ts computerReady): a run on the faux desktop is claimed, and its live view opened, the real way. */
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub"> = {}) =>
+  // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
+  computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...(envValue(env, FAUX_ENV) ? { faux: fauxComputers() } : {}), ...own });
+
 /** The beside-runner's environment (the CLI start's server-and-runner): runEnv of `env` with every test switch this
  *  process inherited taken out (AGENTRUN_SERVE_FAUX*, the harness table: a leftover in a shell would otherwise reach a
  *  run without --faux, as the server's own withoutFaux keeps it from the server), then `switches`, the ones this start
@@ -148,13 +162,17 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
   if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
   const runs = runEnv(env);
-  // The run's computer at its claim, composed once (workspace/computer-deps.ts): none for the runner's place, a box's
-  // computer by the agent's setting, its keys read from the run environment first, then the store's sealed rows; a
-  // Docker computer's mounts by where this process's Docker has the data directory (box-paths.ts), read once.
-  const computers = computerDepsFrom({ env: runs, store, sealKey, dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
+  // The run's computer at its claim, composed once (runnerComputers): none for the runner's place, a box's computer by the
+  // agent's setting, its keys read from the run environment first, then the store's sealed rows; a Docker computer's
+  // mounts by where this process's Docker has the data directory (box-paths.ts), read once; a desktop's or a phone's live
+  // view opened with it.
+  const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
+    // A run's log lines (a learning run's skipped generality check, a sweep that failed) on the runner's stderr, as its
+    // warnings are.
+    log: (line: string) => void process.stderr.write(`agentrun-serve runner: ${line}\n`),
   };
   return { createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) }), computers: computers.computerDeps, env: runs };
 }
