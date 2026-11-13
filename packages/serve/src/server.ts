@@ -3101,10 +3101,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         return send(res, 200, { agent: id, ...cost });
       }
-      case "listLearningEvals":
+      case "listLearningEvals": {
         await needAgent(id);
-        // The held-out tests recorded for the agent (learning-evals.ts), newest first: only ever what was posted.
-        return send(res, 200, { agent: id, evals: await evalsOf(store, id) });
+        // The agent's eval records (learning-evals.ts), newest first, the latest the one shown: only ever what was posted.
+        const evals = await evalsOf(store, id);
+        return send(res, 200, { agent: id, latest: evals[0] ?? null, evals });
+      }
       case "recordLearningEval": {
         const body = await bodyOf(req);
         await needAgent(id);
