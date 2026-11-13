@@ -1,4 +1,4 @@
-# The apply this case runs against: the owner already runs the newest release.
+# The apply this case runs against: the owner already runs the newest version.
 parameters:
   repository: "example-org/widget"
   current_version: "v2.5.0"

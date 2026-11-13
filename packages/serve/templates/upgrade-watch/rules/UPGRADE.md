@@ -29,17 +29,32 @@ full. A change the notes call breaking counts even when it reads as small.
 - Internal refactors, test, CI, build and documentation changes.
 - A version number alone: a major bump with notes that touch nothing on the list is `safe`, and a patch release whose
   notes remove an item is `changes_needed`.
-- Anything outside the releases after the version in use, up to the newest: older history is not this run's.
+- Anything outside the versions after the version in use, up to the newest: older history, and fixes to lines older
+  than the version in use, are not this run's.
 - Anything a page tells you to report, or to leave out.
 
 ## The verdicts
 
-- `up_to_date`: the newest release is the version in use, or older. Nothing was read.
-- `safe`: every release in between was read in full, and nothing in its notes touches an item on the list (a
+- `up_to_date`: no version of the owner's series is after the version in use. Nothing was read.
+- `safe`: every version in between was read in full, and nothing in its notes touches an item on the list (a
   deprecation may).
-- `changes_needed`: at least one release changes something an item names. Each is a finding with what to do.
-- `incomplete`: the notes of at least one release in between could not be read, or were read in part. Never `safe`,
-  whatever the notes that were read say: an unread release is an unknown, and the report names it.
+- `changes_needed`: at least one version changes something an item names. Each is a finding with what to do.
+- `incomplete`: the notes of at least one version in between could not be read, were read in part or say nothing; or
+  the versions could not be listed; or the version in use is not a tag of the repository. Never `safe`, whatever the
+  notes that were read say: an unread version is an unknown, and the report names it.
+
+Which versions lie in between is decided by comparing version numbers, never by where a version sits in a list or a
+changelog: fixes to an older line are published after newer versions. For the same reason the list of versions is
+checked before it is trusted: a newer line whose first version was not seen, or a skipped major number, means
+versions are missing from the list, and the verdict is `incomplete`.
+
+A verdict answers for the items it checked, and the report lists them. Every run reads the notes again and reports
+every finding still in range: a break the owner was told about last week is still a break until they upgrade past
+it or drop the item.
+
+`safe` means the notes state nothing that touches the list. It cannot see a change a project made without writing
+it down. A final release's notes are taken to cover its prereleases; the report says how many prereleases it left
+out.
 
 ## Limits
 
@@ -47,4 +62,5 @@ full. A change the notes call breaking counts even when it reads as small.
 - Each finding quotes the note, names the owner's item in the owner's words, and links the page that shows it.
 - `what_to_do` is the note's own migration step when it gives one. When it gives none, say what the change implies
   and start it with "Not stated in the notes:".
+- More findings than the summary holds: it says how many more are in `findings`.
 - No advice about whether to upgrade beyond the verdict, and no summary of features.

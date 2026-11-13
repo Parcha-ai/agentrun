@@ -1,0 +1,5 @@
+# The apply this case runs against: the version in use is mistyped.
+parameters:
+  repository: "example-org/widget"
+  current_version: "v2.50.0"
+  depends_on: "the serve command's --port and --data flags; POST /v2/agents; the WIDGET_TOKEN environment variable; the export file format (CSV)"
