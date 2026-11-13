@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
+import { kindServed } from "./kinds.js";
 import { type ComputerClient, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerRef, checkLifetime, kindRefusals, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
@@ -43,7 +44,7 @@ export const ATTACH_CLOSE = {
 	idle: 4408,
 	/** The same computer dialed again; the older socket is closed. */
 	replaced: 4409,
-	/** The driver speaks another protocol version: update it. */
+	/** The driver speaks another protocol version, or its hello lacks a group its kind needs (kindServed): update it. */
 	protocol: 4426,
 } as const;
 
@@ -165,6 +166,12 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 	}
 	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
 		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
+	}
+	// A computer that lacks a group its kind needs can't be given to an agent: refused at connect, in the hello's own
+	// words for what it is, never at a run's first call.
+	const lacks = kindServed(hello);
+	if (lacks.length > 0) {
+		return { code: ATTACH_CLOSE.protocol, message: `${paired.name} says it is a ${hello.os} ${hello.kind} but declares no ${lacks.join(", ")}: ${update}` };
 	}
 	return undefined;
 }

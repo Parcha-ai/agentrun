@@ -144,6 +144,16 @@ test("the Core apps and ui cases read the ui fixture on a computer with no exec 
 	}
 });
 
+test("health.kind-served fails a desktop or phone whose hello lacks a group its kind needs, naming the groups; one that declares them passes", async () => {
+	const lacking = await run(fakeUiProvider(), ["health.kind-served"]);
+	assert.equal(statuses(lacking)["health.kind-served"], "fail");
+	assert.match(reasonOf(lacking, "health.kind-served"), /a macos desktop must declare in hello to be given to an agent, which it lacks: expected \[\], got \["screen","input\.pointer","input\.keys"\]/);
+	const phone = await run(fakeUiProvider({ os: "android", kind: "android", groups: ["screen", "apps", "ui"] }), ["health.kind-served"]);
+	assert.match(reasonOf(phone, "health.kind-served"), /a android android .*got \["input\.touch"\]/);
+	const served = await run(fakeUiProvider({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }), ["health.kind-served"]);
+	assert.equal(statuses(served)["health.kind-served"], "pass", reasonOf(served, "health.kind-served"));
+});
+
 test("an expect never matches a secure field's value", async () => {
 	const app = {
 		id: "test.login",

@@ -21,6 +21,7 @@ import {
 	type ComputerOs,
 	type DaemonErrorKind,
 	type Features,
+	type Group,
 	type HelloResult,
 	JSONRPC_CODES,
 	MAX_LINE_BYTES,
@@ -52,6 +53,12 @@ export interface FakeUiOptions {
 	 * background route, lands nowhere, and answers verified false. Default false: such a click is refused denied.
 	 */
 	blindBackground?: boolean;
+	/**
+	 * The groups its hello declares. Default apps and ui, the only methods it answers: a desktop or phone no agent is
+	 * given (health.kind-served fails it by the groups it lacks, and serve refuses it at attach). A test of serve's side
+	 * of attach declares a served kind's groups; the fake still answers only apps and ui.
+	 */
+	groups?: Group[];
 }
 
 /** What one app is doing: its screen, the screens behind it, its fields' values, its switches, its focus, its window. */
@@ -109,6 +116,7 @@ export class FakeUiDriver implements UiSource {
 	readonly apps: ReadonlyMap<string, FakeApp>;
 	readonly os: ComputerOs;
 	readonly kind: ComputerKind;
+	readonly groups: readonly Group[];
 	/** Every method called, in order, with its params: what a test asserts reached the computer. */
 	readonly calls: Array<[string, unknown]> = [];
 	readonly #features: Features;
@@ -123,6 +131,7 @@ export class FakeUiDriver implements UiSource {
 		this.apps = new Map(apps.map((app) => [app.id, app]));
 		this.os = options.os ?? "macos";
 		this.kind = options.kind ?? "desktop";
+		this.groups = options.groups ?? ["apps", "ui"];
 		const touch = this.kind === "android" || this.kind === "ios";
 		this.#features = {
 			"apps.background": touch ? { off: "an app a phone opens comes to the front" } : true,
@@ -143,7 +152,7 @@ export class FakeUiDriver implements UiSource {
 	}
 
 	hello(): HelloResult {
-		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: ["apps", "ui"], screen: SCREEN, osVersion: this.os === "android" ? "15 (API 35)" : "26.1 (25B78)", features: this.#features, device: { maker: "AgentRun", model: "Fake ui driver" } };
+		return { protocol: PROTOCOL_VERSION, version: "fake", os: this.os, kind: this.kind, arch: "arm64", groups: [...this.groups], screen: SCREEN, osVersion: this.os === "android" ? "15 (API 35)" : "26.1 (25B78)", features: this.#features, device: { maker: "AgentRun", model: "Fake ui driver" } };
 	}
 
 	/** The screen an app shows now, by its name; undefined when it is not running. */
@@ -513,7 +522,7 @@ export async function fakeUiConnection(options: FakeUiOptions = {}): Promise<Com
 
 /**
  * A provider whose computers are fake ui drivers in this process, for the conformance suite and for tools that need a
- * provider: groups apps and ui, no daemon, deleted on release. Every computer has the options' apps and features; `make`
+ * provider: the options' groups (apps and ui by default), no daemon, deleted on release. Every computer has the options' apps and features; `make`
  * builds each one's driver (a subclass, for a test of what a broken driver fails).
  */
 export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: FakeUiOptions) => FakeUiDriver = (given) => new FakeUiDriver(given)): ComputerProvider & { drivers: ReadonlyMap<string, FakeUiDriver> } {
@@ -528,7 +537,7 @@ export function fakeUiProvider(options: FakeUiOptions = {}, make: (options: Fake
 		isolation: "machine",
 		os: options.os ?? "macos",
 		daemon: "none",
-		groups: ["apps", "ui"],
+		groups: options.groups ?? ["apps", "ui"],
 		maxLifetimeMs: 60 * 60_000,
 		release: ["delete"],
 	};
