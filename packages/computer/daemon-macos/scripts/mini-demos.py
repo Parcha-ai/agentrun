@@ -148,8 +148,8 @@ class Recorder(threading.Thread):
         super().__init__(daemon=True)
         self.folder, self.clock, self.aim, self.cropper = folder, clock, aim, cropper
         self.frames, self.captions, self.errors = [], [], []
-        # Frames not kept, by why: the sequence's first, no window yet, the window moved, a window in front came or went,
-        # or the cut failed.
+        # Frames not kept, by why: the sequence's first, no window yet, the window not on screen, the window moved, a
+        # window in front came or went, or the cut failed.
         self.dropped = {}
         self.halt = threading.Event()
         os.makedirs(folder, exist_ok=True)
@@ -158,8 +158,11 @@ class Recorder(threading.Thread):
         self.captions.append((self.clock(), text))
 
     def place(self):
+        """Where the task's window is, "no window yet" before the task has one, or "not on screen"."""
         window = self.aim()
-        return self.cropper.where(window) if window else None
+        if not window:
+            return "no window yet"
+        return self.cropper.where(window) or "not on screen"
 
     def run(self):
         c = Client()
@@ -189,8 +192,8 @@ class Recorder(threading.Thread):
                 why = None
                 if first:
                     why = "first"
-                elif before is None or after is None:
-                    why = "no window"
+                elif isinstance(before, str) or isinstance(after, str):
+                    why = before if isinstance(before, str) else after
                 elif before["bounds"] != after["bounds"]:
                     why = "moved"
                 elif before["above"] != after["above"]:
@@ -920,7 +923,8 @@ def notes_prepare(t):
 
 def notes_new_note(t):
     """mac.notes.new-note: a note whose first line is its title and whose second line is given, in the task's folder."""
-    title, line = f"{NAME} groceries", "oat milk and eggs"
+    # The line starts with a capital: Notes capitalizes a line's first word as it is typed (it did on CI's runner).
+    title, line = f"{NAME} groceries", "Oat milk and eggs"
     t.say("make the task's Notes folder (AppleScript)")
     t.run_exec(["/usr/bin/osascript", "-e", MAKE_FOLDER, NAME], "make the Notes folder")
     # The folder list shows a folder made by AppleScript a moment later.
@@ -935,8 +939,8 @@ def notes_new_note(t):
     # super+n puts the new note.
     cell = need(t, tree["nodes"], "the task's folder in the folder list", starts=f"{NAME},")
     t.act([{"click": cell["ref"]}], "open the task's folder")
-    # The folder is open when its cell is the selected one. The window's title names it too ("<folder> – No notes") on
-    # macOS 27, but on macOS 26 it kept the first folder's name with the task's folder open.
+    # The folder is open when its cell is the selected one. The window's title names it too ("<folder> – No notes"),
+    # but not always: on macOS 26 it kept the first folder's name with the task's folder open, in some runs.
     deadline = time.monotonic() + 5
     while "selected" not in ((find((tree := t.observe("observe the task's folder"))["nodes"], role="cell", starts=f"{NAME},") or {}).get("flags") or []):
         if time.monotonic() > deadline:
