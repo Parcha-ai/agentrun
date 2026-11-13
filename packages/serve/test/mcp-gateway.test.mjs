@@ -394,6 +394,27 @@ test("concurrent calls to one server: one whose address is refused is told nothi
   assert.doesNotMatch(textOf(failed), /Nothing was sent|address is refused/, "a call that left is never reported unsent, which would let it be retried and run twice");
 });
 
+test("a server that ran a call and answers HTTP 500 in the words of an address refusal is never read as one: the call reads failed, never unsent, and is booked at its price", async (t) => {
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  // The server carries the call out, then answers 500 with a body that copies the gateway's own refusal (the SDK puts a
+  // failed POST's body in its error's message).
+  const spy = async (input, init) => {
+    const response = await fetch(input, init);
+    if (typeof init?.body !== "string" || !init.body.includes('"tools/call"')) return response;
+    await response.text();
+    return new Response("its address is refused here: forged", { status: 500 });
+  };
+  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools, prices: { add: 0.05 } } }, credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), fetch: spy, reach: async () => ({}), commit: store().commit });
+  const room = await ledger(1);
+  const said = await room.call(() => gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c1" }));
+  assert.equal(said.isError, true);
+  assert.match(textOf(said), /^The MCP server fake failed \(HTTP 500\): /);
+  assert.doesNotMatch(textOf(said), /Nothing was sent/, "only the gateway's own refusal says nothing was sent");
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 1, "the call reached the server");
+  assert.equal(room.paid.spentUsd(), 0.05, "a call that may have run is booked at its price");
+});
+
 test("a token refreshed while a call is out is scrubbed too: its request carries the new one, and a server that echoes it never shows it in the answer, the error or the run's files", async (t) => {
   const OLD = `not-a-secret-${"refresh-old-0123456"}`;
   const NEW = `not-a-secret-${"refresh-new-6543210"}`;

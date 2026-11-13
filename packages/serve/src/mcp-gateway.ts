@@ -137,15 +137,20 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
   return pin;
 }
 
-/** What a request's address refusal says before its reason (the guarded fetch below throws it). */
-const ADDRESS_REFUSED = "its address is refused here: ";
-/** The reason an error, or a cause the SDK wrapped it in, carries for an address refusal: the one request's own, so a
+/** A request's address refused by the guarded fetch below, before anything left: thrown only there, and told apart by
+ *  its class, never by its words. A server's error answer can carry the same words after it ran the call (the SDK puts
+ *  the body of a failed POST in its error's message), and reading them as this refusal would say a call that may have
+ *  run was never sent. */
+class AddressRefused extends Error {
+  constructor(readonly reason: string) {
+    super(`its address is refused here: ${reason}`);
+  }
+}
+/** The reason of the address refusal an error is, or a cause the SDK wrapped it in: the one request's own, so a
  *  refusal of one call is never read as another's. */
 function addressRefusal(error: unknown): string | undefined {
   for (let e: unknown = error, depth = 0; e && depth < 8; e = (e as { cause?: unknown }).cause, depth++) {
-    const message = String((e as { message?: unknown }).message ?? "");
-    const at = message.indexOf(ADDRESS_REFUSED);
-    if (at >= 0) return message.slice(at + ADDRESS_REFUSED.length);
+    if (e instanceof AddressRefused) return e.reason;
   }
   return undefined;
 }
@@ -270,7 +275,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     if (options.reach) {
       const at = await options.reach(input instanceof Request ? input.url : String(input), init.signal ?? AbortSignal.timeout(options.bounds?.connectMs ?? CONNECT_MS));
       if ("refused" in at) {
-        throw new Error(`${ADDRESS_REFUSED}${at.refused}`);
+        throw new AddressRefused(at.refused);
       }
       if (at.send) through = at.send;
     }
