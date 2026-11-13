@@ -13,6 +13,7 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { isObject, unknownFields } from "./validate.js";
 import type { RunPath } from "./learning-cost.js";
+import type { Shown } from "./learning.js";
 import type { Settings } from "./store/store.js";
 
 /** The most rows a batch holds, and the longest a cell, in characters (the whole body is under the server's body limit). */
@@ -63,15 +64,22 @@ export type Row = {
   review?: string;
   /** The review was sent to the run (the run's commands hold it: a resume that finds it there sends none). */
   reviewed?: boolean;
+  /** The path the run's job took, read when it answered, before its review: whoever wrote the run's answer (the review's
+   *  turn adds a message, and a run a learned workflow answered alone would read handed_back after it). */
   path?: RunPath;
   cost_usd?: number | null;
   learning_usd?: number | null;
   total_usd?: number | null;
   learned?: Lessons;
-  /** The commit of the agent's learning folder the run's learning merged, when it did. */
+  /** The commit of the agent's learning folder the run's learning last merged, when it did. */
   merged?: string | null;
+  /** Each round of the run's learning that merged workflows (the job's, the review's), in order: its commit and its
+   *  workflows. The header's `revisions` (not shown in the row). */
+  revisions?: Revision[];
   error?: string;
 };
+/** A merge that touched learned workflows: its commit of the agent's learning folder and the workflows it added or changed. */
+export type Revision = { commit: string | null; workflows: string[] };
 
 export type Header = {
   id: string;
@@ -108,8 +116,19 @@ export type Header = {
 
 /** What the loop reads of a run, from the server's view of it. */
 export type RunSnap = { status: string; ended_at: string | null; answer: string | null; cost_usd: number | null; learning_state: string | null; error: string | null };
-/** What a finished run's learning and cost say (store-reads/learning.ts costRunOf, runLearningEnd). */
-export type Figures = { path: RunPath; cost_usd: number | null; learning_usd: number | null; total_usd: number | null; learned: Lessons; merged: string | null };
+/** What a finished run's learning and cost say (store-reads/learning.ts costRunOf, runLearningEnd): figuresOf. */
+export type Figures = { path: RunPath; cost_usd: number | null; learning_usd: number | null; total_usd: number | null; learned: Lessons; merged: string | null; revisions: Revision[] };
+/** A round's learning end as figuresOf reads it (store-reads/learning.ts RunLearningEnd): null for a round that kept none. */
+type RoundEnd = { merged?: string | null; learned?: readonly { name: string }[]; skills?: readonly { name: string }[]; workflows?: readonly { name: string }[] } | null;
+/** A run's figures from its cost (costRunOf) and the end of each round its learning kept, in order (the job's, then each
+ *  follow-up's, a review's): what every round learned, each name once; the last merge's commit; and each round that merged
+ *  workflows as a revision of its own, with its own commit (a round dropped is none, and moves no other round's commit). */
+export function figuresOf(cost: Pick<Figures, "path" | "cost_usd" | "learning_usd" | "total_usd">, ends: readonly RoundEnd[]): Figures {
+  const names = (pick: (e: NonNullable<RoundEnd>) => readonly { name: string }[] | undefined) => [...new Set(ends.flatMap((e) => (e ? (pick(e) ?? []).map((x) => x.name) : [])))];
+  const revisions = ends.flatMap((e) => (e?.workflows?.length ? [{ commit: e.merged ?? null, workflows: [...new Set(e.workflows.map((w) => w.name))] }] : []));
+  const merged = [...ends].reverse().find((e) => e?.merged)?.merged ?? null;
+  return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged, revisions, learned: { notes: names((e) => e.learned), skills: names((e) => e.skills), workflows: names((e) => e.workflows) } };
+}
 
 /** Everything the loop needs of the server, injected: the run-create path that POST /agents/{id}/runs checks and starts by,
  *  the message path, the run's view, its figures. */
@@ -130,6 +149,11 @@ export interface BatchHost {
   /** A run's figures as booked (costRunOf): what it has spent so far, its learning's every round included (a run still going
    *  counts its live cost), so the live figure and the booked one are one function. */
   figures(runId: string): Promise<Figures | undefined>;
+  /** What a read shows of agent `agentId`'s batches: the learning routes' cut as it is now (server.ts learningShown: the
+   *  server's secrets and the agent's sign-in pointers, live and forgotten), every read's, so a value saved as a secret
+   *  after its row finished is cut too. Throws (403, WITHHELD_LEARNING) when a pointer can't be read here: withheld,
+   *  never shown over a shorter cut. */
+  shown(agentId: string): Promise<Shown>;
   /** How often a wait looks, the longest a row waits on its run (and its learning) before it is cancelled, and the longest
    *  an ending row waits for its run and grade to stop (past it, its cost is not known). */
   pollMs?: number;
@@ -245,6 +269,18 @@ const settled = (s: RunSnap) => TERMINAL.has(s.status) && s.ended_at !== null &&
  *  holds, before the batch ends stopped on the error's words. */
 const LOOP_TRIES = 5;
 const words = (error: unknown): string => String((error as Error)?.message ?? error).slice(0, 400);
+/** A row as a read shows it: no input (its run holds it), no review words, no revisions (the header's), and every text
+ *  that can hold a value through `cut` (a lesson's name as the learning routes show one: notesView). */
+const shownLessons = (l: Lessons, cut: Shown): Lessons => ({ notes: l.notes.map(cut.text), skills: l.skills.map(cut.name), workflows: l.workflows.map(cut.name) });
+function shownRow({ input: _input, review: _review, revisions: _revisions, ...r }: Row, cut: Shown) {
+  return {
+    ...r,
+    reference: cut.text(r.reference),
+    ...(typeof r.answer === "string" ? { answer: cut.text(r.answer) } : {}),
+    ...(r.learned ? { learned: shownLessons(r.learned, cut) } : {}),
+    ...(r.error === undefined ? {} : { error: cut.text(r.error) }),
+  };
+}
 const batchStage = (h: Header): keyof typeof BATCH_MOVES => (h.status !== "running" ? h.status : h.ending ? "ending" : "running");
 
 /** A batch's loop in this process: `cancelled` (a person's cancel: the batch ends cancelled), `halted` (the server stopping:
@@ -274,6 +310,8 @@ export class LearningBatches {
     if (Array.isArray(checked)) throw invalid(checked);
     const learns = await this.host.learning(agentId);
     if (!learns.learns) throw new ApiError("agent_not_runnable", `The agent ${agentId} does not learn here: ${learns.why}`, { details: { learning: false } });
+    // A batch whose progress would be withheld is never started.
+    await this.host.shown(agentId);
     let made!: Header;
     // The index and the running check are one step, so two creates never both start (one process: a queue, not a lock).
     const step = this.index.then(async () => {
@@ -306,31 +344,46 @@ export class LearningBatches {
   }
 
   /** A batch whole as progress: its header, what is under way and what it costs now, and its rows (no input: the run holds
-   *  it). The cost now is the finished rows' and the live row's figures so far, by the function that books it (figures). */
+   *  it), every text through the agent's cut now (host.shown). The cost now is the finished rows' and the live row's figures
+   *  so far, by the function that books it (figures). */
   async read(agentId: string, id: string): Promise<Record<string, unknown>> {
     const h = await this.need(agentId, id);
+    const cut = await this.host.shown(agentId);
     const rows: Row[] = [];
     for (let n = 1; n <= h.total; n++) rows.push(await this.row(id, n));
     const live = rows.find((r) => LIVE.has(stageOf(r)) && r.run_id);
     const inflight = live?.run_id ? ((await this.host.figures(live.run_id).catch(() => undefined))?.total_usd ?? null) : 0;
-    return { ...this.shown(h), current: live?.n ?? null, cost_usd: inflight === null || h.unknown_cost_rows ? null : usd(h.spent_usd + inflight), rows: rows.map(({ input: _input, review: _review, ...r }) => r) };
+    return { ...this.shown(h, cut), current: live?.n ?? null, cost_usd: inflight === null || h.unknown_cost_rows ? null : usd(h.spent_usd + inflight), rows: rows.map((r) => shownRow(r, cut)) };
   }
 
-  /** A batch as the header says it, for a list (no rows). A finished row whose cost is not known makes the cost, and what is
-   *  left of the cap, unknown (null): the known part is never shown as the whole. */
-  private shown(h: Header) {
-    const { ending: _ending, ...shown } = h;
+  /** A batch as the header says it, for a list (no rows), its text through `cut`. A finished row whose cost is not known
+   *  makes the cost, and what is left of the cap, unknown (null): the known part is never shown as the whole. */
+  private shown(h: Header, cut: Shown) {
+    const { ending: _ending, error, ...shown } = h;
     const known = h.unknown_cost_rows === 0;
-    return { ...shown, cost_usd: known ? h.spent_usd : null, remaining_usd: known ? usd(Math.max(0, h.max_cost_usd - h.spent_usd)) : null };
+    return {
+      ...shown,
+      inputs: h.inputs.map(cut.name),
+      answer: cut.name(h.answer),
+      answer_field: h.answer_field === null ? null : cut.name(h.answer_field),
+      lessons: shownLessons(h.lessons, cut),
+      revisions: h.revisions.map((r) => ({ ...r, workflows: r.workflows.map(cut.name) })),
+      ...(error === undefined ? {} : { error: cut.text(error) }),
+      cost_usd: known ? h.spent_usd : null,
+      remaining_usd: known ? usd(Math.max(0, h.max_cost_usd - h.spent_usd)) : null,
+    };
   }
 
   async list(agentId: string): Promise<{ batches: ReturnType<LearningBatches["shown"]>[] }> {
+    const cut = await this.host.shown(agentId);
     const out = [];
-    for (const id of (await this.ids(agentId)).slice(-20).reverse()) { const h = await this.header(id); if (h) out.push(this.shown(h)); }
+    for (const id of (await this.ids(agentId)).slice(-20).reverse()) { const h = await this.header(id); if (h) out.push(this.shown(h, cut)); }
     return { batches: out };
   }
 
-  /** A person's cancel: the batch's loop ends it cancelled, its live row's run stopped and booked first; answers once it has. */
+  /** A person's cancel: the batch's loop ends it cancelled, its live row's run stopped and booked first; answers once it has,
+   *  as a read does. The cancel stands even when its answer is withheld (a 403 from the cut): stopping spend never waits on
+   *  a sign-in. */
   async cancel(agentId: string, id: string): Promise<Record<string, unknown>> {
     const h = await this.need(agentId, id);
     if (h.status === "running" && !this.halting) {
@@ -502,7 +555,9 @@ export class LearningBatches {
       if (snap.status === "input_required") return this.fail(h, row, "the run waits on a person: a batch's runs ask no one", loop);
       if (snap.status !== "completed") return this.fail(h, row, snap.error ?? `the run ${snap.status}`, loop);
       const whole = answerValue(snap.answer, h.answer_field);
-      row = await this.move(h.id, row, "answered", { answer: whole === null ? null : whole.slice(0, ANSWER_SHOWN), right: matches(whole, row.reference), review_after: snap.ended_at, review: reviewText(row.reference, whole) });
+      // The path is the job's, read now, before the review's message is in the run (the run's answer is the job's).
+      const job = await this.host.figures(runId);
+      row = await this.move(h.id, row, "answered", { answer: whole === null ? null : whole.slice(0, ANSWER_SHOWN), right: matches(whole, row.reference), review_after: snap.ended_at, review: reviewText(row.reference, whole), ...(job ? { path: job.path } : {}) });
     }
 
     // The review: once (a resume finds it in the run's commands), to a completed run whose learning has settled.
@@ -525,7 +580,7 @@ export class LearningBatches {
     if (back.status === "input_required") return this.fail(h, row, "the run waits on a person after its review: a batch's runs ask no one", loop);
     if (back.status !== "completed") return this.fail(h, row, `the review's turn ${back.status === "cancelled" ? "was cancelled" : "failed"}${back.error ? `: ${back.error}` : ""}`, loop);
     const f = await this.host.figures(runId);
-    await this.move(h.id, row, "done", f ? { path: f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, total_usd: f.total_usd, learned: f.learned, merged: f.merged } : {});
+    await this.move(h.id, row, "done", f ? { cost_usd: f.cost_usd, learning_usd: f.learning_usd, total_usd: f.total_usd, learned: f.learned, merged: f.merged, revisions: f.revisions } : {});
     return this.tally(h);
   }
 
@@ -547,7 +602,7 @@ export class LearningBatches {
       }
     }
     const f = runId && known ? await this.host.figures(runId).catch(() => undefined) : undefined;
-    await this.move(h.id, row, "failed", { error: error.slice(0, 400), total_usd: runId ? (f?.total_usd ?? null) : 0, ...(f ? { path: f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, learned: f.learned, merged: f.merged } : {}) });
+    await this.move(h.id, row, "failed", { error: error.slice(0, 400), total_usd: runId ? (f?.total_usd ?? null) : 0, ...(f ? { path: row.path ?? f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, learned: f.learned, merged: f.merged, revisions: f.revisions } : {}) });
     return this.tally(h);
   }
 
@@ -567,7 +622,7 @@ export class LearningBatches {
       spent += row.total_usd ?? 0;
       if (row.path) next.paths[row.path]++;
       for (const kind of ["notes", "skills", "workflows"] as const) for (const name of row.learned?.[kind] ?? []) if (!next.lessons[kind].includes(name)) next.lessons[kind].push(name);
-      if (row.learned?.workflows.length) next.revisions.push({ row: row.n, commit: row.merged ?? null, workflows: row.learned.workflows });
+      for (const r of row.revisions ?? []) next.revisions.push({ row: row.n, commit: r.commit, workflows: r.workflows });
     }
     next.spent_usd = usd(spent);
     if (h.status === "running") await this.save(next);

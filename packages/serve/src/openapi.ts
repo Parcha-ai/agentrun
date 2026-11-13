@@ -1059,10 +1059,10 @@ const BATCH_ROW = closedWith(
     answer: { ...NULL_STRING, description: "The run's answer as compared (the `answer_field` of a JSON answer when the batch names one), cut at 2000 characters (compared whole: the review quotes it to 2000 characters and says when it was cut); null when it gave none." },
     right: { type: "boolean", description: "Whether the answer equals the reference once trimmed, case-folded and whitespace-collapsed (two numbers by value). A display: the learning grade is the judge." },
     reviewed: { type: "boolean", description: "The reference was sent to the run as a review, once." },
-    path: { enum: [...RUN_PATHS], description: "The path the run took (GET /agents/{agent_id}/learning/cost's `path`)." },
+    path: { enum: [...RUN_PATHS], description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
     cost_usd: COST_USD("The job's own cost."), learning_usd: COST_USD("What learning cost for the run."), total_usd: COST_USD("Their sum; for a failed row, what its run cost."),
     learned: { ...BATCH_LESSONS, description: "The notes, skills and workflow drafts the run's learning kept, by name." },
-    merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning merged." },
+    merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning last merged (its job's round or its review's)." },
     error: { type: "string", description: "Why a failed row failed." },
   },
 );
@@ -1080,7 +1080,7 @@ const BATCH_HEAD = {
   spent_usd: { type: "number", minimum: 0, description: "The finished rows' total cost." }, unknown_cost_rows: { ...COUNT, description: "Finished rows whose cost is not known (the batch stops on the first)." },
   paths: closed({ agent: COUNT, handed_back: COUNT, workflow: COUNT }, "Done rows by the path their run took."),
   lessons: { ...BATCH_LESSONS, description: "What the batch's learning kept, each name once." },
-  revisions: { type: "array", items: closed({ row: { type: "integer", minimum: 1 }, commit: NULL_STRING, workflows: { type: "array", items: { type: "string" } } }), description: "The merges that touched learned workflows: the row whose learning made it, the commit of the agent's learning folder, and the workflows." },
+  revisions: { type: "array", items: closed({ row: { type: "integer", minimum: 1 }, commit: NULL_STRING, workflows: { type: "array", items: { type: "string" } } }), description: "The merges that touched learned workflows, in order, one per merge (a row's job and its review each learn in a round of their own): the row whose learning made it, that merge's commit of the agent's learning folder, and the workflows it added or changed." },
   cost_usd: { type: ["number", "null"], minimum: 0, description: "The batch's cost so far; in a progress read, the row in flight's too, as its row will book it: its run's cost so far and its learning's, grades that ended included. Null when a finished row's cost, or the row in flight's, is not known: the known part is never shown as the whole." },
   remaining_usd: { type: ["number", "null"], minimum: 0, description: "What is left of the cap: `max_cost_usd` less `spent_usd`; null when a finished row's cost is not known." },
 };
@@ -1138,26 +1138,26 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: closedWith(
         { inputs: { type: "array", items: { type: "string" }, minItems: 1, description: "The columns each run is given." }, answer: { type: "string", description: "The column holding the reference answer." }, rows: { type: "array", minItems: 1, maxItems: BATCH_ROWS_MAX, items: { type: "object", additionalProperties: { type: "string" } }, description: "Each row: {column: text}, with every input column and the answer column." }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped." } },
         { answer_field: { type: "string", description: "A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer." }, effort: { type: "string", description: "The runs' effort, as a run's." } }) } } },
-      responses: { "202": { ...json(LEARNING_BATCH, "The batch, started."), headers: { Location: { schema: { type: "string" } } } }, ...errors(400, 401, 404, 409, 413, 422, 429, 500) }, ...BATCH_MARK,
+      responses: { "202": { ...json(LEARNING_BATCH, "The batch, started."), headers: { Location: { schema: { type: "string" } } } }, ...errors(400, 401, 403, 404, 409, 413, 422, 429, 500) }, ...BATCH_MARK,
     },
     get: {
       operationId: "listLearningBatches", tags: ["agents"], summary: "The agent's learning batches, latest first",
-      description: "The latest 20, each as its header (no rows).",
-      parameters: [AGENT_ID], responses: { "200": json(closed({ batches: { type: "array", items: LEARNING_BATCH_SUMMARY } }), "The batches."), ...errors(401, 404, 429, 500) }, ...BATCH_MARK,
+      description: "The latest 20, each as its header (no rows). Every text is cut as the agent's learning reads are: 403 when they are withheld.",
+      parameters: [AGENT_ID], responses: { "200": json(closed({ batches: { type: "array", items: LEARNING_BATCH_SUMMARY } }), "The batches."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
     },
   },
   "/agents/{agent_id}/learning/batches/{batch_id}": {
     get: {
       operationId: "getLearningBatch", tags: ["agents"], summary: "A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took",
-      description: "Read from the store: it holds after a page reload or a server restart (a running batch takes up again). Each row's input is not repeated here: its run holds it.",
-      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 404, 429, 500) }, ...BATCH_MARK,
+      description: "Read from the store: it holds after a page reload or a server restart (a running batch takes up again). Each row's input is not repeated here: its run holds it. Every text (an answer, a reference, an error, a lesson's name) is cut of the server's secrets and the agent's sign-in pointers as they are now, as GET /agents/{agent_id}/learning cuts them, and withheld the same way (403) when one of the agent's sign-ins can't be read here.",
+      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
     },
   },
   "/agents/{agent_id}/learning/batches/{batch_id}/cancel": {
     post: {
       operationId: "cancelLearningBatch", tags: ["agents"], summary: "Cancel a running learning batch",
-      description: "Cancels the run in flight and ends the loop; rows done stay done, and the row in flight is failed. A batch that already ended is answered as it is. Answers the batch once its loop has ended.",
-      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 404, 429, 500) }, ...BATCH_MARK,
+      description: "Cancels the run in flight and ends the loop; rows done stay done, and the row in flight is failed. A batch that already ended is answered as it is. Answers the batch once its loop has ended, cut as a read is; a 403 (withheld) answers a cancel that stood.",
+      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
     },
   },
   "/agents/{agent_id}/learning/evals": {

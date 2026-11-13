@@ -91,7 +91,7 @@ import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentCostOverStore, agentLearningOverStore, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
-import { LearningBatches, type RunSnap } from "./learning-batch.js";
+import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
@@ -1317,7 +1317,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
   };
   // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
-  // state is the store's settings, so a batch still running when the server stopped takes up again as it starts.
+  // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
+  // (create's answer, read, list, cancel) cut its text as the learning routes do (learningShown, below).
   const batches = new LearningBatches({
     settings: store.settings,
     learning: async (agentId) => {
@@ -1347,14 +1348,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A run still going has no stored cost yet (its column is written at its end): its live cost, from its view, stands in,
       // so a batch's cost now and the cost it books are costRunOf both.
       const run = FINAL_STATES.includes(stored.state) ? stored : { ...stored, costUsd: (await batchRunView(runId))?.cost_usd ?? null };
-      // Every round the run kept (a review follow-up opens a round of its own): what each one learned, the newest's merge.
+      // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
       const newest = await store.learning.proposal(runId);
       const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
-      const cost = await costRunOf(store, run, 0);
-      const end = ends.at(-1);
-      const names = (pick: (e: NonNullable<typeof end>) => readonly { name: string }[] | undefined) => [...new Set(ends.flatMap((e) => (e ? (pick(e) ?? []).map((x) => x.name) : [])))];
-      return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged: end?.merged ?? null, learned: { notes: names((e) => e.learned), skills: names((e) => e.skills), workflows: names((e) => e.workflows) } };
+      return figuresOf(await costRunOf(store, run, 0), ends);
     },
+    // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
+    shown: (agentId) => learningShown(agentId),
     ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
   });
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
