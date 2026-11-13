@@ -118,6 +118,11 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
+  const crashingJournal = (journal) => new Proxy(journal, { get: (target, key) => (key === "commit" ? async (...args) => {
+    const result = await target.commit(...args);
+    if (!crashed && JSON.stringify(args[0]).includes("agentrun.workflow_first")) crash();
+    return result;
+  } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
   // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
   // store's own rows, every other read the store's.
   // `pastFromSecondClaim`: the money rule reads them only once a first claim has built its spec (a claim after a crash).
@@ -141,17 +146,18 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
       return gate ? gate(call) : undefined;
     } };
   };
-  // `crashOnHandback`: the first claim dies as the handback is cut of secrets (after the workflow's end is on the record,
-  // before the agent is sent anything); the run is claimed again.
+  // `crashOnHandback`: the first runner is closed as the workflow's end reaches the record (its claim's signal aborts before
+  // the handback goes to the agent, so that claim returns interrupted with the session still new); a second runner takes the
+  // run, and the money rule (past runs, `pastFromSecondClaim`) now stops the workflow.
   let crashed = false;
-  const redact = (text) => {
-    if (crashOnHandback && !crashed && /ran first on this job and handed it back to you/.test(text)) {
-      crashed = true;
-      throw new Error("the claim died before the handback was sent");
-    }
-    return text;
+  // The store the runners hold: its journals tell the crash when the workflow's end is committed.
+  const runnerStore = crashOnHandback ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const crash = () => {
+    crashed = true;
+    void runner.close();
+    runner = startRunner({ store: runnerStore, name: "runner-b", ...TIMING, createLoop: createAdapterLoop(specOf) });
   };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, ...(crashOnHandback ? { redact } : {}), createLoop: createAdapterLoop(specOf) });
+  runner = startRunner({ store: runnerStore, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const settled = (states) => until(async () => {
     const now = await server.runs.get(RUN);
     return states.includes(now.state) && now.runner === null && now;
@@ -394,12 +400,17 @@ test("costLineOf: the newest 10 served runs at the digest against the agent's by
   assert.equal(workflowCostsOf([...Array.from({ length: 10 }, (_, i) => served(i, 0.1)), run(10, { path: "agent" }, 0.2)])[0].state, "serving", "under the line");
 });
 
-// A workflow whose answer is a string (answerFlow's is a number): its answer is what the node submits, as long as a test likes.
-const textFlow = { ...answerFlow, schemas: { ...answerFlow.schemas, Answer: { type: "object", required: ["answer", "sure"], properties: { answer: { type: "string" }, sure: { type: "boolean" } } } } };
+// A workflow whose one output field is a string (answerFlow's output is a record of a number and a flag, so JSON): the tool hands back
+// that string as it is, whatever the node submits, as long as a test likes.
+const textFlow = {
+  ...answerFlow,
+  schemas: { ...answerFlow.schemas, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } } },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question in words.", out: "Answer", as: "answer", tier: "fast" }] },
+};
 const TEXT_FLOWS = [{ name: "answer", description: "Answers a question in words", workflow: textFlow }];
 
 test("a workflow's answer the tool cut goes back to the agent: no agent turn could recover its ending, so the run never ends on it", async (t) => {
-  const { row, entries, gateway, timeline } = await piRun(t, { flows: TEXT_FLOWS, answer: "x".repeat(LEARNED_CLIP + 5_000) });
+  const { row, entries, gateway, timeline } = await piRun(t, { flows: TEXT_FLOWS, answer: "a long answer. ".repeat(Math.ceil((LEARNED_CLIP + 5_000) / 15)) });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
   assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
@@ -409,7 +420,7 @@ test("a workflow's answer the tool cut goes back to the agent: no agent turn cou
 });
 
 test("a workflow's answer under the cut is the run's own answer", async (t) => {
-  const { row, entries, gateway } = await piRun(t, { flows: TEXT_FLOWS, answer: "x".repeat(LEARNED_CLIP - 1_000) });
+  const { row, entries, gateway } = await piRun(t, { flows: TEXT_FLOWS, answer: "a long answer. ".repeat(Math.floor((LEARNED_CLIP - 1_000) / 15)) });
   assert.equal(row.metrics?.path, "workflow", JSON.stringify(row.metrics));
   assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
   assert.equal(gateway.requests.filter((request) => !isNode(request)).length, 0);
@@ -430,7 +441,7 @@ test("an agent with an output schema: a workflow's JSON answer is fenced as its 
 });
 
 test("a claim that dies after the workflow handed the job back: the next claim sends the handback even when the money rule now stops the workflow", async (t) => {
-  const { row, gateway, entries } = await piRun(t, { sure: false, crashOnHandback: true, past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastFromSecondClaim: true });
+  const { row, gateway, entries, claims } = await piRun(t, { sure: false, crashOnHandback: true, past: pastRuns({ servedUsd: 0.5, byHandUsd: 0.2 }), pastFromSecondClaim: true });
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"], "one step on the record: the money rule's stop added none");
   assert.equal(gateway.requests.filter(isNode).length > 0, true, "the workflow ran once, on the first claim");
@@ -505,7 +516,7 @@ async function cliRun(t, { sure = true } = {}) {
   const gw = await startFauxGateway({ call: ({ body }) => {
     const offered = (body?.tools ?? []).some((tool) => tool?.name === "submit");
     const answered = (body?.messages ?? []).some((m) => Array.isArray(m.content) && m.content.some((b) => b?.type === "tool_result")) || (body?.input ?? []).some((item) => item?.type === "function_call_output");
-    return offered && !answered ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined;
+    return offered && !answered ? { name: "submit", input: { value: { answer: sure ? 42 : 41, sure } } } : undefined;
   } });
   let runner;
   let reader;
