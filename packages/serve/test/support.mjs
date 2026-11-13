@@ -16,6 +16,7 @@ import { startServe } from "../dist/index.js";
 import { dockerPathsForRuns } from "../dist/box-paths.js";
 import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
+import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { readRunDbSync } from "../dist/run-db.js";
 import { resolve } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -297,7 +298,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, failRunsUpdate, fauxVendorApi, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -310,9 +311,22 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       return (...args) => (dead ? new Promise((_, reject) => frozen.push(reject)) : value.apply(target, args));
     },
   });
+  // A store-write fault (`failRunsUpdate(claim, patch)`, a test's): a runs.update it answers true for throws, writing
+  // nothing, as a store that cannot be written does. The test's predicate counts its own hits to prove the fault fired.
+  const runsOf = (runs) => new Proxy(runs, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "update" || !failRunsUpdate) return typeof value === "function" ? value.bind(target) : value;
+      return async (claim, patch, ...rest) => {
+        if (failRunsUpdate(claim, patch)) throw new Error("the store can't be written (a test's fault)");
+        return value.call(target, claim, patch, ...rest);
+      };
+    },
+  });
   const store = new Proxy(opened, {
     get(target, prop) {
       const value = Reflect.get(target, prop, target);
+      if (prop === "runs" && failRunsUpdate) return runsOf(value);
       if (prop === "journal") return (...args) => journalOf(value.apply(target, args));
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -328,7 +342,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   // the test gave its server (fauxMonid, fauxParallel, fauxJev, harnessTable…).
   // A test's harness table reaches the runner with or without the faux model (fauxEnvOf hands it either way): a CLI
   // harness's run on a gateway or a vendor's fake runs on the table's harness, never on the real CLI.
-  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }) };
+  // `fauxVendorApi` (a test's): the module whose default export is the fetch the runner's own sign-in calls to a vendor
+  // (a context or profile made at a launch, tools.ts) go through; the check fakes (fauxBrowserbase, fauxKernel) are the server's.
+  const env = { ...withoutFaux(process.env), ...fauxEnvOf({ ...switches, faux }), ...(fauxVendorApi ? { [FAUX_VENDOR_API_ENV]: resolve(fauxVendorApi) } : {}) };
   let seal;
   try {
     seal = await bootSealKey(store, data, { role: "runner" });

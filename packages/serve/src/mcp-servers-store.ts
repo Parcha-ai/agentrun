@@ -171,7 +171,7 @@ export class McpServersOverStore {
       const kept = await this.need(name);
       const url = new URL(kept.url);
       const send = await this.reached(kept.auth, url, stop);
-      return marked(kept.url, await this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop));
+      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop), stop));
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
@@ -182,7 +182,23 @@ export class McpServersOverStore {
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
     const send = await this.reached(auth.type, url, stop);
-    return marked(url.href, await this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop), stop));
+  }
+
+  /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
+   *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
+   *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
+  private async signInNoted(url: URL, listing: Promise<Listed>, stop?: AbortSignal): Promise<Listed> {
+    try {
+      return await listing;
+    } catch (error) {
+      const details = error instanceof ApiError && error.code === "auth_required" ? (error.extra.details as { auth?: string; oauth?: unknown } | undefined) : undefined;
+      if (details?.auth === "oauth") {
+        const registration = await this.signIns.registration(url, stop);
+        if (registration) details.oauth = registration;
+      }
+      throw error;
+    }
   }
 
   /** PUT: preview, then keep the server with the tools listed. A body with no credential keeps the sealed one, while the
