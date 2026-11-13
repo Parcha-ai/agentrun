@@ -90,6 +90,9 @@ export type RunLearningRead = Answer<"getRunLearning">;
 /** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
  *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
 export type LearningCost = Answer<"getLearningCost">;
+/** The held-out tests recorded for an agent (GET /v2/agents/{id}/learning/evals), newest first. */
+export type LearningEvals = Answer<"listLearningEvals">;
+export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran. */
 /** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
@@ -99,6 +102,10 @@ export type LearningBatchStart = Body<"createLearningBatch">;
 export type LearningBatchRow = LearningBatch["rows"][number];
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
+/** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
+ *  workflow.json, oldest first, each with the text it had then. */
+export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
+export type WorkflowRevision = WorkflowRevisions["revisions"][number];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];

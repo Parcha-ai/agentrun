@@ -89,17 +89,20 @@ few minutes.
 
 ## The two grants (a person, once)
 
-Connect with Screen Sharing (`vnc://<mini's tailnet name>`). In the Computerd window:
+Connect with Screen Sharing (`vnc://<mini's tailnet name>`). The Computerd window shows a Computerd tile for each
+System Settings pane that gives a grant, and opens the first pane still missing beside it:
 
-1. **Click each Allow….** Each one adds Computerd to its list and opens its pane.
-2. **Privacy & Security > Accessibility:** switch Computerd on. This also covers Post Event.
-3. **Privacy & Security > Screen & System Audio Recording:** switch Computerd on.
-4. **The window closes itself** once every grant is on, so it never covers the windows the demos work in.
-5. **Menu bar ⌘D > Grants and Pairing…, then Raise it now,** and answer Allow. The screen capture alert then never
+1. **Drag the tile into the pane's list** (Privacy & Security > Accessibility, called Device Control and Data Access
+   on macOS 27). Its rows tick, Accessibility and Post Event, and the next pane opens.
+2. **Drag the other tile into that list** (Privacy & Security > Screen & System Audio Recording). A click on a tile opens
+   its pane again.
+3. **The window says every grant is in and closes itself,** so it never covers the windows the demos work in.
+4. **Menu bar ⌘D > Grants and Pairing…, then Raise it now,** and answer Allow. The screen capture alert then never
    appears in the middle of a task. A window opened this way stays until you close it.
 
 The script notices the grants and goes on to the smoke check by itself. Opened by a person instead of the script, the
-window also waits for pairing: it closes once the Mac is paired, or after **Not now**.
+app shows its onboarding window once the grants are in, which waits for pairing: it closes once the Mac is paired, or
+after **Not now**.
 
 ## The demo tasks
 

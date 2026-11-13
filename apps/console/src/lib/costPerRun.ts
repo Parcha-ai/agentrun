@@ -38,6 +38,17 @@ export function niceTop(max: number): number {
   return [1, 2, 2.5, 5, 10].map((k) => k * p).find((v) => v >= max * (1 - 1e-9))!;
 }
 
+/** The y axis' ticks from 0 to `top` (a niceTop): a clean step (1, 2 or 5 times a power of ten, 2.5 for a top of 10), four
+ *  or five steps, never a quarter of 5 ($0.00125). */
+export function yTicksOf(top: number): number[] {
+  const p = 10 ** Math.floor(Math.log10(top) + 1e-9);
+  const lead = Math.round((top / p) * 10) / 10;
+  const step = ({ 1: 0.25, 2: 0.5, 2.5: 0.5, 5: 1, 10: 2.5 } as Record<number, number>)[lead] ?? top / 4;
+  const ticks: number[] = [];
+  for (let i = 0; i * step * p <= top * (1 + 1e-9); i++) ticks.push(Math.round(i * step * p * 1e12) / 1e12);
+  return ticks;
+}
+
 /** The y axis' top: over the 95th percentile of the runs, the rolling mean and the level before learning, so one runaway
  *  run does not squash the rest to the floor. A run above it is drawn at the top, and counted (`above`). */
 export function yTopOf(points: readonly Point[], mean: readonly number[], before: number | null): { top: number; above: number } {
@@ -82,3 +93,32 @@ export function level(value: number): string {
   if (value < 0.0001) return "<$0.0001";
   return value >= 1 ? `$${value.toFixed(2)}` : `$${value.toPrecision(3)}`;
 }
+
+/** A block of consecutive runs in the execution mix: its first and last run numbers and how many took each path. */
+export type Block = { from: number; to: number; runs: number; counts: Record<RunPath, number> };
+
+/** The mix's block size: one run a column up to 20 runs (one block of a few runs says nothing), then blocks of 5 or
+ *  more, about 20 blocks at most however many runs there are. */
+export const blockSizeOf = (count: number) => (count <= 20 ? 1 : Math.max(5, Math.ceil(count / 20)));
+
+/** The runs in blocks of `size`, in order (the last may be shorter): every run counts, its cost known or not. */
+export function blocksOf(runs: readonly CostRun[], size: number): Block[] {
+  const blocks: Block[] = [];
+  for (let i = 0; i < runs.length; i += size) {
+    const slice = runs.slice(i, i + size);
+    const counts = { agent: 0, handed_back: 0, workflow: 0 } as Record<RunPath, number>;
+    for (const r of slice) counts[r.path]++;
+    blocks.push({ from: slice[0]!.n, to: slice.at(-1)!.n, runs: slice.length, counts });
+  }
+  return blocks;
+}
+
+/** A cost ratio as a person reads it, the one format of every "N times" the console says: a tenth under 10 ("7.0x",
+ *  "7.4x"), a whole number from 10 up ("12x"). */
+export function timesOf(ratio: number): string {
+  const tenth = Math.round(ratio * 10) / 10;
+  return `${tenth >= 10 ? Math.round(ratio) : tenth.toFixed(1)}x`;
+}
+
+/** A share as a person reads it: a whole percent. */
+export const pct = (part: number, whole: number) => `${whole ? Math.round((part / whole) * 100) : 0}%`;
