@@ -29,7 +29,10 @@ const OUTSIDE = ["1.1.1.1:443", "example.com:443"];
 const TOOL = "2510:2510";
 
 /** The adapter's commands for a pid1 host (Modal): the entrypoint, the install beside the daemon's path, the bridge. */
-const pid1Commands = (options = {}) => hostedCommands({ staging: STAGING, atomic: true, ...options });
+/** This create's nonce, as the adapter makes one: the install writes it to the marker, and the entrypoint starts only
+ *  the daemon whose marker holds it (an empty one is never matched). */
+const NONCE = randomBytes(16).toString("hex");
+const pid1Commands = (options = {}) => hostedCommands({ staging: STAGING, atomic: true, nonce: NONCE, ...options });
 
 /** The daemon streamed in and installed as the adapter does for a pid1 host; the install's output. */
 function pid1Install(name, bytes, sha256) {

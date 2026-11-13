@@ -48,7 +48,10 @@ const STAGING = "/tmp/agentrun-computerd-0123456789abcdef";
 /** The adapter's upload for a host with no file API: the bytes into `cat` as root (hosted/process.ts uploadThroughExec). */
 const STAGE = ["sh", "-c", 'umask 077 && cat > "$1"', "sh", STAGING];
 /** The adapter's commands for a pid1 host: the entrypoint, the install beside the daemon's path, and the bridge. */
-const pid1Commands = (options = {}) => hostedCommands({ staging: STAGING, atomic: true, ...options });
+/** This create's nonce, as the adapter makes one: the install writes it to the marker, and the entrypoint starts only
+ *  the daemon whose marker holds it (an empty one is never matched). */
+const NONCE = randomBytes(16).toString("hex");
+const pid1Commands = (options = {}) => hostedCommands({ staging: STAGING, atomic: true, nonce: NONCE, ...options });
 
 /** A /proc status file's fields, by name. */
 const fieldsOf = (text) =>
@@ -299,7 +302,10 @@ describe("the adapter's pid1 commands in a root container with no network", { sk
 			// Docker's defaults: no CAP_SYS_ADMIN, and its seccomp profile refuses the user namespace too. Neither way: init
 			// refuses, in words naming both, and the computer ends.
 			const neither = sandbox(image, { root: [] });
-			upload(neither.name);
+			// Init refuses as soon as the daemon is moved into place and ends the container, which can cut the install's
+			// read-back (137): its exit is not this case's, as with uid 0's and the bounding set's above.
+			const { bytes, sha } = daemon();
+			install(neither.name, bytes, sha);
 			assert.equal(exitCodeOf(neither.name), "1", "init refused to start, and the container ended");
 			assert.match(spawnSync("docker", ["logs", neither.name], { encoding: "utf8" }).stderr, /init refuses to start: cannot make a network namespace of its own .*CAP_SYS_ADMIN.*, nor can it start itself again in a user and a network namespace of its own/);
 
