@@ -8,6 +8,7 @@ import { ApiError, invalid } from "./errors.js";
 import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTargetOf, mintInstallationToken } from "./github.js";
 import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { registerSecretWrite } from "./secret-writes.js";
+import type { Held } from "./template-github-permissions.js";
 import { isObject, type Json } from "./validate.js";
 
 // Connecting a GitHub App seals its key and webhook secret (the webhook secret signs every GitHub delivery this server
@@ -16,8 +17,8 @@ registerSecretWrite("connectGitHub", () => true);
 registerSecretWrite("disconnectGitHub", () => true);
 
 /** What every GitHub App Connect GitHub makes asks of the repositories it is installed on (its manifest's
- *  default_permissions): the least its templates need. A tool that needs more is warned of when a template granting it is
- *  applied (template-github-permissions.ts), never quietly refused at its first call. */
+ *  default_permissions): the least its templates need. Applying a template warns from each installation's real permissions
+ *  (installationPermissions, template-github-permissions.ts), never from this. */
 export const APP_PERMISSIONS = { pull_requests: "write", contents: "read", metadata: "read", issues: "read" } as const satisfies Record<string, "read" | "write">;
 
 /** How long a Connect's state is good for, and the most kept at once. */
@@ -39,6 +40,9 @@ const consoleAt = (base: string | undefined, page: string) => `${base ?? ""}${pa
 /** A GitHub login (a user or an organization), as GitHub allows one. */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 const SCOPE = GITHUB_SCOPE;
+/** Apply's warning reads the installations' permissions this many at a time, all within one limit (installationPermissions). */
+const PERMISSIONS_PARALLEL = 4;
+const PERMISSIONS_WITHIN_MS = 4_000;
 
 export type Installation = { id: number; account: string };
 /** What a caller (a GitHub template, the console) may read of the connection: never a secret. */
@@ -547,6 +551,58 @@ export class GitHubConnect {
     } catch (error) {
       return { unusable: `GitHub did not give a token: ${(error as Error).message}.` };
     }
+  }
+
+  /** What each installation of the App holds now, as GitHub says (GET /app/installations/{id} with the App's JWT: its
+   *  `permissions` map, `admin` read as `write`, which it includes). Never a guess: no App, no installation, GitHub out of
+   *  reach, an answer that is not a 200 or has no map, or a level it does not know is `unreadable`, with why. */
+  async installationPermissions(signal?: AbortSignal, limits: { parallel?: number; withinMs?: number } = {}): Promise<Held> {
+    const credentials = this.connection.credentials();
+    const view = this.connection.view();
+    if (!credentials || !view) return { unreadable: "this server has no GitHub App" };
+    if (!view.installations.length) return { unreadable: "the GitHub App is not installed on any account yet" };
+    // Bounded: a few reads at a time and one time limit for them all, so a slow GitHub or many accounts never hold the
+    // caller (Apply) past it. A read the limit cut off is `unread`, said so, never passed.
+    const withinMs = limits.withinMs ?? PERMISSIONS_WITHIN_MS;
+    const deadline = AbortSignal.timeout(withinMs);
+    const both = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const read = async (installation: { id: number; account: string }): Promise<{ permissions: Record<string, "read" | "write"> } | { why: string }> => {
+      if (deadline.aborted) return { why: `no answer within ${withinMs / 1000} s` };
+      let answer: Awaited<ReturnType<typeof githubCall>>;
+      try {
+        const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+        answer = await githubCall(this.options.api, `/app/installations/${installation.id}`, { jwt, signal: both });
+      } catch (error) {
+        return { why: deadline.aborted ? `no answer within ${withinMs / 1000} s` : (error as Error).message };
+      }
+      const map = isObject(answer.json) ? answer.json.permissions : undefined;
+      if (answer.status !== 200 || !isObject(map)) return { why: `GitHub gave no permissions for the installation on ${installation.account} (HTTP ${answer.status})` };
+      const permissions: Record<string, "read" | "write"> = {};
+      for (const [name, level] of Object.entries(map)) {
+        if (level !== "read" && level !== "write" && level !== "admin") return { why: `GitHub gave a level this server does not know for ${name} on ${installation.account}` };
+        permissions[name] = level === "read" ? "read" : "write";
+      }
+      return { permissions };
+    };
+    const results = new Array<{ permissions: Record<string, "read" | "write"> } | { why: string }>(view.installations.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < view.installations.length) {
+        const at = next++;
+        results[at] = await read(view.installations[at]!);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limits.parallel ?? PERMISSIONS_PARALLEL, view.installations.length) }, worker));
+    const installations: { account: string; permissions: Record<string, "read" | "write"> }[] = [];
+    const unread: { account: string; why: string }[] = [];
+    view.installations.forEach((installation, at) => {
+      const result = results[at]!;
+      if ("permissions" in result) installations.push({ account: installation.account, permissions: result.permissions });
+      else unread.push({ account: installation.account, why: result.why });
+    });
+    // Nothing read at all: the check could not be made, with the first reason.
+    if (!installations.length) return { unreadable: unread[0]!.why };
+    return unread.length ? { installations, unread } : { installations };
   }
 
   /** The first repository installation `id` covers, if any: asked with a metadata-read token that never leaves this

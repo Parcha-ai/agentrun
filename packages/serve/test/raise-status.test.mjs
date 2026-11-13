@@ -1,18 +1,9 @@
-// A run whose cap is raised at its pause reads queued from the moment the raise is taken, before PATCH /runs/{id}
-// answers: its follow-up turn is still to go, and nothing waits on a person. Never input_required with no pending, which
-// `agentrun runs wait` and the client's runs.wait take as a run that needs someone.
+// The raise guard of the test client: a raise answered by a server that then goes away is the raise's answer when the
+// caller opts out of the guard.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join } from "node:path";
 import { test } from "node:test";
-import { processAlive } from "@parcha/agentrun-kernel/host";
 import { client } from "./support.mjs";
-
-/** The output-priced faux model ($100 a million output tokens: a request's least is $0.1024) in a process that cannot
- *  exit until EXIT_GATE exists, so the raise lands while the paused run's process is still being let go. */
-const SLOW_EXIT = new URL("./fixtures/faux-output-priced-slow-exit.mjs", import.meta.url).pathname;
 
 // The guard's own read is one more request to the server. A test whose server goes away once the raise is answered (its
 // follow-up's process kills it as it comes up: cap-raise's launch-kill test) opts out of it, and gets the raise's answer.

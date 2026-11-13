@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
-import { fakePhoneHarness, KEY } from "./fake-phone-harness.mjs";
+import { fakePhoneHarness, KEY, PHONED_JAR } from "./fake-phone-harness.mjs";
 
 const { create, memoryLedger } = await import("../dist/phone-harness.js");
 const caseOf = (id) => conformanceCases.find((one) => one.id === id);
@@ -122,7 +122,7 @@ test("health.no-key-in-errors: every refusal path is asked, and a planted key in
 
 test("the phone harness passes both contract cases through the runner: its PROVIDERS entry is its declaration, and a planted key never comes back", { timeout: 120_000 }, async () => {
 	const fake = fakePhoneHarness();
-	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000 };
+	const options = { apiKey: KEY, fetch: fake.fetch, adb: fake.adb, ledger: memoryLedger(), now: fake.clock.now, sleep: fake.clock.sleep, maxLifetimeMs: 10 * 60_000, phoned: PHONED_JAR };
 	const provider = await create(options);
 	const secret = "agentrun-planted-fedcba9876543210fedcba98";
 	const planted = async () => ({ provider: await create({ ...options, apiKey: secret }), secrets: [secret] });

@@ -3,7 +3,6 @@ export * from "./result.js";
 export * from "./provider.js";
 export * from "./ui-engine.js";
 export * from "./attach.js";
-export * from "./phone-ui.js";
 export * from "./mount.js";
 export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
@@ -26,6 +25,9 @@ export {
 	type WatchOptions,
 	watchScreen,
 } from "./screen-watch.js";
+// The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and hostedProvider makes it a provider.
+export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
+export { HostedProvider, type HostedOptions, type HostedTimeouts, hostedProvider } from "./hosted/provider.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /orgo,
 // /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
