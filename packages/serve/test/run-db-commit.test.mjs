@@ -1,9 +1,8 @@
 // A lock-free reader of a run's database must never open a WAL that holds frames but no commit yet: SQLite's recovery
 // takes a WAL's end at its last verified commit frame, so such a reader recovers no frame, and its close, an empty
 // checkpoint, removes the WAL the run's process is still writing, its committed rows with it. That window is a fresh WAL's
-// first transaction while it holds more than one page: pi-durable's schema commit. Both reader paths (run-db.ts
-// readRunDbSync, workflow/readers.ts's `unlocked` read) read such a database as the file alone, and no row the writer committed
-// is lost.
+// first transaction while it holds more than one page: pi-durable's schema commit. workflow/readers.ts's `unlocked` read
+// reads such a database as the file alone, and no row the writer committed is lost.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,7 +11,6 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
 import { withDurableFile } from "../dist/workflow/readers.js";
-import { readRunDbSync } from "../dist/run-db.js";
 import { scratch } from "./support.mjs";
 
 /** A run's process whose first transaction spans many pages (a schema and 40 rows of 3,000 bytes, a cache of 2 pages so
@@ -88,7 +86,6 @@ const rowsOf = (file) => {
 };
 
 const PATHS = {
-  "run-db readRunDbSync": (file) => readRunDbSync(file, true, (db) => db.prepare("SELECT count(*) AS n FROM sqlite_schema").get().n),
   "workflow readers unlocked": (file) => withDurableFile(file, (db) => db.prepare("SELECT count(*) AS n FROM sqlite_schema").get().n, { unlocked: true }),
 };
 

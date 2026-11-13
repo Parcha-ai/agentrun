@@ -13,7 +13,6 @@ import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, readDecisions } from '../dist/workflow/decisions.js';
 import { decisionRecovery } from '../dist/workflow/decision-recovery.js';
-import { durableDecisions } from '../dist/workflow/readers.js';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-decisions-keyed-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -103,9 +102,3 @@ const runtimeOf = (harness) => ({ commit: (change, context) => harness.commit(ch
     } finally { await harness.close(ctx); }
   });
 }
-
-test('durableDecisions reads the rows of a store file in commit order', async () => {
-  const keyed = await fill(30);
-  assert.deepEqual(durableDecisions(keyed).map((r) => r.decision_id), Array.from({ length: 30 }, (_, i) => `d${i}`));
-  assert.deepEqual(durableDecisions(join(root, 'no-such-file.sqlite')), []);
-});
