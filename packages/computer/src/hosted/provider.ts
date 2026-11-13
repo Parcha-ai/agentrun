@@ -122,7 +122,7 @@ export interface HostedOptions {
 	onNote?: ProviderNote;
 	/**
 	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
-	 * lane>` such as 10.60.0.40:18100:42050 (archilEgressOf): for a vendor whose machines reach Archil only through it.
+	 * lane>` such as 192.0.2.40:18100:42050 (archilEgressOf): for a vendor whose machines reach Archil only through it.
 	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
 	 */
 	archilEgress?: string;
