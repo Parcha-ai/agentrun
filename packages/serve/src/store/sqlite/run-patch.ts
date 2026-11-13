@@ -140,6 +140,18 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote. */
 export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
+  // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
+  // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
+  // words) and the cancel is taken, so a read never goes cancelled, then completed. Its message waiting is refused below.
+  if (state === "ended") {
+    const won = await tx.get<{ id: number }>("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel' RETURNING id", now, runId);
+    if (won) {
+      await tx.run("UPDATE runs SET state = 'stopped', outcome = 'cancelled', summary = 'cancelled' WHERE id = ?", runId);
+      await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason("stopped"), runId);
+      await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+      return;
+    }
+  }
   if (state === "ended" || state === "stopped") {
     const reopened = await tx.get<{ id: string }>(
       `UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(dialect)}
