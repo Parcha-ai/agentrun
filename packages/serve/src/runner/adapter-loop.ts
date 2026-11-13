@@ -56,7 +56,7 @@ import { McpClaimRefused } from "./mcp-claim.js";
 import { Fenced } from "../store/index.js";
 import { type ClaimMcp, parkedFollowUp } from "./mcp-run.js";
 import { budgetOf, type RequestFigures, reserveFor, TOOL_BUDGET_TEXT, WRAP_UP_TEXT, wrappingUp } from "../tool-budget.js";
-import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
+import { LEARNED_CLIP, LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
@@ -2025,6 +2025,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           }
           if (stopAbort.signal.aborted) return undefined;
+          // An answer the agent could not stand behind goes back to it: one the tool cut (learnedText: no agent turn could
+          // recover its ending), or, for an agent with an output schema, one that is not JSON (its result.output reads the
+          // answer's fenced json block, so a bare JSON answer is fenced).
+          if (!answer.isError && answer.text.length > LEARNED_CLIP) answer = { ...answer, isError: true };
+          if (!answer.isError && first.structured) {
+            try {
+              JSON.parse(answer.text);
+              answer = { ...answer, text: `\`\`\`json\n${answer.text}\n\`\`\`` };
+            } catch {
+              answer = { ...answer, isError: true };
+            }
+          }
           const outcome = answer.isError ? "handed_back" : "answered";
           const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
           await on.commit(async (tx) => {
