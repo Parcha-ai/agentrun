@@ -22,7 +22,7 @@ export function createReleaseWorkflowTools() {
   const tools = [{
     name: 'mcp:release/release_status', description: 'Read current release data for a service. Returns service, version, tests, state and a fresh observation identifier. Pass the whole result unchanged as status to format_release_brief.',
     input_schema: { type: 'object', additionalProperties: false, required: ['service'], properties: { service: string } },
-    output_schema: statusSchema, permission: 'allow', price_usd: 0,
+    output_schema: statusSchema, permission: 'allow', price_usd: 0, readOnly: true,
     async execute(args, ctx) {
       ctx.signal?.throwIfAborted();
       const known = typeof args.service === 'string' && Object.hasOwn(RELEASES, args.service) ? RELEASES[args.service] : undefined;
@@ -35,7 +35,7 @@ export function createReleaseWorkflowTools() {
     name: 'mcp:release/format_release_brief', description: 'Format the complete, unchanged status object returned by release_status into a concise release brief. Returns an object with a brief string. This is a local read-only formatter with no model call.',
     input_schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { status: statusSchema } },
     output_schema: { type: 'object', additionalProperties: false, required: ['brief'], properties: { brief: string } },
-    permission: 'allow', price_usd: 0,
+    permission: 'allow', price_usd: 0, readOnly: true,
     async execute(args, ctx) {
       ctx.signal?.throwIfAborted();
       const status = args.status, known = status && observed.get(status.observation);

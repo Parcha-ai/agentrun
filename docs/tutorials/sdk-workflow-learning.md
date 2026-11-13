@@ -18,6 +18,7 @@ const workflows = await createWorkflowMcpBridge({
     input_schema: statusInputSchema,
     output_schema: statusOutputSchema,
     permission: 'allow', // Declare your actual existing tool policy.
+    readOnly: true, // Only if this callback cannot change external state.
     // Set price_usd: 0 only if this callback truly has no metered cost.
     execute: readReleaseStatus,
   }],
@@ -28,6 +29,8 @@ const workflows = await createWorkflowMcpBridge({
 ```
 
 `execute(args, context)` receives `signal`, `runId`, `workflow`, and `idempotencyKey`. Honor cancellation and keep the callback's existing authorization and side-effect protections. A permission requiring confirmation must not silently become `allow`; this bridge does not supply an approval dialog. Unknown tool pricing can leave a proposed workflow pending owner review. Do not declare a metered API free just to get it accepted.
+
+The optional `readOnly` declaration informs the native MCP approval policy. The bridge advertises a read-only workflow tool only when every allowed callback explicitly declares `readOnly: true` and no model or judge adapter is configured. Otherwise the bridge remains a potentially state-changing tool. This annotation does not replace the live `policy` check, and should never be used to bypass native approval for a tool that can write.
 
 The bridge starts a loopback HTTP MCP endpoint. Its `url` and `headers` configure the native SDK; the wrapper binds each run to that bridge with an expiring capability. One bridge can serve multiple fresh runs. Keep it alive for the backend's lifetime and call `await workflows.close()` during shutdown. Keep the bearer headers and injected capabilities out of logs.
 

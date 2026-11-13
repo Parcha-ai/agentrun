@@ -252,3 +252,20 @@ test('a closed bridge completes the server receipt without dispatching any nativ
   const completed=requests.find(request=>request.path.endsWith('/complete'));
   assert.equal(completed.body.status,'failed');assert.equal(completed.body.evidence_complete,false);
 });
+
+test('MCP read-only annotation requires explicit read-only callbacks and no model adapters',async t=>{
+  const readonly=()=>makeTools([]).map(tool=>({...tool,readOnly:true}));
+  const cases=[
+    ['explicit read-only callbacks',{tools:readonly()},true],
+    ['unspecified callbacks',{tools:makeTools([])},false],
+    ['one mutable callback',{tools:readonly().map((tool,index)=>({...tool,readOnly:index===0}))},false],
+    ['denied mutable callback',{tools:[...readonly(),{...makeTools([])[0],name:'mcp:release/delete',permission:'deny',readOnly:false}]},true],
+    ['explicit model adapter',{tools:readonly(),runNode:async()=>({})},false],
+    ['explicit judge adapter',{tools:readonly(),runJudge:async()=>({answers:{}})},false],
+  ];
+  for(const [name,options,expected] of cases){
+    const {bridge,client}=await setup(t,options);
+    assert.equal((await client.listTools()).tools[0].annotations.readOnlyHint,expected,name);
+    assert.ok(bridge.catalog.every(tool=>!Object.hasOwn(tool,'readOnly')),'readOnly remains local callback metadata');
+  }
+});

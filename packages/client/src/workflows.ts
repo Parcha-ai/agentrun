@@ -16,6 +16,8 @@ export interface WorkflowToolContext {
   idempotencyKey: string;
 }
 export interface BackendWorkflowTool extends BackendWorkflowToolManifest {
+  /** Declare true only when this callback never changes external state. Local MCP metadata, not permission. */
+  readOnly?: boolean;
   execute(input: Record<string, unknown>, context: WorkflowToolContext): Promise<unknown> | unknown;
 }
 export interface WorkflowBridgeEvent {
@@ -100,22 +102,26 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
   // Capture callbacks and schemas once: later caller mutation cannot silently expand this bridge's authority.
   const policy = options.policy, runNode = options.runNode, runJudge = options.runJudge, observer = options.onEvent;
   const validator = new AjvJsonSchemaValidator();
-  const registered = new Map<string, { manifest: BackendWorkflowToolManifest; execute: BackendWorkflowTool['execute']; input: ReturnType<AjvJsonSchemaValidator['getValidator']>; output?: ReturnType<AjvJsonSchemaValidator['getValidator']> }>();
+  const registered = new Map<string, { manifest: BackendWorkflowToolManifest; readOnly: boolean; execute: BackendWorkflowTool['execute']; input: ReturnType<AjvJsonSchemaValidator['getValidator']>; output?: ReturnType<AjvJsonSchemaValidator['getValidator']> }>();
   for (const tool of options.tools) {
     if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string' || !canonicalTool.test(tool.name) || registered.has(tool.name) ||
       typeof tool.description !== 'string' || !tool.description.trim() || tool.description.length > 4000 ||
       !object(tool.input_schema) || (tool.output_schema !== undefined && !object(tool.output_schema)) ||
       !['allow', 'ask', 'deny'].includes(tool.permission) || typeof tool.execute !== 'function' ||
+      (tool.readOnly !== undefined && typeof tool.readOnly !== 'boolean') ||
       (tool.price_usd !== undefined && (typeof tool.price_usd !== 'number' || !Number.isFinite(tool.price_usd) || tool.price_usd < 0))) throw new TypeError('Invalid or duplicate backend workflow tool.');
     const manifest = freeze(copy({ name: tool.name, description: tool.description, input_schema: tool.input_schema,
       ...(tool.output_schema ? { output_schema: tool.output_schema } : {}), permission: tool.permission,
       ...(tool.price_usd !== undefined ? { price_usd: tool.price_usd } : {}) }));
-    registered.set(tool.name, { manifest, execute: tool.execute, input: validator.getValidator(manifest.input_schema),
+    registered.set(tool.name, { manifest, readOnly: tool.readOnly === true, execute: tool.execute, input: validator.getValidator(manifest.input_schema),
       ...(manifest.output_schema ? { output: validator.getValidator(manifest.output_schema) } : {}) });
   }
   const catalog = freeze([...registered.values()].map(tool => tool.manifest));
   if (Buffer.byteLength(JSON.stringify(catalog)) > 65_536) throw new TypeError('The workflow tool manifest exceeds 64 KiB.');
   const adapters = Object.freeze([...(runNode ? ['runNode' as const] : []), ...(runJudge ? ['runJudge' as const] : [])]);
+  // A model adapter may perform work outside this callback catalog. Do not label its workflows read-only.
+  // Ask/deny callbacks cannot execute; allowing a callback later requires constructing a new bridge.
+  const readOnlyHint = !runNode && !runJudge && [...registered.values()].every(tool => tool.manifest.permission !== 'allow' || tool.readOnly);
   const authorization = `Bearer ${randomBytes(32).toString('hex')}`;
   const leases = new Map<string, Lease>();
   const connections = new Set<Server>();
@@ -254,7 +260,7 @@ export async function createWorkflowMcpBridge(options: WorkflowMcpBridgeOptions)
         description: 'Run an approved workflow using this backend\'s existing tools. Use only a name and run capability from the current AgentRun context, with fresh task input. Never retry uncertain effects.',
         inputSchema: { type: 'object', required: ['capability', 'name', 'input'], additionalProperties: false,
           properties: { capability: { type: 'string' }, name: { type: 'string' }, input: { type: 'object' } } },
-        annotations: { openWorldHint: false, idempotentHint: false, readOnlyHint: false } }] }));
+        annotations: { openWorldHint: false, idempotentHint: false, readOnlyHint } }] }));
       server.setRequestHandler(CallToolRequestSchema, async (call, extra) => call.params.name === 'learned_workflow' ? execute(call.params.arguments, extra.signal) : toolResult('Unknown tool.', true));
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.once('close', () => { connections.delete(server); void server.close(); });
