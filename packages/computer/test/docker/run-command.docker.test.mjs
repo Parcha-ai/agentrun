@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DockerProvider } from "../../dist/docker.js";
+import { newRequest } from "./request.mjs";
 import { createForDeadline } from "./deadline.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
@@ -58,7 +59,7 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 
 	it("creates a computer with no network and a 10-minute lifetime", async () => {
 		const from = Date.now();
-		const result = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "run-command" } });
+		const result = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", labels: { "agentrun.test": "run-command" } }, newRequest("run-command"));
 		createdAt = { from, to: Date.now() };
 		assert.equal(result.ok, true, JSON.stringify(result));
 		ref = result.value;
@@ -151,7 +152,7 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 	});
 
 	it("runs as Docker's 0:0 only when the spec asks for user 0, and root's bounding set is empty too", async () => {
-		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", user: "0", labels: { "agentrun.test": "run-command" } });
+		const created = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", user: "0", labels: { "agentrun.test": "run-command" } }, newRequest("run-command-root"));
 		assert.equal(created.ok, true, JSON.stringify(created));
 		made.push(created.value.name);
 		const [inspected] = JSON.parse(docker("inspect", created.value.name));
@@ -170,7 +171,7 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 
 	it("ends itself at its deadline: PID 1 exits 0 with no janitor", async (t) => {
 		// 45 s, or longer on a host slow to start it (createForDeadline); the test asserts the end, not its timing.
-		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "run-command" } }), {
+		const got = await createForDeadline(t, (lifetimeMs) => provider.create({ image: IMAGE, lifetimeMs, network: "none", labels: { "agentrun.test": "run-command" } }, newRequest("run-command-deadline")), {
 			lifetimeMs: 45_000,
 			keep: (name) => made.push(name),
 		});

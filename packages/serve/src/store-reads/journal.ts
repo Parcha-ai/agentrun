@@ -12,8 +12,9 @@ import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
+import { computerCallsOf } from "../computer-calls.js";
 import { labelled, type Reflect } from "../reflect-range.js";
-import { reflectFrom } from "../runner/end-of-run.js";
+import { reflectRanges } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
@@ -27,14 +28,16 @@ export async function runEntries(store: Store, runId: string, context: Context):
   return entries.slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 }
 
-/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): `after`, the entry
- *  before its input; `until`, the run's end entry once written. Undefined for a run that asked none. */
-export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until"> | undefined> {
+/** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): its newest round's
+ *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
+ *  follow-up opened the run again after it). Undefined for a run that asked none. */
+export async function runReflect(store: Store, runId: string, context: Context): Promise<Pick<Reflect, "after" | "until" | "earlier"> | undefined> {
   const records = await journalRecords(store.readJournal(runId), context);
-  const from = reflectFrom(records.submissions ?? [], records.entries);
-  if (from === undefined) return undefined;
-  const end = records.entries.find((entry) => entry.kind === KINDS.end && Number(entry.id) >= from);
-  return { after: from - 1, ...(end ? { until: Number(end.id) } : {}) };
+  const ranges = reflectRanges(records.submissions ?? [], records.entries);
+  const newest = ranges.at(-1);
+  if (newest === undefined) return undefined;
+  const earlier = ranges.slice(0, -1).flatMap(({ from, until }) => (until === undefined ? [] : [{ after: from - 1, until }]));
+  return { after: newest.from - 1, ...(newest.until !== undefined ? { until: newest.until } : {}), ...(earlier.length ? { earlier } : {}) };
 }
 
 /** The CLI record (a harness whose own records are resume log only, record "loop": adapter-loop.ts openCliRecord) as the
@@ -193,8 +196,21 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
   const cwd = cli && !options.path ? entries.find((entry) => entry.kind === KINDS.callStart && typeof (entry.data as { cwd?: unknown } | undefined)?.cwd === "string")?.data as { cwd: string } | undefined : undefined;
   const rendered = timelineOf(withPaidCosts(cli ? piShaped(entries) : entries), cwd ? { ...options, path: inWorkspace(cwd.cwd) } : options);
-  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : rendered;
-  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact));
+  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
+  return labelled((await runReflect(store, runId, context)) as Reflect | undefined, withComputerCalls(withLearnedNodes(await datedRows(store, runId, rows), entries, options.redact), entries));
+}
+
+/** `rows` with each tool call's result row carrying the computer protocol calls it made (`computer_calls`, and
+ *  `computer_calls_dropped` past the record's bound), from the COMPUTER_CALLS entry the adapter loop kept beside the call
+ *  (computer-calls.ts), joined by the call's id. A record holds no param's value and no answer's bytes, so it needs no cut.
+ *  Rows of a run whose tools made none are as they were. */
+function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const made = computerCallsOf(entries);
+  if (!made.size) return rows;
+  return rows.map((row) => {
+    const kept = row.kind === "tool_result" && row.tool_use_id ? made.get(row.tool_use_id) : undefined;
+    return kept ? { ...row, computer_calls: kept.calls, ...(kept.dropped > 0 ? { computer_calls_dropped: kept.dropped } : {}) } : row;
+  });
 }
 
 /** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
@@ -217,6 +233,27 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
   }
   if (!traces.size) return rows;
   return rows.map((row) => (row.kind === "tool_result" && row.tool_use_id && traces.has(row.tool_use_id) ? { ...row, learned_nodes: traces.get(row.tool_use_id)! } : row));
+}
+
+/** A pi run's `rows` with its side calls in its usage row: the requests its session booked that no answer of pi's carries
+ *  (a learned workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), at what they were
+ *  booked at, unknown when one's price is, beside the answers the renderer counted. Their requests join its count; its
+ *  words are the renderer's, figures changed. A run with none is as rendered. */
+function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+  const side = bookedSpend(entries, "side");
+  const at = rows.findLastIndex((row) => row.kind === "usage");
+  if (!side.requests || at < 0) return [...rows];
+  const row = rows[at]!;
+  const own = row.usage ?? { usd: 0, requests: 0 };
+  const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
+  const unpriced = (own.usd === null ? (own.unpriced ?? 0) : 0) + side.unpriced;
+  const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
+  const requests = own.requests + side.requests;
+  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
+  const spent = usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
+  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}`);
+  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}) };
+  return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every

@@ -9,8 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
-import { sealedSettingsOverStore } from "../dist/sealed-settings-store.js";
-import { OUTBOUND_WEBHOOK, Webhooks } from "../dist/webhooks.js";
+import { shownUrl, Webhooks } from "../dist/webhooks.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
 
 /** A place for one store, opened and closed by the test as a server's starts and stops would: a schema of its own on
@@ -26,13 +25,12 @@ async function place(t) {
   return () => openSqliteStore({ dataDir: dir });
 }
 
-/** A server's start on the store `open` opens: the store, and the webhook over it, its secret among the store's sealed
- *  settings under seal key `key`. `stop()` stops the webhook, then closes the store. */
+/** A server's start on the store `open` opens: the store, and the webhook over it, its secret sealed in the store under
+ *  seal key `key`. Its receiver is on this machine, so the operator's switch for private targets is on. `stop()` stops the
+ *  webhook, then closes the store. */
 async function start(open, key) {
   const store = await open();
-  const secret = sealedSettingsOverStore(store, OUTBOUND_WEBHOOK.id, OUTBOUND_WEBHOOK.settings, key, () => undefined);
-  await secret.load();
-  const webhooks = new Webhooks(store, secret, () => undefined, []);
+  const webhooks = new Webhooks(store, key, () => undefined, { retryMs: [], privateTargets: true });
   await webhooks.load();
   return { store, webhooks, stop: async () => (await webhooks.close(), await store.close()) };
 }
@@ -76,7 +74,10 @@ test(`a webhook saved before a restart is still set after it, signs with the sec
   // Restarted: the webhook is still set, its secret still opens, and a run's end is sent once, signed with it.
   const second = await start(open, key);
   const view = second.webhooks.view();
-  assert.deepEqual([view.configured, view.url, view.signing, view.disabled], [true, hook.url, "sealed", null], "the webhook survives the restart");
+  assert.deepEqual([view.configured, view.url, view.signing, view.disabled], [true, shownUrl(hook.url), "sealed", null], "the webhook survives the restart");
+  // The run its notice names, in the store (a message and its ledger row name their run).
+  await second.store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: {} });
+  await second.store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const run = { run_id: "run-1", agent_id: "agent-1", status: "completed", title: "t" };
   const ended = new Date().toISOString();
   assert.equal(await second.webhooks.emit("run.ended", run, ended), "queued");
@@ -84,7 +85,7 @@ test(`a webhook saved before a restart is still set after it, signs with the sec
   await hook.when(1);
   // Received is not answered: the try is in the log once its answer is read, and the stop then waits for its write (a
   // stop before it would cut the try, and the next start would send it again, as it should).
-  while (second.webhooks.attemptsView().attempts.length === 0) await new Promise((resolve) => setImmediate(resolve));
+  while ((await second.webhooks.attemptsView()).attempts.length === 0) await new Promise((resolve) => setImmediate(resolve));
   await second.stop();
   assert.equal(hook.got.length, 1, "sent once");
   assert.ok(signs(saved.secret, hook.got[0]), "signed with the secret the first PUT showed");
@@ -94,6 +95,6 @@ test(`a webhook saved before a restart is still set after it, signs with the sec
   const third = await start(open, key);
   t.after(() => third.stop());
   assert.equal(await third.webhooks.emit("run.ended", run, ended), "queued", "already queued, in the store's ledger");
-  assert.deepEqual(third.webhooks.attemptsView().attempts.map((a) => [a.webhook_id, a.status_code]), [[hook.got[0].headers["webhook-id"], 200]], "the delivery log survives too");
+  assert.deepEqual((await third.webhooks.attemptsView()).attempts.map((a) => [a.webhook_id, a.status_code]), [[hook.got[0].headers["webhook-id"], 200]], "the delivery log survives too");
   assert.equal(hook.got.length, 1, "never sent twice");
 });

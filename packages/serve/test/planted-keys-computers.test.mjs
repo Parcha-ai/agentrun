@@ -107,7 +107,7 @@ async function planted(t) {
   t.after(() => store.close().catch(() => {}));
   const scratch = join(tmp, "scratch");
   mkdirSync(join(scratch, "work"), { recursive: true });
-  return { server, store, sealKey, values, byName, faux: fauxComputers({ viewerBase: origin }), scratch, tmp };
+  return { server, store, sealKey, values, byName, faux: fauxComputers(), scratch, tmp };
 }
 
 /** The planted values' hits in `sources`, none expected: where, which value (cut), in which form. */

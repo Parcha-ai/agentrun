@@ -53,7 +53,7 @@ export interface HostTool {
    *  way, by the child's key. `model`: the calling session's model as its harness resolves it (pi's: a pi-ai Model, whose
    *  input and input limits a file read sizes an image by); `output`: where the call's output goes while it runs (the
    *  session's live view of the running tool). Each is absent where a harness has none to give. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; parked?: true }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
 }
 
 /** A tool of a remote MCP server, as the server listed it when its owner saved it (the run's pinned copy). */
@@ -158,6 +158,9 @@ export interface ModelRequest {
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
+  /** On the session's model but no answer of the turn (a title, a summary, a child's request): booked as any request, but
+   *  never the session's previous request for the cap's expected pricing, read or replaced. */
+  unanswered?: true;
   /** It carries the host's note (ModelPort.note) in its body: the note is delivered once this request is admitted.
    *  `inputTokensMaxWithoutNote`: its input measured as its client sent it, before the note was placed. */
   noted?: true;
@@ -221,6 +224,9 @@ export interface ModelPort {
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
    *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
+  /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
+   *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
+  noteReturned?(note: string): void;
 }
 
 /** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
@@ -257,6 +263,12 @@ export interface SessionIO {
    *  runs nothing; a park holds the call, writing nothing, until the session's signal is aborted (the run parks on a
    *  person). Absent: every call runs. */
   gate?(call: GateCall, context?: unknown): Promise<GateAnswer>;
+  /** The host's setting now for one of the harness's own tools, by the harness's name for it (Codex's `web_search`), read
+   *  again at each ask, so a permission set while the session runs reaches its next request. For a tool no call of which
+   *  reaches the gate before it runs: a provider-hosted search runs inside a model request, so the session offers it only
+   *  while this says "allow" (a throw reads as "deny"). Absent: the host keeps no per-tool permissions, and what the
+   *  session was opened with stands. */
+  permission?(tool: string): Promise<ToolPermission>;
   /** A tool the adapter adds of its own (read_skill_file over the session's skills), made the host's: its calls go the
    *  way the host's own tools' do (the run's record of the call and its result, which its Timeline shows, the rule before
    *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
@@ -279,6 +291,9 @@ export interface GateCall {
 
 /** The host's answer before a call's intent: run it, refuse it in these words, or park the run on it. */
 export type GateAnswer = "allow" | { readonly deny: string } | { readonly park: true };
+
+/** A tool's setting on the host (SessionIO.permission): it runs, it waits for a person's answer, or it is refused. */
+export type ToolPermission = "allow" | "ask" | "deny";
 
 /** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
  *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;

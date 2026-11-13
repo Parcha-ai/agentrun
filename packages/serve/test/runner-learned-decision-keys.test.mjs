@@ -154,7 +154,7 @@ async function codexHeld(t, flows) {
   });
   const sha = flows.length ? await landWorkflows(dir, "agent-1", flows) : undefined;
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "codex", tools: ["read"], learning: true } });
-  const launch = { input: { content: "Check it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-5" }, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
+  const launch = { input: { content: "Check it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-6.1-sol" }, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   await linkHarnesses(dir);

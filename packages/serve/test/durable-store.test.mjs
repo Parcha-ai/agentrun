@@ -1,5 +1,5 @@
 // The document store, held to the store contract by the conformance suite, over a pi-durable Harness on SQLite.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -11,8 +11,8 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
 import { EffectOutcomeUnknownError, runWorkflow } from '@parcha/agentrun-dsl';
 import { FROZEN_SNAPSHOT_SCHEMA_V4, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { durableDoc, readJournal } from '../dist/workflow/readers.js';
 import { documentStore } from '../dist/workflow/store.js';
+import { durableDoc, readJournal } from './durable-file.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -50,36 +50,6 @@ test('document store: two admissions of one effect asked for together write one 
   await journal.close();
 });
 
-test('document store: with immutable, the readers open a store no process writes as an immutable file: the same view, and no file made beside it', async () => {
-  const directory = mkdtempSync(join(root, 'run a#b-'));
-  const file = join(directory, 'run.sqlite');
-  const harness = await open(file);
-  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1', inputs: { workflow: 'digest-a' } });
-  await journal.save({ step: 'done' });
-  await journal.close();
-  await harness.close(ctx);
-  assert.equal(existsSync(`${file}-wal`), false, 'the closed store keeps no write-ahead log');
-  const files = readdirSync(directory).sort();
-  const view = readJournal(file, 'run-1', { immutable: true });
-  assert.deepEqual(view.state, { step: 'done' });
-  assert.equal(durableDoc(file, 'agentrun.driver', 'run-1', { immutable: true }).generation, 1);
-  assert.deepEqual(readdirSync(directory).sort(), files, 'an immutable read makes no file');
-  assert.deepEqual(readJournal(file, 'run-1'), view, 'a plain read gives the same view');
-  assert.equal(readJournal(join(directory, 'missing.sqlite'), 'run-1', { immutable: true }), undefined);
-});
-
-test('document store: with no option, the readers see commits that are only in the write-ahead log of a writer still open', async () => {
-  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
-  const harness = await open(file, { walAutoCheckpointPages: 0 });
-  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1', inputs: { workflow: 'digest-a' } });
-  await journal.save({ step: 'done' });
-  await journal.close();
-  assert.equal(existsSync(`${file}-wal`), true);
-  assert.deepEqual(readJournal(file, 'run-1')?.state, { step: 'done' });
-  assert.equal(durableDoc(file, 'agentrun.driver', 'run-1')?.generation, 1);
-  await harness.close(ctx);
-});
-
 test('document store: the readers see a journal from the store file, wherever the host keeps it, without the Harness, as the last commit left it', async () => {
   // The store under the claim's `store/` directory.
   const directory = mkdtempSync(join(root, 'run-'));
@@ -101,9 +71,6 @@ test('document store: the readers see a journal from the store file, wherever th
   assert.deepEqual(durableDoc(file, 'agentrun.driver', 'run-1').generation, 1);
   assert.equal(durableDoc(file, 'agentrun.driver', 'run-2'), undefined);
   assert.equal(readJournal(join(mkdtempSync(join(root, 'run-')), 'run.sqlite'), 'run-1'), undefined);
-  // A directory is not a store file: the readers never look inside one for a layout.
-  assert.throws(() => readJournal(directory, 'run-1'));
-  assert.throws(() => durableDoc(directory, 'agentrun.driver', 'run-1'));
   await harness.close(ctx);
 });
 
@@ -166,22 +133,6 @@ test('document store: a key or an effect id with a NUL is refused, so two journa
   const next = await documentStore(harness, 'a\u0000b').open({ binding: 'binding-1' }).catch((error) => error);
   assert.match(next.message, /NUL/);
   await harness.close(ctx);
-});
-
-test('document store: a read of the journal is one read transaction, so it is one commit whatever a writer commits meanwhile', async () => {
-  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
-  const harness = await open(file);
-  const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1' });
-  await journal.admit('e1', 'lookup', 'args-1', {});
-  await journal.complete('e1', { value: 1 }, {});
-  await journal.close();
-  await harness.close(ctx);
-  const { DatabaseSync } = (await import('node:module')).createRequire(import.meta.url)('node:sqlite');
-  const original = DatabaseSync.prototype.prepare;
-  const inTransaction = [];
-  DatabaseSync.prototype.prepare = function (sql) { inTransaction.push(this.isTransaction); return original.call(this, sql); };
-  try { assert.equal(readJournal(file, 'run-1').effects.length, 1); } finally { DatabaseSync.prototype.prepare = original; }
-  assert.ok(inTransaction.length >= 4 && inTransaction.every(Boolean), `the reader's queries ran in a transaction: ${inTransaction}`);
 });
 
 test('document store: an effect admitted with an intent carries it at every later open and after it completes; one admitted without carries none', async () => {

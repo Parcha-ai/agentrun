@@ -1,5 +1,5 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
-import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
+import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
@@ -64,6 +64,12 @@ export type TimelineEvent = {
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
+  /** On a tool call's `tool_result` row: each computer protocol call the tool made, in order (serve's computer-calls.ts):
+   *  its method, whether it answered, its ms, its error's code, and for ui.act each step's kind, route and readback.
+   *  Never a param's value or an answer's bytes. `computer_calls_dropped` counts the calls past the record's bound. This
+   *  projector writes none (store-reads/journal.ts withComputerCalls). */
+  computer_calls?: readonly { readonly method: string; readonly ok: boolean; readonly ms: number; readonly code?: string; readonly steps?: readonly { readonly do: string; readonly route?: string; readonly verified?: boolean; readonly error?: string }[]; readonly expect?: "met" | "unmet" }[];
+  computer_calls_dropped?: number;
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
@@ -768,7 +774,7 @@ function createProjector(options: TimelineOptions) {
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
         // An answer its turn goes on from is a text_block (provisional, below), an empty one too.
         if (text || (final && first("text") >= 0)) {
-          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
+          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: saidSummary(text), text });
           add(row);
           if (final) {
             const earlier = provisional.get(conv);
@@ -833,7 +839,7 @@ function createProjector(options: TimelineOptions) {
       add(row);
       if (!view.isError) {
         const answer = str(args.answer);
-        if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
+        if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: saidSummary(answer), text: answer }));
         if (name === "request_sign_in") {
           const reason = str(args.reason);
           add(make("waiting", conv, `${base}:waiting`, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}` }));
@@ -853,9 +859,10 @@ function createProjector(options: TimelineOptions) {
       if (systems.has(conv)) add(make("phase", conv, base, { summary: "Tools changed" }));
       systems.add(conv);
     } else if (entry.kind === "pi.reset") {
-      add(make("phase", conv, base, { summary: "Context reset", text: textOf(message) || null }));
+      // The new context and a summary of the older one are words from the run: redacted by the host, before any cut.
+      add(make("phase", conv, base, { summary: "Context reset", text: redactText(textOf(message)) || null }));
     } else if (entry.kind === "pi.compaction") {
-      add(make("phase", conv, base, { summary: "Summarized older context", text: textOf(message) || null }));
+      add(make("phase", conv, base, { summary: "Summarized older context", text: redactText(textOf(message)) || null }));
     } else if (entry.kind === HOST_PHASE) {
       // A step the host stamped (`at`, ms) shows at that time: written as it happened, it can sit after a message whose time
       // is earlier (a model request's start), and the time of the log before it would not be its own.
@@ -1163,7 +1170,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         const shown = options.redactLive ? options.redactLive(raw) : fallback();
         // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
         const text = kind === "thinking" ? scrubUrls(shown) : shown;
-        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
+        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : saidSummary(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
     };

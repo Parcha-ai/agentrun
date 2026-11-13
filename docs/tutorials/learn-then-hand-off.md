@@ -60,10 +60,35 @@ it took (the agent by hand, a learned workflow that handed back, or the workflow
 the agent's cost before learning as a dashed line, a marker at the first run the workflow finished alone, and the
 level after it. Once 20 runs stand behind that level, it says how many times cheaper it is.
 
-![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7x cheaper](../assets/tutorials/cost-per-run.png)
+![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7.0x cheaper (marked Example data); under it, who finished each block of 5 runs, the learned workflow's share growing from run 21](../assets/tutorials/cost-per-run.png)
 
 The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
 CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
 
+Under the chart, **who finished each run** stacks each block of runs by path on the same run axis, so the learned
+workflow's share grows from the takeover marker.
+
+If you already have the answers, teach it from them. On the Learning tab, **Learn from a CSV** takes a file of rows, the
+column or columns to give the agent and the column that holds the reference answer, and a cap on its runs (grades are
+counted in its cost, not capped). The
+server runs the agent on each row in order, and after each run tells it the reference answer beside its own, so it looks
+back again. The page shows rows done, right or wrong, what it learned and what it has cost, and keeps showing it after a
+reload: the batch is the server's (`POST /v2/agents/{id}/learning/batches`, read at `GET .../batches/{batch_id}`).
+
 To prove it, keep some inputs it never learns on and compare learning off and on. The
-[learning bench](../../packages/serve/learn-bench/README.md) does that for you.
+[learning bench](../../packages/serve/learn-bench/README.md) does that for you. Record what it counted, and the
+Learning tab's **Held-out test** card shows it: how many of the held-out jobs it got right, with a 95% interval the
+platform computes from the counts, and the cost a task against by hand.
+
+```sh
+cat > eval.json <<'JSON'
+{ "name": "invoice bench, sealed test", "label_source": "invented labels", "n": 200, "correct": 188,
+  "cost_per_task_usd": 0.128, "baseline_cost_per_task_usd": 0.89 }
+JSON
+agentrun learning record-eval mcc --body @eval.json
+```
+
+![The held-out test card: 94% held-out accuracy, 95% interval 89.8% to 96.5% over 200 jobs, and 7.0x cheaper a task than by hand ($0.128 against $0.890), both marked Example data](../assets/tutorials/held-out-test.png)
+
+Only counts go in: never the jobs themselves. Until a test is recorded the card says "Not measured yet"; the tab
+never passes the agent's own runs off as a held-out figure.

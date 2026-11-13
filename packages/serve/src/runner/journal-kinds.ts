@@ -37,6 +37,13 @@ export const KINDS = {
    *  the Timeline's attribution (the timeline reads a host's user entry's own origin). The model
    *  reads it as any message. */
   input: "agentrun.input",
+  /** A CLI run's turn opens: written in the same commit as the message that starts it (the person's, a trigger's or a
+   *  follow-up's), so the run reads as working from that commit on, as pi's open input does. Data only: the reader passes
+   *  over it, and turns.ts reads it. */
+  turnStart: "agentrun.turn.start",
+  /** A CLI run's turn is over (`TurnRecordData`): written once its last model text is on the record, before the run's end
+   *  or the next turn. It closes the newest turn still open. Data only, as the start is. */
+  turnEnd: "agentrun.turn.end",
   /** A tool call the gate asked a person about: the run parks on it. */
   ask: "agentrun.ask",
   /** The person's answer to an ask, written by the commit that takes the approve or deny row. */
@@ -83,6 +90,13 @@ export const KINDS = {
    *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
    *  call nor a message. */
   nodeModel: "agentrun.node.model",
+  /** A learning run's generality pre-check (learn/general.ts), its Jev requests about to leave: committed and made
+   *  durable before they do, as a grade request's record is (learning-ask.ts bookedAsk), so a restart that finds one with
+   *  no answer after it books what they spent as unknown (null) before it asks again. Paid, and Jev dedupes none. */
+  learningGeneralSent: "agentrun.learning.general.sent",
+  /** That check's end, kept before the grader starts: its scores, or why it could not run (`unchecked`), and what it spent.
+   *  A restart reuses it and never asks Jev again. */
+  learningGeneral: "agentrun.learning.general",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
@@ -204,6 +218,12 @@ export function endedAnswer(tool: string, end: { status: CallStatus; output?: un
 }
 
 export type MessageRole = "person" | "steer" | "model";
+
+/** What a CLI turn's end (KINDS.turnEnd) says: how the adapter ended it, and its error when it failed with one. */
+export interface TurnRecordData {
+  readonly status: "completed" | "failed" | "interrupted";
+  readonly error?: string;
+}
 
 export interface MessageData {
   readonly role: MessageRole;

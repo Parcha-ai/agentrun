@@ -53,7 +53,7 @@ type Matched = { readonly index: number; readonly id: number };
 /** Finds the record an expectation waits for in a commit's batches. */
 type Match = (batches: readonly (readonly StorageWrite[])[]) => Matched | undefined;
 /** What an expectation stages: the run patch and rows, and the commands it takes (by id; each keyed to the matched record). */
-type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[] };
+type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[]; readonly answer?: { readonly command: number; readonly value: unknown } };
 
 /**
  * The run's journal with the loop's staging matched to commits. stage() replaces what was staged, so the loop never
@@ -128,7 +128,8 @@ function merge(all: readonly { expected: Expected; at: Matched }[]): Staged {
   // call where that record's batch was refused.
   const effect = all.find(({ expected }) => expected.run !== undefined || (expected.also ?? []).length > 0)?.at.id;
   // Each take keyed to the record its expectation matched: the store writes it only with that record's batch.
-  const take = all.flatMap(({ expected, at }) => (expected.take ?? []).map((command) => ({ command, effect: at.id })));
+  // An answer is a value for one of the expectation's own take ids: it rides on that StagedTake.
+  const take = all.flatMap(({ expected, at }) => (expected.take ?? []).map((command) => (expected.answer?.command === command ? { command, effect: at.id, answer: expected.answer.value } : { command, effect: at.id })));
   return { ...(run ? { run } : {}), ...(also.length ? { also } : {}), ...(effect !== undefined && (run || also.length) ? { effect } : {}), ...(take.length ? { take } : {}) };
 }
 

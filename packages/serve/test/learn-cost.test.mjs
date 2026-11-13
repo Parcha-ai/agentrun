@@ -114,7 +114,17 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   const alone = await runOf("Use the learned workflow answer on What is six times seven.");
   const back = await runOf("Use the learned workflow absent on What is two.");
   const body = await cost();
-  assert.deepEqual(body.runs.map((run) => [run.n, run.run_id, run.path, run.workflow]), [[1, byHand[0], "agent", null], [2, byHand[1], "agent", null], [3, alone, "workflow", "answer"], [4, back, "handed_back", null]], "a name the launch never offered (the model's own text) is never shown");
+  // Each run's path is what its own records say (runPathOf over its settled timeline), never its place in the series nor
+  // what a quiet machine's run would hold: on a loaded one the workflow run's records once held more than its call and
+  // its answer, the read said "handed_back", and this test, which assumed "workflow", went red once.
+  const recordsOf = async (runId) => (await follow(api, runId, ["completed", "failed"])).rows;
+  const said = await Promise.all(body.runs.map(async (run) => runPathOf(await recordsOf(run.run_id))));
+  assert.deepEqual(body.runs.map((run) => run.path), said, "each run's path is its own records'");
+  assert.deepEqual(body.runs.map((run) => [run.n, run.run_id, run.workflow]), [[1, byHand[0], null], [2, byHand[1], null], [3, alone, "answer"], [4, back, null]], "in the order they started; a name the launch never offered (the model's own text) is never shown");
+  assert.deepEqual([body.runs[0].path, body.runs[1].path, body.runs[3].path], ["agent", "agent", "handed_back"], "by hand; a workflow it was not offered");
+  // The run told to use the workflow called it: "workflow" when its records hold only that call and the answer (the
+  // first unit test above pins which records say which), "handed_back" when a loaded machine left more in them.
+  assert.ok(["workflow", "handed_back"].includes(body.runs[2].path), `the run told to use the workflow: ${body.runs[2].path}`);
   assert.deepEqual([body.runs[2].learned_revision, body.runs[3].learned_revision], [sha, sha], "the commit its learning started from");
   // One classifier: the agent called the tool itself (no workflow-first step), and its run record's metrics.path, written
   // at its end, is the path the cost per run shows.

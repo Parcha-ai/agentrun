@@ -111,7 +111,7 @@ export interface NestedFact {
   callId: string;
   tool: string;
   /** The session's own record (the effect of `tool:<id>`): none when the call never started. */
-  store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean };
+  store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean; /** What a script's nested call was sent for a tool with a value (scriptAnswer: the value as JSON, its images' data in it), which the rollout holds instead of `text`. */ sent?: string };
   /** What the harness's recovery note of the same turn calls it (the kernel's one rule, process/recovery.ts): `retryable` is a
    *  safe tool's call that a crash cut off, which the note tells the model is safe to repeat. */
   told?: "completed" | "failed" | "interrupted" | "retryable" | "running";
@@ -141,7 +141,7 @@ export function settle(fact: NestedFact): Settled {
   const { store, rollout } = fact;
   const stored = store?.status === "completed" ? ({ kind: "completed", text: store.text ?? "" } as const) : store?.status === "failed" && !store.interrupted ? ({ kind: "failed", text: store.text ?? "" } as const) : undefined;
   const rolled = rollout ? ({ kind: rollout.ok ? "completed" : "failed", text: rollout.text } as const) : undefined;
-  if (stored && rolled) return stored.kind === rolled.kind && (rolled.text === stored.text || rolled.text === boundResult(stored.text).text) ? stored : { kind: "interrupted" };
+  if (stored && rolled) return stored.kind === rolled.kind && (rolled.text === stored.text || rolled.text === boundResult(stored.text).text || (store?.sent !== undefined && rolled.text === store.sent)) ? stored : { kind: "interrupted" };
   return stored ?? rolled ?? { kind: "interrupted" };
 }
 
