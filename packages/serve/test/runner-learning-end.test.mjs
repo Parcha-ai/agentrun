@@ -442,7 +442,8 @@ const judgeDraft = `\`\`\`\`workflow check\n---\ndescription: Checks a claim; us
   v: 2, name: "check",
   schemas: { In: { type: "object", required: ["claim"], properties: { claim: { type: "string" } } }, Check: { type: "object", required: ["right"], properties: { right: { type: "boolean", description: "Is the claim right?" } } } },
   input: { schemaId: "In" }, output: { schemaId: "Check", path: "check" },
-  root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check" }] },
+  // The guard the compile turn asks a judgment step for with Jev (learn/compile.ts guardProblems holds the draft to it).
+  root: { node: "chain", steps: [{ node: "judge", label: "check", state: { claim: "{claim}" }, out: "Check", as: "check", guard: { signal: "both", threshold: 0.7 } }] },
 })}\n\`\`\`\``;
 
 test("on a run with decision providers the compile turn allows judge nodes and a compiled judge workflow is kept; with none it offers none, the draft is refused on every attempt and its errors go with the learning", async (t) => {
