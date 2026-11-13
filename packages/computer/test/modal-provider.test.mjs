@@ -376,7 +376,7 @@ test('the Modal conformance module: mountFor("archil") gives a fresh run folder 
 		COMPUTER_ARCHIL_DISK: MOUNT.disk,
 		COMPUTER_ARCHIL_REGION: MOUNT.region,
 		COMPUTER_ARCHIL_TOKEN: TOKEN,
-		COMPUTER_ARCHIL_API_KEY: "key-archil-account-0123456789abcdef",
+		COMPUTER_ARCHIL_API_KEY: "fake-test-key",
 		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
 	};
 	const env = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", ...settings };
