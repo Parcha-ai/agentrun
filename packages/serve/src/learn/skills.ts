@@ -865,7 +865,8 @@ const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisi
   // With the run's decision providers, a decision node is runnable when its provider is one of them and answers what it
   // asks (the DSL's checkDecisionProviders): the same registry the call's judge is built on.
   const judging = decisions ? { runJudge: async () => ({}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
-  const runner = { runNode: async () => ({}), runEffect: async () => ({}), ...judging };
+  // A step guard is asked by the learned runner's own guardStep (runner/step-guard.ts) on every run.
+  const runner = { runNode: async () => ({}), runEffect: async () => ({}), guardStep: async () => ({ p: 1 }), ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];

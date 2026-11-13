@@ -706,7 +706,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const entries = await agentEntriesOf(deps.journal(claim), context);
       // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
       // one classifier the cost per run reads back (runPathOverStore).
-      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined);
+      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined, entries as never);
       // Its paid tool calls (a Parallel search's, a monid call's, a person's browser time) and its decisions (a learned
       // workflow's decision nodes, LS-07), booked on the run's one ledger (each on its cap, in its own session, not on the
       // root), are the run's cost too; any of them unknown leaves the run's unknown.
