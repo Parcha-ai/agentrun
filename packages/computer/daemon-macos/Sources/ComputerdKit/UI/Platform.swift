@@ -120,6 +120,10 @@ public protocol Accessibility: Sendable {
 	func scrollToVisible(_ element: ElementHandle) throws
 	/// The element with keyboard focus in the target's app.
 	func focused(_ target: ResolvedTarget) -> ElementHandle?
+	/// The element takes typed text (a text field, a text area, a search field), as RawNode.textInput says of a node.
+	func takesText(_ element: ElementHandle) -> Bool
+	/// The id of the target's app's key window, the one its keyboard focus and its menus act in; nil when it has none.
+	func keyWindow(_ target: ResolvedTarget) -> String?
 	/// The enabled menu item a key chord would choose in the target's app (super+s is File > Save).
 	func menuItem(for chord: KeyChord, in target: ResolvedTarget) -> ElementHandle?
 }
@@ -211,6 +215,14 @@ public protocol RawInput: Sendable {
 	func type(_ text: String) async throws
 }
 
+/// A person at the computer's own keyboard and mouse, apart from the input Computerd posts: what the foreground route's
+/// take-over check reads, beside where the pointer is.
+public protocol PersonInput: Sendable {
+	/// When, on the platform's Clock, a person last pressed a key or a mouse button, turned the wheel or moved the
+	/// pointer; nil when none was seen.
+	func lastInput() -> Double?
+}
+
 /// Apps: list, launch, end.
 public protocol Workspace: Sendable {
 	/// apps.launch with background: true works here, or why not.
@@ -256,9 +268,11 @@ public struct Platform: Sendable {
 	public var navFeature: Feature
 	/// input.actions' keyboard and mouse. It is foreground input by nature, so foregroundFeature gates it too.
 	public var raw: any RawInput
+	/// A person's keyboard and mouse, for the take-over check of a ui act that takes the foreground route.
+	public var person: any PersonInput
 	public var clock: any Clock
 
-	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, navFeature: Feature, raw: any RawInput, clock: any Clock = SystemClock()) {
+	public init(accessibility: any Accessibility, capture: any Capture, workspace: any Workspace, background: any InputRoute, backgroundFeature: Feature, foreground: any InputRoute, foregroundFeature: Feature, navFeature: Feature, raw: any RawInput, person: any PersonInput, clock: any Clock = SystemClock()) {
 		self.accessibility = accessibility
 		self.capture = capture
 		self.workspace = workspace
@@ -268,6 +282,7 @@ public struct Platform: Sendable {
 		self.foregroundFeature = foregroundFeature
 		self.navFeature = navFeature
 		self.raw = raw
+		self.person = person
 		self.clock = clock
 	}
 }

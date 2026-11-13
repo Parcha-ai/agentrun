@@ -139,5 +139,21 @@ final class MacTests: XCTestCase {
 		let list = MacPlatform.driver().apps()
 		XCTAssertTrue(list.apps.contains { $0.id == "com.apple.finder" }, "\(list.apps.map(\.id))")
 	}
+
+	func testAPersonsInputIsWhatComputerdDidNotPost() {
+		let watch = PersonWatch(watching: false)
+		let clock = SystemClock()
+		// Computerd's own events are not a person's.
+		watch.record(source: Int64(getpid()))
+		XCTAssertNil(watch.lastInput())
+		// Anyone else's are, at when the monitor saw them.
+		let before = clock.now()
+		watch.record(source: 1)
+		let kept = watch.lastInput()!
+		XCTAssertGreaterThanOrEqual(kept, before)
+		XCTAssertLessThanOrEqual(kept, clock.now())
+		// A modifier pressed on its own is the keyboard too.
+		XCTAssertTrue(PersonWatch.kinds.contains(.flagsChanged))
+	}
 }
 #endif
