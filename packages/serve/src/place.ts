@@ -4,8 +4,7 @@
 // before this field keeps its id. Which boxes this server has is said in capabilities, and a revision whose box it does
 // not have saves with a warning and is refused at run time. A run runs in its revision's place, else this host's
 // default, and keeps the place it resolved to: a run request names none. A sandbox place on a box is a sandbox computer
-// of that provider (computer-setting.ts computerOfPlace), which the run's claim starts: Docker, Daytona or Modal; bwrap
-// says it does not run yet. A harness's own tools in the box, when they come, are an option of sandbox, never a third
+// of that provider (computer-setting.ts computerOfPlace), which the run's claim starts: Docker, Daytona or Modal. A harness's own tools in the box, when they come, are an option of sandbox, never a third
 // mode.
 //
 // The box is a new agent's default machine: an agentic definition that names no place is saved, at its create, with the
