@@ -2,10 +2,10 @@ import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
-// The console's button: mono caps, a 1px border, square. One per action; a row or a card someone can press is a plain
+// The console's button: mono caps, a 1px border, rounded action corners. One per action; a row or a card someone can press is a plain
 // <button> with its own layout, never this.
 export const buttonVariants = cva(
-  "caps inline-flex items-center justify-center gap-2 whitespace-nowrap border text-small transition-colors disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-3.5 [&_svg]:shrink-0",
+  "caps inline-flex items-center justify-center gap-2 whitespace-nowrap !rounded-action border text-small transition-colors disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-3.5 [&_svg]:shrink-0",
   {
     variants: {
       variant: {

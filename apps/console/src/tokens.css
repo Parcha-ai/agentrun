@@ -57,7 +57,7 @@
   --wf-tool: 207 70% 41%;
   --wf-exit: 251 55% 53%;
 
-  /* Square by default; softer edges are scoped to the build composer and coding-agent action. */
+  /* Square fields and surfaces; rounded action buttons and a softer build composer. */
   --radius: 0px;
   --radius-composer: 1rem;
   --radius-action: 0.5rem;

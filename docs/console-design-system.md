@@ -13,7 +13,7 @@ you add or restyle anything a person sees there.
 
 ## The look, in six rules
 
-1. **Square by default.** Only the build composer and coding-agent action use scoped softer edges.
+1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius. The build composer has its own softer edge.
 2. **One line weight.** Borders are 1px. 2px marks where you are (the open tab, the active nav item) and where the
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
@@ -115,9 +115,11 @@ Controls in one row share one height. A target someone taps is at least 24px eac
 - `border` is the 1px line in `--border`. Use `border-border-strong` for the edge of a hovered or floating thing and
   `border-input` for a field.
 - `border-b-2` (or an inset 2px bar) marks the open tab and the active nav item. Nothing else.
-- The stylesheet squares every element by default. The integrated build composer uses `!rounded-composer`
-  (`--radius-composer: 1rem`), and the unified coding-agent action uses `!rounded-action`
-  (`--radius-action: 0.5rem`). Keep these exceptions scoped to their named components.
+- The stylesheet squares fields and surfaces by default. `Button` and `buttonVariants` use `!rounded-action`
+  (`--radius-action: 0.5rem`) for every action, including links, icon buttons and menu triggers. The coding-agent
+  action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
+- The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
+  to the build composer.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
 
@@ -251,7 +253,7 @@ These hold for every change. The primitives already do them; keep them when you 
 | Check | What it holds |
 | --- | --- |
 | `src/design-system.test.ts` | Every colour token has a light and a dark value. Tailwind names only tokens. The type scale, layers, durations and weights match this guide. Every text pair is 4.5:1 and every edge pair 3:1, in both themes. |
-| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no rounded corner, no shadow but `shadow-float`, no duration off the scale, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
+| `src/design-system.sources.test.ts` | The console's own sources: no literal or palette colour, no size off the type scale, no weight but the two, no numbered layer, no unscoped rounded corner, no shadow but `shadow-float`, no duration off the scale, no `uppercase` by hand, no `dark:` variant, no `outline-none` without a replacement, no hand-built button or field outside `components/ui`, and no checkbox or radio without `accent-primary`. An exception is listed in the test with its reason, and a listed exception that no longer applies fails. |
 | `src/lib/utils.test.ts` | `cn()` knows the console's scales, so `text-body text-primary-text` keeps both classes. |
 | `src/components/ui/primitives.test.tsx` | Each primitive's keyboard and screen-reader contract, and that every design-system story renders in both themes. |
 

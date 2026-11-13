@@ -52,7 +52,7 @@ export const CONTROL_SIZES = [
 
 export const SHAPES = [
   { name: "composer", use: "The integrated build-agent prompt and its actions." },
-  { name: "action", use: "The unified coding-agent action and chooser." },
+  { name: "action", use: "All action buttons, including the unified coding-agent action and chooser." },
 ] as const;
 
 /** Text and background pairs that must pass WCAG 2.2 AA (4.5:1), in both themes. `wash`: the tone's fill at 10% over
