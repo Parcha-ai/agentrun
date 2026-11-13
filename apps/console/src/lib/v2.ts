@@ -189,6 +189,10 @@ export type ComputerSecret = ComputerProvider["secrets"][number];
 export type ComputerKeysBody = Body<"saveComputerKeys">;
 /** POST /v2/computers/{provider}/test's answer. */
 export type ComputerTest = Answer<"testComputer">;
+/** GET /v2/computers/{provider}/choices: each picked key (the provider's `picked`), its choices read from the vendor, or
+ *  why there are none. */
+export type ComputerChoices = Answer<"listComputerChoices">;
+export type ComputerKeyChoices = ComputerChoices["choices"][number];
 /** GET /v2/workspace/archil: Archil (Mode 2) on or off, its disk settings, and its secret ("workspace:archil"), never a
  *  value. */
 export type Archil = Answer<"getWorkspaceArchil">;
