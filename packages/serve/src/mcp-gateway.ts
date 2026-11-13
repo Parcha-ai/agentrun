@@ -230,9 +230,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const clients = new Map<string, Promise<Upstream>>();
   const pins = new Map(Object.entries(options.pin));
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
-  /** Each server's last HTTP status, which tells a refused credential from another failure, and the address refusal
-   *  (`reach`) of the request that never left, if one did not. */
-  const statuses = new Map<string, { last?: number; refused?: string }>();
+  /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
+   *  kept here: it is read from each call's own error, since calls to one server run at once.) */
+  const statuses = new Map<string, { last?: number }>();
   const send = options.fetch ?? fetch;
   /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
    *  server: a refresh can swap a token between a call taking its headers and a request leaving, so
@@ -263,7 +263,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {})]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number; refused?: string }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
     // Its address checked first, every request: a name that resolves somewhere private now is refused before anything
     // (its credential among it) leaves, and the request is dialled at the address checked.
     let through = send;
@@ -295,7 +295,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const connect = (server: string, url: string, headers: Record<string, string>): Promise<Upstream> => {
     let upstream = clients.get(server);
     if (!upstream) {
-      const status: { last?: number; refused?: string } = {};
+      const status: { last?: number } = {};
       statuses.set(server, status);
       upstream = (async () => {
         const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");

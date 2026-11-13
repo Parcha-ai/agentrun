@@ -26,7 +26,7 @@ const LONG = Array.from({ length: 3_000 }, (_, i) => `+line ${i} ${"x".repeat(40
 /** A long answer of one line of JSON, as most of GitHub's are, with one value longer than a filed line. */
 const JSON_LONG = JSON.stringify({ items: Array.from({ length: 2_000 }, (_, i) => ({ id: i, name: `item ${i}` })), patch: "p".repeat(3 * FILED_LINE_MAX) });
 
-async function setup(t, { token = TOKEN, url, prices, commit, bounds } = {}) {
+async function setup(t, { token = TOKEN, url, prices, commit, bounds, reach } = {}) {
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   fake.tools.echo = { description: "Echoes what it was sent.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `seen Bearer ${TOKEN} and ${TOKEN}` }, { type: "image", data: Buffer.from(TOKEN).toString("base64"), mimeType: "image/png" }], structuredContent: { token: TOKEN } }) };
@@ -43,7 +43,7 @@ async function setup(t, { token = TOKEN, url, prices, commit, bounds } = {}) {
     if (typeof init?.body === "string" && init.body.includes('"tools/call"')) sent.push(init);
     return fetch(input, init);
   };
-  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => localWorkspace(work), fetch: spy, ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}) });
+  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => localWorkspace(work), fetch: spy, ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}), ...(reach ? { reach } : {}) });
   /** Whether the server was told the call was cancelled: notifications/cancelled (2025 era), or its request closed. */
   const cancelled = () => fake.log.some((entry) => entry.method === "notifications/cancelled") || sent.some((init) => init.signal?.aborted);
   return { fake, gateway, work, cancelled };
@@ -376,6 +376,22 @@ test("a server that can't be reached reads so, at its address with a short reaso
   assert.equal(said.isError, true);
   assert.equal(textOf(said), `The MCP server fake could not be reached at ${new URL(url).origin} (the connection was reset); nothing was sent.`);
   assert.doesNotMatch(textOf(said), /Version negotiation|fetch failed/);
+});
+
+test("concurrent calls to one server: one whose address is refused is told nothing was sent, and another already sent that later fails is never told so", async (t) => {
+  let refuse = false;
+  const { fake, gateway } = await setup(t, { bounds: { callMs: 600 }, reach: async () => (refuse ? { refused: "a private address" } : {}) });
+  // The first call is sent (the server holds it past the call's bound, so it fails after it left).
+  const sentCall = gateway.call("fake", "slow_write", { line: "x", seconds: 30 }, { signal: signal(), callId: "c1" });
+  while (!fake.log.some((entry) => entry.tool === "slow_write")) await new Promise((resolve) => setTimeout(resolve, 20));
+  // A second call on the same server, whose address is now refused, before the first one fails.
+  refuse = true;
+  const refusedCall = await gateway.call("fake", "add", { a: 1, b: 2 }, { signal: signal(), callId: "c2" });
+  assert.equal(refusedCall.isError, true);
+  assert.match(textOf(refusedCall), /address is refused here: a private address\. Nothing was sent\./);
+  const failed = await sentCall;
+  assert.equal(failed.isError, true);
+  assert.doesNotMatch(textOf(failed), /Nothing was sent|address is refused/, "a call that left is never reported unsent, which would let it be retried and run twice");
 });
 
 test("a token refreshed while a call is out is scrubbed too: its request carries the new one, and a server that echoes it never shows it in the answer, the error or the run's files", async (t) => {
