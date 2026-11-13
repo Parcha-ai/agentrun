@@ -5,13 +5,15 @@ import ComputerdMac
 import Foundation
 
 /// The app runs in one of two ways. Started by launchd as the LaunchAgent (or with COMPUTERD_SERVE=1), it serves the
-/// socket, dials the paired server and keeps a menu bar item. Opened by a person, it installs the LaunchAgent (Agent) and
-/// shows the onboarding window, and quits when the window closes. COMPUTERD_HEADLESS=1 (CI) shows nothing at all.
+/// socket, dials the paired server and keeps a menu bar item. Opened by a person, it installs the LaunchAgent (Agent),
+/// shows the grants window while a grant is missing and then the onboarding window, and quits when the last window
+/// closes. COMPUTERD_HEADLESS=1 (CI) shows nothing at all.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	var server: SocketServer?
 	var attach: AttachClient?
 	var statusItem: NSStatusItem?
+	var grants: GrantsWindow?
 	var onboarding: Onboarding?
 	var attachStatus = "Not paired"
 	let environment = ProcessInfo.processInfo.environment
@@ -24,7 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		let missing = Permissions.missing.map(\.rawValue)
 		log(missing.isEmpty ? "every grant is in place" : "not granted yet: \(missing.joined(separator: ", "))")
 		guard serving else {
-			Agent.install()
+			// The grants alone (--until-granted) leave the LaunchAgent as it is: whoever opened the window so set it up.
+			if !untilGranted { Agent.install() }
 			showOnboarding()
 			return
 		}
@@ -101,26 +104,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		showOnboarding()
 	}
 
-	/// Opened with --until-granted (the Mac mini's bootstrap does), the window's job is the grants alone: pairing counts as
-	/// put off, so the window closes once every grant is on.
+	/// Opened with --until-granted (the Mac mini's bootstrap does), the app's job is the grants alone: the grants window,
+	/// which closes once every grant is on, even when they all were when it opened, and nothing after it.
 	var untilGranted: Bool { CommandLine.arguments.contains("--until-granted") }
 
+	/// The grants window while a grant is missing (or for the grants alone), else the onboarding window.
 	func showOnboarding() {
-		if onboarding == nil {
-			onboarding = Onboarding(app: self)
-			onboarding?.grantsOnly = untilGranted
+		if untilGranted || !Permissions.missing.isEmpty { showGrants() } else { showSettings() }
+	}
+
+	func showGrants() {
+		if grants == nil {
+			grants = GrantsWindow(panes: Permissions.panes, onDone: { [weak self] in
+				// Before the grants window goes, so the app still has a window and does not quit.
+				guard let self, !self.untilGranted else { return }
+				self.showSettings()
+			}, onClose: { [weak self] in self?.grants = nil })
 		}
+		grants?.show()
+	}
+
+	func showSettings() {
+		if onboarding == nil { onboarding = Onboarding(app: self) }
 		onboarding?.show()
 	}
 }
 
-/// One window: each grant with its state and a button that asks for it, the capture alert, and pairing. It closes itself
-/// once every grant is on and it is paired or pairing is put off, so it never sits over the windows an agent works in.
+/// The window after the grants: their state with a way back to the grants window, the capture alert, the agent, and
+/// pairing. It closes itself once every grant is on and it is paired or pairing is put off, so it never sits over the
+/// windows an agent works in.
 @MainActor
 final class Onboarding: NSObject, NSWindowDelegate {
 	weak var app: AppDelegate?
 	let window: NSWindow
-	var rows: [(grant: Permissions.Grant, state: NSTextField, button: NSButton)] = []
+	let grantsState = NSTextField(labelWithString: "")
+	let grantsButton = NSButton(title: "Show…", target: nil, action: nil)
 	let alertState = NSTextField(labelWithString: "")
 	let alertButton = NSButton(title: "Raise it now", target: nil, action: nil)
 	let agentState = NSTextField(labelWithString: "")
@@ -133,15 +151,12 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	var timer: Timer?
 	/// The person chose to pair later (Not now).
 	var pairingPutOff = false
-	/// Opened for the grants alone (--until-granted): pairing counts as put off, and the window closes as soon as every
-	/// grant is on, even when they all were when it opened.
-	var grantsOnly = false
 	/// The window closes itself once its job is done. Set when it opens with something left to do, so a window opened
 	/// to look at a finished setup stays until it is closed.
 	var closeWhenDone = false
 
 	/// Every grant on, and paired or pairing put off: nothing is left for this window.
-	var done: Bool { Permissions.missing.isEmpty && (pairingPutOff || grantsOnly || AttachSettings.load() != nil) }
+	var done: Bool { Permissions.missing.isEmpty && (pairingPutOff || AttachSettings.load() != nil) }
 
 	init(app: AppDelegate) {
 		self.app = app
@@ -165,16 +180,12 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		stack.alignment = .leading
 		stack.spacing = 10
 		stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-		stack.addArrangedSubview(label("Computerd lets an agent use this Mac's apps, as the computer protocol asks. It needs three grants, which only you can give.", bold: true))
-		for grant in Permissions.Grant.allCases {
-			let state = NSTextField(labelWithString: "")
-			let button = NSButton(title: "Allow…", target: self, action: #selector(ask(_:)))
-			button.tag = rows.count
-			let row = NSStackView(views: [label("\(grant.rawValue): to \(grant.purpose)."), state, button])
-			row.orientation = .horizontal
-			stack.addArrangedSubview(row)
-			rows.append((grant, state, button))
-		}
+		stack.addArrangedSubview(label("Computerd lets an agent use this Mac's apps, as the computer protocol asks.", bold: true))
+		grantsButton.target = self
+		grantsButton.action = #selector(showGrants)
+		let grantsRow = NSStackView(views: [label("Grants: \(Permissions.Grant.allCases.map(\.rawValue).joined(separator: ", ")), which only you can give."), grantsState, grantsButton])
+		grantsRow.orientation = .horizontal
+		stack.addArrangedSubview(grantsRow)
 		alertButton.target = self
 		alertButton.action = #selector(raiseAlert)
 		let alertRow = NSStackView(views: [label("The screen capture alert: macOS asks once whether Computerd may read the screen directly. Answer it now, not mid-task."), alertState, alertButton])
@@ -202,7 +213,7 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	}
 
 	func show() {
-		closeWhenDone = grantsOnly || !done
+		closeWhenDone = !done
 		refresh()
 		window.center()
 		window.makeKeyAndOrderFront(nil)
@@ -220,11 +231,8 @@ final class Onboarding: NSObject, NSWindowDelegate {
 	}
 
 	func refresh() {
-		for row in rows {
-			let granted = row.grant.granted
-			row.state.stringValue = granted ? "Granted" : "Not granted"
-			row.button.isEnabled = !granted
-		}
+		let missing = Permissions.missing.map(\.rawValue)
+		grantsState.stringValue = missing.isEmpty ? "All on" : "Missing: \(missing.joined(separator: ", "))"
 		let raised = Permissions.captureAlertRaised
 		alertState.stringValue = raised ? "Answered" : "Not yet"
 		alertButton.isEnabled = !raised && Permissions.Grant.screenRecording.granted
@@ -233,9 +241,9 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		if app?.serving == true {
 			pairState.stringValue = app?.attachStatus ?? ""
 		} else {
-			pairState.stringValue = AttachSettings.load().map { "Paired with \($0.server)" } ?? (pairingPutOff || grantsOnly ? "Not paired: pair later from the menu bar item's Grants and Pairing…" : "Not paired")
+			pairState.stringValue = AttachSettings.load().map { "Paired with \($0.server)" } ?? (pairingPutOff ? "Not paired: pair later from the menu bar item's Grants and Pairing…" : "Not paired")
 		}
-		laterButton.isEnabled = !pairingPutOff && !grantsOnly && AttachSettings.load() == nil
+		laterButton.isEnabled = !pairingPutOff && AttachSettings.load() == nil
 		if closeWhenDone && done && window.isVisible {
 			// A moment with every row ticked, then the window goes: on a desktop an agent uses, it would cover the
 			// windows it works in.
@@ -260,10 +268,8 @@ final class Onboarding: NSObject, NSWindowDelegate {
 		refresh()
 	}
 
-	@objc func ask(_ sender: NSButton) {
-		let grant = rows[sender.tag].grant
-		grant.request()
-		NSWorkspace.shared.open(grant.settings)
+	@objc func showGrants() {
+		app?.showGrants()
 	}
 
 	@objc func raiseAlert() {
