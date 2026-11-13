@@ -26,7 +26,7 @@ which loads that one provider's file and the protocol modules it uses, and no ot
 
 Every install carries all of `dist/`, whatever the host's architecture and whichever provider it uses: both daemons
 (a Docker host on either architecture and every remote provider use one of them, and the archive does not know which),
-every provider's module, and the conformance CLI and suite with the Daytona sweep. At 0.1.0-beta.31 (`npm pack
+every provider's module, and the conformance CLI and suite with the live sweep. At 0.1.0-beta.31 (`npm pack
 --dry-run --json`) that is 122 files, 3,688,167 bytes packed and 9,234,731 unpacked; the two daemons are 8,216,900 of
 the unpacked bytes (4,219,042 amd64, 3,997,858 arm64) and the conformance code 238,421. The trade: no Go, no download
 and no install script on the host, for one daemon more than the host runs: about 4 MB unpacked and 1.6 MB compressed.
@@ -480,7 +480,7 @@ the screen (`provider.stream()`), the files a browser saved. A computerd hello n
 
 **Daemon mode.** `capabilities().daemon` says who answers the methods. `pid1`: computerd init is the computer's main
 process, so its exit ends the computer (Docker). `child`: the vendor's own agent is the main process and starts init at
-boot; init's exit does not end the computer (Daytona, whose toolbox daemon runs init as a session command), and it
+boot; init's exit does not end the computer (Daytona, whose toolbox daemon starts init detached), and it
 must not run under a supervisor that restarts it. `none`: no computerd runs, and the provider answers the same methods
 itself, from our server (adb, a vendor API). Either way a connection's `client` is a `ComputerClient` (`call(method,
 params, { signal })` and `close()`): `DaemonClient` over a stream, or a provider's in-process client.
@@ -1173,9 +1173,8 @@ reads at once, then after pauses that double from `minMs` (250 ms) to `maxMs` (5
 returns the first state `done` accepts. Each read gets a signal that aborts at the bound or on the caller's abort; a
 read still pending then is not waited for, and one that throws is not done. Past the bound it returns a `timeout`, on
 the caller's abort an `aborted`, each naming `what` was waited for and the last state read (`describe`). It has no
-vendor's types: the shared adapter's release and the one live sweep wait through it (`settleGone`, until a machine reads
-gone and is no longer listed); Daytona's release, a create that deletes its sandbox, and the Daytona sweep wait through
-it too.
+vendor's types: the shared adapter's release, a create that deletes its machine, and the one live sweep wait through it
+(`settleGone`, until a machine reads gone and is no longer listed), for every hosted vendor (Daytona's stop among them).
 
 ## Modal
 
@@ -1355,7 +1354,10 @@ const made = await daytona.create({ image: "my-snapshot", lifetimeMs: 600_000, n
 ```
 
 A Daytona computer is a sandbox made through Daytona's v0 REST API with `fetch`: no SDK, and no package beyond this
-one. `fetch` and the WebSocket factory are options, so the tests run against a fake.
+one. `fetch` and the WebSocket factory are options, so the tests hand them a recorder. The provider is a `MachineHost`
+on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): Daytona's own calls are here, and the lifecycle
+around them (the computer's name from the create's request id, the daemon's install and start, the read-back, the
+probe, the listing wait, release's wait for gone) is the adapter's, the same for every hosted vendor.
 The key is the caller's to pass: the provider never reads the environment, never sends the key over a redirect or to a
 toolbox URL that is not https, and never puts it in a computer. `image` is a Daytona snapshot, by id or name: the
 snapshot gives the sandbox its class and its size. `image: "default"` sends no snapshot field at all, and Daytona makes
@@ -1383,13 +1385,15 @@ stopped one.
 ### How the daemon gets in, and how it is reached
 
 Daytona runs its own toolbox daemon as the sandbox's first process, and a snapshot we do not build has no `computerd`.
-So the provider pushes it in at create and starts it as a long-lived command, and reaches it the same way:
+So the provider pushes it in at create and starts it, and reaches it the same way. Every command is a session command
+of its own (`runAsync`, `suppressInputEcho`), its argv one shell line, its output read from the command's log stream,
+its exit code from the session; the session is deleted once the command ends, or when the provider ends it:
 
 1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`:
    `/files/upload-v2`, or `/files/upload` when the toolbox answers 404 for it. An older toolbox, as a self-hosted
    Daytona's runners may run, serves only `/files/upload`, which takes the same form; any other refusal is not retried
    on the older route.
-2. Install it with `/process/execute` (the command is piped to the sandbox's shell): root-owned, mode 755, at
+2. Install it with the shared install script: root-owned, mode 755, at
    `/opt/agentrun/computerd`, and make `/work` (its home) and `/run/agentrun` (its socket's directory). As root, or
    through passwordless `sudo`; a sandbox with neither is refused in the script's words. The script prints the
    installed binary's sha256 (`sha256sum`, BusyBox's or coreutils'), which must be the uploaded one's. It makes
@@ -1398,15 +1402,16 @@ So the provider pushes it in at create and starts it as a long-lived command, an
    and writable by no group and no other user (read with `ls -ldn`, so a symbolic link or an ACL on the way fails it).
    A path that fails is refused in words, with nothing installed. Only root can change an owner or a mode, so the
    rule, once it holds, holds until root changes it.
-3. Start `computerd init --deadline <time> --user 2510:2510 --own-network` (`--user` is the `daemonUser` option) as a
-   session command (`runAsync`) in the session `agentrun-computerd`, as root (through `sudo -n` when the session's user
-   is not root), in a clean environment and with `/work` as its directory. Init cuts itself and its programs off from
+3. Start `computerd init --deadline <time> --user 2510:2510 --own-network` (`--user` is the `daemonUser` option)
+   detached, in a session of its own (`setsid`), its output to `/run/agentrun-init.log`, as root (through `sudo -n`
+   when the session's user is not root), in a clean environment and with `/work` as its directory. The command that
+   starts it ends at once, and deleting its session leaves init running; a daemon that never answers is reported with
+   the last words of that log. Init cuts itself and its programs off from
    the toolbox (below), then drops itself: it gives `/work` and `/run/agentrun` to the daemon's user (mode 700, never
    through a symbolic link), sets `no_new_privs` and empties the capability bounding set on every thread, so a setuid
    program such as `sudo` cannot raise it, then becomes uid and gid 2510 with no supplementary groups and empties the
    inheritable set. The provider relies on no privilege tool of the
-   snapshot's: the first live start failed on the snapshot's `setpriv`, and the daemon's own drop replaced it. The provider never deletes
-   that session: deleting it ends init.
+   snapshot's: the first live start failed on the snapshot's `setpriv`, and the daemon's own drop replaced it.
 4. `connect()` starts `computerd stdio` as root the same way, in a session of its own, to reach a socket in a
    directory that is the daemon's user's alone; it only carries bytes. Init and the bridge each check the daemon's
    path against the same rule before they run it as root, and refuse in words when it fails, so a binary a user
@@ -1414,8 +1419,14 @@ So the provider pushes it in at create and starts it as a long-lived command, an
    (`POST .../input`, whole lines, one call after another), and its stdout is the command's log stream, a WebSocket
    with `follow=true`, in which Daytona prefixes each stdout line with `01 01 01` and each stderr line with `02 02 02`
    (split output, asked for with `X-Daytona-Split-Output: true`). Input is sent with `suppressInputEcho`; a line that
-   is a request or a notification, never a reply, is dropped in case a toolbox echoes input anyway. `close()` deletes
-   the session, which ends the bridge and nothing else.
+   is a request or a notification, never a reply, is dropped in case a toolbox echoes input anyway. An input call
+   Daytona answers with its own 500 (its error body, `"statusCode":500`) is sent again, up to three tries with a
+   doubling pause: that answer comes from an error before the call is passed on, or from the toolbox's input route
+   when it could not open the command's input pipe or its reader is gone (`daytonaio/daytona@b5a5d9e7
+   apps/daemon/pkg/session/input.go`), so the line reached no reader. Nothing else is sent again: a call passed on
+   that then fails is a 502 (`libs/common-go/pkg/proxy/proxy.go`), and after a 502, 503, 504, a timeout or no answer
+   the line may have been read, and a line read twice is a request the daemon runs twice. `close()` deletes the
+   session, which ends the bridge and nothing else.
 
 This is the protocol's first binding, stdio over the vendor's exec stream, assembled from two halves: the session
 command's input and its log stream are each one-way, and together they are the duplex byte stream `DaemonClient`
@@ -1438,7 +1449,11 @@ from (the loopback block):
   neither port 2280 on the loopback nor the sandbox's own address; vsock and io_uring are refused to them; and init
   refuses to start while another process holds their uid, so a toolbox (or a session shell of its) that runs as the
   daemon's user is refused, not shared. `capabilities().vendorAgentPorts` declares 2280, and the Core case
-  isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. A runner whose root may
+  isolation.vendor-agent probes it from a program of the computer's user, on both loopbacks. Init takes others' access
+  off every socket under `/run`; Daytona's D-Bus session bus sits in `/tmp` (`/tmp/dbus-<10 characters>`, which a
+  program of the computer's user could connect to in the live baseline), so create, as root and before init starts,
+  takes others' access off each socket `/tmp/dbus-*` names (the host's `vendorSockets`), and its notes name the ones
+  it closed. A runner whose root may
   not make a network namespace (no CAP_SYS_ADMIN: a container class on a runner that is not privileged) fails closed:
   init refuses to start, in words, and create deletes the sandbox.
 - The provider still installs and starts the daemon through that toolbox, as root or through passwordless `sudo`, and
@@ -1449,8 +1464,8 @@ from (the loopback block):
 - Network `none` is `networkBlockAll` (Daytona drops what leaves the sandbox on the host) and, beside it, the
   daemon's own namespace. Known gap: `open` and allowlists are refused in words until a proxy carries them out of the
   daemon's own network, the next feature after this one; a computer that needs pip, npm or git from the internet
-  cannot be made on Daytona until then. `network()` refuses a change to them, and still narrows a computer made
-  before (open or a list) to none.
+  cannot be made on Daytona until then. A computer's network is fixed at create: `network()` refuses every change, with
+  `refused`, and asks Daytona nothing.
 - From outside, anyone with the API key can run a command as root in the sandbox through the same toolbox.
 
 Daytona's container class runs code as root, and the open runner runs it privileged.
@@ -1468,7 +1483,8 @@ the TTL.
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot, and is read back |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
-| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is a session command it runs (below): deleting the session ends init, not the sandbox |
+| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above) |
+| `networkReadBack` | `true` | `networkBlockAll` and the allow lists are read back from the sandbox; the probe checks none from inside as well |
 | `groups` | `exec`, `files`, `processes` | the daemon's own, checked against its hello's `groups`, as is its `kind` |
 | `maxLifetimeMs` | 30 days | the cap `check` gives, through the shared `checkLifetime`; Daytona's TTL is whole minutes and documents no cap of its own |
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
@@ -1478,54 +1494,52 @@ the TTL.
 
 ### What the provider does
 
-- `check(spec)` refuses in words, with no request: no snapshot, a lifetime that is not 1 ms to 30 days, a network
-  that is not `none` (open and every allowlist alike), a label in the provider's own
-  namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
-  (the daemon works in `/work`), and any other field.
-- `create` sends `POST /sandbox` with the name `computer-<12 hex digits>`, the snapshot (none for `"default"`), the
-  labels with `agentrun.computer=1`, `agentrun.computer.deadline=<ISO time>` and `agentrun.computer.image=<the image>`, `public: false`, `ttlMinutes`,
-  `autoStopInterval` (`autoStopMinutes`; unset, 0, since Daytona's idle timer counts only outside traffic and a daemon
-  at work would be stopped), and `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which
-  the TTL then ends). `POST /sandbox` is never retried. A
-  create that fails without a 4xx answer, or is aborted, may still have made the sandbox, so the provider deletes the
-  name it chose. Then it waits for `started` (polling `GET /sandbox/{id}`), runs the drift check on that read, pushes
-  in and starts the daemon, checks the daemon, and waits until the label listing shows the new computer steadily
-  (Daytona's listing trails a create). Any failure, mismatch or abort after the sandbox exists deletes it, and create
-  never returns ok once its signal has aborted.
-- `attach({ id })` takes a sandbox id or a computer's name; `attach({ labels })` must match exactly one computer. Only
-  a sandbox with `agentrun.computer=1` and a computer's name counts. Attach runs the same drift check, with the spec
-  read back from the sandbox, and, when it is started, the daemon's; a computer that drifts is refused and left as it
-  is. It returns `spec`: `image`, the image create was asked for (`"default"` stays `"default"`), from its label;
-  `snapshot`, the snapshot Daytona reports; the daemon's user, the network, `cpus`, `memoryMb` (Daytona's GiB times
-  1024), `/work` when the daemon was checked, and the deadline. A computer with no image label (made before create
-  wrote it) reports its snapshot as `image`, and is not refused for the missing label.
+- `check(spec)` refuses in words, with no request: no snapshot (or one of blanks or control characters), a lifetime
+  that is not 1 ms to 30 days, a network that is not `none` (open and every allowlist alike), a label in the provider's
+  own namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
+  (the daemon works in `/work`), a GPU computer's snapshot other than the GPU snapshot or `"default"`, and any other
+  field.
+- `create(spec, { requestId })` names the computer `computer-<12 hex digits of sha256(requestId)>` and lists that name
+  first: a retry of the same request finds the computer the first one made (the adapter's idempotent create,
+  [PROVIDERS.md](PROVIDERS.md)). It sends `POST /sandbox` with that name, the snapshot (none for `"default"`), the
+  labels (`agentrun.computer=1`, `agentrun.computer.name`, the deadline, the image, and the most an extend could move
+  the deadline to), `public: false`, `networkBlockAll`, `ttlMinutes`, `autoStopInterval` (`autoStopMinutes`; unset, 0,
+  since Daytona's idle timer counts only outside traffic and a daemon at work would be stopped), and
+  `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which the TTL then ends). `POST
+  /sandbox` is never retried; a name Daytona already holds (409) is `exists`. A create that fails without a 4xx
+  answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
+  `started` (polling `GET /sandbox/{id}`), runs the drift check on that read, pushes in and starts the daemon, checks
+  the daemon and probes its network none from inside, and waits until the label listing shows the new computer twice
+  running (Daytona's listing trails a create). Any failure, mismatch or abort after the sandbox exists deletes it, and
+  create never returns ok once its signal has aborted.
+- `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
+  must match exactly one computer. Only a sandbox with `agentrun.computer=1` and a computer's name label counts.
+  Attach holds the spec read back to `check` and, when it is started, the daemon; a computer that drifts is refused and
+  left as it is. It returns `spec`: `image`, the image create was asked for (`"default"` stays `"default"`), from its
+  label; `snapshot`, the snapshot Daytona reports; the daemon's user, the network, `/work`, the deadline and, with one,
+  the GPU.
 - `list(labels)` asks Daytona for `agentrun.computer=1` alone, every page, and filters the other labels itself. A
-  sandbox that is `destroying` or `destroyed`, or whose desired state is `destroyed`, is going and left out.
-  `started`, the states on the way to it, and `stopping` and `pausing` (on the way from it) are `running`: a stopping
-  computer is reported stopped only once Daytona reads it `stopped`. The rest (`stopped`, `archived`, `paused`,
-  `error`, ...) are `stopped`. A listed sandbox with no network fields is read on its own.
-- `network(ref)` reads the network back. `network(ref, policy)` refuses open and an allowlist in words, with no
-  request; a change to none (of a computer made open or with a list before the loopback block) sends `POST
-  /sandbox/{id}/network-settings` and reads it back whatever the answer: as asked, it is returned; unchanged, the
-  change is refused in Daytona's words; anything else is put back, or, if that fails, the network is blocked, and the
-  change is refused. A network is never left wider than asked.
+  sandbox that is `destroying` or `destroyed`, or whose desired state is `destroyed`, is going and left out. `started`
+  is `running`; the states on the way to it are starting, and left out; `stopping` and `pausing` (on the way from it),
+  `stopped`, `archived` and `paused` are `stopped`. A listed sandbox with no network fields is read on its own.
+- `network(ref)` reads the network back; `network(ref, policy)` refuses any policy but the one the computer has, with
+  `refused` and no request.
 - `release(ref, "delete")` deletes: retried on a 5xx, checked against the sandbox, with a forced stop before the last
   attempt. `release(ref, "stop")` stops. Both are idempotent, and both refuse a sandbox that is
   not this provider's.
 - Daytona is asynchronous: it answers a delete by setting the sandbox's desired state to `destroyed` and a stop by
   setting it to `stopped`, and the sandbox gets there later, through `destroying` or `stopping`. Its listing trails
-  both: in the first live run, `list()` still showed a computer right after its delete returned, and showed a stopped
-  one `running`. So release waits until Daytona reads the computer as release left it, twice running, by
-  `GET /sandbox/{id}` and by the label listing alike: after a delete, a 404 and no listed computer; after a stop, a
-  `stopped` read and a computer listed `stopped`, or, when the stop deletes (`autoDeleteMinutes: 0`), a 404 and no
-  listed computer. A stop that is not under way is asked for again. It polls through `waitUntil`, with pauses that
-  double from `pollMs` up to 5 s, bounded by the `goneMs` timeout for a delete and `stopMs` for a stop (120 s each, unset), and by the signal
-  `release(ref, how, { signal })` takes. When the bound runs out, or the sandbox goes to `error`, release fails in
-  words naming the last state Daytona read: it never reports a release it has not seen done. A create that deletes
-  the sandbox it made (a failure, a mismatch, an abort) waits the same way before it returns.
+  both. So release waits until Daytona reads the computer as release left it, twice running, by `GET /sandbox/{id}`
+  and by the label listing alike: after a delete, a 404 (or `destroyed`) and no listed computer; after a stop, a
+  `stopped` read and a computer listed `stopped`, or, when the stop deletes (`autoDeleteMinutes: 0`, or a GPU
+  sandbox), a 404 and no listed computer. A stop that is not under way is asked for again. It polls with pauses that
+  double from `pollMs` up to 5 s, bounded by the `goneMs` timeout (120 s unset) and by the signal
+  `release(ref, how, { signal })` takes. When the bound runs out, release fails in words naming the last state
+  Daytona read: it never reports a release it has not seen done. A create that deletes the sandbox it made (a
+  failure, a mismatch, an abort) waits the same way before it returns.
 - `connect(ref)` refuses a computer that is not `started`, and a daemon whose hello is not the provider's.
 - Every call has its own timeout and takes the caller's signal; reads, the upload and deletes are retried (three tries,
-  backoff); creates, session commands, input and network changes are not.
+  backoff from `timeouts.retryMs`, 500 ms unset); creates, session commands and input are not.
 
 ### The drift check
 
@@ -1535,9 +1549,10 @@ From Daytona's read of the sandbox:
 | --- | --- |
 | `snapshot` | the spec's image; for `"default"`, whatever Daytona names, unchecked |
 | `networkBlockAll`, `networkAllowList`, `domainAllowList`, `outboundProxyUrl` | the network declared; an outbound proxy, both lists, or block-all with a list is drift |
-| `labels` | `agentrun.computer=1`, the deadline and the image as written, every label the spec asked for |
+| `labels` | `agentrun.computer=1`, the name, the deadline and the image as written, every label the spec asked for |
 | `autoStopInterval`, `autoDeleteInterval` | `autoStopMinutes` (0 unset), `autoDeleteMinutes` (-1 unset), exactly |
 | `autoDestroyAt` | set, and no later than the deadline plus the TTL's minute and 2 minutes of clock skew |
+| `state` | `started` |
 | `sandboxClass` | the provider's class |
 | `gpu`, `gpuType` | `spec.gpu`'s count (0 with none) and, with one, its type |
 | `public`, `kvm`, `volumes`, `linkedSandboxId` | false, not true, none, none |
@@ -1545,7 +1560,8 @@ From Daytona's read of the sandbox:
 From the daemon, over one connection: hello (the provider's version, `linux`, the `arch` option, every daemon
 capability), `/proc/self/status` (Uid and Gid the daemon user's four times, no groups, `NoNewPrivs: 1`, `CapInh`,
 `CapPrm`, `CapEff`, `CapBnd` and `CapAmb` all zero), `/proc/self/cwd` (`/work`) and `/proc/self/exe`
-(`/opt/agentrun/computerd`); and the installed binary's sha256 from the install.
+(`/opt/agentrun/computerd`); its own network (loopback alone), and the probe: no target answers a computer with
+network none; and the installed binary's sha256 from the install.
 
 ### Conformance on Daytona
 
@@ -1575,25 +1591,17 @@ npm run conformance -w @parcha/agentrun-computer -- --provider daytona [--image 
 
 ### The sweep around a live run
 
-`dist/conformance/daytona-sweep.js` reads the same `COMPUTER_DAYTONA_API_KEY` and `COMPUTER_DAYTONA_API_URL`, through
-the conformance module:
+The live sweep is the shared one, `dist/conformance/sweep.js --provider daytona --before <file>` and `--after <file>`
+([PROVIDERS.md](PROVIDERS.md), "The live sweep"); it reads the same `COMPUTER_DAYTONA_API_KEY` and
+`COMPUTER_DAYTONA_API_URL` through the conformance module's `createHost`, with no live switch:
 
 ```sh
-node packages/computer/dist/conformance/daytona-sweep.js --before /tmp/daytona-before.json   # before the run
-node packages/computer/dist/conformance/daytona-sweep.js --after /tmp/daytona-before.json    # after it
+node packages/computer/dist/conformance/sweep.js --provider daytona --before /tmp/daytona-before.json   # before the run
+node packages/computer/dist/conformance/sweep.js --provider daytona --after /tmp/daytona-before.json    # after it
 ```
 
-`--before <file>` writes the id of every sandbox carrying `agentrun.computer=1`, whatever its name or state, into the
-file. `--after <file>` lists them again and deletes (`release(ref, "delete")`) every one whose id is not in the file
-and that carries a conformance run's label (`agentrun.conformance`, which every computer of a run carries), then reads
-each with `GET /sandbox/{id}` until Daytona answers 404, up to 60 s each, and prints one JSON line,
-`{"swept":n,"notFound":m,"stillThere":[ids],"leftAlone":k}`, where `swept` counts the conformance sandboxes not there
-before, `notFound` plus `stillThere`'s length is `swept`, and `leftAlone` counts the new labelled sandboxes with no
-conformance label: another user of the account (a server's computers) made them during the run, and no call names
-them. A sandbox in the file is never named by any call. A new conformance sandbox without a computer's name is not this
-provider's: release refuses it, and it is reported still there. Exit 0 when every swept sandbox reads 404, 1 when one
-is still there, 2 on a usage error, a before file it cannot read, no key, or a listing Daytona refused (nothing is
-deleted then).
+It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
+Daytona also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
 
 ### Not yet known
 

@@ -156,8 +156,19 @@ export interface HostFacts {
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
+	/**
+	 * The vendor's own path unix sockets outside /run, as shell patterns with no space (Daytona's D-Bus session bus,
+	 * /tmp/dbus-*). Init takes others' access off every socket under /run itself; a child host's create does the same
+	 * for each socket these name, as root, before init starts, since a network namespace does not cut a path socket.
+	 */
+	vendorSockets?: string[];
 	/** Whether get reads the network back from the vendor. */
 	networkReadBack: boolean;
+	/**
+	 * Whether get reads a machine's GPUs back from the vendor (Machine.gpu, absent for a machine with none): a retry of a
+	 * request is held to them only then. A vendor that reads none back (Modal) answers the request's computer as made.
+	 */
+	gpuReadBack?: boolean;
 	/** The network forms its computers take: of its descriptor's. */
 	network: NetworkForm[];
 	/** The mount kinds it takes: of its descriptor's. */

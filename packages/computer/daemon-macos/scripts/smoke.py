@@ -71,9 +71,12 @@ def core(c):
     h = hello.get("result") or {}
     record("core", "hello", h.get("os") == "macos" and h.get("protocol") == "0.2", json.dumps(h.get("features")))
     record("core", "hello.device and osVersion", (h.get("device") or {}).get("maker") == "Apple" and "(" in (h.get("osVersion") or ""), f"{h.get('device')} {h.get('osVersion')}")
-    names = {"apps.background", "ui.tree", "ui.image", "ui.background", "ui.foreground", "ui.page", "ui.nav"}
+    names = {"screen.capture", "apps.background", "ui.tree", "ui.image", "ui.background", "ui.foreground", "ui.page", "ui.nav"}
     features = h.get("features") or {}
-    record("core", "hello.features names the seven", set(features) == names, ", ".join(sorted(features)))
+    record("core", "hello.features names the eight", set(features) == names, ", ".join(sorted(features)))
+    # stdio is the socket's: the screen is never off for want of the owner's grant to a paired server.
+    capture = features.get("screen.capture")
+    record("core", "screen.capture over stdio needs no grant", capture is True or "paired" not in (capture or {}).get("off", ""), json.dumps(capture))
     vague = [n for n, f in features.items() if f is not True and len((f or {}).get("off", "")) < 20]
     record("core", "every feature off says why", not vague, ", ".join(vague))
     record("core", "hello.screen", bool(h.get("screen")), json.dumps(h.get("screen")))

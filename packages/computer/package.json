@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-computer",
-  "version": "0.1.0-beta.36",
+  "version": "0.1.0-beta.37",
   "description": "The open platform's computer protocol: a daemon in every computer, and one provisioner per vendor, starting with Docker.",
   "keywords": [
     "agentrun",
@@ -107,8 +107,7 @@
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
     "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
     "test:boxd": "node --test --test-timeout=1800000 test/boxd/*.test.mjs",
-    "conformance": "node dist/conformance/cli.js",
-    "daytona:sweep": "node dist/conformance/daytona-sweep.js"
+    "conformance": "node dist/conformance/cli.js"
   },
   "repository": {
     "type": "git",

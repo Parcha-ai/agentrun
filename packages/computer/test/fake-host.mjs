@@ -78,7 +78,7 @@ const START = Date.now();
  *  - flaps: for a new machine, whether each listing after its create shows it (true) or leaves it out (false), in turn,
  *    until they run out; then every listing shows it;
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
- *  - size: the size every machine reads back;
+ *  - size: the size every machine reads back; a machine reads back the GPUs its create asked for;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
@@ -87,7 +87,9 @@ const START = Date.now();
  *  - lingers: { reads, lists } after a delete; fileApi: false for a host with no upload;
  *  - onStep(step, machine): at the start of every host call and daemon request, so a test can abort a signal there;
  *  - hang: a script's kind ("install", ...) whose process never ends; killHangs: a process's kill that never settles;
- *  - archil: root verbs' answers, as fake-archil.mjs's.
+ *  - archil: root verbs' answers, as fake-archil.mjs's;
+ *  - sockets: the path sockets every machine holds, which the sockets script closes where a pattern names them;
+ *    socketsFail: a path among them whose chmod fails.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -113,6 +115,8 @@ export function fakeHost({
 	timer = "ok",
 	hang,
 	killHangs = false,
+	sockets = [],
+	socketsFail,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -169,6 +173,7 @@ export function fakeHost({
 		image: { resolved: `${m.image}-id` },
 		...(m.createdAt === undefined ? {} : { createdAt: new Date(m.createdAt) }),
 		...(size === undefined ? {} : { size: { ...size } }),
+		...(m.request?.gpu === undefined ? {} : { gpu: { ...m.request.gpu } }),
 		endsAt: new Date(m.endsAt),
 		timerMoved: m.timerMoved,
 		...(drift ? { drift: [...drift] } : {}),
@@ -368,6 +373,19 @@ export function fakeHost({
 			});
 			return proc;
 		}
+		if (kind === "sockets") {
+			// The script's patterns, matched as a shell's: * any characters but "/", the rest as written.
+			const named = (path) => script.args.some((pattern) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*")}$`).test(path));
+			queueMicrotask(() => {
+				let failed = 0;
+				for (const path of sockets.filter(named).sort()) {
+					if (path === socketsFail) failed = 1;
+					proc.out.push(`${path === socketsFail ? "failed" : "closed"} ${path}\n`);
+				}
+				proc.exit(failed);
+			});
+			return proc;
+		}
 		if (kind === "log") {
 			queueMicrotask(() => {
 				proc.out.push(m.initLog ?? "");
@@ -425,6 +443,7 @@ export function fakeHost({
 			arch: "amd64",
 			vendorAgentPorts: [7777],
 			networkReadBack: true,
+			gpuReadBack: true,
 			network: ["none"],
 			mounts: ["archil"],
 			release: ["delete"],

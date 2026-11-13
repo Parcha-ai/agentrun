@@ -13,8 +13,9 @@ What a provider declares, the refusal rules, and the conformance report. (Writte
 
 A vendor whose machines run Linux and can start a process as root writes a `MachineHost` (`src/host.ts`), and
 `hostedProvider(host, options)` (`src/hosted/provider.ts`) makes it a whole `ComputerProvider`. The doc comments in
-`src/host.ts` are the contract; this section is their summary. E2B is the first vendor on it (`src/e2b.ts`), and
-Agent37 the second (`src/agent37.ts`: REST over fetch, every command over SSH, no file API).
+`src/host.ts` are the contract; this section is their summary. E2B is the first vendor on it (`src/e2b.ts`),
+Agent37 the second (`src/agent37.ts`: REST over fetch, every command over SSH, no file API), and Daytona the third
+(`src/daytona.ts`).
 
 ### What the vendor writes
 
@@ -23,7 +24,7 @@ Seven members, each a call about the vendor's own machines:
 | Member | What it does |
 | --- | --- |
 | `id` | The descriptor's id: the vendor named by every error of code `vendor`. |
-| `facts` | Static: `daemon` (`child` or `pid1`), `isolation`, `lifetime` (`vendor` timer or `janitor`), `maxLifetimeMs`, `arch`, `vendorAgentPorts`, `networkReadBack`, `network`, `mounts`, `release`; optional `gpu`, `user`, `specFields`, `labelRules`, `runtime`. `capabilities()` is built from these and the adapter's options alone. |
+| `facts` | Static: `daemon` (`child` or `pid1`), `isolation`, `lifetime` (`vendor` timer or `janitor`), `maxLifetimeMs`, `arch`, `vendorAgentPorts`, `networkReadBack`, `network`, `mounts`, `release`; optional `vendorSockets` (the vendor's own path sockets outside `/run`, as shell patterns, which a child host's create closes to the computer's user before init starts), `gpu`, `user`, `specFields`, `labelRules`, `runtime`. `capabilities()` is built from these and the adapter's options alone. |
 | `create(req, ctx)` | Makes one machine from a `MachineRequest` (its name, image, labels, lifetime, network, and on a pid1 host its command) and answers once the vendor has its id. No wait for running or listed: the adapter waits. |
 | `get(id, ctx)` | One `Machine` as the vendor reads it now (labels, state, network, resolved image, the timer's end, the vendor's own drift in words), or `undefined` once the vendor no longer has it. |
 | `list(labels, ctx)` | Every machine carrying all of these labels, every page, each as `get` reads it, within `ctx.timeoutMs`. |
