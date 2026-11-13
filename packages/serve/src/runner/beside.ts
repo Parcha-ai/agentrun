@@ -68,6 +68,9 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
+  // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
+  const { sweepEndedScratch } = await import("./scratch-sweep.js");
+  await sweepEndedScratch(store, dataDir, { log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // Its run start and end lines go where the server's lines do (print.ts runLine), the one stdout; `onLine` is where a
   // launcher in this process (a test) reads them instead.
   const { runLine } = await import("../print.js");

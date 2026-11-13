@@ -393,11 +393,18 @@ interface CliRecord {
   onEvent(event: Parameters<PiSessionIO["onEvent"]>[0]): void;
   /** What the model said since the last boundary, written now. */
   flushText(): Promise<void>;
+  /** The same, only when there is text to show (a whitespace-only gap between two requests stays with what follows). */
+  flushSaid(): Promise<void>;
   /** The person's input, written once for the run (a resumed claim that finds it writes it again never). */
-  person(text: string): Promise<void>;
+  person(text: string, opens?: boolean): Promise<void>;
   /** The first input when someone other than the person wrote it (a trigger's): the host's input entry with its origin, as
-   *  pi's steer writes one, once for the run like the person's. */
-  input(text: string, origin: MessageOrigin): Promise<void>;
+   *  pi's steer writes one, once for the run like the person's. Both open a turn (KINDS.turnStart) unless `opens` is false:
+   *  an input a stopped run's follow-up carries into its one request, which is the follow-up's turn. */
+  input(text: string, origin: MessageOrigin, opens?: boolean): Promise<void>;
+  /** The turn in flight is over (KINDS.turnEnd): written once its last text is on the record. */
+  turnEnded(status: "completed" | "failed" | "interrupted", error?: string): Promise<void>;
+  /** Whether a turn the record opened has not ended: the run's end closes it in its own commit (writeEnd). */
+  openTurn(): boolean;
   /** A message that opened a finished run again (a reopen's follow-up, request id `requestId`): its own person entry, or
    *  input entry with its origin when someone other than the person wrote it, carrying the request id, once per request
    *  id (a claim taken over after it was written writes none). Its commit is the one the follow-up's command row is taken
@@ -450,6 +457,15 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   const append = async (kind: string, data: CallStartData | CallEndData | MessageData): Promise<void> => {
     await harness.commit((tx) => tx.appendEntry(root.id, { kind, data: { ...data, at: now() } as unknown as JsonValue }), context);
   };
+  /** A message that starts a turn: its entry and the turn's start (KINDS.turnStart), one commit, so the turn is open from
+   *  the commit that holds its message. `entry` is the whole message entry when it is the host's input (with its origin). */
+  const startsTurn = async (message: { kind: string; data: CallStartData | CallEndData | MessageData } | { entry: Record<string, unknown> }): Promise<void> => {
+    await harness.commit(async (tx) => {
+      await tx.appendEntry(root.id, ("entry" in message ? message.entry : { kind: message.kind, data: { ...message.data, at: now() } as unknown as JsonValue }) as never);
+      await tx.appendEntry(root.id, { kind: KINDS.turnStart, data: { at: now() } as unknown as JsonValue });
+    }, context);
+    turnsOpen += 1;
+  };
   // Each call started on the record: whether it has its end; and each end, by call id.
   const started = new Map<string, boolean>();
   const ends = new Map<string, { status: CallStatus; output?: string }>();
@@ -460,6 +476,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // The command rows a message was about to be sent for (their intent marks): one sent again is a retry.
   const sending = new Set<number>();
   let personWritten = false;
+  // The turns the record opened (KINDS.turnStart) and has not ended (KINDS.turnEnd): what the journal says on open, then kept.
+  let turnsOpen = 0;
   // The request ids of the follow-ups written (followUp): each is written once.
   const followUps = new Set<string>();
   // Each end-of-run turn's prompt the record wrote as it asked the turn, by its request id: a turn asked again (a later
@@ -475,6 +493,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     if (entry.kind === KINDS.callStart && typeof data.callId === "string") started.set(data.callId, started.get(data.callId) ?? false);
     else if (entry.kind === KINDS.callEnd && typeof data.callId === "string") started.set(data.callId, true);
     else if ((entry.kind === KINDS.message && data.role === "person") || entry.kind === KINDS.input) personWritten = true;
+    if (entry.kind === KINDS.turnStart) turnsOpen += 1;
+    else if (entry.kind === KINDS.turnEnd && turnsOpen > 0) turnsOpen -= 1;
     if ((entry.kind === KINDS.message || entry.kind === KINDS.input) && typeof data.requestId === "string") followUps.add(data.requestId);
   }
   for (const [callId, ended] of started) {
@@ -484,18 +504,25 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     ends.set(callId, { status: "interrupted" });
   }
   let text = "";
+  /** A model message was written at a request's start (flushSaid) and no other flush has come since. */
+  let flushedAtRequest = false;
   /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
   let answer: string | undefined;
   // One write at a time, in the order they were asked for, a failed one never stopping the next.
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
   /** What was said since the last boundary as a model message; at a turn's end, with the cut its adapter reported. */
-  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }) => {
+  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }, atRequest = false) => {
     // Taken at the boundary, not when its write's turn comes: text said after it is the next message's.
     const said = text;
     text = "";
     return inTurn(async () => {
       if (said === "") return;
+      // Whitespace after a message flushed at the request before it joined that message's row, as the turn's text up to its
+      // call always has: it is no message of its own.
+      const joined = flushedAtRequest && said.trim() === "";
+      flushedAtRequest = atRequest;
+      if (joined) return;
       const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }) } : {};
       await append(KINDS.message, { role: "model", text: said, ...length });
     });
@@ -509,31 +536,42 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
     },
     flushText,
-    person: (input) =>
+    flushSaid: () => (answer === undefined && text.trim() !== "" ? flushText(undefined, true) : Promise.resolve()),
+    person: (input, opens = true) =>
       inTurn(async () => {
         if (personWritten) return;
-        await append(KINDS.message, { role: "person", text: input });
+        if (opens) await startsTurn({ kind: KINDS.message, data: { role: "person", text: input } });
+        else await append(KINDS.message, { role: "person", text: input });
         personWritten = true;
       }),
-    input: (input, origin) =>
+    input: (input, origin, opens = true) =>
       inTurn(async () => {
         if (personWritten) return;
-        await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
+        const entry = { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] };
+        if (opens) await startsTurn({ entry });
+        else await harness.commit((tx) => tx.appendEntry(root.id, entry as never), context);
         personWritten = true;
       }),
     followUp: (input, requestId, origin) =>
       inTurn(async () => {
         if (followUps.has(requestId)) return;
-        if (origin) await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin, requestId } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
-        else await append(KINDS.message, { role: "person", text: input, requestId } as MessageData);
+        if (origin) await startsTurn({ entry: { kind: KINDS.input, data: { origin, requestId } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } });
+        else await startsTurn({ kind: KINDS.message, data: { role: "person", text: input, requestId } as MessageData });
         followUps.add(requestId);
         personWritten = true;
       }),
     message: (input, origin) =>
       inTurn(async () => {
-        if (origin) await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } as never), context);
-        else await append(KINDS.message, { role: "person", text: input });
+        if (origin) await startsTurn({ entry: { kind: KINDS.input, data: { origin } as unknown as JsonValue, model: [{ role: "user", content: input, timestamp: now() }] } });
+        else await startsTurn({ kind: KINDS.message, data: { role: "person", text: input } });
       }),
+    turnEnded: (status, error) =>
+      inTurn(async () => {
+        if (turnsOpen === 0) return;
+        await harness.commit((tx) => tx.appendEntry(root.id, { kind: KINDS.turnEnd, data: { status, ...(error === undefined ? {} : { error }) } as unknown as JsonValue }), context);
+        turnsOpen -= 1;
+      }),
+    openTurn: () => turnsOpen > 0,
     async sending(commandId) {
       let again = false;
       await inTurn(async () => {
@@ -944,7 +982,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session idle with no wait taking messages yet: whether the last turn ended on a question to the person, read
     // first. It is an await, so a wait may start meanwhile: every path below is chosen after it, with nothing awaited
     // between that choice and the message's placing.
-    const askedLast = !reopen && session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const reopenedBefore = reopen;
+    const endedOnAsk = session.state === "idle" && root !== undefined && endedOnTurnEndingTool((await entriesOf(gate.journal, root.id, context)) as never) !== undefined;
+    const askedLast = !reopenedBefore && endedOnAsk;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
     // between the question's turn end and that wait): never the wait's answer, never placed, refused in the words the
@@ -967,17 +1007,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // The row is taken only once the session holds the prompt: pi's in its submission's commit; a CLI's (whose harness
       // writes no submission) in the record's follow-up entry, written right after the send, as sendAfterTurn takes its
       // row. A runner lost between the send and that entry leaves the row untaken, so the next claim sends it again: a
-      // follow-up may be sent twice after a crash, never lost. The answer to a wait in the claim: the row's waiting summary
-      // goes in that commit too.
+      // follow-up may be sent twice after a crash, never lost. The answer to an ask: the row's waiting summary goes in
+      // that commit too, for a wait in the claim and for a question a reopened run parked on (its journal holds its earlier
+      // end, so its claim reads as reopened). Left until the end commit, the answer's turn reads running, held and "Waiting
+      // for your reply", and the server tells that ask again.
       const placedBy = theRecord ? writesEntry(by ? KINDS.input : KINDS.message, (data) => data.requestId === requestId) : writesSubmission(sendId);
-      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn ? { run: { summary: null } } : {}) });
+      const taken = gate.expect(placedBy, { take: [command.id], ...(reopen === waitTurn || endedOnAsk ? { run: { summary: null } } : {}) });
       taken.catch(() => undefined);
       reopen.sent = (async () => {
         await theSession.send(content, { id: sendId, ...(by ? { origin: by } : {}) });
         // A CLI's record: the original input as its writer's (the launch's origin, else the person's), then the message.
         if (first) {
-          if (first.inputOrigin) await theRecord?.input(first.input, first.inputOrigin);
-          else await theRecord?.person(first.input);
+          if (first.inputOrigin) await theRecord?.input(first.input, first.inputOrigin, false);
+          else await theRecord?.person(first.input, false);
         }
         await theRecord?.followUp(text, requestId, by);
       })();
@@ -1363,6 +1405,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           onEvent: async (event) => {
             if (event.type === "request_end") requestEnded(event.turn, event.usage, event.ended);
             if (event.type === "request_start") {
+              // A new request means the model's last message is over: what it said so far is on the record before the request,
+              // so an answer shows while the turn goes on (a CLI that answers, then makes another request).
+              await cliRecord?.flushSaid().catch(() => undefined);
               // A pi run's answers are its own entries, so a request that leaves is marked on the root before it does: one
               // with no answer by the time the run settles (a stop or cancel cut it mid-answer) was cut, and a cut request's
               // cost is unknown, never the $0 an unmarked one reads (timeline REQUEST_STARTED). The other harnesses' requests
@@ -1821,6 +1866,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const outcome = (await turn) as TurnEnd;
           // What the model said last, on the record before the run's end.
           await record?.flushText();
+          // The turn's end on the record, after its last text: a CLI run reads working until here.
+          await record?.turnEnded(outcome.status, outcome.error === undefined ? undefined : deps.redact ? deps.redact(outcome.error) : outcome.error);
           await harness.waitForIdle(context);
           const settledEntries = await entriesOf(gate.journal, root.id, context);
           const cutOff = restartLimited(settledEntries);
@@ -1828,6 +1875,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // answer booked: main's end of a run over its cap, before any pause (a question to the person, a cap refusal).
           await bookingsSettled();
           const over = cutOff ? undefined : await overCap();
+          // A failed CLI turn: a message the person sent while it ran may not have reached the loop yet (the runner's next
+          // poll), and the run's status is its last turn's end, so it is handed on now (bounded), as a finished turn's is.
+          if (!cutOff && !over && !refused && outcome.status === "failed" && spec.record === "loop" && afterTurn.length === 0 && steeredIn.length === 0 && deps.deliverNow && !stopReason) {
+            let bound: NodeJS.Timeout | undefined;
+            await Promise.race([deps.deliverNow().catch(() => undefined), new Promise<void>((resolve) => (bound = setTimeout(resolve, DELIVER_NOW_MS)))]);
+            clearTimeout(bound);
+            // A stop or cancel among the delivered rows: the run ends stopped in its words, never failed. Read past the
+            // narrowing TypeScript did before the delivery.
+            const cutBy = stopReason as StopReason | undefined;
+            if (cutBy?.kind === "command") return await writeEnd(harness, root, gate, stopEnd(cutBy.cancel), [cutBy.commandId], await cutRows(claim, spec, "stopped"));
+            if (cutBy || deps.signal.aborted) return await interrupted(cutBy?.kind ?? "its claim's signal aborted");
+          }
           if (cutOff) data = { state: "failed", summary: `a tool call faulted on every restart: ${cutOff}` };
           else if (over) data = { state: "failed", summary: over };
           else if (outcome.status !== "completed" && refused) {
@@ -1843,6 +1902,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
             if (park?.outcome === "parked") return await parkAtCap(harness, root, gate, { pending: park.pending, words: park.words });
             data = { state: "failed", summary: park?.outcome === "failed" ? park.error : refused.refuse };
+          } else if (outcome.status === "failed" && spec.record === "loop" && afterTurn.length > 0 && !stopReason && !deps.signal.aborted) {
+            // A CLI turn that failed with a message queued behind it: the run's status is its last turn's end, so the
+            // queued message's turn runs, and the failure stays in the timeline as the error row a chat keeps before a good
+            // answer (the same row the run's end would have written).
+            const said = outcome.error?.trim() ?? "";
+            const rootId = root.id;
+            await harness.commit((tx) => tx.appendEntry(rootId, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", said ? cutWhole(deps.redact ? deps.redact(said) : said, TURN_ERROR_MAX) : "the turn gave no answer (failed)", now())] as never }), context);
+            turn = sendAfterTurn(gate, afterTurn.shift()!);
+            continue;
+          } else if (outcome.status === "interrupted" && spec.record === "loop" && !outcome.error?.trim()) {
+            // A CLI turn its harness ended on its own, with no stop or cancel from a person and no error of its own: the
+            // turn is over, the run is not. It waits for the person as after a stop (a message reopens it), never failed
+            // with no answer (the status reader's contract: an interrupted newest turn is input_required, turns.ts).
+            data = { state: "stopped", outcome: "stopped", summary: "the turn was interrupted" };
           } else if (outcome.status !== "completed") {
             // A turn that ended on its harness's own error (a CLI's: a codex run whose MCP door could not be reached) fails
             // the run in those words, bounded; serve redacts a run's summary as it serves it, as every summary. With none,
@@ -2528,6 +2601,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await on.commit(async (tx) => {
         for (const answer of withdrawn) await tx.appendEntry(conversation.id, { kind: KINDS.answer, data: answer as unknown as JsonValue });
         for (const callId of recordEnds) await tx.appendEntry(conversation.id, { kind: KINDS.callEnd, data: { callId, status: "refused", output: notRun, at: now() } as unknown as JsonValue });
+        // A turn the run ends while it is open (a stop or cancel cut it, or the run failed in it) ends with the run.
+        if (cliRecord?.openTurn()) await tx.appendEntry(conversation.id, { kind: KINDS.turnEnd, data: { status: data.state === "failed" ? "failed" : data.state === "stopped" ? "interrupted" : "completed" } as unknown as JsonValue });
         if (failedWith !== undefined) await tx.appendEntry(conversation.id, { kind: PI_ASSISTANT, model: [cliErrorAnswer(specNow?.adapter.id ?? "cli", failedWith, now())] as never });
         return tx.appendEntry(conversation.id, { kind: KINDS.end, data: data as unknown as JsonValue });
       }, context);

@@ -619,9 +619,21 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
 | `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b` |
-| `desktop` | A screen, a pointer and keys (`desktop_screen`, `desktop_input`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
-| `phone` | A rented Android: its screen, touch and apps (the `phone_*` tools) | `phone-harness` |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`, `computer_script`), and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo` |
+| `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
+
+A desktop's and a phone's tools are one set over the computer's groups. With the `ui` group, `computer_observe` returns
+the app window's elements as compact lines (`@e12 button "Save"`), and `computer_act` runs steps on them by ref (press,
+set, click, type, key, scroll, drag, nav), each step saying its route and whether a readback verified it, and the answer
+ending with the window's new state. Without it, observe is a screenshot and act's steps are raw input at its pixels.
+`computer_script` runs JavaScript in an isolate in this server, with a typed `computer` object as its only binding (no
+network, no keys): a known sequence of steps is one script, and it returns only what the next decision needs. Its
+declarations are `spec/computer/computer.d.ts`, generated from `packages/computer/src/surface/api.ts`. On pi, a run
+with a desktop or a phone also has pi's code mode (`codemode`), whose scripts call the run's tools and have the same
+`computer` bound; the call is held to the kind's setting. In Codex's code mode, a script's call of a computer tool
+answers the tool's value as JSON. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
+client, each answer with its value as `structuredContent`.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -1458,6 +1470,21 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
 `url` is `https`, or `http` on loopback.
 
+### Composio
+
+Composio is an MCP server like any other, so it needs no adapter of its own. Settings → MCP servers has a Composio
+preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
+toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
+ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
+`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+user_id?}` makes and saves the server. When the toolkit needs your account and `user_id` (default `agentrun`) has none
+active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Composio's server can leave
+out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's `not_served` names any chosen
+action the saved server doesn't list. Both routes are the owner's
+session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
+"not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
+account are left off the server's address.
+
 What can go wrong, told apart:
 
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
@@ -1674,23 +1701,25 @@ asked by default.
 ## Webhooks
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
-or `https` address, with no user or password in it. Loopback and private-network addresses are allowed, so a receiver
-on your own machine or network works. Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
+or `https` address, with no user or password in it, on a public host: a loopback or private-network address is refused
+unless the operator allows it (`AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`, below). Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
 need its person (`input_required`: a question, a call held for approval, a pause at its cap, an ask for its person in
 its browser, desktop or phone, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once the run's end is written). A [schedule](#schedules) whose firing fails sends a third,
 `trigger.failed`; a server with no triggers never sends one.
 
-A run's end and its `run.ended` are one durable step. The server chooses the end's time once and gives it to the agent
-store, so the row's `ended_at` and the message's `webhook-id` name one time. `run.ended` is queued only once the agent
-store has the end, so a receiver that reads the run back on its message (`GET /v2/runs/{id}`) reads it ended; while the
-store refuses the end (a full disk, a busy store), nothing is sent, until a later try of the write or the next server
-stores it. The outbox, in the store with the runs, keeps, in the same write as each message, which end and which wait of
-each run it queued. A server that starts queues any end of the last day that the agent store holds and the outbox does
-not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and a server that takes over a run
-queues a wait it stands at that the outbox does not name (one the run came to while no server was up), under its one
-`webhook-id`. An end before the webhook was set is never sent. A run is continued only once its end's
-`run.ended` is in the outbox (`503` meanwhile), so a continued run's next end is its own, under its own id.
+The server follows the store's run-change feed: each run that reaches its end, or that its runner lets go waiting on a
+person, is told once, in order, whichever runner wrote it, so a receiver that reads the run back on its message
+(`GET /v2/runs/{id}`) reads it as the message says. The end's time is the store's, so the row's `ended_at` and the
+message's `webhook-id` name one time. A wait's `webhook-id` comes from its ask (a question's, an approval's call, a
+pause at the cap, a hand-over), so one ask sends one `run.needs_input`, however often the run is read and after its
+answer too. Everything the webhook keeps is in the store: its messages, their tries, and which
+end and which wait of each run it queued, written with each message in one transaction. While the store refuses that
+write (a full disk, a busy store), nothing is sent and the log says so (`condition=outbox_unwritable`); the server tells
+the notice again on its next read. A server that starts queues any end of the last day that the store holds and the
+webhook has not, under the same `webhook-id` (one lost to a kill, or to a crash of the machine), and any wait a run
+stands at that it has not told (one the run came to while no server was up), under its one `webhook-id`. An end before
+the webhook was set is never sent.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
@@ -1713,16 +1742,23 @@ with any of its libraries: `webhook-id` (the same on every try of a message, so 
 the secret's bytes. A receiver checks the signature against the raw body and refuses a timestamp more than 5 minutes
 from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
 and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
-sealed under `AGENTRUN_SEAL_KEY`, in the store (SQLite or Postgres) with the webhook itself. A new secret is a `DELETE` and a
-`PUT`; a secret that no longer opens under the server's key (sealed under another) is replaced, and shown once, by the next `PUT`.
+sealed under the server's seal key in the store, and a replaced or removed one is kept sealed too, so a run that echoes
+it is still cut. A `PUT` that changes the URL makes a new secret and shows it once, as the first does; one that keeps the
+URL keeps it. `GET` and the log show the URL's origin and its last four characters, never the whole URL (a chat
+service's incoming-hook URL is a credential itself). The URL is refused when it is on a private network or this machine,
+by address or by any address its name resolves to, and each try resolves the name again and dials the address it
+checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` where the server starts. A `DIR/webhook.json` an earlier build left is not read: the
+server says so at its start (`condition=webhook_left_over`), and a `PUT` sets the webhook again. A new secret for the
+same URL is a `DELETE` and a `PUT`; a secret that no longer opens under the server's key (sealed under another) is
+replaced, and shown once, by the next `PUT`. The URL and its secret go live together: a `PUT` whose write the store
+refuses leaves the webhook as it was, and the secret it made is never used.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
 spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
 (`event=webhook condition=delivery_failed`). Each message goes on its own tries, so two queued close together can
 arrive in either order: a receiver orders them by `webhook-timestamp`, or reads the run (`GET /v2/runs/{id}`). A
-`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in the store's outbox, so the next server goes on with
-them after a restart; a message can then come twice, under the same `webhook-id`. An outbox of another version
-is not read: the server starts with none, and the log says so (`condition=outbox_not_read`). `GET /v2/settings/webhook/deliveries`
+`410 Gone` turns the webhook off (`disabled` in `GET`, and the log says why) until a `PUT` sets it again. Pending messages are kept in the store, so the next server goes on with them after a
+restart; a message can then come twice, under the same `webhook-id`. `GET /v2/settings/webhook/deliveries`
 lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
 `POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
 `webhook-id`. `POST /v2/settings/webhook/test` sends a `webhook.test` message once and answers how it went. A webhook a
@@ -2915,7 +2951,7 @@ screenshots, then the answer), spending about $0.04 in all:
 
 | Cap mode | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- | --- |
-| `strict` | Through a gateway (OpenRouter): the byte bound | $0.05 | $0.11 | about $0.013 |
+| `strict` | Through a gateway (OpenRouter): the byte bound | $0.06 | $0.12 | about $0.013 |
 | `strict` | Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
 | `expected` (the default) | Either | as `strict` | $0.06 | about $0.007 |
 
