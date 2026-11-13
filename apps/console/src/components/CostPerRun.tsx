@@ -2,7 +2,7 @@ import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useS
 import { Bone } from "@/components/Skeleton";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { nearest, PATHS, pathOf, plotted, type Point, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
+import { level, nearest, PATHS, pathOf, plotted, type Point, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { LearningCost } from "@/lib/v2";
@@ -17,8 +17,9 @@ const LIMIT = 1000;
 /** What a person does to get the chart: the short and the empty states say it. */
 export const HOW = "Turn learning on and run the same job about 20 times: each run's cost shows here, and where a learned workflow takes the job over, the line falls.";
 
-/** The chart's card for an agent, read when it shows. */
-export function CostPerRun({ v2, agentId, on }: { v2: Client; agentId: string; on: boolean }) {
+/** The chart's card for an agent, read when it shows. `quiet`: under the Learning tab's own empty state, which already
+ *  says what to do, so a series under two runs (and a read that failed) shows nothing. */
+export function CostPerRun({ v2, agentId, on, quiet = false }: { v2: Client; agentId: string; on: boolean; quiet?: boolean }) {
   const [data, setData] = useState<LearningCost | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -29,6 +30,7 @@ export function CostPerRun({ v2, agentId, on }: { v2: Client; agentId: string; o
     Promise.resolve().then(() => v2.learningCost(agentId, LIMIT)).then((r) => { if (live) setData(r); }, (e) => { if (live) setError(e ?? new Error("unknown")); });
     return () => { live = false; };
   }, [v2, agentId, asked]);
+  if (quiet && (!data || data.runs.filter((r) => r.total_usd !== null).length < 2)) return null;
   if (error && !data) return <ProblemCard problem={problem(error, "the cost per run")} onRetry={() => setAsked((n) => n + 1)} className="" />;
   if (!data) return <Bone className="h-[320px] w-full" />;
   return <CostChart data={data} on={on} />;
@@ -78,12 +80,12 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
   const { top, above } = yTopOf(points, mean, s.before?.mean_usd ?? null);
   const y = (v: number) => M.top + H - (Math.min(v, top) / top) * H;
   const yTicks = [0, top / 4, top / 2, (3 * top) / 4, top];
-  const xTicks = runTicks(first, last, width < 520 ? 4 : 7);
+  const xTicks = runTicks(first, last, width < 520 ? 5 : 7);
   const takeover = s.takeover && s.takeover.n >= first ? s.takeover : null;
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.n).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
   const at = active === null ? null : points[active]!;
   const cheaper = s.times_cheaper !== null ? `${s.times_cheaper}x cheaper` : null;
-  const headline = s.before && s.after ? `${usd(s.before.mean_usd)} a run before learning, ${usd(s.after.mean_usd)} after takeover${cheaper ? `: ${cheaper}` : ""}` : null;
+  const headline = s.before && s.after ? `${level(s.before.mean_usd)} a run before learning, ${level(s.after.mean_usd)} after takeover${cheaper ? `: ${cheaper}` : ""}` : null;
 
   const pick = (e: PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -143,12 +145,12 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
             <text x={M.left - 8} y={M.top + H + 18} textAnchor="end" className="caps fill-muted-foreground text-label">Run</text>
             {/* The runs: faint dots, a run past the top drawn on it. */}
             {points.map((p, i) => (
-              <circle key={p.run_id} cx={x(p.n)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.45} />
+              <circle key={p.run_id} cx={x(p.n)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.5} />
             ))}
             {s.before && (
               <g>
                 <path d={`M${M.left},${y(s.before.mean_usd)}H${M.left + plotW}`} className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="6 4" />
-                <Label x={M.left + 6} y={y(s.before.mean_usd) - 6}>Before learning {usd(s.before.mean_usd)}</Label>
+                <Label x={M.left + plotW - 4} y={y(s.before.mean_usd) - 6} anchor="end">Before learning {level(s.before.mean_usd)}</Label>
               </g>
             )}
             {takeover && (
@@ -160,7 +162,7 @@ export function CostChart({ data, on, width: fixed }: { data: LearningCost; on: 
             {takeover && s.after && (
               <g>
                 <path d={`M${x(takeover.n)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
-                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>After takeover {usd(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
+                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>After takeover {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
               </g>
             )}
             <path d={line} fill="none" className="stroke-foreground" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />

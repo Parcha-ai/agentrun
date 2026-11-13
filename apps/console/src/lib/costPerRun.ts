@@ -75,3 +75,10 @@ export function usd(value: number): string {
   if (value >= 1) return `$${value.toFixed(2)}`;
   return `$${value.toFixed(4).replace(/(\.\d\d\d?)0+$/, "$1").replace(/(\.\d\d)0$/, "$1")}`;
 }
+
+/** A level (a mean over many runs): three figures, as a person reads a level ("$0.128"), two places from a dollar up. */
+export function level(value: number): string {
+  if (value === 0) return "$0";
+  if (value < 0.0001) return "<$0.0001";
+  return value >= 1 ? `$${value.toFixed(2)}` : `$${value.toPrecision(3)}`;
+}

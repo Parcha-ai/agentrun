@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
-import { nearest, niceTop, plotted, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
+import { level, nearest, niceTop, plotted, rollingMean, runTicks, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import type { CostRun, LearningCost } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
@@ -53,16 +53,17 @@ describe("the chart's arithmetic", () => {
   });
   it("says a dollar figure with two to four places under a dollar", () => {
     expect([usd(0), usd(0.5), usd(0.1405), usd(0.00004), usd(2.399)]).toEqual(["$0", "$0.50", "$0.1405", "<$0.0001", "$2.40"]);
+    expect([level(0.889921), level(0.127661), level(0.0123), level(1.5)]).toEqual(["$0.890", "$0.128", "$0.0123", "$1.50"]);
   });
 });
 
 describe("CostChart", () => {
   it("shows the drop: the levels before and after, the takeover, and how many times cheaper", () => {
     const host = draw(sample);
-    expect(text(host)).toContain("$0.8899 a run before learning, $0.1277 after takeover: 7x cheaper");
+    expect(text(host)).toContain("$0.890 a run before learning, $0.128 after takeover: 7x cheaper");
     expect(text(host)).toContain("Workflow took over, run 21");
-    expect(text(host)).toContain("After takeover $0.1277 · 7x cheaper");
-    expect(text(host)).toContain("Before learning $0.8899");
+    expect(text(host)).toContain("After takeover $0.128 · 7x cheaper");
+    expect(text(host)).toContain("Before learning $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).toContain("1 run's cost is not known: left out.");
@@ -127,5 +128,16 @@ describe("CostPerRun", () => {
     await act(async () => { host.querySelector<HTMLButtonElement>("[role=alert] button")!.click(); });
     expect(asked).toEqual(["invoice-sorter 1000", "invoice-sorter 1000"]);
     expect(text(host)).toContain("Workflow took over, run 21");
+  });
+  it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null } };
+    for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
+      const v2 = { learningCost: async () => answer } as unknown as Client;
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      await act(async () => root!.render(createElement(CostPerRun, { v2, agentId: "a", on: true, quiet: true })));
+      expect(!!host.querySelector('[data-testid="cost-per-run"]'), `shown for ${answer.runs.length} runs`).toBe(shown);
+      act(() => root!.unmount()); root = undefined; document.body.innerHTML = "";
+    }
   });
 });
