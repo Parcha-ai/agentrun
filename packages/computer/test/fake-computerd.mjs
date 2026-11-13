@@ -11,7 +11,7 @@
 // no capability drop and no fence; no pty, no tar calls, no desktop methods (each answers `unsupported`). It ends, with
 // every process it started, at SIGTERM or once its socket is gone (the host's temp folder removed).
 import { spawn } from "node:child_process";
-import { chmodSync, constants, existsSync, mkdirSync, promises as fs, readlinkSync, rmSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, promises as fs, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -262,35 +262,53 @@ export function computerd({ mounts, root, env = {} }) {
 				logPath = pathOf("log", params.log);
 				if (existsSync(logPath)) throw fail("exists", `${params.log} exists`);
 			}
-			const { child, spawned } = start(params, { stdin: params.stdin === true });
-			const entry = { id: `p${nextId++}`, child, argv: params.argv, startedAt: Date.now(), endedAt: null, ended: false, exitCode: null, signal: null, streams: { stdout: [], stderr: [], log: [] }, sizes: { stdout: 0, stderr: 0, log: 0 }, waiters: [], keep: params.orphans === "keep" };
-			table.set(entry.id, entry);
-			everyChild.add(child);
+			// The log exists before the program starts, and every listener is on the child before this call yields again: a program
+			// that ends at once, or is not there, is seen as it is.
 			if (logPath !== undefined) {
 				await fs.mkdir(dirname(logPath), { recursive: true });
 				await fs.writeFile(logPath, "", { mode: 0o644, flag: "wx" });
 			}
+			const { child, spawned } = start(params, { stdin: params.stdin === true });
+			spawned.catch(() => {});
+			const entry = { id: `p${nextId++}`, child, argv: params.argv, startedAt: Date.now(), endedAt: null, ended: false, exitCode: null, signal: null, streams: { stdout: [], stderr: [], log: [] }, sizes: { stdout: 0, stderr: 0, log: 0 }, waiters: [], keep: params.orphans === "keep" };
+			table.set(entry.id, entry);
+			everyChild.add(child);
+			// Log writes go in order, and the end is reported once they are written (as the real daemon writes the log before waking readers).
+			let writing = Promise.resolve();
 			for (const name of ["stdout", "stderr"]) {
 				child[name].on("data", (chunk) => {
 					for (const stream of [name, "log"]) {
 						entry.streams[stream].push(chunk);
 						entry.sizes[stream] += chunk.length;
 					}
-					if (logPath !== undefined) fs.appendFile(logPath, chunk).catch(() => {});
+					if (logPath !== undefined) writing = writing.then(() => fs.appendFile(logPath, chunk)).catch(() => {});
 					wake(entry);
 				});
 			}
-			child.once("close", (code, signal) => {
-				entry.ended = true;
-				entry.endedAt = Date.now();
-				entry.exitCode = code;
-				entry.signal = NAME(signal);
-				everyChild.delete(child);
+			let status;
+			const finish = () => {
+				if (entry.ended || status === undefined) return;
+				void writing.then(() => {
+					if (entry.ended) return;
+					entry.ended = true;
+					entry.endedAt = Date.now();
+					entry.exitCode = status.code;
+					entry.signal = NAME(status.signal);
+					everyChild.delete(child);
+					wake(entry);
+				});
+			};
+			// The program's own exit ends the process: what it left running is killed unless orphans are kept, and a leftover
+			// holding the output pipes does not keep the program "running". Its output is read to the end, on close, first.
+			child.once("exit", (code, signal) => {
+				status = { code, signal };
 				if (!entry.keep) killGroup(child, "SIGKILL");
-				wake(entry);
+				else finish();
 			});
+			child.once("close", () => finish());
 			await spawned.catch((error) => {
 				table.delete(entry.id);
+				everyChild.delete(child);
 				throw error;
 			});
 			return { id: entry.id, pid: child.pid };
@@ -356,8 +374,9 @@ function entryOf(real, stat) {
 /** The computer's init: listens on `socket`, a line of JSON-RPC at a time, each call answered as the real daemon answers. */
 function serve(socket, config) {
 	const computer = computerd(config);
-	const aborts = new Map();
 	const server = createServer((connection) => {
+		// Request ids are numbered per connection (each client starts at 1), so what a cancel may reach is this connection's.
+		const aborts = new Map();
 		let buffered = "";
 		connection.on("error", () => {});
 		connection.on("data", (chunk) => {
@@ -365,11 +384,11 @@ function serve(socket, config) {
 			for (let at; (at = buffered.indexOf("\n")) >= 0; ) {
 				const line = buffered.slice(0, at);
 				buffered = buffered.slice(at + 1);
-				if (line.trim() !== "") void answer(connection, JSON.parse(line));
+				if (line.trim() !== "") void answer(connection, aborts, JSON.parse(line));
 			}
 		});
 	});
-	async function answer(connection, request) {
+	async function answer(connection, aborts, request) {
 		if (request.method === "$/cancelRequest") return void aborts.get(`${request.params?.id}`)?.abort();
 		const abort = new AbortController();
 		aborts.set(`${request.id}`, abort);
@@ -388,11 +407,13 @@ function serve(socket, config) {
 		computer.close();
 		server.close();
 		rmSync(socket, { force: true });
+		rmSync(`${socket}.ready`, { force: true });
 		process.exit(0);
 	};
 	process.on("SIGTERM", end);
 	process.on("SIGINT", end);
 	server.listen(socket, () => {
+		writeFileSync(`${socket}.ready`, "");
 		// The host's temp folder holding the socket is removed when the test ends: nothing outlives it.
 		setInterval(() => existsSync(socket) || end(), 500);
 	});

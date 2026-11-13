@@ -372,6 +372,12 @@ switch (args[0]) {
 			const mounts = made.Mounts.filter((m) => m.Type === "bind" && m.Destination !== "/opt/agentrun/computerd").map((m) => ({ src: m.Source, dst: m.Destination }));
 			const init = require("node:child_process").spawn(process.execPath, [config.computerd, socket, JSON.stringify({ mounts, root: config.dir + "/fs/" + made.Id.slice(0, 10), env })], { detached: true, stdio: "ignore", env: { PATH: process.env.PATH } });
 			init.unref();
+			// The run returns once the init is listening (a real container's init is up when the daemon's first call lands); the init writes <socket>.ready when it is.
+			const until = Date.now() + 20000;
+			while (!existsSync(socket + ".ready")) {
+				if (Date.now() > until) { process.stderr.write("the fake computerd did not start\\n"); process.exit(125); }
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+			}
 			made.Computerd = { pid: init.pid, socket };
 		}
 		commit(merge(made, config.patch), "computer");

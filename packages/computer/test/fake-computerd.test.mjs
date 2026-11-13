@@ -1,8 +1,11 @@
 // The fake computerd (fake-computerd.mjs) answers the daemon's exec, file and process calls as the protocol says, in a temp
 // folder: what the serve tests' box runs depend on.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { computerd } from "./fake-computerd.mjs";
@@ -61,4 +64,59 @@ test("exec.run runs in the computer's folders with a minimal environment; proces
 	assert.equal(await kindOf(c.call("process.read", { id: "p99", stream: "stdout", offset: 0 })), "not_found");
 	assert.equal(await kindOf(c.call("exec.run", { argv: ["no-such-program-here"], timeoutMs: 1000 })), "not_found");
 	c.close();
+});
+
+test("process.start: a program that ends at once has its whole log, a missing one is not_found, and a leftover child does not keep the program running", async () => {
+	const c = computer();
+	for (let i = 0; i < 20; i++) {
+		const fast = await c.call("process.start", { argv: ["sh", "-c", "printf last"], cwd: "/workspace", log: `/workspace/fast/${i}/log` });
+		assert.deepEqual(await c.call("process.wait", { id: fast.id, timeoutMs: 5000 }), { running: false, exitCode: 0, signal: null });
+		assert.equal(readFileSync(join(c.folder, `fast/${i}/log`), "utf8"), "last", "the end is reported after the log is written");
+	}
+	assert.equal(await kindOf(c.call("process.start", { argv: ["no-such-program-here"], log: "/workspace/missing/log" })), "not_found");
+	const left = await c.call("process.start", { argv: ["sh", "-c", "sleep 30 & exit 0"], cwd: "/workspace" });
+	const began = Date.now();
+	assert.deepEqual(await c.call("process.wait", { id: left.id, timeoutMs: 10_000 }), { running: false, exitCode: 0, signal: null });
+	assert.ok(Date.now() - began < 5000, "the shell's exit ends it, not the sleep's");
+	c.close();
+});
+
+test("a cancel reaches a request of its own connection, not another connection's with the same id", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "fake-computerd-serve-")));
+	dirs.push(root);
+	const socket = join(root, "c.sock");
+	const init = spawn(process.execPath, [fileURLToPath(new URL("./fake-computerd.mjs", import.meta.url)), socket, JSON.stringify({ mounts: [], root: join(root, "own"), env: { HOME: "/work" } })], { stdio: "ignore" });
+	try {
+		for (let i = 0; i < 500 && !existsSync(`${socket}.ready`); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		const client = () => {
+			const connection = connect(socket);
+			const replies = [];
+			let buffered = "";
+			connection.on("data", (chunk) => {
+				buffered += chunk;
+				for (let at; (at = buffered.indexOf("\n")) >= 0; ) {
+					replies.push(JSON.parse(buffered.slice(0, at)));
+					buffered = buffered.slice(at + 1);
+				}
+			});
+			const send = (message) => connection.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+			return { connection, replies, send };
+		};
+		const a = client();
+		const b = client();
+		a.send({ id: 1, method: "process.start", params: { argv: ["sleep", "30"] } });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const started = a.replies.find((reply) => reply.id === 1).result;
+		a.send({ id: 2, method: "process.wait", params: { id: started.id, timeoutMs: 20_000 } });
+		b.send({ id: 2, method: "process.wait", params: { id: started.id, timeoutMs: 20_000 } });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		a.send({ method: "$/cancelRequest", params: { id: 2 } });
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		assert.equal(a.replies.find((reply) => reply.id === 2)?.error?.code, -32800, "A's own wait was cancelled");
+		assert.equal(b.replies.find((reply) => reply.id === 2), undefined, "B's wait, with the same id, is still waiting");
+		a.connection.destroy();
+		b.connection.destroy();
+	} finally {
+		init.kill("SIGTERM");
+	}
 });
