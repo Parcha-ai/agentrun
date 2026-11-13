@@ -377,7 +377,7 @@ test("a running CLI run whose booked request has no figure lists its spend unkno
     entry(await j.mintId(), "agentrun.message", { role: "person", text: "Go." }),
     { type: "conversation", value: { id: conv } },
     entry(key, "agentrun.session.key", { key: "run:run-1", conversation: conv }),
-    { type: "entry", value: { id: req, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "claude-sonnet-4-5" } } },
+    { type: "entry", value: { id: req, conversationId: conv, kind: "runner.request", data: { turn: 1, model: "claude-sonnet-5-5" } } },
     { type: "entry", value: { id: turn, conversationId: conv, kind: "runner.turn", data: { turn: 1, usd: null } } },
     entry(await j.mintId(), "agentrun.message", { role: "model", text: "Working." }),
   ], context);

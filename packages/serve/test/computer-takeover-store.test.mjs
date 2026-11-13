@@ -30,6 +30,7 @@ const { browserHandBack, handBackTarget } = await import("../dist/browser-comman
 const { runEntries, runTimeline } = await import("../dist/store-reads/journal.js");
 const { ApiError } = await import("../dist/errors.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { runComputerRead } = await import("../dist/computer-held-routes.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // A steady lease: no case here loses its runner on purpose, and a person's take holds the run for seconds, so a short
@@ -115,8 +116,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
       holds.push(hold);
       const ends = [];
       hold.on((event) => event.type === "state" && event.ended && ends.push(event.ended));
-      const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
-      const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+      const held = heldHands({ computer: { groups: ["screen"], call: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+      const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.computer.call("screenshot", {})) };
       const base = await piAdapterSpec({ script: [{ call: "look" }, { say: "done" }], tools: { look }, hooks: quiet })(claim, run);
       return {
         ...base, agentId: "agent-1", computer: { kind: "desktop", hold },
@@ -150,14 +151,14 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     let letGoSecond;
     const releasedSecond = second ? new Promise((resolve) => (letGoSecond = resolve)) : Promise.resolve();
     let shots = 0;
-    const held = heldHands({ screen: { shot: async () => {
+    const held = heldHands({ computer: { groups: ["screen"], call: async () => {
       shots += 1;
       if (shots === 1) shotStarted();
       else secondShotStarted();
       await (shots === 1 ? released : releasedSecond);
       return { png: "AA==" };
     } } }, hold);
-    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.computer.call("screenshot", {})) };
     // Two looks: the second is the agent's next call, parked while the person holds the desktop. (A run whose agent
     // answers instead waits at its end for the hand-back: startEnding.)
     const spec = piAdapterSpec({ script: [{ call: "look" }, { call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
@@ -177,8 +178,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     const inShot = new Promise((resolve) => (shotStarted = resolve));
     let letGo;
     const released = new Promise((resolve) => (letGo = resolve));
-    const held = heldHands({ screen: { shot: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
-    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.screen.shot()) };
+    const held = heldHands({ computer: { groups: ["screen"], call: async () => { shotStarted(); await released; return { png: "AA==" }; } } }, hold);
+    const look = { name: "look", replaySafe: true, run: async () => JSON.stringify(await held.computer.call("screenshot", {})) };
     const spec = piAdapterSpec({ script: [{ call: "look" }, { say: "done" }], tools: { look }, hooks: quiet });
     const releases = [];
     await begin(createAdapterLoop(async (claim, run) => {
@@ -207,7 +208,7 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
    *  its tool's result is the answer's outcome. */
   const startAsking = async () => {
     const hold = computerHold();
-    const held = heldHands({ screen: { shot: async () => ({ png: "AA==" }) } }, hold);
+    const held = heldHands({ computer: { groups: ["screen"], call: async () => ({ png: "AA==" }) } }, hold);
     const handoff = { name: "handoff", replaySafe: false, run: async (_args, signal) => (await held.handoff.ask({ instruction: "Type the bank's code", completion_condition: "the statements show" }, signal)).outcome };
     const spec = piAdapterSpec({ script: [{ call: "handoff" }, { say: "done" }], tools: { handoff }, hooks: quiet });
     await begin(createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer: { kind: "desktop", hold } })));
@@ -235,6 +236,8 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
   };
   /** The run read, as GET /v2/runs/{id} answers it over the store. */
   const read = () => viewOverStore(server, "run-1", { origin: "http://127.0.0.1:1", serverSecrets: () => [] });
+  /** The run read's computer.state, as GET /v2/runs/{id} adds it to the read (runComputerRead). */
+  const computerState = async () => (await runComputerRead(server, "run-1", await read())).computer?.state;
   const ended = () => until(async () => {
     const row = await server.runs.get("run-1");
     return row.state === "ended" && row.runner === null && row;
@@ -245,25 +248,29 @@ async function setup(t, { computer = { kind: "desktop", provider: "e2b" } } = {}
     if (row.state !== "running" && row.state !== "queued") return { over: row };
     return (await check()) && { running: row };
   }, what);
-  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startPerClaim, lapse, startAsking, startBrowserAsking, read, until, ended, runningUntil, server: () => server };
+  return { route, answer, hold, live, restart, rows, holdEntries, start, startEnding, startPerClaim, lapse, startAsking, startBrowserAsking, read, computerState, until, ended, runningUntil, server: () => server };
 }
 
-test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, and the Timeline says both at their own times", async (t) => {
+test("a person takes over a runner run's desktop and hands it back: the take waits out the agent's call in flight, the run read's computer.state is taken_over while the person holds it, and the Timeline says both at their own times", async (t) => {
   const world = await setup(t);
   const run = await world.start();
   await world.until(world.live, "the desktop is live in the server's read");
   assert.equal(await world.hold(), "agent");
+  assert.equal(await world.computerState(), "ready", "the run read: the agent drives its desktop");
 
   // The take: written, and pending while the agent's look is still in the shot.
   assert.deepEqual(await world.route("takeOverRunComputer"), { hold: "pending" }, "the person's take waits for the agent's call in flight");
   await world.until(async () => (await world.hold()) === "pending" && run.hold.state() === "pending", "the runner applied the take: pending");
+  assert.equal(await world.computerState(), "ready", "the run read: a pending take is not a take yet");
   run.letGo();
   await world.until(async () => (await world.hold()) === "person", "the person holds the desktop once the call ended");
+  assert.equal(await world.computerState(), "taken_over", "the run read: the person holds the desktop");
 
   // The hand-back: written, applied, and the agent drives again.
   const back = await world.route("handBackRunComputer");
   assert.ok(back.hold === "person" || back.hold === "agent", `the answer is who drives: ${JSON.stringify(back)}`);
   await world.until(async () => (await world.hold()) === "agent" && run.hold.state() === "agent", "the desktop is the agent's again");
+  assert.equal(await world.computerState(), "ready", "the run read: the agent's again after the hand-back");
   await world.ended();
   const said = await world.rows();
   const took = said.indexOf("You took over the desktop");

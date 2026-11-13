@@ -248,7 +248,7 @@ const claude = {
   async setup(t) {
     const fake = await fakeAnthropic({ reply: () => ({ text: "Hello from Claude." }) });
     t.after(() => fake.close());
-    return { env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, answer: "Hello from Claude." };
+    return { env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: fake.url }, model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, answer: "Hello from Claude." };
   },
 };
 

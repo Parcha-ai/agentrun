@@ -15,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { DaemonClient } from "../../dist/index.js";
-import { childCommands } from "../../dist/child.js";
+import { childCommands } from "../../dist/hosted/scripts.js";
 import * as modal from "../../dist/modal.js";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";

@@ -144,7 +144,7 @@ const noComputer = async () => ({ release: async () => {} });
 test("a CLI run through the runner: no planted secret reaches the CLI's child environment, the journal, the store or the runner's log", { timeout: 120_000 }, async (t) => {
   const logs = captureLogs(t);
   const gateway = await responsesGateway(t, "Hello from OpenCode.");
-  const opened = await storeWith(t, { harness: "opencode", tools: ["read"] }, { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-5" } });
+  const opened = await storeWith(t, { harness: "opencode", tools: ["read"] }, { input: { content: "Say hello." }, title: "t", place: { mode: "runner" }, harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   const childEnv = join(opened.dir, "child-env.json");
   const env = { ...PLANT, AGENT_MODEL_BASE_URL: gateway.origin, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [ENV_DUMP, childEnv, STAND_IN] }) };
   const deps = { env, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: noComputer };

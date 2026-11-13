@@ -44,7 +44,10 @@ export const REPORT = "| Category | Count | Total |\n|---|---|---|\n| Office | 2
 function replyTo(context, faux) {
   const untilExists = (file) => untilExistsOr(file, faux.signal);
   const users = personOf(context).map(textOf);
-  const [first = "", last = ""] = [users[0], users.at(-1)];
+  // The run's first message as the person wrote it: the spend cap's note, placed in a request with one user message by
+  // appending it to that message, is the server's, never part of the words a pattern below reads. The last message keeps it
+  // (a reply that quotes the last text shows where the note went: cap-raise.test.mjs).
+  const [first = "", last = ""] = [(users[0] ?? "").replace(/\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*$/, ""), users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
   const results = context.messages.filter((m) => m.role === "toolResult").length;
@@ -343,6 +346,9 @@ function replyTo(context, faux) {
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);
   if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
+  // "Hold the follow-up until <file>.": the first turn answers at once; a follow-up's turn waits for the file.
+  const followHeld = /^Hold the follow-up until (\S+)\.$/.exec(first);
+  if (followHeld) return users.length === 1 ? faux.message("First.") : untilExists(followHeld[1]).then(() => faux.message("Followed."));
   // "Fail once <file> exists.": works until the test makes the file, then the provider refuses the request.
   const failOnce = /^Fail once (\S+) exists\.$/.exec(first);
   if (failOnce && users.length === 1) return untilExists(failOnce[1]).then(() => faux.message("", { stopReason: "error", errorMessage: "the provider refused the request" }));

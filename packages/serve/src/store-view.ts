@@ -4,7 +4,7 @@
 // model sees do not change. runs.ts still answers the API from files; this is the store-backed path the server cut switches
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { CAPS, type TimelineEvent } from "./timeline/index.js";
+import { CAPS, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
@@ -48,7 +48,7 @@ import { overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kerne
 import { type BookedSpend, bookedSpend } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { notesReadOf, runLearningEnd, type RunLearning, withNotes } from "./store-reads/learning.js";
+import { notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
 import { runReflect, runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -110,8 +110,15 @@ function servedOnce(store: Store, runId: string, input: string, values: readonly
   return out;
 }
 
-/** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's. */
-const answerOf = (rows: readonly TimelineEvent[]): string | null => rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL)?.text ?? null;
+/** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
+ *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
+ *  followed, so a follow-up whose own stop said nothing (no text block: a thinking-only stop) has no answer, null, not
+ *  the answer before it. */
+export const answerOf = (rows: readonly TimelineEvent[]): string | null => {
+  const asked = rows.findLastIndex((r) => isMessageRow(r) && r.agent_label === null && r.text !== null);
+  const row = rows.findLast((r) => r.kind === "final_answer" && r.agent_label !== LEARNING_LABEL);
+  return row && rows.lastIndexOf(row) > asked ? row.text ?? null : null;
+};
 
 /** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). A run
  *  its cap ended once its cost passed it (the kernel's overCapEnd) is code spend_cap_reached, its message the words after
@@ -273,7 +280,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // run that learns is seeded, then looking back once its end-of-run turn starts (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
   const read = started?.given.length ? notesReadOf(started.given, reflectRange, await runTimeline(store, runId, context, { settled: terminal })) : [];
-  const under = !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
+  const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, reflectRange, iso(runRow.startedAt)) : null;
   const sofar = ended ?? under;
   const shownEnd = sofar && withNotes(sofar, started, read);
   const turns = new Turns();
@@ -335,6 +342,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
     ((command.kind === "steer" && (command.body as { answers?: unknown } | null)?.answers !== false) || (command.kind === "raise" && budget?.kind === "budget"));
   const submitted = terminal || row.kind !== "agentic" || working ? 0 : (await commandsNow()).filter(pending).length;
   const outcome = terminal ? STATUS_OF[row.state as Exclude<RunReadState, "running">] : undefined;
+  // A cancel the person asked for reads cancelled from the 202 on, while the runner is still cutting the turn: its command
+  // row (not refused) is the request, so a poll never reads working or completed between the request and the end.
+  const cancelling = !terminal && (await commandsNow()).some((command) => command.kind === "cancel" && command.refused === null);
   const view: RunView = {
     id: row.id,
     agentId: row.agent,
@@ -342,8 +352,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
     ...(row.importedFrom ? { imported: { source: row.importedFrom.source, session: row.importedFrom.session } } : {}),
     kind: row.kind,
     ...(outcome ? { outcome } : {}),
+    ...(cancelling ? { finishing: "cancelled" as const } : {}),
     // A cancel is the run's outcome 'cancelled', never its state alone: a person's stop is stopped too, and is no cancel.
-    cancel: runRow.outcome === "cancelled",
+    cancel: runRow.outcome === "cancelled" || cancelling,
     working,
     submitted,
     updatedAt: iso(updatedAtMs),
@@ -407,7 +418,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const { row, runRow, launch, view, unshown, values, output, review: kept, structured } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
-  const endedAtMs = terminal ? (runRow.endedAt ?? runRow.startedAt) : null;
+  // A cancel reads cancelled from its 202 (status terminal) while the runner is still cutting the turn: the run is settled
+  // only once the store holds its end (its row no longer running), so its end time, poll hint, timeline `final` and learning
+  // come from that end, never from the optimistic status. Later tool results, withdrawals and charges still stream in.
+  const ended = row.state !== "running";
+  const endedAtMs = terminal && ended ? (runRow.endedAt ?? runRow.startedAt) : null;
   const shownWords = (text: string): string => withoutLoopback(redacted(text, values));
   // The answer row's text is the answer as served (whole, through redactedAnswer, once per held value set, when the row
   // was cut; else the rows' redactor over what was never cut): served again through redactedAnswer once per that set.
@@ -448,7 +463,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
   const redactor = redactorOf(values);
   const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
-  const settled = terminal;
+  const settled = terminal && ended;
 
   return {
     run_id: row.id,
@@ -485,8 +500,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
     trigger: launch?.trigger ?? null,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
-    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), terminal && settled),
-    poll_after_ms: terminal && settled ? 0 : 1000,
+    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), settled),
+    poll_after_ms: settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };
 }
@@ -511,7 +526,7 @@ export async function factsOverStore(store: Store, runId: string, deps: ViewDeps
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   const { status } = statusOf(run.view, factsOf(run));
-  const endedAtMs = TERMINAL.has(status) ? (run.runRow.endedAt ?? run.runRow.startedAt) : null;
+  const endedAtMs = TERMINAL.has(status) && run.row.state !== "running" ? (run.runRow.endedAt ?? run.runRow.startedAt) : null;
   return { kind: run.row.kind, revision: run.row.revision, agentId: run.row.agent, status, createdAt: iso(run.runRow.startedAt), endedAt: endedAtMs === null ? null : iso(endedAtMs), unshown: run.unshown };
 }
 

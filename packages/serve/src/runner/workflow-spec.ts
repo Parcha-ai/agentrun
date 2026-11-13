@@ -50,7 +50,7 @@ import { CLOSE_MS, entriesOf } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
 import { heldRedactor, holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
-import { type DecisionDriver, type NodeToolBinding, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
+import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 import { bookedSpend } from "./metrics.js";
@@ -249,6 +249,12 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     const flight: EffectsInFlight = { count: 0 };
     // The workflow's steps under way, by label: a model request the cap holds names its node when one step alone is open.
     const steps = openSteps();
+    // A park for the cap names the one step under way, as a model request's does (parkOnRefusal): a decision, a paid call
+    // or a hold the cap refuses waits for a raise at its node, so the pause reads "waiting at <node>".
+    const parkAt = (refusal: CapRefusal) => {
+      const node = refusal.node ?? steps.only();
+      hooks.park(node === undefined ? refusal : { ...refusal, node });
+    };
     // What a model node offers its model: its `submit` and the tools its node names. The session proxy's policy drops every
     // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
     // nodes send their requests straight to the provider (app.ts:117), unfiltered.
@@ -315,7 +321,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
     // extension of its own; the binding's raw extension (installed through `installed`) is never put in the registry.
     const nodeTools = new Map<string, NodeToolBinding>();
     for (const [name, binding] of nodeBindings) {
-      const booked = bookedNodeTools(binding, () => paidTools, (refusal) => hooks.park(refusal));
+      const booked = bookedNodeTools(binding, () => paidTools, parkAt);
       nodeTools.set(name, { tools: booked.tools, extensions: [defineExtension({ name: `node-tool-${name}`, tools: booked.tools as unknown as ToolRegistration[] })] });
     }
     const nodePolicy = callPolicyOf(deps.store, claim.runId, claimed);
@@ -365,10 +371,10 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string 
           // (failingEffects, main's `failing`), on the first run and on a resume that answers it from its receipt alike.
           // Once the engine has admitted it, each call's most cost is held on the run's one ledger (holdAtEffects): a hold
           // the cap refuses for room ends the effect held, nothing sent, and parks the run once that end is durable.
-          cap: pauseAtEffects(holdAtEffects(failingEffects(decisions ? decisionWorkflowCap(() => decisionCap, decisions, hooks) : identityWorkflowCap()), {
+          cap: pauseAtEffects(holdAtEffects(failingEffects(decisions ? decisionWorkflowCap(() => decisionCap, decisions, { paused: () => hooks.paused(), pause: () => hooks.pause(), park: parkAt }) : identityWorkflowCap()), {
             paid: () => paidTools,
             holdOf: (tool, input) => callHoldOf(tool, input, callEnv, tierModel),
-            park: (refusal) => hooks.park(refusal),
+            park: parkAt,
             flush: () => deps.store.flush(),
           }), hooks, flight),
         };
@@ -445,7 +451,7 @@ export function parkOnRefusal(before: BeforeRequest, hooks: Pick<WorkflowHostHoo
 }
 
 /** The workflow's steps under way, by label (the workflow's node.start/node.end, through the host): `only` is the label
- *  of the one step open, else undefined (none, or several at once). */
+ *  of the one step open (a map's several items open at once are one label), else undefined (none, or different steps at once). */
 export interface OpenSteps { start(label: string): void; end(label: string): void; only(): string | undefined }
 export function openSteps(): OpenSteps {
   const open = new Map<string, number>();
@@ -456,11 +462,8 @@ export function openSteps(): OpenSteps {
       if (left > 0) open.set(label, left);
       else open.delete(label);
     },
-    only: () => {
-      if (open.size !== 1) return undefined;
-      const [[label, count]] = [...open];
-      return count === 1 ? label : undefined;
-    },
+    // One label open, however many items of it run at once: a map's items run the same node, so the node is named.
+    only: () => (open.size === 1 ? [...open.keys()][0] : undefined),
   };
 }
 
@@ -475,8 +478,8 @@ export interface EffectsInFlight { count: number }
 export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, "paused" | "pause">, flight: EffectsInFlight): WorkflowCap {
   return {
     ...cap,
-    effect: <F>(fn: F): F => {
-      const inner = cap.effect(fn) as unknown as (params: { signal?: AbortSignal }) => Promise<unknown>;
+    effect: <F>(fn: F, driver?: PollDriver): F => {
+      const inner = cap.effect(fn, driver) as unknown as (params: { signal?: AbortSignal }) => Promise<unknown>;
       return (async (params: { signal?: AbortSignal }) => {
         if (hooks.paused()) {
           hooks.pause();
@@ -501,7 +504,7 @@ export function pauseAtEffects(cap: WorkflowCap, hooks: Pick<WorkflowHostHooks, 
  *  stop cut short is booked only once its proxy sees the provider's side end, which can be after its node ended, and the
  *  run's end waits for it (bookingsSettled), as the pi adapter's loop does. */
 function deferredHooks() {
-  let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined } | undefined;
+  let port: { beforeRequest(r: unknown): Promise<unknown>; afterRequest(u: unknown, t?: unknown, e?: unknown): Promise<void>; responded?(ids: unknown, t?: unknown): Promise<void>; note?(m: string, r?: unknown): string | undefined; noteReturned?(n: string): void } | undefined;
   let loop: WorkflowHostHooks | undefined;
   let unbooked = 0;
   const bookedAll: (() => void)[] = [];
@@ -522,6 +525,7 @@ function deferredHooks() {
       },
       responded: (ids: never, ticket?: never) => (port ?? missing()).responded?.(ids, ticket) ?? Promise.resolve(),
       note: (model: never, request?: never) => (port ?? missing()).note?.(model, request),
+      noteReturned: (note: never) => (port ?? missing()).noteReturned?.(note),
     },
     setPort: (p: typeof port) => { port = p; },
     /** Waits, at most CLOSE_MS, until every request admitted is booked, and says how many are still not. Past the bound
@@ -640,24 +644,37 @@ function reservedBooking(held: Reservation): PaidBooking {
  *     receipt, replayed) is the park that claim made: the call goes again, a new effect judged at this claim's cap. */
 export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => RunTools | undefined; readonly holdOf: (tool: string, input: Record<string, unknown>) => CallHold; readonly park: (refusal: CapRefusal) => void; readonly flush: () => Promise<void> }): WorkflowCap {
   let seq = 0;
+  /** Effects between the driver's admission and its end, and the held ends waiting for none (see `effect`). */
+  let running = 0;
+  const quiet: Array<() => void> = [];
   /** The held ends this process made, by the outcome the driver completed each effect with, and the cap's refusal. */
   const heldHere = new WeakMap<object, CapRefused>();
   // A returned failure (`ok: false`): a continuation never answers a call from it.
   const failed = (label: string, words: string) => ({ ok: false, [TOOL_FAILED]: `call node "${label}": ${words}` });
   return {
     ...cap,
-    effect: <F>(fn: F): F => {
-      const inner = cap.effect(fn) as unknown as (params: unknown) => Promise<unknown>;
-      return (async (params: { signal?: AbortSignal }) => {
+    effect: <F>(fn: F, driver?: PollDriver): F => {
+      const inner = cap.effect(fn, driver) as unknown as (params: unknown) => Promise<unknown>;
+      return (async (params: { signal?: AbortSignal; executionPath?: string }) => {
         for (;;) {
-          const value = await inner(params);
+          running += 1;
+          let value;
+          try { value = await inner(params); } finally { running -= 1; if (running === 0) for (const wake of quiet.splice(0)) wake(); }
           if (!value || typeof value !== "object" || !Object.hasOwn(value, CAP_HELD)) return value;
           const refused = heldHere.get(value);
-          // An earlier claim's park at this call (its receipt): the raise this claim took sends the call again.
-          if (!refused) continue;
+          // An earlier claim's park at this call (its receipt): the raise this claim took sends the call again, its poll window
+          // (when it is a poll) moved back by the time the run was held for the raise, which no deadline is for.
+          if (!refused) {
+            const at = (value as { held_at?: unknown }).held_at;
+            if (typeof at === "number" && params.executionPath !== undefined) driver?.holdPoll?.(params.executionPath, Date.now() - at, String(at));
+            continue;
+          }
           heldHere.delete(value);
           // The effect's held end lands before the run parks, so the next claim replays it and goes again.
           await deps.flush();
+          // The park aborts every node's signal, and an effect the driver has admitted and not completed is unknown at the
+          // next claim: so it parks once no sibling effect (a map's other branch) is between its admission and its end.
+          if (running > 0) await new Promise<void>((resolve) => quiet.push(resolve));
           deps.park({ message: refused.message, forGood: false, ...(refused.figures ? { figures: refused.figures } : {}) });
           const signal = params.signal;
           if (signal && !signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
@@ -680,7 +697,7 @@ export function holdAtEffects(cap: WorkflowCap, deps: { readonly paid: () => Run
         } catch (error) {
           if (error instanceof CapRefused && !error.forGood) {
             // Held, nothing sent: an outcome a continuation never answers a call from (`ok: false`, a returned failure).
-            const outcome = { ok: false, [CAP_HELD]: error.message };
+            const outcome = { ok: false, [CAP_HELD]: error.message, held_at: Date.now() };
             heldHere.set(outcome, error);
             return outcome;
           }
@@ -751,8 +768,8 @@ function callEnvOf(env: NodeJS.ProcessEnv, claimed: Claimed): NodeJS.ProcessEnv 
 export function failingEffects(cap: WorkflowCap): WorkflowCap {
   return {
     ...cap,
-    effect: <F>(fn: F): F => {
-      const inner = cap.effect(fn) as unknown as (params: unknown) => Promise<unknown>;
+    effect: <F>(fn: F, driver?: PollDriver): F => {
+      const inner = cap.effect(fn, driver) as unknown as (params: unknown) => Promise<unknown>;
       return (async (params: unknown) => {
         const value = await inner(params);
         const failed = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[TOOL_FAILED] : undefined;
@@ -825,7 +842,8 @@ async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | un
   // (decisionCap.spentUsd, which stays the cap's own figure). With no journal to read, any decision is unknown.
   const decision = !decisionCap ? 0 : journalOf ? await decisionsBooked(journalOf()) : null;
   const paid = paidTools ? paidTools.spentUsd() : 0;
-  return model === null || decision === null || paid === null ? {} : { costUsd: model + decision + paid };
+  // Unknown is written as null, never left out (an end that says nothing leaves the $0 the run read before a response).
+  return { costUsd: model === null || decision === null || paid === null ? null : model + decision + paid };
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a

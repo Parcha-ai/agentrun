@@ -14,7 +14,7 @@ after(closeOpenSessions);
 
 const CAP = 0.01;
 /** The run's own model, free: its requests always fit, so only the browser ask meets the cap. */
-const FREE = { id: "claude-sonnet-4-5", api: "anthropic-messages", price: { input: 0, output: 0 }, outputCeiling: 8_192 };
+const FREE = { id: "claude-sonnet-5-5", api: "anthropic-messages", price: { input: 0, output: 0 }, outputCeiling: 8_192 };
 /** Browserbase at $0.12 an hour: a person's fifteen minutes are $0.03, past a $0.01 cap. */
 const PRICE = { usdPerHour: 0.12, minimumS: 60 };
 

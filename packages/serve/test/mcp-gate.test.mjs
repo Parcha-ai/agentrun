@@ -371,11 +371,11 @@ test("claude-agent: with no setting the CLI's MCP call asks once (exactly one ap
     Object.assign(process.env, saved);
   });
   delete process.env.AGENT_MODEL_BASE_URL;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" });
   const server = await serve(t, { faux: undefined });
   const answer = await owner(server);
   const fake = await addFake(t, server.api);
-  const runId = await started(server.api, "claude-asker", ["mcp:fake/add"], "Add 2 and 3 with the add tool.", { extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" } });
+  const runId = await started(server.api, "claude-asker", ["mcp:fake/add"], "Add 2 and 3 with the add tool.", { extra: { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" } });
   const pending = await parked(server.api, runId);
   assert.deepEqual([pending.tool, pending.price], ["mcp:fake/add", "not metered"]);
   // The parked result ended the turn: no model request carried it back.
@@ -442,8 +442,8 @@ async function ownClient(t, harness) {
       reply: (request) => (Object.keys(request.results).length ? { text: `The tool said: ${Object.values(request.results)[0]}` } : request.tools.includes("mcp__fake__paid") ? { tool: { name: "mcp__fake__paid", input: { query: "ada" } } } : { text: "Noted." }),
     });
     t.after(() => anthropic.close());
-    withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AGENT_MODEL"]);
-    return { extra: { harness, model: "anthropic/claude-haiku-4-5" }, content: "Look up ada with the paid tool." };
+    withEnv(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AGENT_MODEL"]);
+    return { extra: { harness, model: "anthropic/claude-haiku-5-5" }, content: "Look up ada with the paid tool." };
   }
   const standIn = join(await scratch(t), "codex-stand-in.mjs");
   await copyStandIn(standIn);
@@ -503,9 +503,9 @@ async function parkingServer(t, harness, { tool = "add", input = { a: 2, b: 3 } 
     Object.assign(process.env, saved);
   });
   delete process.env.AGENT_MODEL_BASE_URL;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, ANTHROPIC_BASE_URL: anthropic.url, AGENT_MODEL: "anthropic/claude-haiku-5-5" });
   const server = await serve(t, { faux: undefined });
-  return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-4-5" }, content: `Use the ${tool} tool.` };
+  return { server, answer: await owner(server), fake: await addFake(t, server.api), extra: { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }, content: `Use the ${tool} tool.` };
 }
 const PARK_HARNESSES = ["pi", ...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : [])];
 

@@ -25,7 +25,7 @@ const MCP = "@modelcontextprotocol/sdk";
 /** A release of the MCP library newer than the one in the locks (fakeRegistry's `later`). */
 const LATE_MCP = "1.99.0";
 const KEY = `not-a-secret-${"anthropic"}`;
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-5-5";
 const INSTALLING = "Installing Claude Code (first use)…";
 /** The pinned CLI this repository's tests run, and its platform package's name (`claude-agent-sdk-linux-x64`, say). */
 const CLI = claudeAgentExecutable();

@@ -36,8 +36,10 @@ export type EndOfRunTurn = (input: {
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
-  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request. */
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true }): Promise<EndOfRunAnswer>;
+  /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request.
+   *  `round`: which end of the run this is (1, its first, when absent): an end after a follow-up opened the run again is
+   *  a later round, asked of the model anew under a request of its own. */
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number }): Promise<EndOfRunAnswer>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
 
@@ -104,6 +106,10 @@ export interface Loop {
   command(command: Command): Promise<CommandOutcome>;
   /** Aborts the in-flight turn; resolves once the loop will write nothing more. */
   stop(reason: StopReason): Promise<void>;
+  /** Whether a person's stop `reason` ends only the agent, the run keeping its computer for its owner (a held computer,
+   *  computer-held.ts): the runner then goes on handing it rows (the owner's calls and release) until it ends. Absent:
+   *  never. */
+  keepsComputer?(reason: StopReason): boolean;
 }
 
 export interface LoopDeps {

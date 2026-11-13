@@ -235,3 +235,20 @@ export async function signedIn(page) {
 export function check(ok, what) {
   if (!ok) throw new Error(what);
 }
+
+/** The "Example data" badge on a shot a person sees outside a test (a PR, a doc, a README): drawn into the page by the
+ *  shooting step, in a strip of its own at the top of `box` (a locator) so it never covers the card's words at 390 px, and
+ *  on the picture itself, never only in a caption. Not product code: the console never draws it. Idempotent. */
+export async function markExample(box) {
+  await box.evaluate((el) => {
+    if (el.querySelector("[data-example-badge]")) return;
+    const row = document.createElement("div");
+    row.setAttribute("data-example-badge", "");
+    row.style.cssText = "display:flex;justify-content:flex-end;padding:6px 8px 0";
+    const badge = document.createElement("span");
+    badge.textContent = "Example data";
+    badge.style.cssText = "font:600 12px/16px ui-monospace,monospace;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border:1px solid currentColor;background:#fff7d6;color:#7a4b00";
+    row.append(badge);
+    el.prepend(row);
+  });
+}

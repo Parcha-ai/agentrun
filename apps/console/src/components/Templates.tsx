@@ -253,6 +253,14 @@ function ApplyTemplate({ v2, template: t, go }: Props & { template: TemplateView
                 <Chip tone={m.required ? "plain" : "muted"}>{m.required ? "Required" : "Optional"}</Chip>
                 {servers && <span className="text-small text-muted-foreground">{servers.has(m.server) ? "Set up here" : "Not set up here"}</span>}
               </p>
+              {/* A server the template names that is not saved here: said before Apply, with the way to set it up, so an agent is
+                  never made without its tools unseen. `github` is GitHub's own, set up as a GitHub App. */}
+              {servers && !servers.has(m.server) && (
+                <p role="status" data-missing-mcp={m.server} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
+                  {m.required ? `${m.server} is required and not set up here: Apply is refused until it is.` : `${m.server} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
+                  <a href={`#/settings/mcp?add=${encodeURIComponent(m.server)}${m.server === "github" ? "&auth=github_app" : ""}`} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.server === "github" ? "Set up GitHub App access" : `Set up ${m.server}`}</a>
+                </p>
+              )}
               <Issues issues={at(`mcp.${m.server}`)} />
               <ul className="mt-2 space-y-2">
                 {m.tools.map((tool) => {

@@ -22,6 +22,7 @@ import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, type ProviderEntry, type Result } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
+import { recordedClient } from "../computer-calls.js";
 import type { MountCheck } from "./attach.js";
 import type { RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -40,6 +41,9 @@ export type KindRegistry = {
   readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, unknown>>;
   servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[];
   readonly PROVIDERS: readonly ProviderEntry[];
+  /** A provider's own words for why it gives no computer of `kind`, where they say more than servingRefusals' (a paired
+   *  computer: its driver is what to update, attached-computers.ts withPaired); undefined, servingRefusals' words. */
+  readonly unservedWhy?: (entry: ProviderEntry, kind: ComputerSettingKind) => string | undefined;
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
@@ -290,6 +294,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // The configurations of the provider that serve the kind; none, and the registry says why, by its closest one.
   const serving = servingOf(registry, entry, kind);
   if (serving.length === 0) {
+    const own = registry.unservedWhy?.(entry, kind);
+    if (own !== undefined) return { refused: `${own}, or pick ${pick}` };
     const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
@@ -373,8 +379,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
 function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: LaunchedComputer, check: MountCheck | undefined): RunComputer | string {
   // The run's browser tool opens a browser's sessions through its provider.
   if (kind === "browser") return launched.browser ? { kind, browser: launched.browser } : "it gave no CDP connection";
-  const { client, hello } = launched;
-  if (!client) return "it gave no computer protocol client";
+  const { hello } = launched;
+  if (!launched.client) return "it gave no computer protocol client";
+  // Each call the agent's tools make is recorded on the tool call's row (computer-calls.ts): the run's one client.
+  const client = recordedClient(launched.client);
   if (kind === "phone") return hello ? { kind, computer: { client }, hello } : "it gave no hello";
   if (check && !launched.readBack) return "it gave no read-back of its mount";
   const readBack = launched.readBack ? () => launched.readBack!() : async (): Promise<Result<MountReadBack>> => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } });
