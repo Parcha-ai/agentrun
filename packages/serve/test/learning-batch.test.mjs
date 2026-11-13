@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answerValue, BATCH_ROWS_MAX, checkBatchBody, contentOf, LearningBatches, matches, reviewText, RUN_CAP_MIN_USD } from "../dist/learning-batch.js";
+import { secretsShown } from "../dist/learning.js";
 import { note } from "./fixtures/faux-learn.mjs";
 import { LEARN, learner, made, sleep } from "./learn-support.mjs";
 import { follow, serve } from "./support.mjs";
@@ -25,6 +26,8 @@ async function until(api, id, batch, done, { ms = 120_000 } = {}) {
 }
 const finished = (b) => b.status !== "running";
 const money = (x) => Math.round(x * 1e6) / 1e6;
+/** The learning routes' cut with no secret held: what a host with none shows. */
+const OPEN = secretsShown([]);
 
 test("the match is structural: trimmed, case-folded, whitespace-collapsed, numbers by value; a JSON answer's field by a dotted path", () => {
   assert.equal(matches("  Job   ANSWER. ", "job answer."), true);
@@ -245,10 +248,13 @@ function fakeHost({ costs, cancelled = [], after = "A" }) {
     sent: async (id, text) => runs.get(id).messages.includes(text),
     message: async (id, text) => void runs.get(id).messages.push(text),
     cancel: async (id) => { cancelled.push(id); if (runs.has(id)) runs.get(id).cancelled = true; },
-    figures: async (id) => ({ path: "agent", cost_usd: runs.get(id).cost === null ? null : runs.get(id).cost, learning_usd: 0, total_usd: runs.get(id).cost, learned: { notes: [], skills: [], workflows: [] }, merged: null }),
+    figures: async (id) => ({ path: "agent", cost_usd: runs.get(id).cost === null ? null : runs.get(id).cost, learning_usd: 0, total_usd: runs.get(id).cost, learned: { notes: [], skills: [], workflows: [] }, merged: null, revisions: [] }),
+    shown: async () => OPEN,
     pollMs: 1,
   };
 }
+/** A batch body with one row per reference and a cap that never stops it. */
+const oneEach = (references) => ({ inputs: ["q"], answer: "a", rows: references.map((a, i) => ({ q: `q${i + 1}`, a })), max_cost_usd: 50 });
 const asked = (extra = {}) => ({ inputs: ["q"], answer: "a", rows: Array.from({ length: 6 }, (_, i) => ({ q: `q${i}`, a: "A" })), max_cost_usd: 1.2, ...extra });
 
 test("the cap's rule on its own: with $0.40 a row and $1.20, a third row is started (what is left, $0.40, covers the mean) and a fourth is not", async () => {
@@ -344,7 +350,8 @@ function lifeHost({ reviewTurn = "completed", unknown = [] } = {}) {
     },
     cancel: async (id) => { const r = runs.get(id); if (r?.status === "working") r.stop = true; },
     // A run named in `unknown` has no known cost (its learning's figures were not kept).
-    figures: async (id) => { const r = runs.get(id); const known = !unknown.includes(id); return { path: "agent", cost_usd: money(0.1 * r.turn), learning_usd: known ? 0 : null, total_usd: known ? money(0.1 * r.turn) : null, learned: { notes: [], skills: [], workflows: [] }, merged: null }; },
+    figures: async (id) => { const r = runs.get(id); const known = !unknown.includes(id); return { path: "agent", cost_usd: money(0.1 * r.turn), learning_usd: known ? 0 : null, total_usd: known ? money(0.1 * r.turn) : null, learned: { notes: [], skills: [], workflows: [] }, merged: null, revisions: [] }; },
+    shown: async () => OPEN,
     pollMs: 0,
   };
 }
@@ -538,7 +545,7 @@ test("the live cost is the booked one's function: a row in flight adds what its 
   const host = fakeHost({ costs: [] });
   // Row 1's run looks working at $0.10 (its view); its figures, the booked function, count $0.25 with a grade that ended.
   host.view = async () => ({ status: "working", ended_at: null, answer: null, cost_usd: 0.1, learning_state: "graded", error: null });
-  host.figures = async () => ({ path: "agent", cost_usd: 0.1, learning_usd: 0.15, total_usd: 0.25, learned: { notes: [], skills: [], workflows: [] }, merged: null });
+  host.figures = async () => ({ path: "agent", cost_usd: 0.1, learning_usd: 0.15, total_usd: 0.25, learned: { notes: [], skills: [], workflows: [] }, merged: null, revisions: [] });
   const batches = new LearningBatches(host);
   const made = await batches.create("a1", asked({ max_cost_usd: 50 }));
   for (let i = 0; i < 200 && host.runs.size < 1; i++) await sleep(5);
@@ -582,7 +589,7 @@ test("a row that ends failed is booked once its run and its grade have stopped: 
   };
   host.figures = async (id) => {
     const total = id === "run-1" ? (polls >= 5 ? 0.3 : 0.1) : 0.1;
-    return { path: "agent", cost_usd: total, learning_usd: 0, total_usd: total, learned: { notes: [], skills: [], workflows: [] }, merged: null };
+    return { path: "agent", cost_usd: total, learning_usd: 0, total_usd: total, learned: { notes: [], skills: [], workflows: [] }, merged: null, revisions: [] };
   };
   host.rowTimeoutMs = 20;
   const batches = new LearningBatches(host);
@@ -631,4 +638,81 @@ test("the person's text is kept whole: an effort is one a run takes, a column na
   assert.equal(matches("-0", "0"), true);
   assert.equal(matches("+007", "7"), true);
   assert.equal(matches("0.1000000000000000000001", "0.1"), false);
+});
+
+test("a batch's text is read through the learning routes' cut as it is now: an answer, a reference, an error or a lesson's name holding a value saved as a secret after its row finished reads cut on read, list and cancel; a cut that can't be made withholds them all", async () => {
+  const SECRET = `batch-secret-${"7f3a".repeat(8)}`;
+  const host = fakeHost({ costs: [] });
+  let held = [];
+  const cuts = [];
+  host.shown = async (agentId) => {
+    cuts.push(agentId);
+    if (held === "unreadable") throw new Error("withheld: the agent's sign-in can't be read here");
+    return secretsShown(held);
+  };
+  const view = host.view;
+  host.view = async (id) => ({ ...(await view(id)), answer: host.runs.get(id).messages.length ? "B" : `A ${SECRET}` });
+  host.figures = async () => ({ path: "agent", cost_usd: 0.1, learning_usd: 0, total_usd: 0.1, learned: { notes: [`Sign in with ${SECRET}`], skills: [], workflows: [`flow-${SECRET}`] }, merged: "c1", revisions: [{ commit: "c1", workflows: [`flow-${SECRET}`] }] });
+  // The second row's review is refused in words that quote the value.
+  const message = host.message;
+  host.message = async (id, text) => { if (id === "run-2") throw new Error(`the store refused ${SECRET}`); return message(id, text); };
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", oneEach([`A ${SECRET}`, "B"]));
+  await batches.idle(made.id);
+  // The rows finished while the value was no secret; it is one now.
+  held = [SECRET];
+  const shownBy = { read: await batches.read("a1", made.id), list: await batches.list("a1"), cancel: await batches.cancel("a1", made.id) };
+  for (const [route, got] of Object.entries(shownBy)) {
+    const text = JSON.stringify(got);
+    assert.ok(!text.includes(SECRET), `${route} shows the secret: ${text.slice(0, 600)}`);
+    assert.ok(text.includes("[redacted]"), `${route}: ${text.slice(0, 600)}`);
+  }
+  const row = shownBy.read.rows[0];
+  assert.deepEqual([row.right, row.state, shownBy.read.rows[1].state], [true, "done", "failed"], "compared whole, as saved: only what is shown is cut");
+  assert.match(shownBy.read.rows[1].error, /review was not sent/);
+  assert.ok(cuts.length >= 3 && cuts.every((agentId) => agentId === "a1"), "each read asks the agent's own cut");
+  held = "unreadable";
+  for (const read of [() => batches.read("a1", made.id), () => batches.list("a1"), () => batches.cancel("a1", made.id)]) await assert.rejects(read, /withheld/);
+});
+
+test("a row's path is its job's, read before its review: a run a learned workflow answered alone stays `workflow` after its review's turn, done or failed", async () => {
+  // The path as the server measures it: `workflow` for the job alone, `handed_back` once the review's message is in the run.
+  const host = fakeHost({ costs: [] });
+  host.figures = async (id) => ({ path: host.runs.get(id).messages.length ? "handed_back" : "workflow", cost_usd: 0.1, learning_usd: 0, total_usd: 0.1, learned: { notes: [], skills: [], workflows: [] }, merged: null, revisions: [] });
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", oneEach(["A", "A"]));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual(end.rows.map((r) => [r.state, r.path]), [["done", "workflow"], ["done", "workflow"]]);
+  assert.deepEqual(end.paths, { agent: 0, handed_back: 0, workflow: 2 });
+  // A review's turn that fails: the row is failed, its path still its job's.
+  const life = lifeHost({ reviewTurn: "failed" });
+  const figures = life.figures;
+  life.figures = async (id) => ({ ...(await figures(id)), path: life.runs.get(id).turn === 1 ? "workflow" : "handed_back" });
+  const second = new LearningBatches(life);
+  const failed = await second.create("a1", TWO());
+  await second.idle(failed.id);
+  const after = await second.read("a1", failed.id);
+  assert.deepEqual(after.rows.map((r) => [r.state, r.path]), [["failed", "workflow"], ["failed", "workflow"]]);
+});
+
+test("every round's merge is a revision of its own: a row whose job and review each merged workflows counts two, in order, each with its commit and its workflows; a round dropped leaves the other's commit", async () => {
+  const { figuresOf } = await import("../dist/learning-batch.js");
+  const cost = { path: "agent", cost_usd: 0.1, learning_usd: 0.02, total_usd: 0.12 };
+  const flows = (...names) => names.map((name) => ({ file: `workflows/${name}/workflow.json`, name }));
+  const both = figuresOf(cost, [{ merged: "c1", learned: [{ name: "n1" }], workflows: flows("lookup") }, { merged: "c2", learned: [], workflows: flows("lookup", "check") }]);
+  assert.deepEqual(both.revisions, [{ commit: "c1", workflows: ["lookup"] }, { commit: "c2", workflows: ["lookup", "check"] }]);
+  assert.deepEqual([both.merged, both.learned.workflows, both.learned.notes], ["c2", ["lookup", "check"], ["n1"]]);
+  const dropped = figuresOf(cost, [{ merged: "c3", workflows: flows("verify") }, { state: "dropped" }]);
+  assert.deepEqual([dropped.revisions, dropped.merged], [[{ commit: "c3", workflows: ["verify"] }], "c3"], "the review's round dropped: the job's merge keeps its commit");
+  assert.deepEqual(figuresOf(cost, [null]).revisions, [], "a run that kept no learning made no revision");
+  // The batch keeps every row's every revision, in row order.
+  const host = fakeHost({ costs: [] });
+  host.figures = async (id) => ({ ...(id === "run-1" ? both : dropped), cost_usd: 0.1, total_usd: 0.1 });
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", oneEach(["A", "A"]));
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual(end.revisions, [{ row: 1, commit: "c1", workflows: ["lookup"] }, { row: 1, commit: "c2", workflows: ["lookup", "check"] }, { row: 2, commit: "c3", workflows: ["verify"] }]);
+  assert.deepEqual(end.lessons.workflows, ["lookup", "check", "verify"]);
 });
