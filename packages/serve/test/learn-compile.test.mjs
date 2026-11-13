@@ -241,7 +241,7 @@ test("a run's timeline shows the compile turn's asks in the host's words, never 
   assert.deepEqual(rows.map(({ text }) => text), [said.asked, said.askedCompile, said.askedCompileAgain]);
 });
 
-// Jev by default (Miguel, 11-13: "i want jev incorporated"): a run that can call Jev (its decision providers hold jev,
+// Jev by default (SPEC 11-13): a run that can call Jev (its decision providers hold jev,
 // not denied) asks each judgment step for a guard on its own confidence and Jev's together (`both`), and each extract or
 // call step, which reports no confidence, for Jev alone (`jev`); a run that can't asks `self` on the judgment steps and
 // no guard elsewhere. Every guard starts at GUARD_THRESHOLD until a refit (learn/refit.ts) fits it.
