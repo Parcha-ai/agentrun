@@ -90,7 +90,8 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, min
   root = createRoot(host);
   const went: string[] = [];
   const agentName = (id: string) => (id === "triage" ? "Triage" : id);
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, now: () => NOW, ...(refreshMs ? { refreshMs } : {}) })));
+  // failuresToPause: the server's threshold for turning a trigger off (capabilities' features.triggers.failures_to_pause).
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName, minEvery, failuresToPause: 5, now: () => NOW, ...(refreshMs ? { refreshMs } : {}) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -131,6 +132,14 @@ describe("the schedules list", () => {
     expect(t.went).toEqual(["#/triggers/new"]);
   });
   // A schedule fires while its page is open: the page reads again on its own, so a new firing shows with no reload.
+  it("says a schedule that turned itself off, and why, apart from one a person paused", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const t = await open(server({ triggers: [off] }).v2, {});
+    const row = t.host.querySelector("[data-trigger]")!;
+    expect(row.textContent).toContain("Turned off");
+    expect(row.textContent).toContain("Turned off after 5 failures in a row.");
+    expect(row.textContent).not.toContain("Paused");
+  });
   it("reads the schedules again while it is open", async () => {
     const triggers = [NIGHTLY];
     const t = await open(server({ triggers }).v2, {}, undefined, 30);
@@ -433,6 +442,33 @@ describe("one schedule", () => {
     expect(t.text()).toContain("This trigger sends its firings to a run: this page doesn't open it yet.");
     expect(t.button(/^Pause$|^Resume$|^Edit$|^Run now$|^Delete$/)).toBeUndefined();
     expect(t.text()).not.toContain("undefined");
+  });
+  it("says why it turned itself off, and Resume turns it on again by enabled alone", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, failures_in_a_row: 5, disabled: { at: "2026-11-05T09:00:00Z", reason: "auto_paused" } };
+    const { v2, calls } = server({ triggers: [off] });
+    const t = await open(v2, { trigger: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off after 5 failures in a row. Resume turns it on again.");
+    await t.click(/^Resume$/);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ enabled: true }]);
+  });
+  it("says a source that can't be read", async () => {
+    const off: Trigger = { ...NIGHTLY, enabled: false, next_at: null, disabled: { at: "2026-11-05T09:00:00Z", reason: "source_unreadable", detail: "unknown time zone Mars/Base" } };
+    const t = await open(server({ triggers: [off] }).v2, { trigger: "trg_1" });
+    expect(t.host.querySelector('[role="status"][data-disabled]')?.textContent).toBe("Turned off: its source can't be read (unknown time zone Mars/Base). Edit its when, then Resume.");
+  });
+  it("marks a firing that caught up a time missed while the server was down, whatever came of it", async () => {
+    const firings = { trg_1: [
+      firing({ key: "f4", status: "started", run_id: "r1", catch_up: true }),
+      firing({ key: "f3", status: "skipped", reason: "The last run is still working.", catch_up: true }),
+      firing({ key: "f2", status: "failed", error: { code: "agent_not_runnable", message: "No model." }, catch_up: true }),
+      firing({ key: "f0", status: "started", run_id: "r0" }),
+    ] };
+    const t = await open(server({ firings }).v2, { trigger: "trg_1" });
+    const rows = [...t.host.querySelectorAll("[data-firing]")].map((r) => r.textContent ?? "");
+    expect(rows[0]).toContain("On schedule, caught up late");
+    expect(rows[1]).toContain("Skipped: The last run is still working. · caught up late");
+    expect(rows[2]).toContain("Failed: No model. · caught up late");
+    expect(rows[3]).not.toContain("caught up");
   });
   it("pauses and resumes by enabled alone", async () => {
     const { v2, calls } = server();
