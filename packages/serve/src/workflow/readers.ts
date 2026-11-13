@@ -110,16 +110,6 @@ export function durableDoc<T = Record<string, unknown>>(file: string, kind: stri
   return (withDurableFile(file, (db) => sessionDoc(db, kind, key), options) ?? undefined) as T | undefined;
 }
 
-/** The decision rows (`agentrun.decisions`) of the run's store `file`, in commit order: the keyed documents, one row each, in the order of their keys. */
-export function durableDecisions(file: string, options: DurableReadOptions = {}): Array<Record<string, unknown>> {
-  return withDurableFile(file, (db) => {
-    const count = (sessionDoc(db, "agentrun.decisions.count") as { count?: unknown } | undefined)?.count;
-    const rows: Array<Record<string, unknown>> = [];
-    if (typeof count === "number") for (let place = 0; place < count; place += 1) { const row = sessionDoc(db, "agentrun.decisions", decisionKey(place)); if (row) rows.push(row as Record<string, unknown>); }
-    return rows;
-  }, options) ?? [];
-}
-
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
  *  such journal or none has bound it. `effects` are every effect the journal admitted, once each, in the order they were
  *  admitted, in either layout: in the keyed one (`agentrun.frozen_run.v4`) the effects a map item owns, nested maps
