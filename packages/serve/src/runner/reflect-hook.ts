@@ -7,7 +7,8 @@
 // from everything the hook keeps; a run whose list can't be read learns nothing.
 import { cutStrings } from "../key-refusal.js";
 import type { DraftDecisions } from "../learn/skills.js";
-import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets, type ReviseAsk } from "../learn/index.js";
+import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
+import type { ReviseAsk } from "../learn/reflect.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunTurn } from "./loop-contract.js";
 
