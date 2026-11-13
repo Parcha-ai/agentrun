@@ -452,6 +452,8 @@ interface CliRecord {
    *  and its prompt is written now (once per `requestId`), so the run reads as looking back while the turn runs
    *  (end-of-run.ts reflectRanges), as a pi run's placed input does. */
   answering(requestId: string, prompt: string): Promise<void>;
+  /** Whether the record holds the end-of-run turn `requestId`'s prompt (answering's, this claim's or an earlier one's). */
+  asked(requestId: string): boolean;
   /** The end-of-run turn ended (`status`, its turn's): its prompt and answer as the submission `requestId` names, the same
    *  record pi's adapter writes (done with its answer entry, or unanswered with why), written once. */
   answered(requestId: string, prompt: string, status: string): Promise<void>;
@@ -623,6 +625,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         }, context);
       });
     },
+    asked: (requestId) => askedAt.has(requestId),
     answered: (requestId, prompt, status) =>
       inTurn(async () => {
         const said = answer ?? "";
@@ -2574,8 +2577,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // How this claim's turn ended; a turn answered before reads as its submission says.
       let turnStatus = "completed";
       if (!known) {
+        // The turn an earlier claim asked and its runner lost before the answer (its prompt on the record, the session
+        // cut inside it): resumed, never asked again, so the CLI answers it once (a send would queue a second paid turn
+        // behind the one it recovers).
+        const cut = theRecord !== undefined && theSession.state === "open_turn" && theRecord.asked(requestId);
         await theRecord?.answering(requestId, prompt);
-        await theSession.send(prompt, { id: requestId });
+        if (cut) await theSession.recover();
+        else await theSession.send(prompt, { id: requestId });
         const turn = theSession.turnEnd();
         const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), deadlineMs)));
         const end = await Promise.race([turn, timeout, stopping.then(() => "stop" as const), on.closed.then(() => "closed" as const)]);
