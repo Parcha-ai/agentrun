@@ -12,6 +12,7 @@ import { answeredUnpriced, RUNNER_RECORDS, type SessionRecord, sessionSpendOf } 
 import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS, WORKFLOW_SESSION } from "./journal-kinds.js";
 import { anthropicModelId } from "../provider.js";
+import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
 
 /** What a run's booking says one of its sessions spent: its requests (a hold given back unused is none), their known
  *  sum, how many have no known cost, their tokens, and how many of the requests have no known tokens (`unmetered`: booked
@@ -100,9 +101,15 @@ export function runEndCost(parts: { readonly model: number | null; readonly paid
  *  its end-of-run turn's answer. Each took a model request, so a run that shows one and booked none (its requests went
  *  past its model proxy) spent what no booking read: its cost is unknown, never $0. */
 export function cliModelWorked(entries: readonly EntryLike[]): boolean {
+  // A run its learned workflow served first and answered (runner/workflow-first.ts, the loop's WORKFLOW_FIRST entry) keeps
+  // the step's call and the workflow's answer, as the model's message, on that same record (pi's too: adapter-loop.ts
+  // serveFirst): neither took a model request of the run's agent, so its cost is its booking's, never unknown for them.
+  const servedAlone = entries.some((e) => e.kind === WORKFLOW_FIRST && (e.data as { outcome?: unknown } | undefined)?.outcome === "answered");
   return entries.some((e) => {
-    const role = (e.data as { role?: unknown } | undefined)?.role;
-    return e.kind === KINDS.callStart || ((e.kind === KINDS.message || e.kind === KINDS.endOfRunTurn) && role === "model");
+    const data = e.data as { role?: unknown; callId?: unknown } | undefined;
+    if (e.kind === KINDS.callStart) return data?.callId !== WORKFLOW_FIRST_CALL;
+    if (e.kind === KINDS.message) return data?.role === "model" && !servedAlone;
+    return e.kind === KINDS.endOfRunTurn && data?.role === "model";
   });
 }
 

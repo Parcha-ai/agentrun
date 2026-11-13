@@ -94,7 +94,7 @@ export type LearningCost = Answer<"getLearningCost">;
 export type LearningEvals = Answer<"listLearningEvals">;
 export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
- *  went on, `agent` none ran. */
+ *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
 /** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's

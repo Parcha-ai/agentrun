@@ -29,6 +29,7 @@ export { COST_WINDOW };
 import type { Store } from "../store/store.js";
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
+import { type GuardRow, guardsOf } from "../learned-nodes.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
  *  revision, under which call, and how it ended. A later claim that finds it never runs the workflow again. */
@@ -44,6 +45,8 @@ export interface WorkflowFirst {
   readonly digest: string;
   readonly input: Readonly<Record<string, unknown>>;
   readonly revision: string | null;
+  /** A replay run's (RunLaunch.replay): the workflow runs alone, a hand-back ends the run with no agent turn. */
+  readonly replay?: true;
 }
 
 /** What WORKFLOW_FIRST keeps: the step's end (its call, and whether it answered or handed back), or why the workflow did
@@ -86,7 +89,7 @@ export function costLineOf(past: readonly PastRun[], name: string, digest: strin
   const served = newest.filter((run) => ran(run) && pathFields(run.metrics).workflow_digest === digest && known(run)).slice(0, COST_WINDOW).map((run) => run.costUsd as number);
   const agent = newest.filter((run) => pathFields(run.metrics).path === "agent" && known(run)).map((run) => run.costUsd as number);
   const first = Math.min(...newest.filter(ran).map((run) => run.startedAt));
-  const before = agent.length ? agent : newest.filter((run) => run.startedAt < first && !SERVED.includes(pathFields(run.metrics).path) && known(run)).map((run) => run.costUsd as number);
+  const before = agent.length ? agent : newest.filter((run) => run.startedAt < first && !SERVED.includes(pathFields(run.metrics).path) && pathFields(run.metrics).path !== "replay" && known(run)).map((run) => run.costUsd as number);
   return { served: meanOf(served) ?? { runs: 0, mean_usd: null }, by_hand: meanOf(before) };
 }
 
@@ -156,11 +159,23 @@ export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): str
 
 /** The workflow a run serves first (`serve`), or the one the money rule stopped (`revise`), or neither: the run is
  *  agentic, its claim laid learned workflows (`workflows`: the active ones the seed lay chose, so learning is neither off
- *  nor notes-only), its launch does not force the agent path, and exactly one of them fits its input; then costLineOf over
- *  the agent's runs (`past`, pastOf). `log`: one line when the launch forces the agent, more than one fits, there is no
- *  by-hand cost to hold the workflow to, or the rule stops it. */
-export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly PastRun[]>): Promise<FirstChoice> {
+ *  nor notes-only), its launch does not force the agent path, and exactly one of them fits its input; then its promotion
+ *  (`promoted`, runner/promotion.ts: a new digest serves only once its replay on the agent's graded inputs clears the bar,
+ *  learn/promote.ts; false leaves the run to the agent), then costLineOf over the agent's runs (`past`, pastOf). `log`: one
+ *  line when the launch forces the agent, more than one fits, there is no by-hand cost to hold the workflow to, or the
+ *  rule stops it. A replay run (launch.replay) serves the workflow it replays, by name, alone: no promotion, no money rule;
+ *  none when its claim laid no workflow by that name at that digest (the replay then ends on the agent's path, failed). */
+export async function workflowFirstOf(kind: string, workflows: readonly LearnedWorkflow[], launch: RunLaunch, log?: (line: string) => void, past?: () => Promise<readonly PastRun[]>, promoted?: (workflow: LearnedWorkflow, digest: string) => Promise<boolean>): Promise<FirstChoice> {
   if (kind !== "agentic" || workflows.length === 0 || !launch.learning) return {};
+  if (launch.replay) {
+    const { workflow: name, digest } = launch.replay;
+    const chosen = workflows.find((one) => one.name === name);
+    if (!chosen || !isObject(launch.input as Json)) {
+      log?.(`workflow-first: replay of ${name} at ${digest}: the run's claim laid no workflow by that name, or its input is no object; the replay fails`);
+      return {};
+    }
+    return { serve: { name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed, replay: true } };
+  }
   if (launch.workflowFirst === false) {
     log?.("workflow-first: off for this run (workflow_first: false); the agent takes it");
     return {};
@@ -174,6 +189,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   const chosen = fitting[0]!;
   const digest = workflowDigest(chosen);
   const serve = { serve: { name: chosen.name, digest, input: launch.input as Record<string, unknown>, revision: launch.learning.seed } };
+  if (promoted && !(await promoted(chosen, digest))) return {};
   if (!past) return serve;
   const line = costLineOf(await past().catch(() => []), chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return serve;
@@ -206,13 +222,25 @@ export function reviseOf(entries: readonly { readonly kind: string; readonly dat
 
 /** The run-record fields a learning run's metrics carry, from the run-end classifier's `classified` path
  *  (runPathOverStore): the path it took, the learned revision it ran on, the learned workflow it ran (served first, or
- *  called by its agent) and, for one served first, its digest. learning-cost reads path and workflow from here. None for
- *  a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string } | undefined): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string } {
+ *  called by its agent) and, for one served first, its digest; and from its root `entries`, each step guard's check of
+ *  its learned workflows' calls (`guards`, learned-nodes.ts guardsOf), when one ran. learning-cost reads path and
+ *  workflow from here. None for a run that does not learn. */
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; guards?: GuardRow[]; replay?: ReplayMetrics } {
   if (!launch.learning) return {};
   const { path, workflow, digest } = classified ?? { path: "agent" as const, workflow: null };
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}) };
+  const guards = guardsOf(entries);
+  if (launch.replay) {
+    // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
+    // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow).
+    const { of, workflow: name, digest: at } = launch.replay;
+    const outcome = path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name ? "handed_back" : "failed";
+    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...(guards.length ? { guards } : {}), replay: { of, outcome } };
+  }
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(guards.length ? { guards } : {}) };
 }
+
+/** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
+export type ReplayMetrics = { readonly of: string; readonly outcome: "answered" | "handed_back" | "failed" };
 
 /** What run `entries` (its root's) say its learned workflow answered alone: the workflow and its answer (the model's
  *  message written just before the WORKFLOW_FIRST entry, in its commit); undefined for a run it did not answer. A follow-up that opens such a

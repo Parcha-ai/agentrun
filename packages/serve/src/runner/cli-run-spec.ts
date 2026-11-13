@@ -62,6 +62,7 @@ import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, runEndCost } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { claimPromotion, promotionGate, replayLaid } from "./promotion.js";
 import { pastOf, pathMetrics, workflowFirstOf } from "./workflow-first.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -467,7 +468,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
   // (learningEndOfRun).
   let handedKeys: string[] = [];
-  const workflows = seedLaid?.workflows ?? [];
+  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  const workflows = replayLaid(launch, seedLaid?.workflows ?? []);
   const learns = learnsWorkflows(revision.kind, workflows);
   if (webNames.length || learns) {
     // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below.
@@ -512,8 +514,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     }
   }
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts).
-  // Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
-  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId)) : {};
+  // Only a promoted digest serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its
+  // dry run with fewer than five). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run
+  // asks for its revision.
+  const { serve: workflowFirst, revise: workflowRevise } = learnedTool ? await workflowFirstOf(revision.kind, workflows, launch, log, pastOf(deps.store, runRow.agentId), promotionGate(claimPromotion({
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log,
+    folder: () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil })),
+  }))) : {};
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
@@ -531,7 +538,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
   // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
-  const endOfRun = learningEndOfRun(launch, {
+  // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -594,7 +602,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // session, and its decisions (a learned workflow's decision nodes) are the run's cost too, as the pi spec's.
       const total = runEndCost({ model, paid: run.ledger?.paid ? run.ledger.paid.spentUsd() : 0, decisions: bookedSpend(all, "decisions").usd });
       // An unknown cost is written as null, never left out: a follow-up's end clears the cost an earlier end stored.
-      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined) } };
+      return { costUsd: total, metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning) : undefined, entries as never) } };
     },
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing.
