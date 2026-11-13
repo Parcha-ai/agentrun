@@ -27,7 +27,21 @@ export interface LearningSeedLay {
   readonly log: (line: string) => void;
   /** False for a run of a revision that says `learning: "notes"`: its notes and skills are laid, never a learned workflow. */
   readonly workflows?: false;
+  /** The notes its # Learned section names in no way, over the learning budget (the launch's `notesLeftOut`), by file:
+   *  said in the run's log, so a run that read only some of what its agent learned says which it did not. */
+  readonly notesLeftOut?: readonly string[];
 }
+
+/** The most notes the log line names: past it, it says how many more. */
+export const LEFT_OUT_NAMED = 100;
+
+/** The run's log line for the notes its # Learned section leaves out, or undefined for none. */
+export const notesLeftOutLine = (files: readonly string[] | undefined): string | undefined => {
+  if (!files?.length) return undefined;
+  const named = files.slice(0, LEFT_OUT_NAMED).join(", ");
+  const more = files.length > LEFT_OUT_NAMED ? `, and ${files.length - LEFT_OUT_NAMED} more` : "";
+  return `starts without ${files.length} of the notes its agent learned in its # Learned section, over the learning budget (the notes that bear most on it are given whole; the rest stay in ${LEARNED_DIR}/): ${named}${more}`;
+};
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -64,6 +78,8 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
     const { taken, left } = await chooseSkills(lay.work, seed, lay.own, shown);
     await laySkills(lay.work, taken, made);
     for (const path of seed.skipped) lay.log(`its learning folder's ${path} was not read`);
+    const leftOut = notesLeftOutLine(lay.notesLeftOut);
+    if (leftOut) lay.log(leftOut);
     for (const name of left) lay.log(`starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
     const workflows = lay.workflows === false ? { flows: [], left: [] } : chooseWorkflows(seed, shown);
     for (const name of workflows.left) lay.log(`starts without the learned workflow ${name} its agent learned: it is over what is left of the learned workflows' budget, or holds a secret`);
