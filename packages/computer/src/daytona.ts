@@ -842,7 +842,11 @@ class DaytonaHost implements MachineHost {
 		const exitCode = async (): Promise<number> => {
 			for (;;) {
 				const read = await this.#rest.json("GET", session, { retry: true });
-				if (!read.ok) return -1;
+				if (!read.ok) {
+					// The command may run on, its stream open: let go of both, and fail with the read's own words.
+					await kill();
+					throw new Error(`reading the command's exit code failed (${read.error.code}): ${read.error.message}`);
+				}
 				const found = ((read.value as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === commandId);
 				if (typeof found?.exitCode === "number") {
 					// The stream closes as the command ends; one that trails is let go of after a grace.
