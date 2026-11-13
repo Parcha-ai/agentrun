@@ -20,10 +20,8 @@ import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
 import {
 	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
-	type ArchilEgress,
 	type ArchilMount,
 	type ArchilRoot,
-	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilRefusals,
@@ -120,12 +118,6 @@ export interface HostedOptions {
 	probeTargets?: string[];
 	/** Told what is no failure of the call it came from: a release that did not let an Archil folder go cleanly. */
 	onNote?: ProviderNote;
-	/**
-	 * The egress gateway an Archil computer's archil client reaches Archil through, `<IPv4 gateway>:<mount lane>:<data
-	 * lane>` such as 192.0.2.40:18100:42050 (archilEgressOf): for a vendor whose machines reach Archil only through it.
-	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
-	 */
-	archilEgress?: string;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
@@ -265,7 +257,6 @@ export class HostedProvider implements ComputerProvider {
 	readonly #timeouts: HostedTimeouts;
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
-	readonly #archilEgress: ArchilEgress | undefined;
 	/** Each create in flight, by the name its request id gives: a second create of the same request waits for the first. */
 	readonly #creating = new Map<string, Promise<Result<CreatedComputer>>>();
 	/** Names of computers this provider made and has given up on or deleted: a retry of their request is refused. */
@@ -284,14 +275,12 @@ export class HostedProvider implements ComputerProvider {
 			timeouts = {},
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
-			archilEgress,
 		} = options;
 		this.id = host.id;
 		this.host = host;
 		this.#label = label;
 		this.#fail = failOf(host);
 		this.#onNote = onNote;
-		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
@@ -846,7 +835,6 @@ export class HostedProvider implements ComputerProvider {
 			self: computer,
 			releaseOlder: () => releaseOlder(this, run, epoch, signal ? { signal } : {}),
 			timeoutMs: this.#timeouts.mountMs,
-			...(this.#archilEgress ? { egress: this.#archilEgress } : {}),
 			...(signal ? { signal } : {}),
 		});
 	}
