@@ -15,6 +15,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { ASK_TOOL } from "../tools.js";
+import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
 import { cutAtLimit } from "./loop-contract.js";
 import { PI_STOP } from "./pi-stop.js";
@@ -186,7 +187,8 @@ export function subagentTool(options: SubagentOptions): ToolRegistration {
         const handle = await api.conversation(child, context);
         if (!handle) return { ...fail("subagent: its conversation could not be opened. Nothing ran."), details };
         const submission = await handle.submit({ type: "input", content: args.prompt, requestId: `subagent:${String(api.taskId)}` }, context);
-        const settled = await submission.wait(context);
+        // Never on the call's signal (durableWait): a stop while it registers rejects this wait, never one unhandled.
+        const settled = await durableWait((at) => submission.wait(at), context);
         if (settled.status === "done" && settled.answer !== undefined) {
           const answer = await api.commit((tx) => tx.entry(settled.answer!), context);
           const message = answer?.model?.findLast((each) => each.role === "assistant") as { stopReason?: string; usage?: { output?: number } } | undefined;

@@ -19,6 +19,7 @@ import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type Hos
 import { type ModelProxy, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
+import { durableWait } from "../../workflow/pi-versions.js";
 import { HOSTED_SEARCH_ALLOWANCE_TOKENS } from "../../hosted-search.js";
 import { sessionProvider, tierProvider } from "../../port-models.js";
 import { KINDS } from "../journal-kinds.js";
@@ -380,7 +381,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   let state: AdapterSession["state"] = existing === undefined ? "new" : later ? "open_turn" : existing.status === "done" ? "idle" : "open_turn";
   let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
   const watch = (submission: Submission) => {
-    running = submission.wait(context).then(
+    // Its wait never holds the claim's signal (durableWait): an abort while it registers (a close, a lost claim, as a
+    // resumed loop opens) ends the turn interrupted here, never as a rejection nothing handles, which ends the process.
+    running = durableWait((at) => submission.wait(at), context).then(
       (record) => {
         state = "idle";
         const status: TurnStatus = record.status === "done" ? "completed" : "failed";
