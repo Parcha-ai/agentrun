@@ -1436,7 +1436,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (capNote.offered && Date.now() - capNote.offered.at < WRAP_UP_OFFER_MS) return undefined;
           if (!config || !capModel || capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return undefined;
           const spentUsd = sessionSpent + decided + paidSpent + rest;
-          const heldUsd = inFlight + ledger.decisions.heldUsd() + ledger.paid.heldUsd();
+          // The tools' gate counts a request in flight at its hold and its bound (sessionSpendOf: a cache miss adds the bound),
+          // so the note counts it the same: it never comes later than the gate's first refusal.
+          const heldUsd = inFlight + (bookingNow?.boundUsd() ?? 0) + ledger.decisions.heldUsd() + ledger.paid.heldUsd();
           const due = noteFor(
             { kind: "model", id: "wrap-up", model: capModel, inputTokens: asked?.inputTokensMax, ...(asked?.outputTokensAsked === undefined ? {} : { outputAsked: asked.outputTokensAsked }), ...(asked?.outputTokensLeast === undefined ? {} : { outputTokensLeast: asked.outputTokensLeast }) },
             { capUsd, spentUsd, heldUsd, costs: capNote.costs, told: false, mode: config.mode ?? "expected", now: Date.now() },
