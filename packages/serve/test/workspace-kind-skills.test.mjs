@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
 import { KIND_SKILLS, layOwnSkills, localWorkspace } from "../dist/workspace/index.js";
 
 const dirs = [];
@@ -29,6 +30,15 @@ test("the kind skills are the repo's own SKILL.md files, by the names their fron
   assert.equal(KIND_SKILLS.desktop.text, source("desktop"));
   assert.equal(KIND_SKILLS.phone.text, source("phone"));
   for (const skill of Object.values(KIND_SKILLS)) assert.match(skill.text, new RegExp(`^---\\nname: ${skill.name}\\ndescription: `));
+});
+
+test("the kind skills teach the registry's computer tools, by name, and no other tool", () => {
+  for (const skill of Object.values(KIND_SKILLS)) {
+    const named = new Set(skill.text.match(/\b(?:computer|desktop|phone)_[a-z_]+\b/g));
+    assert.deepEqual([...named].filter((name) => !COMPUTER_TOOLS.includes(name)), [], skill.name);
+    for (const tool of ["computer_observe", "computer_act", "computer_screenshot", "computer_script"]) assert.ok(named.has(tool), `${skill.name} teaches ${tool}`);
+    assert.match(skill.text, /observe again before you act/, `${skill.name} says what the hand-back's refusal says`);
+  }
 });
 
 test("a desktop or phone run's claim lays its kind's skill beside the agent's own", async () => {

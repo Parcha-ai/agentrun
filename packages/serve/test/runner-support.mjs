@@ -102,6 +102,21 @@ export async function stores({ runners = 1 } = {}) {
   return { server, runners: forRunners, clock, file };
 }
 
+/**
+ * Closes what `stores()` opened now, instead of at the file's end: its stores, their files, and on Postgres its schema.
+ * Call it after the test's runners are closed (one after-hook: `await runner.close(); await release(opened)`). A file of
+ * many cases on Postgres otherwise holds every case's connections until it ends, beside the other files' (too many
+ * clients).
+ */
+export async function release({ server }) {
+  const at = opened.findIndex((entry) => entry.stores.includes(server));
+  if (at === -1) return;
+  const [{ stores: these, dir, schema }] = opened.splice(at, 1);
+  for (const store of these) await store.close().catch(() => undefined);
+  rmSync(dir, { recursive: true, force: true });
+  if (schema) await dropSchema(schema);
+}
+
 /** A queued run on the server's store. */
 export const queue = (server, id) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
 

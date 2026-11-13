@@ -121,10 +121,11 @@ export interface HostTool<Input = any> {
   execute(input: Input, io: HostToolIO): Promise<string | ToolOutput>;
 }
 
-/** A tool's answer with images. */
+/** A tool's answer with images, and its value where it gives one (a computer tool's: what a script reads). */
 export interface ToolOutput {
   text: string;
   images?: readonly ToolImage[];
+  structured?: JsonValue;
 }
 
 export interface HostToolIO {

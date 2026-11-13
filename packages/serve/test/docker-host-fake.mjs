@@ -3,7 +3,9 @@
 // with), answers `version` (amd64), `image inspect` (the image's labels), `build` (the tag and labels it is given, the
 // recipe read from stdin) and `pull` (refused for the recipe's repository, agentrun-computer, which no registry has), and
 // refuses a `run` of an image it lacks that no registry has, as Docker's own pull for run is refused. Every other call
-// (run, inspect, exec with the daemon's hello, rm) is the fake's. No Docker is reached.
+// (run, inspect, exec with the daemon's hello, rm) is the fake's. No Docker is reached. With `computerd: true`, each
+// computer also has a fake computerd (computer/test/fake-computerd.mjs): its exec, file and process calls run on this
+// machine in the computer's own folders, /workspace the run's folder, so a run's tools work in the Docker box.
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,8 +20,8 @@ export const NAMED_PREFIX = "registry.example/";
 
 /** The host: `dir` (put it first on PATH), `calls()` (every docker call's argv, in order), `images()` (what the host has,
  *  by tag: its labels, and `pulledByRun` for one a run pulled), and the computer fake (`fake`: its daemonPath and cache). */
-export function dockerHost() {
-  const fake = fakeDocker();
+export function dockerHost({ computerd = false } = {}) {
+  const fake = fakeDocker({ computerd });
   const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-docker-host-")));
   dirs.push(dir);
   const images = join(dir, "images.json");
