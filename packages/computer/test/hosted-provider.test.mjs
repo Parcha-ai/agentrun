@@ -637,7 +637,7 @@ test("connect to a machine the vendor reads as going (past its deadline or relea
 	const connected = await provider.connect(ref);
 	assert.equal(connected.error?.code, "gone");
 	assert.match(connected.error?.message ?? "", /going/);
-	assert.deepEqual(await provider.release(ref), { ok: true, value: undefined });
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
 });
 
 test("list finds this provider's machines by labels; attach by id or labels reads the spec back; one that drifted is refused and left running", async () => {

@@ -998,6 +998,8 @@ export class HostedProvider implements ComputerProvider {
 		if (problem) return this.#fail("invalid", problem);
 		const found = await this.#own(ref);
 		if (!found.ok) return found;
+		// A machine on its way out (past its deadline or released, the vendor still deleting it) is gone, not merely stopped.
+		if (found.value.state === "going") return this.#fail("gone", `${ref.name} passed its deadline or was released: it is going`);
 		if (found.value.state !== "running") return this.#fail("refused", `${ref.name} is ${found.value.state}, not running: its daemon does not run`);
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
