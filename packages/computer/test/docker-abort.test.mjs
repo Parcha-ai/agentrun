@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { settleWords } from "../dist/docker.js";
-import { fakeDocker } from "./fake-docker.mjs";
+import { computerNameFor } from "../dist/provider.js";
+import { container, fakeDocker } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
@@ -56,6 +57,24 @@ test("an abort during the computer's own docker run, which the daemon still fini
 		assert.deepEqual(fake.names(), [], JSON.stringify(network));
 		assert.deepEqual(fake.volumeNames(), [], JSON.stringify(network));
 	}
+});
+
+test("a retry cut off during its docker run, before Docker said the name is taken, leaves the computer its request already has", { timeout: 60_000 }, async () => {
+	const requestId = "docker-abort-retry";
+	const name = computerNameFor(requestId);
+	// The computer an earlier create of this request made (here or in another process); the retry's run never answers.
+	const fake = fakeDocker({ containers: [container({ name })], hold: ["run"] });
+	const controller = new AbortController();
+	const watch = (async () => {
+		while (!fake.runHeld()) await sleep(10);
+		controller.abort();
+	})();
+	const made = await fake.provider.create(SPEC, { requestId, signal: controller.signal });
+	await watch;
+	assert.equal(made.error?.code, "aborted");
+	assert.equal(made.error.message, `create was aborted during docker run; the computer ${name} that another create of this request made is left as it is`);
+	assert.deepEqual(fake.names(), [name], "the request's computer is still there");
+	assert.ok(!fake.calls().some((args) => args[0] === "rm" && args.includes(name)), "no rm by its name");
 });
 
 test("a late container that Docker will not remove is named in the error once the 10 s bound is spent", { timeout: 60_000 }, async () => {

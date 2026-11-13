@@ -168,7 +168,8 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
- * "info", "hello", "logs") that wait, once called, until `proceed(step)`. `desktop` is the provider's desktop option; `display`
+ * "info", "hello", "logs") that wait, once called, until `proceed(step)`; "run" is a docker run that never answers, cut
+ * off before Docker looked at the name (`runHeld()` says it began). `desktop` is the provider's desktop option; `display`
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
  * daemon answers nothing once the server is started, as one stuck in the X connection setup, or stopped, does).
@@ -301,6 +302,12 @@ const merge = (base, over) => {
 };
 switch (args[0]) {
 	case "run": {
+		// hold "run": a CLI that never answers, cut off before Docker looked at the name; run-held marks that it began.
+		if (config.hold.includes("run")) {
+			appendFileSync(config.dir + "/run-held", "");
+			setInterval(() => {}, 1000);
+			break;
+		}
 		const flags = {};
 		let i = 1;
 		for (; i < args.length && args[i].startsWith("--"); i += args[i] === "--detach" || args[i] === "--read-only" ? 1 : 2) (flags[args[i]] ??= []).push(args[i + 1]);
@@ -538,7 +545,8 @@ switch (args[0]) {
 	// `options` makes a fresh provider over the same Docker: another process's.
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
-	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started, late };
+	const runHeld = () => existsSync(join(dir, "run-held"));
+	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started, late, runHeld };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and

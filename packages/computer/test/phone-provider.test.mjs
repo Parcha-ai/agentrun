@@ -251,16 +251,24 @@ test("a phone whose end is still in flight: a second release is ok, it is neithe
 	assert.equal(fake.requests().some((r) => r.method === "DELETE" && r.path === "/sessions/sess_other"), false);
 });
 
-test("a session the service ended is gone to attach and list, and the ledger forgets it", async () => {
+test("a session the service ended is gone to attach and list, and the ledger forgets it; its request stays spent", async () => {
 	const { provider, fake, ledger } = await setup();
-	const created = await provider.create({ ...SPEC, labels: { run: "r1" } }, req());
-	const other = await provider.create({ ...SPEC, labels: { run: "r1" } }, req());
+	const spec = { ...SPEC, labels: { run: "r1" } };
+	const created = await provider.create(spec, { requestId: "phone-gone-attach" });
+	const other = await provider.create(spec, { requestId: "phone-gone-list" });
 	fake.sessions.delete(created.value.id);
 	fake.sessions.delete(other.value.id);
 	assert.equal((await provider.attach({ id: created.value.id })).error.code, "gone");
 	assert.deepEqual((await ledger.list()).map((e) => e.id), [other.value.id], "attach forgot the one it found gone");
 	assert.deepEqual((await provider.list({ run: "r1" })).value, []);
 	assert.deepEqual(await ledger.list(), [], "and list the other");
+	// A retry of either request after its entry was forgotten is exists, never a second POST /sessions.
+	for (const requestId of ["phone-gone-attach", "phone-gone-list"]) {
+		const again = await provider.create(spec, { requestId });
+		assert.equal(again.error?.code, "exists", requestId);
+		assert.match(again.error.message, /^computer-[0-9a-f]{12} was made for this request and has ended: create with a new request id$/);
+	}
+	assert.equal(fake.requests().filter((r) => r.method === "POST" && r.path === "/sessions").length, 2, "nothing rented for a spent request");
 });
 
 test("list names a phone once while create swaps its pending key for the session's entry", async () => {

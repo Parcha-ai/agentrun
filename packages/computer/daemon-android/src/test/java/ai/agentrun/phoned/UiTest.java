@@ -329,6 +329,25 @@ final class UiTest {
 		eq(0, list(map(then.get("diff")), "added").size());
 	}
 
+	static void testAWindowTargetsExpectReadsItsOwnAppsMainWindow() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		phone.call("apps.launch", "{\"id\":\"" + FakeDevice.FIXTURE + "\"}");
+		String fixture = (String) map(phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}").get("window")).get("id");
+		// Another app's window comes in front of the fixture's.
+		FakeNode root = FakeNode.of("android.widget.FrameLayout").at(0, 0, 1080, 2400).pkg("com.example.other");
+		synchronized (phone.device) {
+			phone.device.windows.add(0, new FakeDevice.FakeWindow(99, "Other app", new ai.agentrun.phoned.device.Rect(0, 0, 1080, 2400), root));
+			phone.device.changed();
+		}
+		String target = "\"target\":{\"window\":\"" + fixture + "\"}";
+		// A wait aimed at the fixture's window reads the fixture's main window, never the app in front.
+		eq("unmet", phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"Other app\"},\"timeoutMs\":300}}").get("expect"));
+		Map<String, Object> met = phone.call("ui.act", "{" + target + ",\"steps\":[],\"expect\":{\"window\":{\"title\":\"UI fixture\"},\"timeoutMs\":300}}");
+		eq("met", met.get("expect"));
+		Map<String, Object> answered = phone.call("ui.observe", "{" + target + ",\"since\":\"" + met.get("state") + "\"}");
+		eq("UI fixture", map(answered.get("window")).get("title"));
+	}
+
 	static void testASetThatTheAppTakesBackIsNotVerified() throws Exception {
 		Check.Phone phone = new Check.Phone();
 		phone.device.internet();

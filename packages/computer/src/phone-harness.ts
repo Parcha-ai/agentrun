@@ -612,6 +612,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
+	/**
+	 * Forgets a phone the service ended: its request is spent first, so a retry of it is refused exists (endedWords),
+	 * never a second POST /sessions, and then its entry goes.
+	 */
+	async #forget(entry: PhoneLedgerEntry): Promise<void> {
+		this.#requests.end(entry.name);
+		await this.#ledger.remove(entry.id);
+	}
+
 	#deadlineOf(session: Session, fallback: number): string {
 		return new Date(typeof session.expires_at === "number" && Number.isFinite(session.expires_at) ? session.expires_at * 1000 : fallback).toISOString();
 	}
@@ -806,7 +815,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const id = (entry as PhoneLedgerEntry).id;
 		const session = await this.#session(id, signal);
 		if (!session.ok) {
-			if (session.error.code === "gone") await this.#ledger.remove(id);
+			if (session.error.code === "gone") await this.#forget(entry as PhoneLedgerEntry);
 			return session;
 		}
 		if (session.value.state !== "ready" && session.value.state !== "provisioning") return fail("gone", `${id} is ${session.value.state}`);
@@ -858,10 +867,10 @@ export class PhoneHarnessProvider implements ComputerProvider {
 			if (entry.released !== undefined) {
 				// Released, and being ended: never listed. Forgotten once the listing leaves it out and its own GET is a 404,
 				// or once its deadline has passed.
-				if (this.#now() > Date.parse(entry.deadline)) await this.#ledger.remove(entry.id);
+				if (this.#now() > Date.parse(entry.deadline)) await this.#forget(entry);
 				else if (!live.has(entry.id)) {
 					const read = await this.#session(entry.id, signal);
-					if (!read.ok && read.error.code === "gone") await this.#ledger.remove(entry.id);
+					if (!read.ok && read.error.code === "gone") await this.#forget(entry);
 				}
 				continue;
 			}
@@ -870,7 +879,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				// Not in the listing: its own GET says whether the service ended it (404), and only then is it forgotten.
 				const read = await this.#session(entry.id, signal);
 				if (!read.ok && read.error.code === "gone") {
-					await this.#ledger.remove(entry.id);
+					await this.#forget(entry);
 					continue;
 				}
 				if (!read.ok) return read;

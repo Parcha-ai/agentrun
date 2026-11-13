@@ -456,9 +456,10 @@ public final class UiDriver {
 				if (!"not_found".equals(none.kind) || expect == null || !expect.window || !steps.isEmpty()) throw none;
 				aimed = null;
 			}
-			// An act with neither a state nor a target is aimed at the app in front as it begins: a step that opens
-			// another app never lets a later step reach it.
-			if (target.app == null && target.window == null && aimed != null) target.app = appOf(aimed);
+			// An act is aimed at the app of the window it begins on: the app in front for one with neither a state nor a
+			// target, so a step that opens another app never lets a later step reach it, and a window target's own app, so
+			// a window expect reads that app's main window, never the one in front.
+			if (target.app == null && aimed != null) target.app = appOf(aimed);
 			String first = aimed == null ? "" : new Look(aimed, false).fingerprint();
 			List<Object> answers = new ArrayList<>(steps.size());
 			boolean refused = false;
