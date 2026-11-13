@@ -65,5 +65,23 @@ level after it. Once 20 runs stand behind that level, it says how many times che
 The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
 CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
 
+Under the chart, **who finished each run** stacks each block of runs by path on the same run axis, so the learned
+workflow's share grows from the takeover marker.
+
 To prove it, keep some inputs it never learns on and compare learning off and on. The
-[learning bench](../../packages/serve/learn-bench/README.md) does that for you.
+[learning bench](../../packages/serve/learn-bench/README.md) does that for you. Record what it counted, and the
+Learning tab's **Held-out test** card shows it: how many of the held-out jobs it got right, with a 95% interval the
+platform computes from the counts, and the cost a task against by hand.
+
+```sh
+cat > eval.json <<'JSON'
+{ "name": "invoice bench, sealed test", "label_source": "invented labels", "n": 200, "correct": 188,
+  "cost_per_task_usd": 0.12, "baseline_cost_per_task_usd": 0.89 }
+JSON
+agentrun learning record-eval invoice-sorter --body @eval.json
+```
+
+![The held-out test card: 94% held-out accuracy, 95% interval 89.8% to 96.5% over 200 jobs, and 7.4x cheaper a task than by hand](../assets/tutorials/held-out-test.png)
+
+Only counts go in: never the jobs themselves. Until a test is recorded the card says "Not measured yet"; the tab
+never passes the agent's own runs off as a held-out figure.
