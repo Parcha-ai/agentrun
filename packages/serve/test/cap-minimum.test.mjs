@@ -102,11 +102,13 @@ for (const [route, origin, minimum] of [["through a gateway", "https://openroute
 
 // Expected mode, the default: a step after the first is priced from what the session's previous request read from the cache
 // (cacheRead at $0.30 a million, only what is new at the cache-write price), so the run needs about $0.06 by either route.
-test("expected mode, the default: $0.06 takes a pi desktop run on Sonnet to its answer by either route; $0.05 parks it before its last step", async (t) => {
+// Through a gateway the first request alone needs $0.055 (the computer tools' definitions are read by their bytes), so $0.05
+// parks it before anything is sent; straight to Anthropic it parks before the last step.
+test("expected mode, the default: $0.06 takes a pi desktop run on Sonnet to its answer by either route; $0.05 parks it (a gateway's first request needs $0.055, so nothing is sent; Anthropic's parks before its last step)", async (t) => {
   for (const origin of ["https://openrouter.ai/api", "https://api.anthropic.com"]) {
     const at = await desktopRun(t, 0.06, origin, "expected");
     assert.deepEqual([at.row.state, at.sent.length], ["ended", 5], `${origin}: ${JSON.stringify({ state: at.row.state, summary: at.row.summary })}`);
     const under = await desktopRun(t, 0.05, origin, "expected");
-    assert.deepEqual([under.row.state, under.sent.length], ["parked", 4], `${origin}: ${JSON.stringify({ state: under.row.state, summary: under.row.summary })}`);
+    assert.deepEqual([under.row.state, under.sent.length], ["parked", origin.includes("openrouter") ? 0 : 4], `${origin}: ${JSON.stringify({ state: under.row.state, summary: under.row.summary })}`);
   }
 });
