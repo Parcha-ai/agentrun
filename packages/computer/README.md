@@ -2042,6 +2042,130 @@ A live run must show:
 `packages/envd/internal/services/process/start.go`, `.../process/handler/handler.go:395-420`), and E2B's docs
 (network/restrict-public-access and network/internet-access, read 2026-11-07). Each is cited where it is used above and in `src/e2b.ts`.
 
+## Agent37
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY), and ssh2 is the host's own (npm ssh2 1.17.0).
+const agent37 = await providerFor("agent37", { apiKey, sshKey });
+const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+Agent37 runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/agent37.ts` is Agent37's
+`MachineHost`, and `src/hosted/provider.ts` does everything that is not Agent37's own (the upload, the install, init's
+start, the stdio bridge, the probe, the janitor's extend, idempotent create by the request's name label). An Agent37
+computer is an instance made from a workspace template, by default `agent37-base`, Agent37's plain Debian 12. It is
+kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` (Agent37's gVisor sandbox). Kind
+`desktop` waits for our box image as an Agent37 template (below).
+
+### Two keys
+
+`create(options)` takes the workspace's API key as `options.apiKey` and the private half of an SSH key registered on
+the same workspace (`POST /v1/ssh-keys`, or `agent37 ssh-keys add`) as `options.sshKey`, its contents, never a path:
+the provider reads no file and no environment. A key pasted into Settings comes back on one line (a password field
+drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. REST takes the API key as
+`Authorization: Bearer <key>`; the SSH tunnel's edge takes the same key in `X-Agent37-Key` (npm `agent37@0.4.1`
+`src/cli.js`, `wsHandshake` and `runTunnel`). Neither key appears in an error, a note or a label: the sweep's scope
+names the API key by its sha256 prefix alone.
+
+### The mapping
+
+| MachineHost | Agent37 |
+| --- | --- |
+| `create` | `POST /v1/instances` with the template, `type`, `region`, the size when the spec asks one, `name` (the adapter's name label), the labels as `metadata`, `network: "deny-all"` (`"allow-all"` for an Archil computer's root, whose own namespace is still loopback-only), `auto_sleep: false` and `public_ports: []`. It answers 201 once the instance runs |
+| `get` | `GET /v1/instances/{id}`; 404 is none |
+| `list` | `GET /v1/instances`, the whole workspace in one answer (`{ data }`, no paging keys, seen live), matched on the labels here. An answer that says it has more is refused, never read as all |
+| `delete` | `DELETE /v1/instances/{id}`, never signalled; a repeat's 404 is done |
+| `setLabels` | `GET`, then `PATCH` of the whole `metadata`, which a PATCH replaces |
+| `exec` | SSH as root over a binary WebSocket to `wss://{id}-22022.agent37.app/`, one connection per process (below) |
+| `errorCode` | the envelope's `error.code` (or a flat `error` string), then the HTTP status; ssh2's `client-authentication` is `denied` |
+| `check` | a template name with an optional `@version`; one of Agent37's four shapes; at most 4 CPUs; metadata within 4096 bytes with the provider's own labels |
+
+Agent37 has no request id and no unique name, so a retried POST makes a second instance: the adapter lists the name
+label and keeps the oldest by `created` (whole seconds; ties go to the lowest id), as it does for every vendor.
+
+### Exec over SSH
+
+Agent37 has no SSH port on the internet: the instance's sshd answers on 22022 inside it, and the edge carries the SSH
+stream as binary WebSocket frames. `exec` opens a WebSocket (Node's global one takes `headers`), wraps it as a Duplex
+for ssh2's `Client.connect({ sock })`, and runs argv as `sh -c` under a wrapper that writes the shell's pid to
+`/tmp/.agentrun-exec-<random>` and removes it when the command ends. stdout and stderr are the channel's, piped; with no
+stdin, end of file is sent at once. `wait()` answers at the channel's close with the exit-status, or -1 for an exit by
+signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
+and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
+on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
+seen live), then closes the channel and the connection. An SSH signal request is not used: ssh2 sends one only while
+stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
+
+### Capabilities
+
+| Capability | Declared | Why |
+| --- | --- | --- |
+| `kind` | `linux` | `desktop` waits for the box template (below) |
+| `daemon` | `child` | the image's entrypoint is a template field, not a create field; init is a detached command over SSH |
+| `isolation` | `vm` or `gvisor` | `options.type`: `vm` (default) or `default` |
+| `lifetime` | `janitor` | Agent37 never ends an instance on its own; init's deadline and the deadline label do, and the run's sweep is the backstop |
+| `maxLifetimeMs` | 24 h | the janitor's cap; `options.maxLifetimeMs` sets less |
+| `network` | `none` | `deny-all`, read back, and the daemon's own network namespace |
+| `networkReadBack` | `true` | `GET` reports `network` and `public_ports`; any public port reads `other` |
+| `vendorAgentPorts` | `[22022, 7681]` | the platform's sshd (root for whoever holds the key) and its web terminal (ttyd), both seen listening on every VM |
+| `mount` | `archil` | the run's folder on an Archil disk; `/dev/fuse` is there on both types (live), and the mount needs the box template |
+| `release` | `delete` | `DELETE`; no release maps to Agent37's stop here |
+| `specFields` | `cpus`, `memoryMb` | 2/4, 4/8, 4/16 or 4/32 (CPUs/GB); more than 4 CPUs is refused, since Agent37 gives 4 without saying so |
+
+Every instance is made with `auto_sleep: false`: a VM that sleeps wakes cold, its daemon gone. A read-back with
+`auto_sleep` on, another type, region or template is drift, and the adapter refuses the computer.
+
+### Conformance on Agent37
+
+```sh
+AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_SSH_KEY="$(cat key)" \
+  npm run conformance -w @parcha/agentrun-computer -- --provider agent37
+```
+
+The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
+`COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, required, the key's contents),
+`COMPUTER_AGENT37_TEMPLATE` (the run's image, default `agent37-base`), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
+`COMPUTER_AGENT37_API_URL`, `COMPUTER_AGENT37_DAEMON` (`daemonPath`), `COMPUTER_AGENT37_MAX_LIFETIME_MS` and
+`COMPUTER_AGENT37_USER` (`daemonUser`), never `AGENT37_API_KEY`. Every computer of a run lives at most 30 minutes.
+`createDriftedProvider()` uploads a daemon built as `<version>-drift`. The live sweep is the shared one,
+`dist/conformance/sweep.js --provider agent37 --before <file>` and `--after <file>`; its scope is the key's workspace.
+
+### Seen live (2026-11-13)
+
+Twelve instances, at most two at once, every one labelled for the sweep and deleted; the workspace listed no instance
+after. One fresh VM's tunnel failed to open for the daemon's upload, so a tunnel that fails before its SSH handshake is
+opened again (four tries in all, within the call's bound). On type `vm` with `agent37-base`: the POST answered `running` in about 1 s (the provider's whole create,
+daemon included, 4 to 8 s); the read-back held `deny-all`, no public port, `auto_sleep: false`, 2 CPUs and 4 GB,
+dotted metadata keys and odd values; metadata's cap is 4096 bytes serialized, exactly; commands run as uid 0 on
+Debian 12 under the platform's own init; 3 MiB of stdin took half a second over the tunnel; the daemon started, hello
+answered with fence `netns`, and its programs ran as 2510 with no capability and no DNS. On type `default` (gVisor,
+kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespace inside a user namespace of its own
+(fence `userns-netns`); the rest as on `vm`. The Archil mount itself is the conformance run's to show, on the box template.
+
+### What the desktop template needs
+
+Kind `desktop` is not declared yet. It needs:
+
+1. A recipe: `box/Dockerfile` (the archil client, the helper, the tool user, FUSE) plus Xvfb and the X11 shim's
+   libraries, as one Dockerfile whose `CMD` keeps running (Agent37 needs a long-running main process). The image is
+   `linux/amd64`, under Agent37's 15 GB cap.
+2. A cloud build of it as a workspace template, `box/build-agent37.mjs` beside `build-e2b.mjs`: `POST
+   /v1/template-builds` with the name (the recipe's hash, as E2B's) and the gzipped context's byte count, `PUT` the
+   context to the presigned URL, `POST .../start`, then poll `GET .../{id}` and its `logs` until the template is
+   published (builds are free, at most three at once, 45 minutes each; docs: templates, "Build an image in the cloud").
+3. Then the provider: `LINUX_DESKTOP` in the descriptor with that template as the desktop's default image, a `kind`
+   option as E2B's (the X server started through the daemon by `src/desktop.ts`), on type `vm`, and the screen and input
+   cases run live on it. The same template is what an Archil computer names as its image.
+
+### Sources
+
+Agent37's docs under `https://www.agent37.com/docs/agents-api/` (instances create, get, list, edit, delete and object;
+errors; instance-sizing; vm-instances; instance-network; ssh; templates; custom-image), read 2026-11-13; npm
+`agent37@0.4.1` `src/cli.js` (the tunnel); `ssh2@1.17.0` (`lib/client.js`, `lib/Channel.js`, `lib/utils.js`); and
+the live runs above.
+
 ## Orgo: Windows and macOS desktops (parked)
 
 Orgo offers its Linux desktop alone, which runs computerd (`src/orgo.ts`). Its Windows and macOS desktops are parked:

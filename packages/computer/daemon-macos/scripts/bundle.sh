@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Builds Computerd.app from this package and signs it.
+#
+#   scripts/bundle.sh [OUT_DIR]          writes OUT_DIR/Computerd.app (default: ./build)
+#   COMPUTERD_UI_FIXTURE=1 also writes OUT_DIR/UIFixture.app, the ui conformance cases' fixture
+#
+# COMPUTERD_SIGN_IDENTITY is the one signing setting. "-" (the default) signs ad hoc, as CI does: macOS then pins each
+# grant to this exact build, so a new build is granted again. A "Developer ID Application: <name> (<team>)" identity
+# from the keychain signs for distribution, with the hardened runtime and a timestamp, and grants survive updates. Any
+# other keychain identity, such as the Mac mini's self-signed "Computerd Local Signing" (MINI.md), signs without either;
+# its grants survive rebuilds too, since the designated requirement names the certificate and not the build.
+#
+# The bundle:
+#   Contents/MacOS/Computerd                        the app (ComputerdApp)
+#   Contents/Helpers/computerd                      the command that relays to the app's socket
+#   Contents/Info.plist
+# The LaunchAgent's plist is not in the bundle: the app writes it to ~/Library/LaunchAgents when a person opens it.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+identity="${COMPUTERD_SIGN_IDENTITY:--}"
+config="${COMPUTERD_CONFIG:-release}"
+out="${1:-$here/build}"
+mkdir -p "$out"
+out="$(cd "$out" && pwd)"
+
+cd "$here"
+swift build -c "$config" --product ComputerdApp
+swift build -c "$config" --product computerd
+bin="$(swift build -c "$config" --show-bin-path)"
+
+app="$out/Computerd.app"
+rm -rf "${out:?}/Computerd.app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers"
+cp "$bin/ComputerdApp" "$app/Contents/MacOS/Computerd"
+cp "$bin/computerd" "$app/Contents/Helpers/computerd"
+cp App/Info.plist "$app/Contents/Info.plist"
+
+# A Developer ID identity signs with the hardened runtime and Apple's timestamp, which notarization asks for. Ad hoc and
+# local identities (mini-bootstrap.sh's) sign plainly: neither is notarized.
+options=()
+if [[ "$identity" == "Developer ID Application:"* ]]; then
+	options=(--options runtime --timestamp)
+fi
+# The helper first, then the app, which seals what it holds.
+# (bash 3.2, macOS's own, calls an empty array unbound under set -u: hence the ${...+...}.)
+codesign --force --sign "$identity" ${options[@]+"${options[@]}"} --identifier ai.parcha.computerd.cli "$app/Contents/Helpers/computerd"
+codesign --force --sign "$identity" ${options[@]+"${options[@]}"} --entitlements App/Computerd.entitlements "$app"
+codesign --verify --strict --deep "$app"
+codesign --display --requirements - "$app" 2>&1 | sed -n 's/^designated => /designated requirement: /p'
+echo "$app"
+
+# The ui conformance cases' fixture app, with COMPUTERD_UI_FIXTURE=1 (CI installs it in /Applications). Test-only.
+if [[ "${COMPUTERD_UI_FIXTURE:-}" == 1 ]]; then
+	swift build -c "$config" --product UIFixture
+	fixture="$out/UIFixture.app"
+	rm -rf "${out:?}/UIFixture.app"
+	mkdir -p "$fixture/Contents/MacOS"
+	cp "$bin/UIFixture" "$fixture/Contents/MacOS/UIFixture"
+	cp App/UIFixture-Info.plist "$fixture/Contents/Info.plist"
+	codesign --force --sign "$identity" ${options[@]+"${options[@]}"} "$fixture"
+	echo "$fixture"
+fi

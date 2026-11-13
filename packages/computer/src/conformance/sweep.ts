@@ -110,7 +110,7 @@ interface HostModule {
 }
 
 const USAGE = `usage: node packages/computer/dist/conformance/sweep.js --provider <id> --before <file> | --after <file>
-  --provider <id>  a provider on the shared machine-host adapter (e2b)
+  --provider <id>  a provider on the shared machine-host adapter (e2b, agent37)
   --before <file>  record the id of every machine the vendor lists with ${COMPUTER_LABEL}=1 into <file>
   --after <file>   delete every machine listed with ${COMPUTER_LABEL}=1 and ${RUN_LABEL} whose id is not in <file>, read
                    each back until the vendor no longer has it (up to 60 s each), and print

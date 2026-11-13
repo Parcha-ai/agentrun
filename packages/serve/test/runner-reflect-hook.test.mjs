@@ -93,7 +93,7 @@ test("the learning run a proposal queues names the grade model the hook is given
   });
   const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => ({ ended: true, answer: "```note a.md\nx\n```" }) };
   const queued = async (extra) => (await createReflectHook(deps(extra))(input)).also.find((row) => row.table === "learning_run")?.row;
-  assert.deepEqual(await queued({ gradeModel: "claude-sonnet-4-5" }), { id: "run-learn-1", model: "claude-sonnet-4-5" }, "the grade model, on the learning run");
+  assert.deepEqual(await queued({ gradeModel: "claude-sonnet-5-5" }), { id: "run-learn-1", model: "claude-sonnet-5-5" }, "the grade model, on the learning run");
   assert.deepEqual(await queued(), { id: "run-learn-1" }, "none given: none named, and the agent's own grades it");
 });
 

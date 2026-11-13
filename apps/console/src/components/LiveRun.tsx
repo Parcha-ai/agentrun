@@ -148,7 +148,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   // While it works, the run with the newest page's cost; ended, the run as its own read says (the end-of-run read).
   const shown = pageCost && !FINAL_RUN.has(run.status) ? { ...run, cost: pageCost } : run;
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col short:h-auto">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
       <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}

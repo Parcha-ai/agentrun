@@ -353,8 +353,8 @@ test("a model Codex runs in code mode is checked like any other: the check refus
   const dir = scratch();
   const make = (model) => codexAdapter({ model, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
   const spec = { key: 'step:mode', label: 'x', system: [], tools: [], context: 'fresh' };
-  for (const model of ['gpt-5.4-mini', 'gpt-6-sol', 'gpt-5.6-luna']) assert.deepEqual(make(model).check(spec), [], model);
-  const tiered = codexAdapter({ model: { default: 'gpt-5.4-mini', strong: 'gpt-6-sol' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
+  for (const model of ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra']) assert.deepEqual(make(model).check(spec), [], model);
+  const tiered = codexAdapter({ model: { default: 'gpt-6-luna', strong: 'gpt-6.1-sol' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
   assert.deepEqual(tiered.check({ ...spec, tier: 'strong' }), []);
 });
 

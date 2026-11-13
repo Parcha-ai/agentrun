@@ -44,7 +44,7 @@ import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
-import { type Checked, createReflectHook, type ReflectTurn } from "./reflect-hook.js";
+import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
 import { runnerSecrets } from "./redact.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
@@ -77,11 +77,14 @@ export interface LearningEndDeps {
  *  does not learn is asked nothing and keeps nothing), else the reflect hook over the run's store. */
 export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndOfRunTurn | undefined {
   const start = learningStartOf(launch);
-  if (!start) return undefined;
+  // A run that only uses what its agent learned (`learning: "use"`) is asked nothing and keeps nothing, at every end.
+  if (!start || start.use) return undefined;
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
-  const hookFor = (runId: string) => createReflectHook({
+  const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => createReflectHook({
+    round,
+    ...(before ? { before } : {}),
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
     // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
     // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
@@ -124,10 +127,15 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     check: async ({ runId, agentId, turn, outcome, refuse }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
-      return checkedOf(deps, { runId, agentId, seed: start.seed, turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
+      // A later round checks against the main the earlier rounds merged into, not the seed the run started from: a note
+      // round 1 added and a reviewer corrected is a supersedes target round 2 may name.
+      // The skills and workflows keep the seed the run was laid from as their conflict base (the merge refuses a file main
+      // changed since), so only the notes are checked against that main.
+      const notesSeed = round > 1 ? await mainOf(deps, agentId) : undefined;
+      return checkedOf(deps, { runId, agentId, seed: start.seed, ...(notesSeed ? { notesSeed } : {}), turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
     },
-    // The learning run's id, one per run: a replayed end queues the same one (the store adds it once).
-    newRunId: () => `${runId}-learning`,
+    // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
+    newRunId: () => learningRunIdOf(runId, round),
     ...(gradeModel ? { gradeModel } : {}),
   });
   return async (input) => {
@@ -137,11 +145,23 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     if (seedFailed(start)) {
       const failed = start.seedFailed;
       const why = failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
+      // Every end of it: the first's drop stands for a later one (the store keeps one a round, so it adds nothing new).
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
-    return hookFor(input.runId)(input);
+    // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
+    // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
+    const prior = await deps.store.learning.proposal(input.runId);
+    const round = prior ? prior.round + 1 : 1;
+    const kept = prior?.proposal as { job_cost_usd?: unknown; look_back_usd?: unknown } | null | undefined;
+    const spent = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const before = prior ? { job_cost_usd: spent(kept?.job_cost_usd), look_back_usd: spent(kept?.look_back_usd), looked: prior.turn !== null } : undefined;
+    return hookFor(input.runId, round, before)(input);
   };
 }
+
+/** The learning run of round `round` of run `runId`'s learning: `<runId>-learning` for its first, `<runId>-learning-<n>`
+ *  for each later one. */
+export const learningRunIdOf = (runId: string, round = 1): string => (round > 1 ? `${runId}-learning-${round}` : `${runId}-learning`);
 
 /** learned_workflow by every name a harness calls it: its own, and claude-agent's host-tool alias (`mcp__hands__<name>`).
  *  A harness that names it another way reads as another tool, so its run is asked as before. */
@@ -328,9 +348,19 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
   return { tools, gated, deniedBy, asked, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy } };
 }
 
+/** The commit main of the agent's learning folder is at now; none for a folder with no main yet. */
+async function mainOf(deps: LearningEndDeps, agentId: string): Promise<string | undefined> {
+  const folder = deps.learningFolder(agentId);
+  try {
+    return (await readSnapshot(folder.workspace))?.main ?? undefined;
+  } finally {
+    await folder.end();
+  }
+}
+
 /** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
  *  is read back for the hook to store with the run's end, and the directory is removed. */
-async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
+async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
     const { tools, gated, deniedBy, asked, decisions } = await draftTools(deps, input.runId);
@@ -340,7 +370,7 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}) });
+      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}) });
     } finally {
       await folder.end();
     }

@@ -1,5 +1,5 @@
 import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, inputPreview, labelOf, outcomeOf, refusedLabel, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
-import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
+import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 
 export type TimelineKind =
@@ -768,7 +768,7 @@ function createProjector(options: TimelineOptions) {
         // say. A message with no text block (a request the adapter bridge writes without content) shows none.
         // An answer its turn goes on from is a text_block (provisional, below), an empty one too.
         if (text || (final && first("text") >= 0)) {
-          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: firstLine(text), text });
+          const row = make(final ? "final_answer" : "text_block", conv, `${base}:${first("text")}`, { summary: saidSummary(text), text });
           add(row);
           if (final) {
             const earlier = provisional.get(conv);
@@ -833,7 +833,7 @@ function createProjector(options: TimelineOptions) {
       add(row);
       if (!view.isError) {
         const answer = str(args.answer);
-        if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: firstLine(answer), text: answer }));
+        if (name === "submit" && answer !== undefined) add(make("final_answer", conv, `${base}:answer`, { summary: saidSummary(answer), text: answer }));
         if (name === "request_sign_in") {
           const reason = str(args.reason);
           add(make("waiting", conv, `${base}:waiting`, { summary: `Waiting for you: ${reason ? firstLine(reason) : "sign in on the live browser"}` }));
@@ -1163,7 +1163,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
         const shown = options.redactLive ? options.redactLive(raw) : fallback();
         // The agent's text streams as it will settle, its URLs whole; its thinking is scrubbed, as when it settles.
         const text = kind === "thinking" ? scrubUrls(shown) : shown;
-        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
+        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : saidSummary(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
     };
